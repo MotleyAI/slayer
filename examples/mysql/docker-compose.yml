@@ -1,0 +1,39 @@
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: slayer_demo
+      MYSQL_USER: slayer
+      MYSQL_PASSWORD: slayer
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -u slayer -pslayer -e 'SELECT 1' slayer_demo || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  seed:
+    build:
+      context: ../..
+    command: python /examples/seed.py mysql+pymysql://slayer:slayer@mysql:3306/slayer_demo
+    volumes:
+      - ../seed.py:/examples/seed.py:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  slayer:
+    build:
+      context: ../..
+    command: sh /examples/start.sh
+    ports:
+      - "5143:5143"
+    volumes:
+      - ./start.sh:/examples/start.sh:ro
+      - ./slayer_data:/data
+    depends_on:
+      seed:
+        condition: service_completed_successfully

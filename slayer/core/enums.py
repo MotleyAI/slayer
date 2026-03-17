@@ -1,0 +1,105 @@
+"""Core enums for SLayer."""
+
+import datetime
+from enum import Enum
+
+
+class StrEnum(str, Enum):
+    def __str__(self) -> str:
+        return self.value
+
+
+class DataType(StrEnum):
+    STRING = "string"
+    TIMESTAMP = "time"
+    DATE = "date"
+    BOOLEAN = "boolean"
+    NUMBER = "number"
+    COUNT = "count"
+    COUNT_DISTINCT = "count_distinct"
+    SUM = "sum"
+    AVERAGE = "avg"
+    MIN = "min"
+    MAX = "max"
+
+    @property
+    def is_aggregation(self) -> bool:
+        return self in (
+            DataType.COUNT,
+            DataType.COUNT_DISTINCT,
+            DataType.SUM,
+            DataType.AVERAGE,
+            DataType.MIN,
+            DataType.MAX,
+        )
+
+    @property
+    def python_type(self) -> type:
+        return {
+            DataType.STRING: str,
+            DataType.TIMESTAMP: datetime.datetime,
+            DataType.DATE: datetime.date,
+            DataType.BOOLEAN: bool,
+            DataType.NUMBER: float,
+            DataType.COUNT: int,
+            DataType.COUNT_DISTINCT: int,
+            DataType.SUM: float,
+            DataType.AVERAGE: float,
+            DataType.MIN: float,
+            DataType.MAX: float,
+        }[self]
+
+
+
+class TimeGranularity(StrEnum):
+    SECOND = "second"
+    MINUTE = "minute"
+    HOUR = "hour"
+    DAY = "day"
+    WEEK = "week"
+    MONTH = "month"
+    QUARTER = "quarter"
+    YEAR = "year"
+
+    def period_start(self, date: datetime.date) -> datetime.date:
+        if self in (TimeGranularity.SECOND, TimeGranularity.MINUTE, TimeGranularity.HOUR):
+            return date
+        if self == TimeGranularity.DAY:
+            return date
+        elif self == TimeGranularity.WEEK:
+            return date - datetime.timedelta(days=date.weekday())
+        elif self == TimeGranularity.MONTH:
+            return date.replace(day=1)
+        elif self == TimeGranularity.QUARTER:
+            quarter_month = ((date.month - 1) // 3) * 3 + 1
+            return date.replace(month=quarter_month, day=1)
+        elif self == TimeGranularity.YEAR:
+            return date.replace(month=1, day=1)
+        raise ValueError(f"Unexpected granularity: {self}")
+
+    def period_end(self, date: datetime.date) -> datetime.date:
+        if self in (TimeGranularity.SECOND, TimeGranularity.MINUTE, TimeGranularity.HOUR):
+            return date
+        if self == TimeGranularity.DAY:
+            return date
+        elif self == TimeGranularity.WEEK:
+            return date + datetime.timedelta(days=6 - date.weekday())
+        elif self == TimeGranularity.MONTH:
+            if date.month == 12:
+                return date.replace(year=date.year + 1, month=1, day=1) - datetime.timedelta(days=1)
+            else:
+                return date.replace(month=date.month + 1, day=1) - datetime.timedelta(days=1)
+        elif self == TimeGranularity.QUARTER:
+            quarter_end_month = ((date.month - 1) // 3) * 3 + 3
+            if quarter_end_month == 12:
+                return datetime.date(date.year, 12, 31)
+            else:
+                return datetime.date(date.year, quarter_end_month + 1, 1) - datetime.timedelta(days=1)
+        elif self == TimeGranularity.YEAR:
+            return date.replace(month=12, day=31)
+        raise ValueError(f"Unexpected granularity: {self}")
+
+
+class OrderDirection(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
