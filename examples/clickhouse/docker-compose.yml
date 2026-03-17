@@ -1,0 +1,39 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_DB: slayer_demo
+      CLICKHOUSE_USER: slayer
+      CLICKHOUSE_PASSWORD: slayer
+    ports:
+      - "8123:8123"
+      - "9001:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user slayer --password slayer --query 'SELECT 1' || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  seed:
+    build:
+      context: ../..
+    command: python /examples/seed.py clickhouse+http://slayer:slayer@clickhouse:8123/slayer_demo
+    volumes:
+      - ../seed.py:/examples/seed.py:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  slayer:
+    build:
+      context: ../..
+    command: sh /examples/start.sh
+    ports:
+      - "5143:5143"
+    volumes:
+      - ./start.sh:/examples/start.sh:ro
+      - ./slayer_data:/data
+    depends_on:
+      seed:
+        condition: service_completed_successfully

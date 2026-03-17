@@ -1,0 +1,40 @@
+site_name: SLayer
+site_description: A lightweight semantic layer for AI agents
+site_url: https://slayer.readthedocs.io
+repo_url: https://github.com/motleyai/slayer
+repo_name: motleyai/slayer
+
+theme:
+  name: readthedocs
+  logo: https://raw.githubusercontent.com/MotleyAI/slayer/refs/heads/main/docs/SLayer.png
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Concepts:
+      - Terminology: concepts/terminology.md
+      - Models: concepts/models.md
+      - Queries: concepts/queries.md
+      - Formulas: concepts/formulas.md
+      - Auto-Ingestion: concepts/ingestion.md
+  - Interfaces:
+      - MCP Server: interfaces/mcp.md
+      - REST API: interfaces/rest-api.md
+      - Python Client: interfaces/python-client.md
+      - CLI: interfaces/cli.md
+  - Configuration:
+      - Datasources: configuration/datasources.md
+      - Storage Backends: configuration/storage.md
+  - Development: development.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - tables
+  - toc:
+      permalink: true

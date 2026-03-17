@@ -1,0 +1,92 @@
+---
+description: How to create and manage SLayer models and datasources. Use when defining models, dimensions, measures, or datasource configs.
+---
+
+# Model Management in SLayer
+
+## Creating a Model (YAML)
+
+```yaml
+name: orders
+sql_table: public.orders         # or sql: "SELECT * FROM ..."
+data_source: my_postgres
+
+dimensions:
+  - name: id
+    sql: "id"
+    type: number
+    primary_key: true
+  - name: status
+    sql: "status"
+    type: string
+  - name: created_at
+    sql: "created_at"
+    type: time
+
+default_time_dimension: created_at  # Optional: used by time-dependent formulas when no time_dimensions in query
+
+measures:
+  - name: count
+    type: count                  # COUNT(*), no sql needed
+  - name: revenue_sum
+    sql: "amount"
+    type: sum
+  - name: revenue_avg
+    sql: "amount"
+    type: avg
+```
+
+## Data Types
+
+**Dimension types**: `string`, `number`, `boolean`, `time` (timestamp), `date`
+
+**Measure aggregation types**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`
+
+## SQL Placeholders
+
+- Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
+- `${TABLE}` is available for complex expressions (e.g., `"${TABLE}.amount * ${TABLE}.quantity"`)
+## Datasource Config
+
+```yaml
+name: my_postgres
+type: postgres
+host: ${DB_HOST}
+port: 5432
+database: ${DB_NAME}
+username: ${DB_USER}       # "user" is also accepted
+password: ${DB_PASSWORD}
+```
+
+`${VAR}` references are resolved from environment variables at read time.
+
+## Auto-Ingestion with Rollup Joins
+
+Connect to a DB and generate denormalized models automatically:
+
+```python
+from slayer.engine.ingestion import ingest_datasource
+models = ingest_datasource(datasource=ds, schema="public")
+```
+
+Generates:
+- Dimensions for all columns
+- `count` measure, `{col}_sum` and `{col}_avg` for numeric non-ID columns
+- **Rollup joins**: detects FK relationships, computes transitive closure, creates denormalized models with LEFT JOINs baked into the SQL
+- Rolled-up dimensions use `{table}__{column}` naming (e.g., `customers__name`)
+- FK columns are excluded from rollup; ID-like columns (`*_id`, `*_key`) skip sum/avg measures
+- Count-distinct measures added for each referenced table's PK (e.g., `customers__count`)
+
+## MCP Incremental Editing
+
+Via MCP, agents can edit models incrementally:
+- `update_model(model_name="orders", description="Core orders table")` — update metadata without replacing the full definition
+- `add_measures(model_name="orders", measures=[{"name": "total", "sql": "amount", "type": "sum"}])`
+- `add_dimensions(model_name="orders", dimensions=[{"name": "region", "sql": "region", "type": "string"}])`
+- `delete_measures_dimensions(model_name="orders", names=["total"])`
+
+## Storage Backends
+
+- `YAMLStorage(base_dir="./data")` — models as YAML files in `data/models/`, datasources in `data/datasources/`
+- `SQLiteStorage(db_path="./slayer.db")` — everything in a single SQLite file
+- Both implement `StorageBackend` protocol: `save_model()`, `get_model()`, `list_models()`, `delete_model()`, same for datasources

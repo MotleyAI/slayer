@@ -1,0 +1,130 @@
+"""Tests for core domain models."""
+
+from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.query import ColumnRef, Field, SlayerQuery, TimeDimension
+
+
+class TestColumnRef:
+    def test_from_string_with_model(self) -> None:
+        ref = ColumnRef.from_string("orders.status")
+        assert ref.model == "orders"
+        assert ref.name == "status"
+        assert ref.full_name == "orders.status"
+
+    def test_from_string_without_model(self) -> None:
+        ref = ColumnRef.from_string("status")
+        assert ref.model is None
+        assert ref.name == "status"
+        assert ref.full_name == "status"
+
+
+class TestSlayerModel:
+    def test_get_dimension(self) -> None:
+        model = SlayerModel(
+            name="test",
+            sql_table="t",
+            data_source="test",
+            dimensions=[Dimension(name="x", type=DataType.STRING)],
+        )
+        assert model.get_dimension("x") is not None
+        assert model.get_dimension("y") is None
+
+    def test_get_measure(self) -> None:
+        model = SlayerModel(
+            name="test",
+            sql_table="t",
+            data_source="test",
+            measures=[Measure(name="count", type=DataType.COUNT)],
+        )
+        assert model.get_measure("count") is not None
+        assert model.get_measure("missing") is None
+
+
+class TestDatasourceConfig:
+    def test_postgres_connection_string(self) -> None:
+        ds = DatasourceConfig(
+            name="test",
+            type="postgres",
+            host="localhost",
+            port=5432,
+            database="mydb",
+            username="user",
+            password="pass",
+        )
+        cs = ds.get_connection_string()
+        assert cs == "postgresql://user:pass@localhost:5432/mydb"
+
+    def test_explicit_connection_string(self) -> None:
+        ds = DatasourceConfig(
+            name="test",
+            connection_string="postgresql://custom@host/db",
+        )
+        assert ds.get_connection_string() == "postgresql://custom@host/db"
+
+    def test_user_alias(self) -> None:
+        ds = DatasourceConfig.model_validate({
+            "name": "test", "type": "postgres", "user": "pg", "password": "secret",
+        })
+        assert ds.username == "pg"
+        assert "pg:secret@" in ds.get_connection_string()
+
+    def test_sqlite_connection_string(self) -> None:
+        ds = DatasourceConfig(name="test", type="sqlite", database="/tmp/test.db")
+        assert ds.get_connection_string() == "sqlite:////tmp/test.db"
+
+
+class TestDataType:
+    def test_is_aggregation(self) -> None:
+        assert DataType.COUNT.is_aggregation is True
+        assert DataType.SUM.is_aggregation is True
+        assert DataType.STRING.is_aggregation is False
+        assert DataType.NUMBER.is_aggregation is False
+
+    def test_python_type(self) -> None:
+        assert DataType.STRING.python_type is str
+        assert DataType.COUNT.python_type is int
+        assert DataType.SUM.python_type is float
+
+
+class TestTimeGranularity:
+    def test_period_start_week(self) -> None:
+        import datetime
+        # Wednesday 2024-03-13 -> Monday 2024-03-11
+        start = TimeGranularity.WEEK.period_start(datetime.date(2024, 3, 13))
+        assert start == datetime.date(2024, 3, 11)
+
+    def test_period_end_month(self) -> None:
+        import datetime
+        end = TimeGranularity.MONTH.period_end(datetime.date(2024, 3, 15))
+        assert end == datetime.date(2024, 3, 31)
+
+
+class TestWholePeriodsOnly:
+    def test_adds_lte_filter_when_none(self) -> None:
+        query = SlayerQuery(
+            model="orders",
+            fields=[Field(formula="count")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            whole_periods_only=True,
+        )
+        snapped = query.snap_to_whole_periods()
+        assert len(snapped.filters) == 1
+        assert "<=" in snapped.filters[0]
+
+    def test_noop_when_false(self) -> None:
+        query = SlayerQuery(
+            model="orders",
+            fields=[Field(formula="count")],
+            whole_periods_only=False,
+        )
+        snapped = query.snap_to_whole_periods()
+        assert snapped.filters is None
+
+    def test_period_start_quarter(self) -> None:
+        import datetime
+        start = TimeGranularity.QUARTER.period_start(datetime.date(2024, 5, 15))
+        assert start == datetime.date(2024, 4, 1)
