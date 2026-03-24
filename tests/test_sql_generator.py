@@ -502,3 +502,113 @@ class TestNestedFields:
         sql = _generate(generator, query, orders_model)
         assert "SUM(" in sql  # cumsum window
         assert "avg_cumsum" in sql.lower()
+
+
+class TestDialectMapping:
+    """Test _dialect_for_type resolves all supported datasource types."""
+
+    @pytest.mark.parametrize("ds_type,expected", [
+        ("postgres", "postgres"),
+        ("postgresql", "postgres"),
+        ("mysql", "mysql"),
+        ("mariadb", "mysql"),
+        ("clickhouse", "clickhouse"),
+        ("bigquery", "bigquery"),
+        ("snowflake", "snowflake"),
+        ("sqlite", "sqlite"),
+        ("duckdb", "duckdb"),
+        ("redshift", "redshift"),
+        ("trino", "trino"),
+        ("presto", "presto"),
+        ("athena", "presto"),
+        ("databricks", "databricks"),
+        ("spark", "spark"),
+        ("mssql", "tsql"),
+        ("sqlserver", "tsql"),
+        ("tsql", "tsql"),
+        (None, "postgres"),
+        ("unknown", "postgres"),
+    ])
+    def test_dialect_for_type(self, ds_type: str, expected: str) -> None:
+        assert SlayerQueryEngine._dialect_for_type(ds_type) == expected
+
+
+class TestMultiDialectGeneration:
+    """Test SQL generation across all supported dialects."""
+
+    @pytest.fixture
+    def orders_model(self) -> SlayerModel:
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            default_time_dimension="created_at",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            measures=[
+                Measure(name="count", type=DataType.COUNT),
+                Measure(name="revenue", sql="amount", type=DataType.SUM),
+            ],
+        )
+        return model
+
+    ALL_DIALECTS = ["postgres", "mysql", "sqlite", "clickhouse", "bigquery",
+                    "snowflake", "duckdb", "redshift", "trino", "presto",
+                    "databricks", "spark", "tsql"]
+
+    @pytest.mark.parametrize("dialect", ALL_DIALECTS)
+    def test_basic_query(self, dialect: str, orders_model: SlayerModel) -> None:
+        """Basic aggregation query should generate valid SQL for every dialect."""
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            model="orders",
+            fields=[Field(formula="count"), Field(formula="revenue")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = _generate(gen, query, orders_model)
+        assert "COUNT(" in sql
+        assert "SUM(" in sql
+
+    @pytest.mark.parametrize("dialect", ALL_DIALECTS)
+    def test_date_trunc(self, dialect: str, orders_model: SlayerModel) -> None:
+        """DATE_TRUNC should produce valid output for every dialect."""
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            model="orders",
+            fields=[Field(formula="count")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+        )
+        sql = _generate(gen, query, orders_model)
+        assert "COUNT(" in sql
+        # Each dialect uses its own truncation function
+        sql_upper = sql.upper()
+        assert any(fn in sql_upper for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE"])
+
+    @pytest.mark.parametrize("dialect", ALL_DIALECTS)
+    def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
+        """Calendar-based time_shift should produce dialect-appropriate date arithmetic."""
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'year')", name="rev_prev_year")],
+        )
+        sql = _generate(gen, query, orders_model)
+        assert "shifted_" in sql
+        assert "LEFT JOIN" in sql
+        # Dialect-specific date arithmetic
+        sql_upper = sql.upper()
+        if dialect == "sqlite":
+            assert "DATE(" in sql_upper
+        elif dialect in ("bigquery", "clickhouse", "databricks", "spark", "tsql"):
+            assert "DATE_ADD(" in sql_upper or "DATEADD(" in sql_upper
+        elif dialect in ("snowflake", "redshift"):
+            assert "DATEADD(" in sql_upper
+        elif dialect in ("trino", "presto"):
+            assert "DATE_ADD(" in sql_upper
+        else:
+            # Postgres, MySQL, DuckDB — INTERVAL syntax
+            assert "INTERVAL" in sql_upper

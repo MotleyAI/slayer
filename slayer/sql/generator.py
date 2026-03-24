@@ -323,12 +323,27 @@ class SQLGenerator:
             multiplier = 3 if granularity == "quarter" else 7 if granularity == "week" else 1
             val = offset * multiplier
             return f"DATE({left_table}.{time_col}, '{val} {unit}') = {right_table}.{time_col}"
-        # Postgres / MySQL / standard SQL
+        # Standard SQL date arithmetic with dialect-specific syntax
         unit_map = {"year": "YEAR", "month": "MONTH", "day": "DAY",
                     "quarter": "MONTH", "week": "WEEK"}
         unit = unit_map.get(granularity, granularity.upper())
         val = offset * 3 if granularity == "quarter" else offset
-        return f"{left_table}.{time_col} = {right_table}.{time_col} + INTERVAL '{val}' {unit}"
+        right_col = f"{right_table}.{time_col}"
+        left_col = f"{left_table}.{time_col}"
+        if self.dialect == "bigquery":
+            return f"{left_col} = DATE_ADD({right_col}, INTERVAL {val} {unit})"
+        elif self.dialect in ("snowflake", "redshift"):
+            return f"{left_col} = DATEADD('{unit}', {val}, {right_col})"
+        elif self.dialect == "clickhouse":
+            return f"{left_col} = DATE_ADD({unit}, {val}, {right_col})"
+        elif self.dialect in ("trino", "presto"):
+            return f"{left_col} = DATE_ADD('{unit}', {val}, {right_col})"
+        elif self.dialect in ("databricks", "spark"):
+            return f"{left_col} = DATEADD({unit}, {val}, {right_col})"
+        elif self.dialect == "tsql":
+            return f"{left_col} = DATEADD({unit}, {val}, {right_col})"
+        # Postgres / MySQL / DuckDB — standard INTERVAL syntax
+        return f"{left_col} = {right_col} + INTERVAL '{val}' {unit}"
 
     def _apply_order_limit(self, select: exp.Select, enriched: EnrichedQuery) -> exp.Select:
         """Apply ORDER BY, LIMIT, OFFSET to a select expression."""

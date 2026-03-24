@@ -32,7 +32,7 @@ SLayer sits between your data and your apps or AI agents. Instead of writing raw
 
 **Key features:**
 - **Agent-first design** — MCP, Python SDK, and REST API interfaces
-- **Datasource-agnostic** — Postgres, MySQL, BigQuery, Snowflake, and more via sqlglot
+- **Datasource-agnostic** — first-class support for Postgres, MySQL, ClickHouse, and SQLite (tested in CI with integration tests and Docker examples); additional support for Snowflake, BigQuery, Redshift, DuckDB, Trino/Presto, Databricks/Spark, and MS SQL Server via sqlglot (covered by unit tests but not verified by periodic tests against live instances)
 - **`fields` API** — Describe derived metrics with formulas (`"revenue / count"`, `"cumsum(revenue)"`, `"time_shift(revenue, -1, 'year')"`) in a single list
 - **Auto-ingestion with rollup joins** — Connect to a DB, introspect schema, generate denormalized models with FK-based LEFT JOINs automatically
 - **Incremental model editing** — Add/remove measures and dimensions without replacing the full model

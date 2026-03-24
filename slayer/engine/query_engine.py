@@ -319,16 +319,24 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _dialect_for_type(ds_type: Optional[str]) -> str:
-        if ds_type in ("postgres", "postgresql"):
-            return "postgres"
-        elif ds_type in ("mysql", "mariadb"):
-            return "mysql"
-        elif ds_type == "clickhouse":
-            return "clickhouse"
-        elif ds_type == "bigquery":
-            return "bigquery"
-        elif ds_type == "snowflake":
-            return "snowflake"
-        elif ds_type == "sqlite":
-            return "sqlite"
-        return "postgres"
+        _DIALECT_MAP = {
+            "postgres": "postgres",
+            "postgresql": "postgres",
+            "mysql": "mysql",
+            "mariadb": "mysql",
+            "clickhouse": "clickhouse",
+            "bigquery": "bigquery",
+            "snowflake": "snowflake",
+            "sqlite": "sqlite",
+            "duckdb": "duckdb",
+            "redshift": "redshift",
+            "trino": "trino",
+            "presto": "presto",
+            "athena": "presto",
+            "databricks": "databricks",
+            "spark": "spark",
+            "mssql": "tsql",
+            "sqlserver": "tsql",
+            "tsql": "tsql",
+        }
+        return _DIALECT_MAP.get(ds_type or "", "postgres")
