@@ -338,5 +338,6 @@ class SlayerQueryEngine:
             "mssql": "tsql",
             "sqlserver": "tsql",
             "tsql": "tsql",
+            "oracle": "oracle",
         }
         return _DIALECT_MAP.get(ds_type or "", "postgres")

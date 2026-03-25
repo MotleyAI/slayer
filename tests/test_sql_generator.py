@@ -526,6 +526,7 @@ class TestDialectMapping:
         ("mssql", "tsql"),
         ("sqlserver", "tsql"),
         ("tsql", "tsql"),
+        ("oracle", "oracle"),
         (None, "postgres"),
         ("unknown", "postgres"),
     ])
@@ -557,7 +558,7 @@ class TestMultiDialectGeneration:
 
     ALL_DIALECTS = ["postgres", "mysql", "sqlite", "clickhouse", "bigquery",
                     "snowflake", "duckdb", "redshift", "trino", "presto",
-                    "databricks", "spark", "tsql"]
+                    "databricks", "spark", "tsql", "oracle"]
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     def test_basic_query(self, dialect: str, orders_model: SlayerModel) -> None:
