@@ -132,13 +132,13 @@ class SQLGenerator:
         ctes = [("base", base_sql)]
         available_aliases = set(base_aliases)  # Aliases available in the current layer
 
-        # All transforms go into a unified layering loop. Each iteration tries
-        # to resolve transforms whose inputs are available. Self-join transforms
-        # (time_shift, change, change_pct) get their own CTE with a LEFT JOIN.
-        # Window transforms (cumsum, lag, lead, rank, last) are batched into a
-        # single CTE layer with OVER() expressions.
+        # Group transforms into layers: a transform goes in the first layer where
+        # its measure_alias is available.
+        # time_shift always uses self-join CTE (both row-based and calendar-based)
+        # lag/lead use window functions (handled in pending_transforms)
+        time_shifts = [t for t in enriched.transforms if t.transform == "time_shift"]
         pending_expressions = list(enriched.expressions)
-        pending_transforms = list(enriched.transforms)
+        pending_transforms = [t for t in enriched.transforms if t.transform != "time_shift"]
         layer_num = 0
         has_self_joins = False  # Track if any self-join was emitted (for ORDER BY qualification)
 
@@ -226,6 +226,23 @@ class SQLGenerator:
 
         # Build final CTE clause
         cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in ctes]
+
+        # Add time_shift source CTEs
+        final_cte = ctes[-1][0]
+        row_based_shifts = [t for t in time_shifts if not t.granularity]
+        if row_based_shifts:
+            # Add ROW_NUMBER column for row-based time_shift joins
+            time_col = f'"{row_based_shifts[0].time_alias}"'
+            all_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
+            rn_cte_name = f"{final_cte}_rn"
+            rn_sql = f"SELECT {all_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {final_cte}"
+            cte_strs.append(f"{rn_cte_name} AS (\n    {rn_sql}\n)")
+            final_cte = rn_cte_name
+
+        for t in time_shifts:
+            shift_name = f"shifted_{t.name}"
+            cte_strs.append(f"{shift_name} AS (\n    SELECT * FROM {final_cte}\n)")
+
         cte_clause = "WITH " + ",\n".join(cte_strs)
 
         final_cte = ctes[-1][0]
@@ -244,7 +261,18 @@ class SQLGenerator:
 
         outer_select = "SELECT\n    " + ",\n    ".join(final_parts)
 
-        sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
+        # Build FROM with time_shift JOINs
+        from_clause = f"FROM {final_cte}"
+        for t in time_shifts:
+            shift_name = f"shifted_{t.name}"
+            time_col = f'"{t.time_alias}"'
+            join_condition = self._build_time_shift_join(
+                left_table=final_cte, right_table=shift_name,
+                time_col=time_col, offset=t.offset, granularity=t.granularity,
+            )
+            from_clause += f"\nLEFT JOIN {shift_name}\n    ON {join_condition}"
+
+        sql = f"{cte_clause}\n{outer_select}\n{from_clause}"
 
         # Apply order/limit/offset to the outer query
         if enriched.order:
@@ -317,12 +345,17 @@ class SQLGenerator:
 
         if t.transform == "cumsum":
             return f"SUM({measure}) OVER ({order_clause})"
-        elif t.transform in _SELF_JOIN_TRANSFORMS:
-            raise ValueError(f"{t.transform} should not reach _build_transform_sql; it uses self-join CTE")
+        elif t.transform == "time_shift":
+            raise ValueError("time_shift should not reach _build_transform_sql; it uses self-join CTE")
         elif t.transform == "lag":
             return f"LAG({measure}, {abs(t.offset)}) OVER ({order_clause})"
         elif t.transform == "lead":
             return f"LEAD({measure}, {abs(t.offset)}) OVER ({order_clause})"
+        elif t.transform == "change":
+            return f"{measure} - LAG({measure}, {t.offset}) OVER ({order_clause})"
+        elif t.transform == "change_pct":
+            lag = f"LAG({measure}, {t.offset}) OVER ({order_clause})"
+            return f"CASE WHEN {lag} != 0 THEN ({measure} - {lag}) * 1.0 / {lag} END"
         elif t.transform == "rank":
             return f"RANK() OVER (ORDER BY {measure} DESC)"
         elif t.transform == "last":
