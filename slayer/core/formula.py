@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Union
 
 # Transforms that require a time dimension for ORDER BY
-TIME_TRANSFORMS = {"cumsum", "change", "change_pct", "time_shift", "last"}
+TIME_TRANSFORMS = {"cumsum", "change", "change_pct", "time_shift", "last", "lag", "lead"}
 
 # Transforms that don't need time ordering
 TIMELESS_TRANSFORMS = {"rank"}

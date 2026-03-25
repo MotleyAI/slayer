@@ -88,12 +88,13 @@ query = SlayerQuery(
         {"formula": "last(revenue_sum)", "name": "latest_rev"},
         {"formula": "time_shift(revenue_sum, -1, 'year')", "name": "rev_last_year"},
         {"formula": "time_shift(revenue_sum, -2)", "name": "rev_2_ago"},
+        {"formula": "lag(revenue_sum, 1)", "name": "rev_prev_row"},
         {"formula": "rank(revenue_sum)"},
     ],
 )
 ```
 
-Available formula functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last` (most recent value). `time_shift(x, offset)` is row-based (negative=back, positive=forward); `time_shift(x, offset, granularity)` is calendar-based (e.g., year-over-year via self-join CTE).
+Available formula functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last`, `lag`, `lead`. `time_shift` always uses a self-join CTE — no edge NULLs, handles data gaps correctly. `lag(x, n)` / `lead(x, n)` use SQL window functions directly (more efficient, but NULLs at edges).
 
 Time dimension resolution for time-dependent functions: query `main_time_dimension` -> query `time_dimensions` (if exactly 1) -> model `default_time_dimension` -> error.
 

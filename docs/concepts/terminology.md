@@ -32,12 +32,13 @@ Key terms used throughout SLayer documentation and code.
 
 ## Formulas
 
-**Transform function** — A window function applied to a measure, computing values across time buckets. Examples: `cumsum` (running total), `time_shift` (previous/next value, row-based or calendar-based), `change` (difference from previous bucket), `rank` (ordering).
+**Transform function** — A function applied to a measure, computing values across time buckets. Examples: `cumsum` (running total), `time_shift` (previous/next value via self-join), `lag`/`lead` (window-function-based row access), `change` (difference from previous bucket), `rank` (ordering).
 
-**`time_shift` — row-based vs calendar-based:**
+**`time_shift` vs `lag`/`lead`:**
 
-- `time_shift(revenue, -1)` (no granularity) returns the value from the **previous row** in the result set. If there are gaps in the data (missing months), the "previous row" might not be the previous calendar time bucket. Negative offset = look back (LAG), positive = look forward (LEAD).
-- `time_shift(revenue, -1, 'year')` (with granularity) returns the value from the **matching time bucket in a different year** (e.g., January 2024 → January 2023). It uses a self-join on the calendar date, so gaps are handled correctly (producing NULL for missing time buckets).
+- `time_shift(revenue, -1)` uses a self-join CTE to fetch the previous period's value — it can reach outside the current result set (no edge NULLs) and handles gaps correctly.
+- `time_shift(revenue, -1, 'year')` (with granularity) joins on calendar date arithmetic for comparisons like year-over-year.
+- `lag(revenue, 1)` / `lead(revenue, 1)` use SQL `LAG`/`LEAD` window functions directly — more efficient, but produce NULLs at the edges and are sensitive to gaps in data.
 
 **Nesting** — Formulas can be nested: `change(cumsum(revenue))` applies `change` to the result of `cumsum`. Each level of nesting generates an additional CTE layer in the SQL.
 

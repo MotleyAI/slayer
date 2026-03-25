@@ -159,8 +159,9 @@ def create_mcp_server(storage: StorageBackend):
             fields: Data columns to return. Each is a formula: {"formula": "count"} (measure),
                 {"formula": "revenue / count", "name": "aov"} (arithmetic),
                 {"formula": "cumsum(revenue)"} (cumulative sum), {"formula": "change(revenue)"} (diff from previous row),
-                {"formula": "change_pct(revenue)"} (% change), {"formula": "time_shift(revenue, -1)"} (previous row),
-                {"formula": "time_shift(revenue, -1, 'year')"} (year-over-year), {"formula": "last(revenue)"} (most recent),
+                {"formula": "change_pct(revenue)"} (% change), {"formula": "time_shift(revenue, -1)"} (previous period via self-join),
+                {"formula": "time_shift(revenue, -1, 'year')"} (year-over-year), {"formula": "lag(revenue, 1)"} (previous row via window function),
+                {"formula": "lead(revenue, 1)"} (next row via window function), {"formula": "last(revenue)"} (most recent),
                 {"formula": "rank(revenue)"} (ranking).
             dimensions: List of dimension names to group by, e.g. ["status", "region"].
             filters: Filter conditions as formula strings. Examples: "status == 'completed'",

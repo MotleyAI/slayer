@@ -358,7 +358,31 @@ class TestFields:
             fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1)", name="rev_prev")],
         )
         sql = _generate(generator, query, orders_model)
+        assert "shifted_" in sql
+        assert "LEFT JOIN" in sql
+        assert "ROW_NUMBER()" in sql
+        assert "_rn" in sql
+
+    def test_lag(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue"), Field(formula="lag(revenue, 1)", name="rev_prev")],
+        )
+        sql = _generate(generator, query, orders_model)
         assert "LAG(" in sql
+        assert "OVER" in sql
+
+    def test_lead(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue"), Field(formula="lead(revenue, 1)", name="rev_next")],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "LEAD(" in sql
         assert "OVER" in sql
 
     def test_change(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:

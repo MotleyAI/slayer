@@ -129,11 +129,11 @@ class SQLGenerator:
 
         # Group transforms into layers: a transform goes in the first layer where
         # its measure_alias is available.
-        # Separate calendar-based time_shift (with granularity) — handled via self-join CTE
-        # Row-based time_shift (without granularity) goes through normal window function path
-        time_shifts = [t for t in enriched.transforms if t.transform == "time_shift" and t.granularity]
+        # time_shift always uses self-join CTE (both row-based and calendar-based)
+        # lag/lead use window functions (handled in pending_transforms)
+        time_shifts = [t for t in enriched.transforms if t.transform == "time_shift"]
         pending_expressions = list(enriched.expressions)
-        pending_transforms = [t for t in enriched.transforms if not (t.transform == "time_shift" and t.granularity)]
+        pending_transforms = [t for t in enriched.transforms if t.transform != "time_shift"]
         layer_num = 0
 
         while pending_expressions or pending_transforms:
@@ -177,6 +177,16 @@ class SQLGenerator:
 
         # Add time_shift source CTEs
         final_cte = ctes[-1][0]
+        row_based_shifts = [t for t in time_shifts if not t.granularity]
+        if row_based_shifts:
+            # Add ROW_NUMBER column for row-based time_shift joins
+            time_col = f'"{row_based_shifts[0].time_alias}"'
+            all_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
+            rn_cte_name = f"{final_cte}_rn"
+            rn_sql = f"SELECT {all_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {final_cte}"
+            cte_strs.append(f"{rn_cte_name} AS (\n    {rn_sql}\n)")
+            final_cte = rn_cte_name
+
         for t in time_shifts:
             shift_name = f"shifted_{t.name}"
             cte_strs.append(f"{shift_name} AS (\n    SELECT * FROM {final_cte}\n)")
@@ -208,7 +218,7 @@ class SQLGenerator:
             time_col = f'"{t.time_alias}"'
             join_condition = self._build_time_shift_join(
                 left_table=final_cte, right_table=shift_name,
-                time_col=time_col, offset=t.offset, granularity=t.granularity or "month",
+                time_col=time_col, offset=t.offset, granularity=t.granularity,
             )
             from_clause += f"\nLEFT JOIN {shift_name}\n    ON {join_condition}"
 
@@ -289,14 +299,11 @@ class SQLGenerator:
         if t.transform == "cumsum":
             return f"SUM({measure}) OVER ({order_clause})"
         elif t.transform == "time_shift":
-            # Without granularity: row-based shift via LAG/LEAD
-            # With granularity: handled separately via self-join CTE
-            if t.granularity:
-                raise ValueError("time_shift with granularity should not reach _build_transform_sql")
-            if t.offset < 0:
-                return f"LAG({measure}, {abs(t.offset)}) OVER ({order_clause})"
-            else:
-                return f"LEAD({measure}, {t.offset}) OVER ({order_clause})"
+            raise ValueError("time_shift should not reach _build_transform_sql; it uses self-join CTE")
+        elif t.transform == "lag":
+            return f"LAG({measure}, {abs(t.offset)}) OVER ({order_clause})"
+        elif t.transform == "lead":
+            return f"LEAD({measure}, {abs(t.offset)}) OVER ({order_clause})"
         elif t.transform == "change":
             return f"{measure} - LAG({measure}, {t.offset}) OVER ({order_clause})"
         elif t.transform == "change_pct":
@@ -313,8 +320,11 @@ class SQLGenerator:
             raise ValueError(f"Unsupported transform: {t.transform}")
 
     def _build_time_shift_join(self, left_table: str, right_table: str,
-                               time_col: str, offset: int, granularity: str) -> str:
-        """Build a JOIN condition for calendar-based time_shift."""
+                               time_col: str, offset: int, granularity: Optional[str]) -> str:
+        """Build a JOIN condition for time_shift (row-based or calendar-based)."""
+        if granularity is None:
+            # Row-based: join on ROW_NUMBER offset
+            return f"{left_table}._rn + {offset} = {right_table}._rn"
         if self.dialect == "sqlite":
             # SQLite: DATE(col, 'N months') for date arithmetic
             unit_map = {"year": "years", "month": "months", "day": "days",

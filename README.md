@@ -197,15 +197,16 @@ The `fields` parameter specifies what data columns to return. Each field has a `
     {"formula": "last(revenue_sum)", "name": "latest_rev"},
     {"formula": "time_shift(revenue_sum, -1, 'year')", "name": "rev_last_year"},
     {"formula": "time_shift(revenue_sum, -2)", "name": "rev_2_periods_ago"},
+    {"formula": "lag(revenue_sum, 1)", "name": "rev_prev_row"},
     {"formula": "rank(revenue_sum)"},
     {"formula": "change(cumsum(revenue_sum))", "name": "cumsum_delta"}
   ]
 }
 ```
 
-Formulas are parsed using Python's `ast` module (see `slayer/core/formula.py`). Available functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last` (most recent value via `FIRST_VALUE`). `time_shift(x, offset)` without granularity is row-based (negative = look back, positive = look forward); `time_shift(x, offset, granularity)` is calendar-based (e.g., year-over-year via self-join CTE). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue))` or `cumsum(revenue) / count`.
+Formulas are parsed using Python's `ast` module (see `slayer/core/formula.py`). Available functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last`, `lag`, `lead`. `time_shift` always uses a self-join CTE — it can reach outside the current result set (no edge NULLs) and handles data gaps correctly. `lag`/`lead` use SQL window functions directly (more efficient, but produce NULLs at edges). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue))` or `cumsum(revenue) / count`.
 
-Functions that need ordering over time resolve the time dimension via: query `main_time_dimension` -> query `time_dimensions` (if exactly one) -> model `default_time_dimension` -> error. The `time_shift` function also uses a granularity argument (year, month, quarter, etc.) and generates a self-join CTE.
+Functions that need ordering over time resolve the time dimension via: query `main_time_dimension` -> query `time_dimensions` (if exactly one) -> model `default_time_dimension` -> error.
 
 
 ## Filters
