@@ -1,5 +1,9 @@
 # SLayer — a semantic layer by Motley
 
+<p align="center">
+  <img src="docs/images/slayer-hero.png" alt="SLayer — AI agent operating a semantic layer" width="700">
+</p>
+
 [![PyPI](https://img.shields.io/pypi/v/agentic-slayer?label=PyPI)](https://pypi.org/project/agentic-slayer/)
 [![Python](https://img.shields.io/pypi/pyversions/agentic-slayer)](https://pypi.org/project/agentic-slayer/)
 [![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://agentic-slayer.readthedocs.io/)
@@ -32,6 +36,10 @@ When AI agents write raw SQL, things break in production — hallucinated column
 - Claude Code plugin with query skills
 
 ---
+
+[![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
+
+> If you find SLayer useful, a ⭐ helps others discover it!
 
 ## Quick Start
 
