@@ -135,13 +135,29 @@ class SlayerQueryEngine:
             ))
 
         # Resolve time dimension for transforms that need ORDER BY time.
-        # Resolution chain: query main_time_dimension → query time_dimensions (if exactly 1) → model default.
+        # Resolution chain:
+        #   1. query.main_time_dimension (explicit override)
+        #   2. First time dimension in query.time_dimensions (groupby)
+        #   3. First time dimension referenced in filters
+        #   4. model.default_time_dimension
         resolved_time_alias = None
         if query.main_time_dimension:
             resolved_time_alias = f"{model.name}.{query.main_time_dimension}"
         if resolved_time_alias is None and time_dimensions:
-            if len(time_dimensions) == 1:
-                resolved_time_alias = time_dimensions[0].alias
+            resolved_time_alias = time_dimensions[0].alias
+        if resolved_time_alias is None and query.filters:
+            # Check if any filter references a time/timestamp/date dimension
+            time_dim_names = {
+                d.name for d in model.dimensions
+                if d.type in (DataType.TIMESTAMP, DataType.DATE)
+            }
+            for f_str in query.filters:
+                for td_name in time_dim_names:
+                    if td_name in f_str:
+                        resolved_time_alias = f"{model.name}.{td_name}"
+                        break
+                if resolved_time_alias:
+                    break
         if resolved_time_alias is None and model.default_time_dimension:
             resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
 
