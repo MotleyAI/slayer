@@ -8,6 +8,9 @@
 [![Python](https://img.shields.io/pypi/pyversions/agentic-slayer)](https://pypi.org/project/agentic-slayer/)
 [![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://agentic-slayer.readthedocs.io/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
+
+> If you find SLayer useful, a ⭐ helps others discover it!
 
 A lightweight, open-source semantic layer that lets AI agents query data without writing SQL.
 
@@ -37,9 +40,8 @@ When AI agents write raw SQL, things break in production — hallucinated column
 
 ---
 
-[![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 
-> If you find SLayer useful, a ⭐ helps others discover it!
+
 
 ## Quick Start
 
