@@ -314,6 +314,10 @@ class SlayerQueryEngine:
                         name=field_name, transform="last",
                         measure_alias=internal_alias, offset=1,
                     )
+                    if field.label:
+                        for t in enriched_transforms:
+                            if t.alias == f"{query.model}.{field_name}":
+                                t.label = field.label
                 # Apply label to the measure if provided
                 elif field.label:
                     for m in measures:

@@ -49,6 +49,7 @@ class DataType(StrEnum):
             DataType.AVERAGE: float,
             DataType.MIN: float,
             DataType.MAX: float,
+            DataType.LAST: float,
         }[self]
 
 
