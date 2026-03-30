@@ -9,7 +9,7 @@ A lightweight, open-source semantic layer that lets AI agents query data without
 
 ---
 
-### The problem
+## The problem
 
 When AI agents write raw SQL, things break in production — hallucinated column names, incorrect joins, metrics that drift across queries. Existing semantic layers (Cube, dbt metrics) were built for dashboards: heavy infrastructure, slow model refresh cycles, and limited expressiveness for the kinds of ad-hoc analysis agents need.
 
