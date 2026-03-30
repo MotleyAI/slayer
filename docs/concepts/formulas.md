@@ -41,23 +41,25 @@ Functions apply window operations to measures:
 | `time_shift(x, -n)` | Value N periods back | Self-join CTE on row number |
 | `time_shift(x, 1)` | Next period's value | Self-join CTE on row number |
 | `time_shift(x, offset, gran)` | Value from a different calendar time bucket | Self-join CTE on date arithmetic |
+| `change(x)` | Difference from previous period | Self-join CTE (current - previous) |
+| `change_pct(x)` | Percentage change from previous period | Self-join CTE ((current - previous) / previous) |
 | `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (ORDER BY time)` |
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (ORDER BY time)` |
-| `change(x)` | Difference from previous row | `x - LAG(x) OVER (ORDER BY time)` |
-| `change_pct(x)` | Percentage change from previous row | `CASE WHEN LAG(x) != 0 THEN (x - LAG(x)) / LAG(x) END` |
 | `rank(x)` | Ranking by value (descending) | `RANK() OVER (ORDER BY x DESC)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
 **Time dimension requirement:** Functions that order over time (`cumsum`, `time_shift`, `change`, `change_pct`, `last`, `lag`, `lead`) need a time dimension, resolved via: query's `main_time_dimension` → query's `time_dimensions` (if exactly one) → model's `default_time_dimension` → error. `rank` does not need a time dimension.
 
-**`time_shift` vs `lag`/`lead`:**
+**Self-join transforms vs window-function transforms:**
 
-`time_shift` always uses a self-join CTE, which means it can reach outside the current result set to fetch values. This is the recommended function for business reports — if you're showing monthly revenue with a "vs previous month" column, the first row will still show the previous month's value (fetched from the database), not NULL.
+`time_shift`, `change`, and `change_pct` all use self-join CTEs internally. This means they can reach outside the current result set to fetch previous/next values — no edge NULLs when the database has the data, and correct handling of gaps in time series.
 
-- **Row-based** (no granularity): `time_shift(revenue, -1)` returns the previous period's value. Uses a ROW_NUMBER-based self-join CTE. Handles gaps in data correctly.
-- **Calendar-based** (with granularity): `time_shift(revenue, -1, 'year')` compares the current time bucket to the matching time bucket in a different year (e.g., January 2024 → January 2023). Supported granularities: `year`, `month`, `quarter`, `week`, `day`. Uses a self-join CTE on date arithmetic.
+- `time_shift(revenue, -1)` — previous period's value (ROW_NUMBER-based self-join)
+- `time_shift(revenue, -1, 'year')` — value from a different calendar time bucket (date-arithmetic self-join). Supported granularities: `year`, `month`, `quarter`, `week`, `day`.
+- `change(revenue)` — difference from previous period (`current - previous`, self-join)
+- `change_pct(revenue)` — percentage change from previous period (`(current - previous) / previous`, self-join)
 
-`lag(x, n)` and `lead(x, n)` use SQL window functions directly (`LAG`/`LEAD`). They are more efficient but have two trade-offs:
+`lag(x, n)` and `lead(x, n)` use SQL `LAG`/`LEAD` window functions directly. They are more efficient but have two trade-offs:
 
 - **Edge NULLs**: the first/last N rows always return NULL since window functions can only see rows within the current result set.
 - **Gap sensitivity**: if there are missing time periods in your data, `lag` shifts by row position, not by logical period — so the "previous row" might not be the previous calendar period.

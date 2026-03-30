@@ -393,8 +393,11 @@ class TestFields:
             fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
         )
         sql = _generate(generator, query, orders_model)
-        assert "LAG(" in sql
-        assert "OVER" in sql
+        assert "shifted_" in sql
+        assert "LEFT JOIN" in sql
+        assert "_rn" in sql
+        # change = current - previous (self-join column expression)
+        assert ' - shifted_' in sql
 
     def test_change_pct(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
@@ -404,7 +407,8 @@ class TestFields:
             fields=[Field(formula="revenue"), Field(formula="change_pct(revenue)", name="rev_pct")],
         )
         sql = _generate(generator, query, orders_model)
-        assert "LAG(" in sql
+        assert "shifted_" in sql
+        assert "LEFT JOIN" in sql
         assert "CASE" in sql
 
     def test_rank(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -508,7 +512,7 @@ class TestNestedFields:
         assert "base" in sql.lower()
         assert "step" in sql.lower()
         assert "SUM(" in sql  # cumsum
-        assert "LAG(" in sql  # change
+        assert "shifted_" in sql  # change uses self-join
         assert "delta" in sql.lower()
 
     def test_mixed_arithmetic_with_transform(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:

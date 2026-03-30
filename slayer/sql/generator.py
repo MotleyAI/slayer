@@ -25,6 +25,11 @@ _AGG_FUNCTION_MAP = {
     DataType.MAX: "MAX",
 }
 
+# Transforms that use self-join CTEs instead of window functions.
+# This gives correct results at result-set edges (no NULLs when the DB has the data)
+# and handles gaps in time series correctly.
+_SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
+
 _GRANULARITY_MAP = {
     TimeGranularity.SECOND: "second",
     TimeGranularity.MINUTE: "minute",
@@ -127,25 +132,26 @@ class SQLGenerator:
         ctes = [("base", base_sql)]
         available_aliases = set(base_aliases)  # Aliases available in the current layer
 
-        # Group transforms into layers: a transform goes in the first layer where
-        # its measure_alias is available.
-        # time_shift always uses self-join CTE (both row-based and calendar-based)
-        # lag/lead use window functions (handled in pending_transforms)
-        time_shifts = [t for t in enriched.transforms if t.transform == "time_shift"]
+        # All transforms go into a unified layering loop. Each iteration tries
+        # to resolve transforms whose inputs are available. Self-join transforms
+        # (time_shift, change, change_pct) get their own CTE with a LEFT JOIN.
+        # Window transforms (cumsum, lag, lead, rank, last) are batched into a
+        # single CTE layer with OVER() expressions.
         pending_expressions = list(enriched.expressions)
-        pending_transforms = [t for t in enriched.transforms if t.transform != "time_shift"]
+        pending_transforms = list(enriched.transforms)
         layer_num = 0
+        has_self_joins = False  # Track if any self-join was emitted (for ORDER BY qualification)
 
         while pending_expressions or pending_transforms:
             layer_num += 1
             prev_cte = ctes[-1][0]
-            layer_name = f"step{layer_num}"
-            layer_parts = [f'"{a}"' for a in sorted(available_aliases)]
             added_this_layer = []
             remaining_expressions = []
             remaining_transforms = []
 
-            # Try to add expressions whose dependencies are all available
+            # Collect window transforms and expressions that can go in one layer
+            layer_parts = [f'"{a}"' for a in sorted(available_aliases)]
+
             for expr in pending_expressions:
                 if self._deps_available(expr.sql, available_aliases):
                     layer_parts.append(f'{expr.sql} AS "{expr.alias}"')
@@ -153,88 +159,101 @@ class SQLGenerator:
                 else:
                     remaining_expressions.append(expr)
 
-            # Try to add transforms whose measure_alias is available
+            # Batch window-function transforms into this layer
+            deferred_self_joins = []
             for t in pending_transforms:
-                if t.measure_alias in available_aliases:
+                if t.measure_alias not in available_aliases:
+                    remaining_transforms.append(t)
+                elif t.transform in _SELF_JOIN_TRANSFORMS:
+                    deferred_self_joins.append(t)  # Handle after window layer
+                else:
                     window_sql = self._build_transform_sql(t)
                     layer_parts.append(f'{window_sql} AS "{t.alias}"')
                     added_this_layer.append(t.alias)
-                else:
-                    remaining_transforms.append(t)
+
+            # Emit window layer CTE if anything was added
+            if added_this_layer:
+                layer_name = f"step{layer_num}"
+                layer_select = "SELECT\n    " + ",\n    ".join(layer_parts)
+                ctes.append((layer_name, f"{layer_select}\nFROM {prev_cte}"))
+                available_aliases.update(added_this_layer)
+
+            # Now emit each self-join transform as its own CTE layer
+            for t in deferred_self_joins:
+                has_self_joins = True
+                src_cte = ctes[-1][0]
+
+                # Add ROW_NUMBER if row-based and not already present
+                if not t.granularity:
+                    time_col = f'"{t.time_alias}"'
+                    all_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
+                    rn_cte = f"{src_cte}_rn"
+                    rn_sql = f"SELECT {all_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {src_cte}"
+                    ctes.append((rn_cte, rn_sql))
+                    src_cte = rn_cte
+
+                shift_name = f"shifted_{t.name}"
+                # Build the self-join CTE: src LEFT JOIN shifted ON condition → result column
+                time_col = f'"{t.time_alias}"'
+                join_cond = self._build_time_shift_join(
+                    left_table=src_cte, right_table=shift_name,
+                    time_col=time_col, offset=t.offset, granularity=t.granularity,
+                )
+                col_sql = self._build_self_join_column(
+                    transform=t.transform, left_table=src_cte,
+                    right_table=shift_name, measure_alias=t.measure_alias,
+                )
+                join_cols = ", ".join(f'{src_cte}."{a}"' for a in sorted(available_aliases))
+                join_layer = f"sjoin_{t.name}"
+                join_sql = (
+                    f"SELECT {join_cols}, {col_sql} AS \"{t.alias}\"\n"
+                    f"FROM {src_cte}\n"
+                    f"LEFT JOIN {shift_name}\n"
+                    f"    ON {join_cond}"
+                )
+                # The shifted source CTE is a copy of src_cte
+                ctes.append((shift_name, f"SELECT * FROM {src_cte}"))
+                ctes.append((join_layer, join_sql))
+                available_aliases.add(t.alias)
+                added_this_layer.append(t.alias)
 
             if not added_this_layer:
+                remaining_transforms.extend(deferred_self_joins)
                 break  # Nothing could be added — remaining items have unresolved deps
-
-            layer_select = "SELECT\n    " + ",\n    ".join(layer_parts)
-            ctes.append((layer_name, f"{layer_select}\nFROM {prev_cte}"))
-            available_aliases.update(added_this_layer)
 
             pending_expressions = remaining_expressions
             pending_transforms = remaining_transforms
 
         # Build final CTE clause
         cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in ctes]
-
-        # Add time_shift source CTEs
-        final_cte = ctes[-1][0]
-        row_based_shifts = [t for t in time_shifts if not t.granularity]
-        if row_based_shifts:
-            # Add ROW_NUMBER column for row-based time_shift joins
-            time_col = f'"{row_based_shifts[0].time_alias}"'
-            all_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
-            rn_cte_name = f"{final_cte}_rn"
-            rn_sql = f"SELECT {all_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {final_cte}"
-            cte_strs.append(f"{rn_cte_name} AS (\n    {rn_sql}\n)")
-            final_cte = rn_cte_name
-
-        for t in time_shifts:
-            shift_name = f"shifted_{t.name}"
-            cte_strs.append(f"{shift_name} AS (\n    SELECT * FROM {final_cte}\n)")
-
         cte_clause = "WITH " + ",\n".join(cte_strs)
 
+        final_cte = ctes[-1][0]
+
         # Build final SELECT
-        final_parts = [f'{final_cte}."{a}"' for a in sorted(available_aliases)]
+        final_parts = [f'"{a}"' for a in sorted(available_aliases)]
 
         # Add any remaining expressions/transforms that couldn't be layered
         for expr in pending_expressions:
             final_parts.append(f'{expr.sql} AS "{expr.alias}"')
         for t in pending_transforms:
-            if t.transform != "time_shift":
-                window_sql = self._build_transform_sql(t)
-                final_parts.append(f'{window_sql} AS "{t.alias}"')
-
-        # Add time_shift columns
-        for t in time_shifts:
-            shift_name = f"shifted_{t.name}"
-            final_parts.append(f'{shift_name}."{t.measure_alias}" AS "{t.alias}"')
+            if t.transform in _SELF_JOIN_TRANSFORMS:
+                continue  # Should not happen — self-joins are always materialized
+            window_sql = self._build_transform_sql(t)
+            final_parts.append(f'{window_sql} AS "{t.alias}"')
 
         outer_select = "SELECT\n    " + ",\n    ".join(final_parts)
 
-        # Build FROM with time_shift JOINs
-        from_clause = f"FROM {final_cte}"
-        for t in time_shifts:
-            shift_name = f"shifted_{t.name}"
-            time_col = f'"{t.time_alias}"'
-            join_condition = self._build_time_shift_join(
-                left_table=final_cte, right_table=shift_name,
-                time_col=time_col, offset=t.offset, granularity=t.granularity,
-            )
-            from_clause += f"\nLEFT JOIN {shift_name}\n    ON {join_condition}"
-
-        sql = f"{cte_clause}\n{outer_select}\n{from_clause}"
+        sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
 
         # Apply order/limit/offset to the outer query
-        # We need to do this as raw SQL since we're building the outer query as a string
         if enriched.order:
             order_parts = []
             for order_item in enriched.order:
                 col = order_item.column
                 col_name = f"{col.model or enriched.model_name}.{col.name}"
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                # Qualify with final CTE to avoid ambiguity in self-join
-                qualifier = f"{final_cte}." if time_shifts else ""
-                order_parts.append(f'{qualifier}"{col_name}" {direction}')
+                order_parts.append(f'"{col_name}" {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
 
         if enriched.limit is not None:
@@ -298,17 +317,12 @@ class SQLGenerator:
 
         if t.transform == "cumsum":
             return f"SUM({measure}) OVER ({order_clause})"
-        elif t.transform == "time_shift":
-            raise ValueError("time_shift should not reach _build_transform_sql; it uses self-join CTE")
+        elif t.transform in _SELF_JOIN_TRANSFORMS:
+            raise ValueError(f"{t.transform} should not reach _build_transform_sql; it uses self-join CTE")
         elif t.transform == "lag":
             return f"LAG({measure}, {abs(t.offset)}) OVER ({order_clause})"
         elif t.transform == "lead":
             return f"LEAD({measure}, {abs(t.offset)}) OVER ({order_clause})"
-        elif t.transform == "change":
-            return f"{measure} - LAG({measure}, {t.offset}) OVER ({order_clause})"
-        elif t.transform == "change_pct":
-            lag = f"LAG({measure}, {t.offset}) OVER ({order_clause})"
-            return f"CASE WHEN {lag} != 0 THEN ({measure} - {lag}) * 1.0 / {lag} END"
         elif t.transform == "rank":
             return f"RANK() OVER (ORDER BY {measure} DESC)"
         elif t.transform == "last":
@@ -318,6 +332,20 @@ class SQLGenerator:
             )
         else:
             raise ValueError(f"Unsupported transform: {t.transform}")
+
+    @staticmethod
+    def _build_self_join_column(transform: str, left_table: str,
+                                right_table: str, measure_alias: str) -> str:
+        """Build the SELECT expression for a self-join transform."""
+        cur = f'{left_table}."{measure_alias}"'
+        prev = f'{right_table}."{measure_alias}"'
+        if transform == "time_shift":
+            return prev
+        elif transform == "change":
+            return f"{cur} - {prev}"
+        elif transform == "change_pct":
+            return f"CASE WHEN {prev} != 0 THEN ({cur} - {prev}) * 1.0 / {prev} END"
+        raise ValueError(f"Unknown self-join transform: {transform}")
 
     def _build_time_shift_join(self, left_table: str, right_table: str,
                                time_col: str, offset: int, granularity: Optional[str]) -> str:

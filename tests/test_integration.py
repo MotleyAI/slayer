@@ -289,12 +289,11 @@ def test_cumsum_change_identity(integration_env):
     assert response.row_count == 3
     assert "orders.cumsum_change" in response.columns
 
-    # First row: cumsum of first change is NULL (no previous)
-    assert response.data[0]["orders.cumsum_change"] is None
-
-    # Remaining rows: cumsum(change(x)) == x - x[0]
+    # With self-join change, the first row's change is NULL (no previous period),
+    # cumsum(NULL) = 0 in SQLite. The identity cumsum(change(x)) == x - x[0]
+    # holds for all rows (including the first, where it equals 0).
     first_count = response.data[0]["orders.count"]
-    for row in response.data[1:]:
+    for row in response.data:
         assert row["orders.cumsum_change"] == row["orders.count"] - first_count
 
 
