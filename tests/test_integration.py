@@ -107,6 +107,7 @@ def integration_env(tmp_path):
         measures=[
             Measure(name="count", type=DataType.COUNT),
             Measure(name="total_amount", sql="amount", type=DataType.SUM),
+            Measure(name="latest_amount", sql="amount", type=DataType.LAST),
         ],
     )
     storage.save_model(orders_model)
@@ -705,3 +706,32 @@ def test_transform_on_filter_rhs(integration_env):
     # Only March (325 > 125)
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+
+
+def test_last_measure_type(integration_env):
+    """A measure with type=last should return the most recent time bucket's value."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # latest_amount has type=last, so querying it as a bare measure
+    # should auto-wrap with last() and return Mar's value (325) for all rows
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="latest_amount"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # latest_amount should be the same (most recent) value for all rows
+    # Base agg is MAX(amount), March has max single order = 300
+    latest_vals = [r["orders.latest_amount"] for r in response.data]
+    assert len(set(latest_vals)) == 1  # All rows have the same value
+    assert latest_vals[0] == pytest.approx(300.0)  # March's MAX(amount)

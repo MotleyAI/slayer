@@ -24,6 +24,8 @@ _AGG_FUNCTION_MAP = {
     DataType.AVERAGE: "AVG",
     DataType.MIN: "MIN",
     DataType.MAX: "MAX",
+    DataType.LAST: "MAX",  # Base aggregation for `last` type; the actual "most recent" logic
+                           # is handled by auto-adding a last() transform during enrichment
 }
 
 # Transforms that use self-join CTEs instead of window functions.

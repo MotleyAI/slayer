@@ -6,6 +6,7 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 import logging
 from typing import Any, Dict, List, Optional
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.enriched import (
@@ -282,8 +283,23 @@ class SlayerQueryEngine:
 
             if isinstance(spec, MeasureRef):
                 _ensure_measure(spec.name)
+                # If the measure has type=last, auto-wrap with last() transform
+                measure_def = model.get_measure(spec.name)
+                if measure_def and measure_def.type == DataType.LAST:
+                    # Rename the base measure's alias to an internal name
+                    # so it doesn't collide with the transform's output alias
+                    base_alias = f"{query.model}.{spec.name}"
+                    internal_alias = f"{query.model}._base_{spec.name}"
+                    for m in measures:
+                        if m.alias == base_alias:
+                            m.alias = internal_alias
+                            known_aliases[spec.name] = internal_alias
+                    _add_transform(
+                        name=field_name, transform="last",
+                        measure_alias=internal_alias, offset=1,
+                    )
                 # Apply label to the measure if provided
-                if field.label:
+                elif field.label:
                     for m in measures:
                         if m.name == spec.name:
                             m.label = field.label

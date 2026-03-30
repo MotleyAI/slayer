@@ -432,6 +432,22 @@ class TestFields:
         assert "FIRST_VALUE(" in sql
         assert "DESC" in sql
 
+    def test_last_measure_type(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """A measure with type=last should auto-wrap with last() transform."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="balance", type=DataType.LAST))
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="balance")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should auto-generate FIRST_VALUE (last() transform)
+        assert "FIRST_VALUE(" in sql
+        assert "DESC" in sql
+        # Base aggregation should use MAX
+        assert "MAX(" in sql
+
     def test_time_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(

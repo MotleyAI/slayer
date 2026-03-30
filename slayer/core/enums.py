@@ -21,6 +21,7 @@ class DataType(StrEnum):
     AVERAGE = "avg"
     MIN = "min"
     MAX = "max"
+    LAST = "last"
 
     @property
     def is_aggregation(self) -> bool:
@@ -31,6 +32,7 @@ class DataType(StrEnum):
             DataType.AVERAGE,
             DataType.MIN,
             DataType.MAX,
+            DataType.LAST,
         )
 
     @property
