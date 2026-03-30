@@ -772,7 +772,7 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
-        """Calendar-based time_shift should produce dialect-appropriate date arithmetic."""
+        """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             model="orders",
@@ -782,16 +782,10 @@ class TestMultiDialectGeneration:
         sql = _generate(gen, query, orders_model)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
-        # Dialect-specific date arithmetic
+        # Join should be simple equality (timestamp shift is inside the shifted CTE)
+        # Dialect-specific date arithmetic should appear in the shifted CTE's SELECT/GROUP BY
         sql_upper = sql.upper()
         if dialect == "sqlite":
             assert "DATE(" in sql_upper
-        elif dialect in ("bigquery", "clickhouse", "databricks", "spark", "tsql"):
-            assert "DATE_ADD(" in sql_upper or "DATEADD(" in sql_upper
-        elif dialect in ("snowflake", "redshift"):
-            assert "DATEADD(" in sql_upper
-        elif dialect in ("trino", "presto"):
-            assert "DATE_ADD(" in sql_upper
         else:
-            # Postgres, MySQL, DuckDB — INTERVAL syntax
             assert "INTERVAL" in sql_upper
