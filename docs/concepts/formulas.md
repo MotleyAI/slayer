@@ -102,6 +102,8 @@ Filter formulas define conditions for the query. They go in the `filters` parame
 | `in` | `"status in ('active', 'pending')"` |
 | `is None` | `"discount is None"` (IS NULL) |
 | `is not None` | `"discount is not None"` (IS NOT NULL) |
+| `like` | `"name like '%acme%'"` |
+| `not like` | `"name not like '%test%'"` |
 
 ### Boolean Logic
 
@@ -115,15 +117,6 @@ Use `and`, `or`, `not` within a single filter string:
 ```
 
 Multiple entries in the `filters` list are combined with AND.
-
-### Filter Functions
-
-| Function | Example | SQL |
-|----------|---------|-----|
-| `contains(col, val)` | `"contains(name, 'acme')"` | `name LIKE '%acme%'` |
-| `starts_with(col, val)` | `"starts_with(name, 'A')"` | `name LIKE 'A%'` |
-| `ends_with(col, val)` | `"ends_with(email, '.com')"` | `email LIKE '%.com'` |
-| `between(col, low, high)` | `"between(amount, 100, 500)"` | `amount BETWEEN 100 AND 500` |
 
 ### Filtering on Computed Columns
 

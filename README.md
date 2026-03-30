@@ -270,7 +270,7 @@ Filters use simple formula strings — no verbose JSON objects:
 "filters": ["status == 'completed' or status == 'pending'"]
 ```
 
-**Functions**: `contains(col, 'val')`, `starts_with(col, 'val')`, `ends_with(col, 'val')`, `between(col, 'a', 'b')`. Filters on measures (e.g., `"count > 10"`) are automatically routed to HAVING.
+**Pattern matching**: `like` and `not like` operators (e.g., `"name like '%acme%'"`, `"name not like '%test%'"`). Filters on measures (e.g., `"count > 10"`) are automatically routed to HAVING.
 
 **Computed column filters**: filters can reference field names or contain inline transform expressions. These are applied as post-filters after all transforms are computed:
 ```json

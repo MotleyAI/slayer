@@ -194,8 +194,8 @@ def _parse_literal(node: ast.AST, original: str) -> Any:
 # Filter parsing
 # ---------------------------------------------------------------------------
 
-# String filter functions (no Python operator equivalent)
-FILTER_FUNCTIONS = {"contains", "starts_with", "ends_with", "between"}
+# Internal filter functions (used after pre-processing operators like `like`)
+FILTER_FUNCTIONS = {"__like__", "__notlike__"}
 
 
 @dataclass
@@ -211,6 +211,37 @@ class ParsedFilter:
     is_post_filter: bool = False  # True if this references a computed column (transform/expression)
 
 
+def _preprocess_like(formula: str) -> str:
+    """Convert `like` and `not like` operators to internal function calls for AST parsing.
+
+    "name like '%acme%'"       → "__like__(name, '%acme%')"
+    "name not like '%acme%'"   → "__notlike__(name, '%acme%')"
+    """
+    import re
+    formula = re.sub(
+        r'\b(\w+)\s+not\s+like\s+',
+        r'__notlike__(\1, ',
+        formula, flags=re.IGNORECASE,
+    )
+    # Close the parenthesis: find the string argument and close after it
+    formula = re.sub(
+        r'(__notlike__\([^,]+,\s*\'[^\']*\')',
+        r'\1)',
+        formula,
+    )
+    formula = re.sub(
+        r'\b(\w+)\s+like\s+',
+        r'__like__(\1, ',
+        formula, flags=re.IGNORECASE,
+    )
+    formula = re.sub(
+        r'(__like__\([^,]+,\s*\'[^\']*\')',
+        r'\1)',
+        formula,
+    )
+    return formula
+
+
 def parse_filter(formula: str) -> ParsedFilter:
     """Parse a filter formula string into a ParsedFilter.
 
@@ -223,13 +254,13 @@ def parse_filter(formula: str) -> ParsedFilter:
         "status in ('a', 'b', 'c')"       → WHERE status IN ('a', 'b', 'c')
         "status is None"                  → WHERE status IS NULL
         "status is not None"              → WHERE status IS NOT NULL
-        "contains(name, 'acme')"          → WHERE name LIKE '%acme%'
-        "starts_with(name, 'A')"          → WHERE name LIKE 'A%'
-        "ends_with(name, 'Inc')"          → WHERE name LIKE '%Inc'
-        "between(created_at, '2024-01-01', '2024-12-31')"  → WHERE created_at BETWEEN '...' AND '...'
+        "name like '%acme%'"              → WHERE name LIKE '%acme%'
+        "name not like '%test%'"          → WHERE name NOT LIKE '%test%'
     """
+    # Pre-process `like` / `not like` operators into internal function calls
+    processed = _preprocess_like(formula)
     try:
-        tree = ast.parse(formula, mode="eval")
+        tree = ast.parse(processed, mode="eval")
     except SyntaxError as e:
         raise ValueError(f"Invalid filter syntax: {formula!r} — {e}")
 
@@ -310,26 +341,17 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
         right = _filter_node_to_sql(node.right, original, columns)
         return f"{left} {op_str} {right}"
 
-    # Function call → contains, starts_with, ends_with, between
+    # Internal function calls for like/not like operators
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         func_name = node.func.id
-        if func_name == "contains" and len(node.args) >= 2:
+        if func_name == "__like__" and len(node.args) >= 2:
             col = _filter_node_to_sql(node.args[0], original, columns)
             val = _get_string_arg(node.args[1], original)
-            return f"{col} LIKE '%{val}%'"
-        elif func_name == "starts_with" and len(node.args) >= 2:
+            return f"{col} LIKE '{val}'"
+        elif func_name == "__notlike__" and len(node.args) >= 2:
             col = _filter_node_to_sql(node.args[0], original, columns)
             val = _get_string_arg(node.args[1], original)
-            return f"{col} LIKE '{val}%'"
-        elif func_name == "ends_with" and len(node.args) >= 2:
-            col = _filter_node_to_sql(node.args[0], original, columns)
-            val = _get_string_arg(node.args[1], original)
-            return f"{col} LIKE '%{val}'"
-        elif func_name == "between" and len(node.args) >= 3:
-            col = _filter_node_to_sql(node.args[0], original, columns)
-            low = _filter_node_to_sql(node.args[1], original, columns)
-            high = _filter_node_to_sql(node.args[2], original, columns)
-            return f"{col} BETWEEN {low} AND {high}"
+            return f"{col} NOT LIKE '{val}'"
         raise ValueError(f"Unknown filter function '{func_name}' in: {original!r}")
 
     raise ValueError(f"Unsupported filter syntax: {original!r}")

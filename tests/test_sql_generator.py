@@ -161,7 +161,7 @@ class TestFilters:
         query = SlayerQuery(
             model="orders",
             fields=[Field(formula="count")],
-            filters=["contains(status, 'act')"],
+            filters=["status like '%act%'"],
         )
         sql = _generate(generator, query, orders_model)
         assert "LIKE" in sql
@@ -199,10 +199,11 @@ class TestFilters:
         query = SlayerQuery(
             model="orders",
             fields=[Field(formula="count")],
-            filters=["between(created_at, '2024-01-01', '2024-06-30')"],
+            filters=["created_at >= '2024-01-01' and created_at <= '2024-06-30'"],
         )
         sql = _generate(generator, query, orders_model)
-        assert "BETWEEN" in sql
+        assert ">=" in sql
+        assert "<=" in sql
 
 
 class TestMeasureTypes:

@@ -166,7 +166,7 @@ def create_mcp_server(storage: StorageBackend):
             dimensions: List of dimension names to group by, e.g. ["status", "region"].
             filters: Filter conditions as formula strings. Examples: "status == 'completed'",
                 "amount > 100", "status in ('a', 'b')", "status is None",
-                "contains(name, 'acme')". Filters on measures are automatically routed to HAVING.
+                "name like '%acme%'". Filters on measures are automatically routed to HAVING.
                 Supports and/or: "status == 'a' or status == 'b'".
                 Filters can also reference computed field names or contain inline transforms:
                 "change(revenue) > 0", "last(change(revenue)) < 0".
