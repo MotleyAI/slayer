@@ -229,6 +229,18 @@ class SlayerQueryEngine:
                 return alias
 
             elif isinstance(spec, TransformField):
+                # Validate: nesting a self-join transform inside another is not supported
+                # (e.g., change(time_shift(x)) — the outer's shifted CTE can't replay the inner)
+                _self_join = {"time_shift", "change", "change_pct"}
+                if (spec.transform in _self_join
+                        and isinstance(spec.inner, TransformField)
+                        and spec.inner.transform in _self_join):
+                    raise ValueError(
+                        f"Nesting '{spec.transform}' around '{spec.inner.transform}' is not supported. "
+                        f"Both use self-join CTEs. Try wrapping with a window function instead "
+                        f"(e.g., cumsum, lag)."
+                    )
+
                 # Flatten inner first
                 inner_name = f"_inner_{field_name}"
                 if isinstance(spec.inner, MeasureRef):
@@ -249,6 +261,11 @@ class SlayerQueryEngine:
                     offset = spec.args[0] if isinstance(spec.args[0], int) else 1
                 if len(spec.args) >= 2:
                     granularity = str(spec.args[1])
+
+                # change/change_pct look backward by default (like LAG),
+                # so negate offset for self-join semantics
+                if spec.transform in ("change", "change_pct") and not spec.args:
+                    offset = -1
 
                 _add_transform(
                     name=field_name, transform=spec.transform,
@@ -282,6 +299,16 @@ class SlayerQueryEngine:
                         if t.alias == alias:
                             t.label = field.label
 
+        # Pre-process filters: extract inline transform expressions
+        # (e.g., "last(change(revenue)) < 0" → hidden field + rewritten filter)
+        processed_filters = []
+        for f_str in (query.filters or []):
+            rewritten, extra_fields = SlayerQueryEngine._extract_filter_transforms(f_str)
+            for name, formula in extra_fields:
+                spec = parse_formula(formula)
+                _flatten_spec(spec, name)
+            processed_filters.append(rewritten)
+
         return EnrichedQuery(
             model_name=model.name,
             sql_table=model.sql_table,
@@ -292,8 +319,10 @@ class SlayerQueryEngine:
             expressions=enriched_expressions,
             transforms=enriched_transforms,
             filters=SlayerQueryEngine._classify_filters(
-                filters=[parse_filter(f) for f in (query.filters or [])],
+                filters=[parse_filter(f) for f in processed_filters],
                 measure_names={m.name for m in measures},
+                computed_names={t.name for t in enriched_transforms}
+                              | {e.name for e in enriched_expressions},
             ),
             order=query.order,
             limit=query.limit,
@@ -301,10 +330,65 @@ class SlayerQueryEngine:
         )
 
     @staticmethod
-    def _classify_filters(filters: list, measure_names: set) -> list:
-        """Classify filters as WHERE or HAVING based on whether they reference measures."""
+    def _extract_filter_transforms(filter_str: str) -> tuple[str, list[tuple[str, str]]]:
+        """Extract transform function calls from a filter string.
+
+        Returns (rewritten_filter, [(name, formula), ...]) where transform
+        calls are replaced with generated field names.
+
+        Example: "last(change(revenue)) < 0"
+            → ("_ft0 < 0", [("_ft0", "last(change(revenue))")])
+        """
+        import ast as _ast
+        from slayer.core.formula import ALL_TRANSFORMS
+
+        try:
+            tree = _ast.parse(filter_str, mode="eval")
+        except SyntaxError:
+            return filter_str, []
+
+        transforms: list[tuple[str, str]] = []
+        counter = [0]
+
+        def _replace(node):
+            if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name) and node.func.id in ALL_TRANSFORMS:
+                name = f"_ft{counter[0]}"
+                counter[0] += 1
+                formula = _ast.unparse(node)
+                transforms.append((name, formula))
+                return _ast.Name(id=name, ctx=_ast.Load())
+            # Recurse into child nodes
+            if isinstance(node, _ast.BinOp):
+                node.left = _replace(node.left)
+                node.right = _replace(node.right)
+            elif isinstance(node, _ast.UnaryOp):
+                node.operand = _replace(node.operand)
+            elif isinstance(node, _ast.Compare):
+                node.left = _replace(node.left)
+                node.comparators = [_replace(c) for c in node.comparators]
+            elif isinstance(node, _ast.BoolOp):
+                node.values = [_replace(v) for v in node.values]
+            return node
+
+        modified = _replace(tree.body)
+        if not transforms:
+            return filter_str, []
+        return _ast.unparse(modified), transforms
+
+    @staticmethod
+    def _classify_filters(filters: list, measure_names: set,
+                          computed_names: set = None) -> list:
+        """Classify filters as WHERE, HAVING, or post-filter.
+
+        Post-filters reference computed columns (transforms/expressions) and
+        are applied as a WHERE on an outer wrapper around the final query.
+        """
+        computed_names = computed_names or set()
         for f in filters:
-            f.is_having = any(col in measure_names for col in f.columns)
+            if any(col in computed_names for col in f.columns):
+                f.is_post_filter = True
+            elif any(col in measure_names for col in f.columns):
+                f.is_having = True
         return filters
 
     def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:

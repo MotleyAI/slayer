@@ -208,6 +208,7 @@ class ParsedFilter:
     sql: str  # e.g., "status = 'completed'"
     columns: List[str]  # Column names referenced
     is_having: bool = False  # True if this is a HAVING filter (aggregate condition)
+    is_post_filter: bool = False  # True if this references a computed column (transform/expression)
 
 
 def parse_filter(formula: str) -> ParsedFilter:

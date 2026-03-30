@@ -55,6 +55,8 @@ filters=[
 
 **Functions**: `contains(col, 'val')`, `starts_with(col, 'val')`, `ends_with(col, 'val')`, `between(col, 'a', 'b')`. Filters on measures are automatically routed to HAVING.
 
+**Filtering on computed columns**: filters can reference field names from `fields` (e.g., `"rev_change < 0"`) or contain inline transform expressions (e.g., `"last(change(revenue)) < 0"`). These are applied as post-filters on the outer query.
+
 ## Executing
 
 ```python

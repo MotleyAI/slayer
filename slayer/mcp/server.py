@@ -168,6 +168,8 @@ def create_mcp_server(storage: StorageBackend):
                 "amount > 100", "status in ('a', 'b')", "status is None",
                 "contains(name, 'acme')". Filters on measures are automatically routed to HAVING.
                 Supports and/or: "status == 'a' or status == 'b'".
+                Filters can also reference computed field names or contain inline transforms:
+                "change(revenue) > 0", "last(change(revenue)) < 0".
             time_dimensions: Time grouping. Format: {"dimension": "created_at", "granularity": "day|week|month|quarter|year", "date_range": ["2024-01-01", "2024-12-31"]}.
             order: Sorting. Format: {"column": "field_name", "direction": "asc|desc"}.
             limit: Max rows to return.
