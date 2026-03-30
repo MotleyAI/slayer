@@ -655,3 +655,53 @@ def test_inline_last_change_filter(integration_env):
     )
     response2 = engine.execute(query2)
     assert response2.row_count == 0
+
+
+def test_arithmetic_transform_filter(integration_env):
+    """Arithmetic expressions with transforms in filters: change(x) / x > threshold."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # change: Jan=NULL, Feb=-175, Mar=200
+    # change / total_amount: Jan=NULL, Feb=-175/125=-1.4, Mar=200/325≈0.615
+    # Filter: change(total_amount) / total_amount > 0 → only March
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+        filters=["change(total_amount) / total_amount > 0"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # Only March passes (positive change ratio)
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+
+
+def test_transform_on_filter_rhs(integration_env):
+    """Transform expressions work on the RHS of filters too."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # time_shift(total_amount, -1): Jan=NULL, Feb=300, Mar=125
+    # Filter: total_amount > time_shift(total_amount, -1) → months where value increased
+    # Jan: 300 > NULL → NULL (filtered out), Feb: 125 > 300 → false, Mar: 325 > 125 → true
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+        filters=["total_amount > time_shift(total_amount, -1)"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # Only March (325 > 125)
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)

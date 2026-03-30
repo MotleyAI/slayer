@@ -297,6 +297,19 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
         elts = [_filter_node_to_sql(e, original, columns) for e in node.elts]
         return f"({', '.join(elts)})"
 
+    # Arithmetic expression (e.g., change / revenue in a filter LHS)
+    if isinstance(node, ast.BinOp):
+        op_map = {
+            ast.Add: "+", ast.Sub: "-", ast.Mult: "*",
+            ast.Div: "/", ast.Mod: "%", ast.Pow: "**",
+        }
+        op_str = op_map.get(type(node.op))
+        if op_str is None:
+            raise ValueError(f"Unsupported arithmetic operator in filter: {original!r}")
+        left = _filter_node_to_sql(node.left, original, columns)
+        right = _filter_node_to_sql(node.right, original, columns)
+        return f"{left} {op_str} {right}"
+
     # Function call → contains, starts_with, ends_with, between
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         func_name = node.func.id
