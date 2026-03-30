@@ -5,7 +5,33 @@
 [![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://agentic-slayer.readthedocs.io/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 
-A lightweight open-source semantic layer for AI agents and humans
+A lightweight, open-source semantic layer that lets AI agents query data without writing SQL.
+
+---
+
+## The problem
+
+When AI agents write raw SQL, things break in production — hallucinated column names, incorrect joins, metrics that drift across queries. Existing semantic layers (Cube, dbt metrics) were built for dashboards: heavy infrastructure, slow model refresh cycles, and limited expressiveness for the kinds of ad-hoc analysis agents need.
+
+### What SLayer does differently
+
+- **Auto-ingestion with FK awareness** — Connect a database, and SLayer introspects the schema, detects foreign keys, and generates usable models with denormalized joins instantly. No manual modeling required to get started.
+- **Dynamic model manipulation** — Agents create and edit models at runtime. Changes take effect immediately — no rebuild, no deploy, no restart.
+- **Query-time expressions** — Compose derived metrics on the fly with the `fields` API (`"revenue / count"`, `"cumsum(revenue)"`, `"change_pct(revenue)"`). No need to pre-define every metric.
+- **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"change(cumsum(revenue))"`).
+
+### Roadmap
+
+- Measures from joined models
+- Multistage queries
+- Unpivoting
+- Smart output formatting (currency, percentages)
+- Auto-propagating filters
+- Asof joins
+- Chart generation (eCharts)
+- Claude Code plugin with query skills
+
+---
 
 ## Quick Start
 
