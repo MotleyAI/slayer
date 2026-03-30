@@ -1,11 +1,47 @@
 # SLayer — a semantic layer by Motley
 
+<p align="center">
+  <img src="docs/images/slayer-hero.png" alt="SLayer — AI agent operating a semantic layer" width="700">
+</p>
+
 [![PyPI](https://img.shields.io/pypi/v/agentic-slayer?label=PyPI)](https://pypi.org/project/agentic-slayer/)
 [![Python](https://img.shields.io/pypi/pyversions/agentic-slayer)](https://pypi.org/project/agentic-slayer/)
 [![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://agentic-slayer.readthedocs.io/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 
-A lightweight open-source semantic layer for AI agents and humans
+> [If you find SLayer useful, a ⭐ helps others discover it!](https://github.com/MotleyAI/slayer/stargazers)
+
+A lightweight, open-source semantic layer that lets AI agents query data without writing SQL.
+
+---
+
+## The problem
+
+When AI agents write raw SQL, things break in production — hallucinated column names, incorrect joins, metrics that drift across queries. Existing semantic layers (Cube, dbt metrics) were built for dashboards: heavy infrastructure, slow model refresh cycles, and limited expressiveness for the kinds of ad-hoc analysis agents need.
+
+### What SLayer does differently
+
+- **Auto-ingestion with FK awareness** — Connect a database, and SLayer introspects the schema, detects foreign keys, and generates usable models with denormalized joins instantly. No manual modeling required to get started.
+- **Dynamic model manipulation** — Agents create and edit models at runtime. Changes take effect immediately — no rebuild, no deploy, no restart.
+- **Query-time expressions** — Compose derived metrics on the fly with the `fields` API (`"revenue / count"`, `"cumsum(revenue)"`, `"change_pct(revenue)"`). No need to pre-define every metric.
+- **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"last(change(revenue))"`).
+
+### Roadmap
+
+- Measures from joined models
+- Multistage queries
+- Unpivoting
+- Smart output formatting (currency, percentages)
+- Auto-propagating filters
+- Asof joins
+- Chart generation (eCharts)
+- Claude Code plugin with query skills
+
+---
+
+
+
 
 ## Quick Start
 
@@ -28,15 +64,18 @@ claude mcp add slayer -- slayer mcp --models-dir ./my_models
 
 ## What is SLayer?
 
-SLayer sits between your data and your apps or AI agents. Instead of writing raw SQL, agents describe what data they want — measures, dimensions, filters — and SLayer handles the rest.
+SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, internal tools, dashboards, or scripts. You define your data model once (or let SLayer auto-generate it from your schema), and consumers query using a structured API of measures, dimensions, and filters instead of writing SQL directly.
+
+SLayer compiles these queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences so that consumers don't have to. Models are editable at runtime — agents can add metrics, adjust definitions, and query the results immediately, with no redeploy step.
 
 **Key features:**
-- **Agent-first design** — MCP, Python SDK, and REST API interfaces
-- **Datasource-agnostic** — first-class support for Postgres, MySQL, ClickHouse, and SQLite (tested in CI with integration tests and Docker examples); additional support for Snowflake, BigQuery, Redshift, DuckDB, Trino/Presto, Databricks/Spark, MS SQL Server, and Oracle via sqlglot (covered by unit tests but not verified by periodic tests against live instances)
-- **`fields` API** — Describe derived metrics with formulas (`"revenue / count"`, `"cumsum(revenue)"`, `"time_shift(revenue, -1, 'year')"`) in a single list
-- **Auto-ingestion with rollup joins** — Connect to a DB, introspect schema, generate denormalized models with FK-based LEFT JOINs automatically
-- **Incremental model editing** — Add/remove measures and dimensions without replacing the full model
-- **Lightweight** — Minimal dependencies, easy to set up and extend
+
+* **Four interfaces, one query language** — MCP (stdio + SSE), REST API, CLI and Python SDK all expose the same capabilities. Agents, apps, and humans use the same models.
+* **13 database dialects** — CI-tested against Postgres, MySQL, ClickHouse, and SQLite; additional support for Snowflake, BigQuery, Redshift, DuckDB, Trino/Presto, Databricks/Spark, MS SQL Server, and Oracle via sqlglot.
+* **Composable `fields` API** — Derived metrics as formula strings (`"revenue / count"`, `"cumsum(revenue)"`, `"time_shift(revenue, -1, 'year')"`). Arbitrary nesting works — `change(cumsum(revenue))` just compiles.
+* **Zero-config onboarding** — Point SLayer at a database and it introspects the schema, detects foreign keys, and generates denormalized models with transitive LEFT JOINs baked in.
+* **Instant model editing** — Add or remove measures and dimensions on a running system via API, CLI, or MCP tool. No rebuild, no restart — changes are queryable immediately.
+* **Embeddable** — Use it as a standalone service or import it as a Python module with no network layer.
 
 
 ## Interfaces
