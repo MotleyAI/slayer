@@ -9,9 +9,12 @@ SLayer uses formula strings in two places: **fields** (data columns) and **filte
 Field formulas define what data columns a query returns. They go in the `fields` parameter:
 
 ```json
-{"formula": "count"}
-{"formula": "revenue / count", "name": "aov", "label": "Average Order Value"}
-{"formula": "cumsum(revenue)"}
+"fields": [
+  {"formula": "count"},
+  {"formula": "revenue / count", "name": "aov", "label": "Average Order Value"},
+  {"formula": "cumsum(revenue)"},
+  ...
+]
 ```
 
 The `name` is optional — if omitted, it's auto-generated from the formula. The `label` is an optional human-readable display name for the field.
@@ -62,10 +65,13 @@ Functions apply window operations to measures:
 Field formulas support arbitrary nesting — functions can wrap other functions or arithmetic:
 
 ```json
-{"formula": "change(cumsum(revenue))", "name": "cumsum_delta"}
-{"formula": "last(change(cumsum(revenue)))"}
-{"formula": "cumsum(revenue / count)", "name": "running_aov"}
-{"formula": "cumsum(revenue) / count", "name": "cumsum_div_count"}
+"fields": [
+  {"formula": "change(cumsum(revenue))", "name": "cumsum_delta"},
+  {"formula": "last(change(cumsum(revenue)))"},
+  {"formula": "cumsum(revenue / count)", "name": "running_aov"},
+  {"formula": "cumsum(revenue) / count", "name": "cumsum_div_count"},
+  ...
+]
 ```
 
 Use `show_sql=True` on the query to see what SQL is generated for complex formulas.
@@ -94,6 +100,7 @@ This ranks customers by total revenue. Combine with `limit` to get "top N":
 
 ```json
 {
+  ...
   "filters": ["rank(revenue_sum) <= 10"]
 }
 ```
@@ -108,6 +115,7 @@ Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at ra
 
 ```json
 {
+  "model": "orders",
   "fields": [
     {"formula": "revenue_sum"},
     {"formula": "last(revenue_sum)", "name": "latest_revenue"}
