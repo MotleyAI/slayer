@@ -13,7 +13,7 @@ from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-VALID_MEASURE_TYPES = {"count", "count_distinct", "sum", "avg", "min", "max"}
+VALID_MEASURE_TYPES = {"count", "count_distinct", "sum", "avg", "min", "max", "last"}
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 
 

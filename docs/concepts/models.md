@@ -24,7 +24,7 @@ dimensions:
 measures:
   - name: count                 # Required
     description: "Row count"    # Optional — explains what this measure computes
-    type: count                 # Required: count, count_distinct, sum, avg, min, max
+    type: count                 # Required: count, count_distinct, sum, avg, min, max, last
     # sql: not needed for count
 
   - name: revenue_sum
@@ -79,6 +79,7 @@ Measures are aggregated values — counts, sums, averages.
 | `avg` | `AVG(expr)` | Average |
 | `min` | `MIN(expr)` | Minimum |
 | `max` | `MAX(expr)` | Maximum |
+| `last` | Most recent value | Auto-wraps with `last()` transform; returns the most recent time bucket's value. Useful for snapshot metrics like balances or inventory counts. |
 
 ## SQL Placeholders
 

@@ -1,6 +1,6 @@
 # Formulas
 
-SLayer uses formula strings in two places: **fields** (data columns) and **filters** (conditions). Both are compiled to SQL — everything runs in the database.
+SLayer uses formula strings in two places: **fields** (data columns) and **filters** (conditions). Both are compiled to SQL — everything runs in the database. Field formulas are documented below; filter formulas are in [Queries — Filters](queries.md#filters).
 
 ---
 
@@ -81,80 +81,7 @@ Use `show_sql=True` on the query to see what SQL is generated for complex formul
 
 ---
 
-## Filter Formulas
-
-Filter formulas define conditions for the query. They go in the `filters` parameter as plain strings:
-
-```json
-"filters": ["status == 'active'", "amount > 100"]
-```
-
-### Comparison Operators
-
-| Operator | Example |
-|----------|---------|
-| `==` | `"status == 'active'"` |
-| `!=` | `"status != 'cancelled'"` |
-| `>` | `"amount > 100"` |
-| `>=` | `"amount >= 100"` |
-| `<` | `"amount < 1000"` |
-| `<=` | `"amount <= 1000"` |
-| `in` | `"status in ('active', 'pending')"` |
-| `is None` | `"discount is None"` (IS NULL) |
-| `is not None` | `"discount is not None"` (IS NOT NULL) |
-| `like` | `"name like '%acme%'"` |
-| `not like` | `"name not like '%test%'"` |
-
-### Boolean Logic
-
-Use `and`, `or`, `not` within a single filter string:
-
-```json
-"filters": [
-    "status == 'completed' or status == 'pending'",
-    "amount > 100 and amount < 1000"
-]
-```
-
-Multiple entries in the `filters` list are combined with AND.
-
-### Filtering on Computed Columns
-
-Filters can reference names of computed fields — transforms and arithmetic expressions defined in `fields`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
-
-```json
-{
-  "fields": [
-    {"formula": "revenue"},
-    {"formula": "change(revenue)", "name": "rev_change"}
-  ],
-  "filters": ["rev_change < 0"]
-}
-```
-
-This returns only rows where revenue decreased from the previous period.
-
-Transform expressions can also be used **directly in filters** without defining them as fields first:
-
-```json
-{
-  "filters": ["last(change(revenue)) < 0"]
-}
-```
-
-This keeps only rows where the most recent period's revenue change is negative — useful for queries like "show me monthly data, but only for metrics that are declining." The transform is auto-extracted as a hidden field and applied as a post-filter.
-
-Post-filters can be combined with regular filters — base filters (on dimensions/measures) are applied in the inner query, post-filters on the outer wrapper:
-
-```json
-{
-  "filters": ["status == 'completed'", "change(revenue) > 0"]
-}
-```
-
----
-
-## Shared: Parsing Internals
+## Parsing Internals
 
 Both field and filter formulas are parsed by `slayer/core/formula.py` using Python's `ast` module.
 
@@ -165,8 +92,4 @@ Both field and filter formulas are parsed by `slayer/core/formula.py` using Pyth
 - **TransformField** — function call, possibly nested (`"cumsum(revenue)"`)
 - **MixedArithmeticField** — arithmetic containing function calls (`"cumsum(revenue) / count"`)
 
-**Filter formulas** are classified into:
-
-- **ParsedFilter** — a SQL-ready condition string with column references and a `is_having` flag
-
-The query engine's `_enrich()` method processes field formulas into ordered enrichment steps, and the SQL generator translates them into stacked CTEs. Filter formulas are parsed into `ParsedFilter` objects and column names are qualified with the model name during SQL generation.
+The query engine's `_enrich()` method processes field formulas into ordered enrichment steps, and the SQL generator translates them into stacked CTEs.

@@ -89,7 +89,7 @@ claude mcp list
 | `model` | string | Model name (required) |
 | `fields` | list[dict] | Data columns: measures, arithmetic, transforms. E.g. `[{"formula": "count"}, {"formula": "revenue / count", "name": "aov", "label": "Average Order Value"}, {"formula": "cumsum(revenue)"}]`. Each field has an optional `label` for human-readable display. Supports nesting: `{"formula": "change(cumsum(revenue))"}` |
 | `dimensions` | list[str] | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `ColumnRef(name="status", label="Order Status")`. |
-| `filters` | list[str] | Filter formula strings, e.g. `["status == 'active'", "amount > 100"]`. Supports operators (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `is None`, `is not None`), boolean logic (`and`, `or`, `not`), and functions (`contains`, `starts_with`, `ends_with`, `between`). Filters on measures are automatically routed to HAVING. |
+| `filters` | list[str] | Filter formula strings, e.g. `["status == 'active'", "amount > 100"]`. Supports operators (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `is None`, `is not None`, `like`, `not like`), boolean logic (`and`, `or`, `not`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
 | `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
 | `order` | list[dict] | Sorting, e.g. `[{"column": "count", "direction": "desc"}]` |
 | `limit` | int | Max rows |

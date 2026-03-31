@@ -8,7 +8,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Dimension** — A column used for grouping and filtering. Examples: `status`, `region`, `customer_name`. Dimensions are not aggregated — they appear in GROUP BY clauses.
 
-**Measure** — A model-defined aggregation. Each measure has a name, a SQL expression, and an aggregation type (`count`, `sum`, `avg`, `min`, `max`, `count_distinct`). Examples: `count` (COUNT(*)), `revenue_sum` (SUM(amount)).
+**Measure** — A model-defined aggregation. Each measure has a name, a SQL expression, and an aggregation type (`count`, `sum`, `avg`, `min`, `max`, `count_distinct`, `last`). Examples: `count` (COUNT(*)), `revenue_sum` (SUM(amount)), `balance` (most recent value via `last`).
 
 **Datasource** — A database connection configuration: host, port, credentials, database type. SLayer supports Postgres, MySQL/MariaDB, ClickHouse, SQLite, BigQuery, and Snowflake.
 
