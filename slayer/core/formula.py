@@ -218,6 +218,9 @@ def _preprocess_like(formula: str) -> str:
     "name not like '%acme%'"   → "__notlike__(name, '%acme%')"
     """
     import re
+    # Skip if already preprocessed (contains __like__ or __notlike__)
+    if "__like__" in formula or "__notlike__" in formula:
+        return formula
     formula = re.sub(
         r'\b(\w+)\s+not\s+like\s+',
         r'__notlike__(\1, ',

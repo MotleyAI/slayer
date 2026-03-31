@@ -120,7 +120,7 @@ Multiple entries in the `filters` list are combined with AND.
 
 ### Filtering on Computed Columns
 
-Filters can reference field names defined in `fields`. These are applied as post-filters on the outer query, after all transforms are computed:
+Filters can reference names of computed fields — transforms and arithmetic expressions defined in `fields`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
 
 ```json
 {

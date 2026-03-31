@@ -338,8 +338,11 @@ class SlayerQueryEngine:
         # Pre-process filters: extract inline transform expressions
         # (e.g., "last(change(revenue)) < 0" → hidden field + rewritten filter)
         processed_filters = []
+        ft_counter = [0]  # Shared counter across all filters for unique _ftN names
         for f_str in (query.filters or []):
-            rewritten, extra_fields = SlayerQueryEngine._extract_filter_transforms(f_str)
+            rewritten, extra_fields = SlayerQueryEngine._extract_filter_transforms(
+                f_str, counter=ft_counter,
+            )
             for name, formula in extra_fields:
                 spec = parse_formula(formula)
                 _flatten_spec(spec, name)
@@ -366,25 +369,34 @@ class SlayerQueryEngine:
         )
 
     @staticmethod
-    def _extract_filter_transforms(filter_str: str) -> tuple[str, list[tuple[str, str]]]:
+    def _extract_filter_transforms(filter_str: str,
+                                   counter: list[int] = None) -> tuple[str, list[tuple[str, str]]]:
         """Extract transform function calls from a filter string.
 
         Returns (rewritten_filter, [(name, formula), ...]) where transform
         calls are replaced with generated field names.
 
+        Args:
+            counter: Shared mutable counter [n] for unique _ftN names across
+                multiple filter strings. If None, starts at 0.
+
         Example: "last(change(revenue)) < 0"
             → ("_ft0 < 0", [("_ft0", "last(change(revenue))")])
         """
         import ast as _ast
-        from slayer.core.formula import ALL_TRANSFORMS
+        from slayer.core.formula import ALL_TRANSFORMS, _preprocess_like
 
+        if counter is None:
+            counter = [0]
+
+        # Pre-process `like`/`not like` operators so ast.parse doesn't fail
+        preprocessed = _preprocess_like(filter_str)
         try:
-            tree = _ast.parse(filter_str, mode="eval")
+            tree = _ast.parse(preprocessed, mode="eval")
         except SyntaxError:
             return filter_str, []
 
         transforms: list[tuple[str, str]] = []
-        counter = [0]
 
         def _replace(node):
             if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name) and node.func.id in ALL_TRANSFORMS:
