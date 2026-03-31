@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "agentic-slayer"
-version = "0.1.0rc5"
+version = "0.1.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 authors = ["MotleyAI"]
 license = "MIT"
