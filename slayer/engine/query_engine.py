@@ -135,31 +135,26 @@ class SlayerQueryEngine:
             ))
 
         # Resolve time dimension for transforms that need ORDER BY time.
-        # Resolution chain:
-        #   1. query.main_time_dimension (explicit override)
-        #   2. First time dimension in query.time_dimensions (groupby)
-        #   3. First time dimension referenced in filters
-        #   4. model.default_time_dimension
+        # - Single time dimension → use it (no ambiguity)
+        # - Multiple time dimensions → use main_time_dimension if specified,
+        #   then model's default_time_dimension if it's among the query's
+        #   time dimensions, otherwise error
+        # - No time dimensions → fall back to model's default_time_dimension
         resolved_time_alias = None
-        if query.main_time_dimension:
-            resolved_time_alias = f"{model.name}.{query.main_time_dimension}"
-        if resolved_time_alias is None and time_dimensions:
+        if len(time_dimensions) == 1:
             resolved_time_alias = time_dimensions[0].alias
-        if resolved_time_alias is None and query.filters:
-            # Check if any filter references a time/timestamp/date dimension
-            time_dim_names = {
-                d.name for d in model.dimensions
-                if d.type in (DataType.TIMESTAMP, DataType.DATE)
-            }
-            for f_str in query.filters:
-                for td_name in time_dim_names:
-                    if td_name in f_str:
-                        resolved_time_alias = f"{model.name}.{td_name}"
-                        break
-                if resolved_time_alias:
-                    break
-        if resolved_time_alias is None and model.default_time_dimension:
-            resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
+        elif len(time_dimensions) > 1:
+            if query.main_time_dimension:
+                resolved_time_alias = f"{model.name}.{query.main_time_dimension}"
+            elif model.default_time_dimension:
+                # Only use default if it's among the query's time dimensions
+                td_names = {td.name for td in time_dimensions}
+                if model.default_time_dimension in td_names:
+                    resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
+        else:
+            # No time dimensions in query — fall back to model default
+            if model.default_time_dimension:
+                resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
 
         # Process fields — parse formulas and flatten into measures/expressions/transforms
         import re
@@ -193,6 +188,8 @@ class SlayerQueryEngine:
                 resolved = re.sub(rf'\b{re.escape(name)}\b', f'"{alias}"', resolved)
             return resolved
 
+        _self_join_transforms = {"time_shift", "change", "change_pct"}
+
         def _add_transform(name: str, transform: str, measure_alias: str,
                            offset: int = 1, granularity: str = None):
             """Add a transform to the enriched list, checking time requirements."""
@@ -201,6 +198,14 @@ class SlayerQueryEngine:
                 raise ValueError(
                     f"Field '{name}' ({transform}) requires a time dimension. "
                     f"Add a time_dimension to the query or set default_time_dimension on the model."
+                )
+            # Self-join transforms need actual time dimensions in the query for
+            # meaningful time bucketing. A bare default_time_dimension fallback
+            # (no time dimensions) produces no grouping → meaningless results.
+            if transform in _self_join_transforms and not time_dimensions:
+                raise ValueError(
+                    f"Field '{name}' ({transform}) requires a time_dimension in the query "
+                    f"with a granularity for time bucketing."
                 )
             alias = f"{query.model}.{name}"
             enriched_transforms.append(EnrichedTransform(
@@ -248,10 +253,9 @@ class SlayerQueryEngine:
             elif isinstance(spec, TransformField):
                 # Validate: nesting a self-join transform inside another is not supported
                 # (e.g., change(time_shift(x)) — the outer's shifted CTE can't replay the inner)
-                _self_join = {"time_shift", "change", "change_pct"}
-                if (spec.transform in _self_join
+                if (spec.transform in _self_join_transforms
                         and isinstance(spec.inner, TransformField)
-                        and spec.inner.transform in _self_join):
+                        and spec.inner.transform in _self_join_transforms):
                     raise ValueError(
                         f"Nesting '{spec.transform}' around '{spec.inner.transform}' is not supported. "
                         f"Both use self-join CTEs. Try wrapping with a window function instead "

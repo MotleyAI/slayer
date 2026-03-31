@@ -98,7 +98,7 @@ query = SlayerQuery(
 
 Available formula functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last`, `lag`, `lead`. `time_shift` always uses a self-join CTE — no edge NULLs, handles data gaps correctly. `lag(x, n)` / `lead(x, n)` use SQL window functions directly (more efficient, but NULLs at edges).
 
-Time dimension resolution for time-dependent functions: query `main_time_dimension` -> query `time_dimensions` (if exactly 1) -> model `default_time_dimension` -> error.
+Time dimension resolution: single `time_dimensions` entry is used automatically. With 2+, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims). With none, falls back to model default.
 
 ## Result Format
 

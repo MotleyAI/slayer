@@ -73,7 +73,7 @@ poetry run ruff check slayer/ tests/
 - Queries support `fields` — list of `{"formula": "...", "name": "...", "label": "..."}` parsed by `slayer/core/formula.py`. `label` is an optional human-readable display name (also supported on `ColumnRef` and `TimeDimension`)
 - Available formula functions: cumsum, time_shift, change, change_pct, rank, last (FIRST_VALUE window), lag, lead. time_shift, change, and change_pct always use self-join CTEs (no edge NULLs, gap-safe). time_shift uses row-number-based join without granularity, date-arithmetic-based with granularity. lag/lead use LAG/LEAD window functions directly (more efficient but produce NULLs at edges)
 - Filters can reference computed field names or contain inline transform expressions (e.g., `"change(revenue) > 0"`, `"last(change(revenue)) < 0"`). These are auto-extracted as hidden fields and applied as post-filters on the outer query
-- Functions needing time ordering use resolution chain: query main_time_dimension -> query time_dimensions (if exactly 1) -> model default_time_dimension -> error
+- Functions needing time ordering: single time_dimensions entry is used automatically; with 2+ time dimensions, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims); with none, falls back to model default
 - SlayerModel has optional `default_time_dimension` field for time-dependent formula resolution
 - SQLite dialect uses STRFTIME instead of DATE_TRUNC (handled automatically by sqlglot)
 - See "Database Support" section below for dialect tiers and testing expectations

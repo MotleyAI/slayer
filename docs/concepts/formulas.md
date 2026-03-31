@@ -37,27 +37,20 @@ Functions apply window operations to measures:
 | Function | Description | SQL Generated |
 |----------|-------------|---------------|
 | `cumsum(x)` | Running total over time | `SUM(x) OVER (ORDER BY time)` |
-| `time_shift(x, -1)` | Previous period's value | Self-join CTE on row number |
-| `time_shift(x, -n)` | Value N periods back | Self-join CTE on row number |
-| `time_shift(x, 1)` | Next period's value | Self-join CTE on row number |
-| `time_shift(x, offset, gran)` | Value from a different calendar time bucket | Self-join CTE on date arithmetic |
+| `time_shift(x, n)` | Value N periods next or back | Self-join CTE on query granularity |
+| `time_shift(x, offset, gran)` | Value from a different time bucket | Self-join CTE on given granularity |
 | `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (ORDER BY time)` |
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (ORDER BY time)` |
-| `change(x)` | Difference from previous period | Self-join CTE (current - previous) |
-| `change_pct(x)` | Percentage change from previous period | Self-join CTE ((current - previous) / previous) |
+| `change(x)` | Difference from previous period | Self-join CTE, `current - previous` |
+| `change_pct(x)` | Percentage change from previous period | Self-join CTE, `(current - previous) / previous` |
 | `rank(x)` | Ranking by value (descending) | `RANK() OVER (ORDER BY x DESC)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** Functions that order over time (`cumsum`, `time_shift`, `change`, `change_pct`, `last`, `lag`, `lead`) need a time dimension, resolved via: query's `main_time_dimension` → query's `time_dimensions` (if exactly one) → model's `default_time_dimension` → error. `rank` does not need a time dimension.
+**Time dimension requirement:** Functions that order over time (`cumsum`, `time_shift`, `change`, `change_pct`, `last`, `lag`, `lead`) need a time dimension. With a single `time_dimensions` entry, it's used automatically. With 2+ time dimensions, specify query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
 
 **Self-join transforms vs window-function transforms:**
 
-`time_shift`, `change`, and `change_pct` all use self-join CTEs internally. This means they can reach outside the current result set to fetch previous/next values — no edge NULLs when the database has the data, and correct handling of gaps in time series.
-
-- `time_shift(revenue, -1)` — previous period's value (ROW_NUMBER-based self-join)
-- `time_shift(revenue, -1, 'year')` — value from a different calendar time bucket (date-arithmetic self-join). Supported granularities: `year`, `month`, `quarter`, `week`, `day`.
-- `change(revenue)` — difference from previous period (`current - previous`, self-join)
-- `change_pct(revenue)` — percentage change from previous period (`(current - previous) / previous`, self-join)
+`time_shift`, `change`, and `change_pct` all use **self-join CTEs** internally. This means they can reach outside the current result set to fetch previous/next values — no edge NULLs when the database has the data, and correct handling of gaps in time series.
 
 `lag(x, n)` and `lead(x, n)` use SQL `LAG`/`LEAD` window functions directly. They are more efficient but have two trade-offs:
 
