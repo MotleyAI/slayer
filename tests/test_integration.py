@@ -735,3 +735,63 @@ def test_last_measure_type(integration_env):
     latest_vals = [r["orders.latest_amount"] for r in response.data]
     assert len(set(latest_vals)) == 1  # All rows have the same value
     assert latest_vals[0] == pytest.approx(300.0)  # March's MAX(amount)
+
+
+def test_having_filter(integration_env):
+    """Filters on measures should use HAVING with the aggregate expression."""
+    engine = integration_env
+
+    # Group by status: completed(3 orders), pending(2), cancelled(1)
+    # Filter: count > 1 → only completed and pending
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[ColumnRef(name="status")],
+        fields=[Field(formula="count")],
+        filters=["count > 1"],
+        order=[OrderItem(column=ColumnRef(name="count"), direction="desc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 2
+    assert response.data[0]["orders.status"] == "completed"
+    assert response.data[0]["orders.count"] == 3
+    assert response.data[1]["orders.status"] == "pending"
+    assert response.data[1]["orders.count"] == 2
+
+
+def test_having_filter_with_sum(integration_env):
+    """HAVING on a SUM measure should use the SUM() expression."""
+    engine = integration_env
+
+    # Group by status: completed(100+200+300=600), pending(50+25=75), cancelled(75)
+    # Filter: total_amount > 100 → only completed
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[ColumnRef(name="status")],
+        fields=[Field(formula="total_amount")],
+        filters=["total_amount > 100"],
+        order=[OrderItem(column=ColumnRef(name="total_amount"), direction="desc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.status"] == "completed"
+    assert response.data[0]["orders.total_amount"] == pytest.approx(600.0)
+
+
+def test_having_with_non_groupby_dimension_raises(integration_env):
+    """HAVING filter referencing a dimension not in GROUP BY should error early."""
+    engine = integration_env
+
+    # Filter mixes measure (count) and dimension (status), but status is not in dimensions
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="count")],
+        filters=["count > 1 and status == 'completed'"],
+    )
+    with pytest.raises(ValueError, match="not in the query's dimensions"):
+        engine.execute(query)

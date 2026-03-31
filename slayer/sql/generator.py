@@ -639,17 +639,32 @@ class SQLGenerator:
             # Post-filters are applied later, on the outer wrapper
             if f.is_post_filter:
                 continue
-            # Qualify column names with model name (deduplicate, word boundary, skip already qualified)
-            qualified_sql = f.sql
-            for col_name in dict.fromkeys(f.columns):  # deduplicate preserving order
-                qualified_sql = re.sub(
-                    rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
-                    f"{model}.{col_name}",
-                    qualified_sql,
-                )
             if f.is_having:
-                having_parts.append(qualified_sql)
+                # HAVING: reference the aggregate by looking up the measure's
+                # aggregation expression from the enriched query
+                having_sql = f.sql
+                for col_name in dict.fromkeys(f.columns):
+                    # Find the measure and build its aggregate expression
+                    for m in enriched.measures:
+                        if m.name == col_name:
+                            agg_expr, _ = self._build_agg(measure=m)
+                            agg_sql = agg_expr.sql(dialect=self.dialect)
+                            having_sql = re.sub(
+                                rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
+                                agg_sql,
+                                having_sql,
+                            )
+                            break
+                having_parts.append(having_sql)
             else:
+                # WHERE: qualify column names with model name
+                qualified_sql = f.sql
+                for col_name in dict.fromkeys(f.columns):
+                    qualified_sql = re.sub(
+                        rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
+                        f"{model}.{col_name}",
+                        qualified_sql,
+                    )
                 where_parts.append(qualified_sql)
 
         where_clause = None

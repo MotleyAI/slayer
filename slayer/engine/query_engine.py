@@ -366,6 +366,8 @@ class SlayerQueryEngine:
                 measure_names={m.name for m in measures},
                 computed_names={t.name for t in enriched_transforms}
                               | {e.name for e in enriched_expressions},
+                groupby_names={d.name for d in dimensions}
+                             | {td.name for td in time_dimensions},
             ),
             order=query.order,
             limit=query.limit,
@@ -429,18 +431,31 @@ class SlayerQueryEngine:
 
     @staticmethod
     def _classify_filters(filters: list, measure_names: set,
-                          computed_names: set = None) -> list:
+                          computed_names: set = None,
+                          groupby_names: set = None) -> list:
         """Classify filters as WHERE, HAVING, or post-filter.
 
         Post-filters reference computed columns (transforms/expressions) and
         are applied as a WHERE on an outer wrapper around the final query.
+
+        HAVING filters that reference dimensions not in the GROUP BY are
+        rejected early — they would produce invalid SQL.
         """
         computed_names = computed_names or set()
+        groupby_names = groupby_names or set()
         for f in filters:
             if any(col in computed_names for col in f.columns):
                 f.is_post_filter = True
             elif any(col in measure_names for col in f.columns):
                 f.is_having = True
+                # Validate: non-measure columns in a HAVING filter must be in GROUP BY
+                for col in f.columns:
+                    if col not in measure_names and col not in groupby_names:
+                        raise ValueError(
+                            f"Filter '{f.sql}' references measure and dimension '{col}', "
+                            f"but '{col}' is not in the query's dimensions or time_dimensions. "
+                            f"Add it to dimensions/time_dimensions or split into separate filters."
+                        )
         return filters
 
     def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
