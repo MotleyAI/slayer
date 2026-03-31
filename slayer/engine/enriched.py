@@ -116,6 +116,9 @@ class EnrichedQuery:
     expressions: List[EnrichedExpression] = field(default_factory=list)
     transforms: List[EnrichedTransform] = field(default_factory=list)
 
+    # Time column for `type: last` aggregation (ORDER BY for ROW_NUMBER)
+    last_agg_time_column: Optional[str] = None
+
     # Filters, ordering, pagination
     filters: List[ParsedFilter] = field(default_factory=list)
     order: Optional[List[OrderItem]] = None

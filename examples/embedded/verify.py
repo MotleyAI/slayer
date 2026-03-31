@@ -150,15 +150,15 @@ def main():
     cumvals = [r["orders.cumulative"] for r in result.data]
     check("cumsum non-decreasing", all(a <= b for a, b in zip(cumvals, cumvals[1:])))
 
-    # Lag
+    # time_shift (row-based, previous period)
     result = engine.execute(query=SlayerQuery(
         model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[Field(formula="count"), Field(formula="time_shift(count, -1)", name="prev")],
         order=[{"column": {"name": "created_at"}, "direction": "asc"}],
     ))
-    check("lag first month is null", result.data[0]["orders.prev"] is None)
-    check("lag second month = first month count", result.data[1]["orders.prev"] == result.data[0]["orders.count"])
+    check("time_shift first month is null", result.data[0]["orders.prev"] is None)
+    check("time_shift second month = first month count", result.data[1]["orders.prev"] == result.data[0]["orders.count"])
 
     # Change
     result = engine.execute(query=SlayerQuery(

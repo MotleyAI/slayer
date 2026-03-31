@@ -6,6 +6,7 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 import logging
 from typing import Any, Dict, List, Optional
 
+from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.enriched import (
@@ -134,15 +135,61 @@ class SlayerQueryEngine:
             ))
 
         # Resolve time dimension for transforms that need ORDER BY time.
-        # Resolution chain: query main_time_dimension → query time_dimensions (if exactly 1) → model default.
+        # - Single time dimension → use it (no ambiguity)
+        # - Multiple time dimensions → use main_time_dimension if specified,
+        #   then model's default_time_dimension if it's among the query's
+        #   time dimensions, otherwise error
+        # - No time dimensions → fall back to model's default_time_dimension
         resolved_time_alias = None
+        if len(time_dimensions) == 1:
+            resolved_time_alias = time_dimensions[0].alias
+        elif len(time_dimensions) > 1:
+            if query.main_time_dimension:
+                resolved_time_alias = f"{model.name}.{query.main_time_dimension}"
+            elif model.default_time_dimension:
+                # Only use default if it's among the query's time dimensions
+                td_names = {td.name for td in time_dimensions}
+                if model.default_time_dimension in td_names:
+                    resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
+        else:
+            # No time dimensions in query — fall back to model default
+            if model.default_time_dimension:
+                resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
+
+        # Resolve time column for `type: last` aggregation.
+        # Unlike transforms (which need granularity), this only needs a time column
+        # for ORDER BY within each group — no bucketing required.
+        # Resolution: main_time_dimension → first time dim in dimensions →
+        #   first time dim in filters → model default_time_dimension
+        last_agg_time_column = None
         if query.main_time_dimension:
-            resolved_time_alias = f"{model.name}.{query.main_time_dimension}"
-        if resolved_time_alias is None and time_dimensions:
-            if len(time_dimensions) == 1:
-                resolved_time_alias = time_dimensions[0].alias
-        if resolved_time_alias is None and model.default_time_dimension:
-            resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
+            last_agg_time_column = query.main_time_dimension
+        if last_agg_time_column is None:
+            # Check regular dimensions for time/date types
+            for dim_ref in (query.dimensions or []):
+                dim_def = model.get_dimension(dim_ref.name)
+                if dim_def and dim_def.type in (DataType.TIMESTAMP, DataType.DATE):
+                    last_agg_time_column = dim_ref.name
+                    break
+        if last_agg_time_column is None:
+            # Check time_dimensions
+            if time_dimensions:
+                last_agg_time_column = time_dimensions[0].name
+        if last_agg_time_column is None and query.filters:
+            # Check filters for time dimension references
+            time_dim_names = {
+                d.name for d in model.dimensions
+                if d.type in (DataType.TIMESTAMP, DataType.DATE)
+            }
+            for f_str in (query.filters or []):
+                for td_name in time_dim_names:
+                    if td_name in f_str:
+                        last_agg_time_column = td_name
+                        break
+                if last_agg_time_column:
+                    break
+        if last_agg_time_column is None and model.default_time_dimension:
+            last_agg_time_column = model.default_time_dimension
 
         # Process fields — parse formulas and flatten into measures/expressions/transforms
         import re
@@ -176,6 +223,8 @@ class SlayerQueryEngine:
                 resolved = re.sub(rf'\b{re.escape(name)}\b', f'"{alias}"', resolved)
             return resolved
 
+        _self_join_transforms = {"time_shift", "change", "change_pct"}
+
         def _add_transform(name: str, transform: str, measure_alias: str,
                            offset: int = 1, granularity: str = None):
             """Add a transform to the enriched list, checking time requirements."""
@@ -184,6 +233,14 @@ class SlayerQueryEngine:
                 raise ValueError(
                     f"Field '{name}' ({transform}) requires a time dimension. "
                     f"Add a time_dimension to the query or set default_time_dimension on the model."
+                )
+            # Self-join transforms and last() need actual time dimensions in the
+            # query for meaningful time bucketing. A bare default_time_dimension
+            # fallback (no time dimensions) produces no grouping → wrong results.
+            if transform in (_self_join_transforms | {"last"}) and not time_dimensions:
+                raise ValueError(
+                    f"Field '{name}' ({transform}) requires a time_dimension in the query "
+                    f"with a granularity for time bucketing."
                 )
             alias = f"{query.model}.{name}"
             enriched_transforms.append(EnrichedTransform(
@@ -229,6 +286,17 @@ class SlayerQueryEngine:
                 return alias
 
             elif isinstance(spec, TransformField):
+                # Validate: nesting a self-join transform inside another is not supported
+                # (e.g., change(time_shift(x)) — the outer's shifted CTE can't replay the inner)
+                if (spec.transform in _self_join_transforms
+                        and isinstance(spec.inner, TransformField)
+                        and spec.inner.transform in _self_join_transforms):
+                    raise ValueError(
+                        f"Nesting '{spec.transform}' around '{spec.inner.transform}' is not supported. "
+                        f"Both use self-join CTEs. Try wrapping with a window function instead "
+                        f"(e.g., cumsum, lag)."
+                    )
+
                 # Flatten inner first
                 inner_name = f"_inner_{field_name}"
                 if isinstance(spec.inner, MeasureRef):
@@ -250,6 +318,11 @@ class SlayerQueryEngine:
                 if len(spec.args) >= 2:
                     granularity = str(spec.args[1])
 
+                # change/change_pct look backward by default (like LAG),
+                # so negate offset for self-join semantics
+                if spec.transform in ("change", "change_pct") and not spec.args:
+                    offset = -1
+
                 _add_transform(
                     name=field_name, transform=spec.transform,
                     measure_alias=inner_alias, offset=offset, granularity=granularity,
@@ -265,6 +338,13 @@ class SlayerQueryEngine:
 
             if isinstance(spec, MeasureRef):
                 _ensure_measure(spec.name)
+                # Validate type=last has a time column for ordering
+                measure_def = model.get_measure(spec.name)
+                if measure_def and measure_def.type == DataType.LAST and last_agg_time_column is None:
+                    raise ValueError(
+                        f"Measure '{spec.name}' has type=last but no time column could be resolved. "
+                        f"Add a time dimension, set main_time_dimension, or set default_time_dimension on the model."
+                    )
                 # Apply label to the measure if provided
                 if field.label:
                     for m in measures:
@@ -282,6 +362,22 @@ class SlayerQueryEngine:
                         if t.alias == alias:
                             t.label = field.label
 
+        # Pre-process filters: extract inline transform expressions
+        # (e.g., "last(change(revenue)) < 0" → hidden field + rewritten filter)
+        processed_filters = []
+        ft_counter = [0]  # Shared counter across all filters for unique _ftN names
+        for f_str in (query.filters or []):
+            rewritten, extra_fields = SlayerQueryEngine._extract_filter_transforms(
+                f_str, counter=ft_counter,
+            )
+            for name, formula in extra_fields:
+                spec = parse_formula(formula)
+                _flatten_spec(spec, name)
+            processed_filters.append(rewritten)
+
+        # Only include last_agg_time_column if there are actual type=last measures
+        has_last_measures = any(m.type == DataType.LAST for m in measures)
+
         return EnrichedQuery(
             model_name=model.name,
             sql_table=model.sql_table,
@@ -291,9 +387,14 @@ class SlayerQueryEngine:
             time_dimensions=time_dimensions,
             expressions=enriched_expressions,
             transforms=enriched_transforms,
+            last_agg_time_column=last_agg_time_column if has_last_measures else None,
             filters=SlayerQueryEngine._classify_filters(
-                filters=[parse_filter(f) for f in (query.filters or [])],
+                filters=[parse_filter(f) for f in processed_filters],
                 measure_names={m.name for m in measures},
+                computed_names={t.name for t in enriched_transforms}
+                              | {e.name for e in enriched_expressions},
+                groupby_names={d.name for d in dimensions}
+                             | {td.name for td in time_dimensions},
             ),
             order=query.order,
             limit=query.limit,
@@ -301,10 +402,87 @@ class SlayerQueryEngine:
         )
 
     @staticmethod
-    def _classify_filters(filters: list, measure_names: set) -> list:
-        """Classify filters as WHERE or HAVING based on whether they reference measures."""
+    def _extract_filter_transforms(filter_str: str,
+                                   counter: list[int] = None) -> tuple[str, list[tuple[str, str]]]:
+        """Extract transform function calls from a filter string.
+
+        Returns (rewritten_filter, [(name, formula), ...]) where transform
+        calls are replaced with generated field names.
+
+        Args:
+            counter: Shared mutable counter [n] for unique _ftN names across
+                multiple filter strings. If None, starts at 0.
+
+        Example: "last(change(revenue)) < 0"
+            → ("_ft0 < 0", [("_ft0", "last(change(revenue))")])
+        """
+        import ast as _ast
+        from slayer.core.formula import ALL_TRANSFORMS, _preprocess_like
+
+        if counter is None:
+            counter = [0]
+
+        # Pre-process `like`/`not like` operators so ast.parse doesn't fail
+        preprocessed = _preprocess_like(filter_str)
+        try:
+            tree = _ast.parse(preprocessed, mode="eval")
+        except SyntaxError:
+            return filter_str, []
+
+        transforms: list[tuple[str, str]] = []
+
+        def _replace(node):
+            if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name) and node.func.id in ALL_TRANSFORMS:
+                name = f"_ft{counter[0]}"
+                counter[0] += 1
+                formula = _ast.unparse(node)
+                transforms.append((name, formula))
+                return _ast.Name(id=name, ctx=_ast.Load())
+            # Recurse into child nodes
+            if isinstance(node, _ast.BinOp):
+                node.left = _replace(node.left)
+                node.right = _replace(node.right)
+            elif isinstance(node, _ast.UnaryOp):
+                node.operand = _replace(node.operand)
+            elif isinstance(node, _ast.Compare):
+                node.left = _replace(node.left)
+                node.comparators = [_replace(c) for c in node.comparators]
+            elif isinstance(node, _ast.BoolOp):
+                node.values = [_replace(v) for v in node.values]
+            return node
+
+        modified = _replace(tree.body)
+        if not transforms:
+            return filter_str, []
+        return _ast.unparse(modified), transforms
+
+    @staticmethod
+    def _classify_filters(filters: list, measure_names: set,
+                          computed_names: set = None,
+                          groupby_names: set = None) -> list:
+        """Classify filters as WHERE, HAVING, or post-filter.
+
+        Post-filters reference computed columns (transforms/expressions) and
+        are applied as a WHERE on an outer wrapper around the final query.
+
+        HAVING filters that reference dimensions not in the GROUP BY are
+        rejected early — they would produce invalid SQL.
+        """
+        computed_names = computed_names or set()
+        groupby_names = groupby_names or set()
         for f in filters:
-            f.is_having = any(col in measure_names for col in f.columns)
+            if any(col in computed_names for col in f.columns):
+                f.is_post_filter = True
+            elif any(col in measure_names for col in f.columns):
+                f.is_having = True
+                # Validate: non-measure columns in a HAVING filter must be in GROUP BY
+                for col in f.columns:
+                    if col not in measure_names and col not in groupby_names:
+                        raise ValueError(
+                            f"Filter '{f.sql}' references measure and dimension '{col}', "
+                            f"but '{col}' is not in the query's dimensions or time_dimensions. "
+                            f"Add it to dimensions/time_dimensions or split into separate filters."
+                        )
         return filters
 
     def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:

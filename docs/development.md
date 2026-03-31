@@ -72,7 +72,7 @@ tests/
 - Use `poetry run` for all Python commands
 - Use keyword arguments for functions with more than 1 parameter
 - SQL generation uses sqlglot AST building (not string concatenation)
-- Dimension/measure SQL uses bare column names; `${TABLE}` for complex expressions
+- Dimension/measure SQL uses bare column names; `model_name.column_name` for complex expressions
 - Result column keys: `model_name.column_name` format
 - Integration tests marked with `@pytest.mark.integration`
 

@@ -40,12 +40,12 @@ measures:
 
 **Dimension types**: `string`, `number`, `boolean`, `time` (timestamp), `date`
 
-**Measure aggregation types**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`
+**Measure aggregation types**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `last` (most recent time bucket's value — for snapshot metrics like balances)
 
 ## SQL Placeholders
 
 - Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
-- `${TABLE}` is available for complex expressions (e.g., `"${TABLE}.amount * ${TABLE}.quantity"`)
+- For complex expressions, use the model name as table prefix (e.g., `"orders.amount * orders.quantity"`)
 ## Datasource Config
 
 ```yaml

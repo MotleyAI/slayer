@@ -107,6 +107,7 @@ def integration_env(tmp_path):
         measures=[
             Measure(name="count", type=DataType.COUNT),
             Measure(name="total_amount", sql="amount", type=DataType.SUM),
+            Measure(name="latest_amount", sql="amount", type=DataType.LAST),
         ],
     )
     storage.save_model(orders_model)
@@ -289,11 +290,12 @@ def test_cumsum_change_identity(integration_env):
     assert response.row_count == 3
     assert "orders.cumsum_change" in response.columns
 
-    # With self-join change, the first row's change is NULL (no previous period),
-    # cumsum(NULL) = 0 in SQLite. The identity cumsum(change(x)) == x - x[0]
-    # holds for all rows (including the first, where it equals 0).
+    # First row: change is NULL (no previous period), cumsum(NULL) = NULL
+    assert response.data[0]["orders.cumsum_change"] is None
+
+    # Remaining rows: cumsum(change(x)) == x - x[0]
     first_count = response.data[0]["orders.count"]
-    for row in response.data:
+    for row in response.data[1:]:
         assert row["orders.cumsum_change"] == row["orders.count"] - first_count
 
 
@@ -403,3 +405,422 @@ def test_time_shift_calendar_based(integration_env):
     assert response.data[1]["orders.prev_month"] == pytest.approx(300.0)
     # Mar's previous month is Feb
     assert response.data[2]["orders.prev_month"] == pytest.approx(125.0)
+
+
+def test_time_shift_with_date_range(integration_env):
+    """time_shift with date_range should fetch shifted data from outside the filtered range."""
+    engine = integration_env
+
+    # Query only March, but ask for previous month's value (February)
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+            date_range=["2025-03-01", "2025-03-31"],
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="time_shift(total_amount, -1, 'month')", name="prev_month"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # Only March in the result (date filter)
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+    # Previous month (February) should be fetched from the DB, not NULL
+    assert response.data[0]["orders.prev_month"] == pytest.approx(125.0)
+
+
+def test_change_with_date_range(integration_env):
+    """change() with date_range should fetch previous period from outside the filtered range."""
+    engine = integration_env
+
+    # Query only March, change should compare to February
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+            date_range=["2025-03-01", "2025-03-31"],
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="change(total_amount)", name="amount_change"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 1
+    # March(325) - February(125) = 200
+    assert response.data[0]["orders.amount_change"] == pytest.approx(200.0)
+
+
+def test_change_pct_with_date_range(integration_env):
+    """change_pct() with date_range should compute correct percentage from shifted data."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+            date_range=["2025-03-01", "2025-03-31"],
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="change_pct(total_amount)", name="pct"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 1
+    # (325 - 125) / 125 = 1.6
+    assert response.data[0]["orders.pct"] == pytest.approx(1.6)
+
+
+def test_multiple_date_range_shifts(integration_env):
+    """Multiple self-join transforms with different offsets should each get correct shifted data."""
+    engine = integration_env
+
+    # Query Feb only, ask for both previous (Jan) and next (Mar) month
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+            date_range=["2025-02-01", "2025-02-28"],
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="time_shift(total_amount, -1, 'month')", name="prev"),
+            Field(formula="time_shift(total_amount, 1, 'month')", name="next"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+    # Jan = 300
+    assert response.data[0]["orders.prev"] == pytest.approx(300.0)
+    # Mar = 325
+    assert response.data[0]["orders.next"] == pytest.approx(325.0)
+
+
+def test_forward_row_shift_with_date_range(integration_env):
+    """time_shift(x, 1) (forward, row-based) with date_range should fetch the next period."""
+    engine = integration_env
+
+    # Query Feb only, ask for the next period's value (March)
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+            date_range=["2025-02-01", "2025-02-28"],
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="time_shift(total_amount, 1)", name="next_period"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+    # Next period (March) should be fetched from DB = 325
+    assert response.data[0]["orders.next_period"] == pytest.approx(325.0)
+
+
+def test_post_filter_on_change(integration_env):
+    """Filter on a computed column (change) should only return matching rows."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # change values: Jan=NULL, Feb=125-300=-175, Mar=325-125=200
+    # Filter: change < 0 → only February
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="change(total_amount)", name="amount_change"),
+        ],
+        filters=["amount_change < 0"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # Only February should remain (change = -175)
+    assert response.row_count == 1
+    assert response.data[0]["orders.amount_change"] == pytest.approx(-175.0)
+    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+
+
+def test_post_filter_with_base_filter(integration_env):
+    """Post-filter and base filter should both be applied correctly."""
+    engine = integration_env
+
+    # Without base filter: Jan(300), Feb(125), Mar(325)
+    # change: Jan=NULL, Feb=-175, Mar=200
+    # Post-filter: amount_change > 0 → only March
+    # Base filter: status != 'cancelled' → excludes order 4 (cancelled, 75, Feb)
+    # Without cancelled: Jan(300), Feb(50), Mar(325)
+    # change: Jan=NULL, Feb=50-300=-250, Mar=325-50=275
+    # Post-filter: amount_change > 0 → only March
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="change(total_amount)", name="amount_change"),
+        ],
+        filters=["status != 'cancelled'", "amount_change > 0"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # Only March (non-cancelled=325, change=275)
+    assert response.row_count == 1
+    assert response.data[0]["orders.amount_change"] == pytest.approx(275.0)
+
+
+def test_inline_transform_filter(integration_env):
+    """Transform expressions can be used directly in filters (auto-extracted as hidden fields)."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # change: Jan=NULL, Feb=-175, Mar=200
+    # Filter: change(total_amount) < 0 → only February
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+        filters=["change(total_amount) < 0"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+
+
+def test_inline_last_change_filter(integration_env):
+    """last(change(x)) in filter: keep rows only if the most recent period's change matches."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # change: Jan=NULL, Feb=-175, Mar=200
+    # last(change) = 200 (March's change, broadcast to all rows)
+    # Filter: last(change(total_amount)) > 0 → all rows pass (200 > 0)
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+        filters=["last(change(total_amount)) > 0"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # last(change) = 200 > 0, so all 3 rows pass
+    assert response.row_count == 3
+
+    # Now filter for < 0 → no rows pass (last change is 200)
+    query2 = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+        filters=["last(change(total_amount)) < 0"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response2 = engine.execute(query2)
+    assert response2.row_count == 0
+
+
+def test_arithmetic_transform_filter(integration_env):
+    """Arithmetic expressions with transforms in filters: change(x) / x > threshold."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # change: Jan=NULL, Feb=-175, Mar=200
+    # change / total_amount: Jan=NULL, Feb=-175/125=-1.4, Mar=200/325≈0.615
+    # Filter: change(total_amount) / total_amount > 0 → only March
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+        filters=["change(total_amount) / total_amount > 0"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # Only March passes (positive change ratio)
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+
+
+def test_transform_on_filter_rhs(integration_env):
+    """Transform expressions work on the RHS of filters too."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # time_shift(total_amount, -1): Jan=NULL, Feb=300, Mar=125
+    # Filter: total_amount > time_shift(total_amount, -1) → months where value increased
+    # Jan: 300 > NULL → NULL (filtered out), Feb: 125 > 300 → false, Mar: 325 > 125 → true
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+        filters=["total_amount > time_shift(total_amount, -1)"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    # Only March (325 > 125)
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+
+
+def test_last_measure_type(integration_env):
+    """A measure with type=last should return the most recent time bucket's value."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # latest_amount has type=last, so querying it as a bare measure
+    # should auto-wrap with last() and return Mar's value (325) for all rows
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="latest_amount"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # type=last returns the latest record's value within each month:
+    # Jan: orders on 15th(100) and 20th(200) → latest = 200
+    # Feb: orders on 10th(50) and 15th(75) → latest = 75
+    # Mar: orders on 5th(300) and 20th(25) → latest = 25
+    assert response.data[0]["orders.latest_amount"] == pytest.approx(200.0)
+    assert response.data[1]["orders.latest_amount"] == pytest.approx(75.0)
+    assert response.data[2]["orders.latest_amount"] == pytest.approx(25.0)
+
+
+def test_last_function(integration_env):
+    """last() function should broadcast the most recent time bucket's value to all rows."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # last(total_amount) = March's total (325) broadcast to all rows
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="last(total_amount)", name="latest"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # last() broadcasts the most recent bucket's value to ALL rows
+    latest_vals = [r["orders.latest"] for r in response.data]
+    assert len(set(latest_vals)) == 1  # Same value everywhere
+    assert latest_vals[0] == pytest.approx(325.0)  # March's SUM
+
+
+def test_having_filter(integration_env):
+    """Filters on measures should use HAVING with the aggregate expression."""
+    engine = integration_env
+
+    # Group by status: completed(3 orders), pending(2), cancelled(1)
+    # Filter: count > 1 → only completed and pending
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[ColumnRef(name="status")],
+        fields=[Field(formula="count")],
+        filters=["count > 1"],
+        order=[OrderItem(column=ColumnRef(name="count"), direction="desc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 2
+    assert response.data[0]["orders.status"] == "completed"
+    assert response.data[0]["orders.count"] == 3
+    assert response.data[1]["orders.status"] == "pending"
+    assert response.data[1]["orders.count"] == 2
+
+
+def test_having_filter_with_sum(integration_env):
+    """HAVING on a SUM measure should use the SUM() expression."""
+    engine = integration_env
+
+    # Group by status: completed(100+200+300=600), pending(50+25=75), cancelled(75)
+    # Filter: total_amount > 100 → only completed
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[ColumnRef(name="status")],
+        fields=[Field(formula="total_amount")],
+        filters=["total_amount > 100"],
+        order=[OrderItem(column=ColumnRef(name="total_amount"), direction="desc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders.status"] == "completed"
+    assert response.data[0]["orders.total_amount"] == pytest.approx(600.0)
+
+
+def test_having_with_non_groupby_dimension_raises(integration_env):
+    """HAVING filter referencing a dimension not in GROUP BY should error early."""
+    engine = integration_env
+
+    # Filter mixes measure (count) and dimension (status), but status is not in dimensions
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="count")],
+        filters=["count > 1 and status == 'completed'"],
+    )
+    with pytest.raises(ValueError, match="not in the query's dimensions"):
+        engine.execute(query)

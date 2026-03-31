@@ -24,7 +24,7 @@ dimensions:
 measures:
   - name: count                 # Required
     description: "Row count"    # Optional — explains what this measure computes
-    type: count                 # Required: count, count_distinct, sum, avg, min, max
+    type: count                 # Required: count, count_distinct, sum, avg, min, max, last
     # sql: not needed for count
 
   - name: revenue_sum
@@ -79,14 +79,30 @@ Measures are aggregated values — counts, sums, averages.
 | `avg` | `AVG(expr)` | Average |
 | `min` | `MIN(expr)` | Minimum |
 | `max` | `MAX(expr)` | Maximum |
+| `last` | Latest record's value | See below |
 
-## SQL Placeholders
+### The `last` Aggregation Type
+
+`type: last` returns the value from the **most recent record** within each grouped bucket — like `min`/`max`, but ordered by time instead of value. Useful for snapshot metrics like balances, inventory counts, or status fields where you want the latest state.
+
+```yaml
+measures:
+  - name: balance
+    sql: balance
+    type: last
+```
+
+When grouped by month, each month returns the `balance` value from the latest record in that month. The time column for ordering is resolved via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
+
+Not to be confused with the [`last()` formula function](formulas.md#last-function), which is a window-function transform that broadcasts a single value across all rows.
+
+## SQL Expressions
 
 ### In Dimensions and Measures
 
 Use **bare column names** (e.g., `"amount"`) — SLayer automatically qualifies them with the model's table reference at query time.
 
-`${TABLE}` is available for complex expressions that need an explicit table prefix (e.g., `"${TABLE}.amount * ${TABLE}.quantity"`).
+For complex expressions, use the model name as a table prefix: `"orders.amount * orders.quantity"`.
 
 ## Model Fields Reference
 

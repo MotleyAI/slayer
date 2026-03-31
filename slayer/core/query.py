@@ -107,7 +107,7 @@ class SlayerQuery(BaseModel):
     def snap_to_whole_periods(self) -> "SlayerQuery":
         """Adjust date filters to align with period boundaries when whole_periods_only=True.
 
-        For each time dimension with a granularity, adds a between() filter
+        For each time dimension with a granularity, adds a date range filter
         to exclude the current incomplete period if no date filter exists.
         """
         if not self.whole_periods_only or not self.time_dimensions:

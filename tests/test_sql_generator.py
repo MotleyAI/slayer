@@ -161,7 +161,7 @@ class TestFilters:
         query = SlayerQuery(
             model="orders",
             fields=[Field(formula="count")],
-            filters=["contains(status, 'act')"],
+            filters=["status like '%act%'"],
         )
         sql = _generate(generator, query, orders_model)
         assert "LIKE" in sql
@@ -199,10 +199,11 @@ class TestFilters:
         query = SlayerQuery(
             model="orders",
             fields=[Field(formula="count")],
-            filters=["between(created_at, '2024-01-01', '2024-06-30')"],
+            filters=["created_at >= '2024-01-01' and created_at <= '2024-06-30'"],
         )
         sql = _generate(generator, query, orders_model)
-        assert "BETWEEN" in sql
+        assert ">=" in sql
+        assert "<=" in sql
 
 
 class TestMeasureTypes:
@@ -432,6 +433,24 @@ class TestFields:
         assert "FIRST_VALUE(" in sql
         assert "DESC" in sql
 
+    def test_last_measure_type(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """A measure with type=last should use ROW_NUMBER + conditional aggregate."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="balance", type=DataType.LAST))
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="balance")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # ROW_NUMBER ranked subquery for latest row per group
+        assert "ROW_NUMBER()" in sql
+        assert "_last_rn" in sql
+        assert "DESC" in sql
+        # Conditional aggregate: MAX(CASE WHEN _last_rn = 1 THEN col END)
+        assert "MAX(" in sql
+        assert "CASE" in sql
+
     def test_time_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
@@ -443,6 +462,160 @@ class TestFields:
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         assert "INTERVAL" in sql
+
+    def test_time_shift_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Calendar time_shift with date_range should shift the filter in the shifted CTE."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-03-01", "2024-03-31"],
+            )],
+            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'month')", name="rev_prev")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Base CTE should have original date range
+        assert "2024-03-01" in sql
+        assert "2024-03-31" in sql
+        # Shifted CTE should have date range shifted back by 1 month
+        assert "2024-02-01" in sql
+        assert "2024-02-29" in sql
+
+    def test_time_shift_yoy_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Year-over-year time_shift should shift the date range by 1 year."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-03-01", "2024-03-31"],
+            )],
+            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'year')", name="rev_yoy")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Shifted CTE should query March 2023
+        assert "2023-03-01" in sql
+        assert "2023-03-31" in sql
+
+    def test_change_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Row-based change with date_range should shift the filter using query's time granularity."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-03-01", "2024-03-31"],
+            )],
+            fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # change looks back 1 period — shifted CTE should query February
+        assert "2024-02-01" in sql
+        assert "2024-02-29" in sql
+
+    def test_no_date_range_no_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Without a date_range, shifted CTE should still be a valid base query (no date filter)."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'month')", name="rev_prev")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Both base and shifted CTEs should query the source table without date filters
+        assert "shifted_base_" in sql
+        assert "BETWEEN" not in sql
+
+    def test_forward_time_shift_with_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Forward time_shift(x, 1, 'month') with date_range should shift the filter forward."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-03-01", "2024-03-31"],
+            )],
+            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, 1, 'month')", name="rev_next")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Shifted CTE should query April (1 month forward)
+        assert "2024-04-01" in sql
+        assert "2024-04-30" in sql
+
+    def test_quarter_date_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """time_shift with quarter granularity should shift the date range by 3 months."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.QUARTER,
+                date_range=["2024-07-01", "2024-09-30"],
+            )],
+            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'quarter')", name="prev_q")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Q3 2024 shifted back 1 quarter = Q2 2024
+        assert "2024-04-01" in sql
+        assert "2024-06-30" in sql
+
+    def test_nested_self_join_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Nesting self-join transforms (e.g., change(time_shift(x))) should raise."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue"), Field(formula="change(time_shift(revenue, -1, 'year'))", name="x")],
+        )
+        with pytest.raises(ValueError, match="Nesting.*not supported"):
+            _generate(generator, query, orders_model)
+
+    def test_post_filter_on_computed_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Filters on computed columns should be applied as post-filter wrapper."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
+            filters=["rev_change < 0"],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should wrap in a post-filter SELECT
+        assert "_filtered" in sql
+        assert '"orders.rev_change" < 0' in sql
+
+    def test_inline_transform_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Transform expressions in filters should be auto-extracted as hidden fields."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue")],
+            filters=["last(change(revenue)) < 0"],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should have the hidden transform columns
+        assert "FIRST_VALUE" in sql  # last()
+        assert "shifted_" in sql  # change() via self-join
+        # Should have post-filter wrapper
+        assert "_filtered" in sql
+        assert "< 0" in sql
+
+    def test_mixed_base_and_post_filters(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Base filters and post-filters should coexist correctly."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
+            filters=["status == 'completed'", "rev_change > 0"],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Base filter should be in the inner WHERE
+        assert "'completed'" in sql
+        # Post-filter should be in the outer wrapper
+        assert '"orders.rev_change" > 0' in sql
+        assert "_filtered" in sql
 
     def test_transform_without_time_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Transforms requiring time should fail if no time dimension available."""
@@ -618,7 +791,7 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
-        """Calendar-based time_shift should produce dialect-appropriate date arithmetic."""
+        """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             model="orders",
@@ -628,16 +801,10 @@ class TestMultiDialectGeneration:
         sql = _generate(gen, query, orders_model)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
-        # Dialect-specific date arithmetic
+        # Join should be simple equality (timestamp shift is inside the shifted CTE)
+        # Dialect-specific date arithmetic should appear in the shifted CTE's SELECT/GROUP BY
         sql_upper = sql.upper()
         if dialect == "sqlite":
             assert "DATE(" in sql_upper
-        elif dialect in ("bigquery", "clickhouse", "databricks", "spark", "tsql"):
-            assert "DATE_ADD(" in sql_upper or "DATEADD(" in sql_upper
-        elif dialect in ("snowflake", "redshift"):
-            assert "DATEADD(" in sql_upper
-        elif dialect in ("trino", "presto"):
-            assert "DATE_ADD(" in sql_upper
         else:
-            # Postgres, MySQL, DuckDB — INTERVAL syntax
             assert "INTERVAL" in sql_upper

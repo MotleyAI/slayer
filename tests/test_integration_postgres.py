@@ -8,9 +8,9 @@ pytest.importorskip("pytest_postgresql")
 
 from pytest_postgresql import factories
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -221,6 +221,88 @@ class TestPostgresQueries:
         )
         result = pg_env.execute(query=query)
         assert result.data[0]["orders.count"] == 5  # 3 completed + 2 pending
+
+    def test_time_shift_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
+        """time_shift with date_range should fetch shifted data from outside the filtered range."""
+        # Query only March, ask for previous month (February)
+        # Seed: Jan(300), Feb(200), Mar(375)
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-03-01", "2024-03-31"],
+            )],
+            fields=[
+                Field(formula="total"),
+                Field(formula="time_shift(total, -1, 'month')", name="prev_month"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = pg_env.execute(query=query)
+        assert result.row_count == 1
+        assert float(result.data[0]["orders.total"]) == pytest.approx(375.0)
+        # Previous month (Feb) fetched from DB, not NULL
+        assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
+
+    def test_change_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
+        """change() with date_range should fetch previous period from outside the filtered range."""
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-03-01", "2024-03-31"],
+            )],
+            fields=[
+                Field(formula="total"),
+                Field(formula="change(total)", name="amount_change"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = pg_env.execute(query=query)
+        assert result.row_count == 1
+        # Mar(375) - Feb(200) = 175
+        assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
+
+    def test_change_pct_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
+        """change_pct() with date_range should compute correct percentage from shifted data."""
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-03-01", "2024-03-31"],
+            )],
+            fields=[
+                Field(formula="total"),
+                Field(formula="change_pct(total)", name="pct"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = pg_env.execute(query=query)
+        assert result.row_count == 1
+        # (375 - 200) / 200 = 0.875
+        assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
+
+    def test_multiple_date_range_shifts(self, pg_env: SlayerQueryEngine) -> None:
+        """Multiple self-join transforms with different offsets should each get correct data."""
+        # Query Feb only, ask for both previous (Jan) and next (Mar)
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+                date_range=["2024-02-01", "2024-02-29"],
+            )],
+            fields=[
+                Field(formula="total"),
+                Field(formula="time_shift(total, -1, 'month')", name="prev"),
+                Field(formula="time_shift(total, 1, 'month')", name="next"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = pg_env.execute(query=query)
+        assert result.row_count == 1
+        assert float(result.data[0]["orders.total"]) == pytest.approx(200.0)
+        assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)  # Jan
+        assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)  # Mar
 
 
 @pytest.fixture
