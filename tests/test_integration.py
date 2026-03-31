@@ -730,11 +730,40 @@ def test_last_measure_type(integration_env):
     response = engine.execute(query)
 
     assert response.row_count == 3
-    # latest_amount should be the same (most recent) value for all rows
-    # Base agg is MAX(amount), March has max single order = 300
-    latest_vals = [r["orders.latest_amount"] for r in response.data]
-    assert len(set(latest_vals)) == 1  # All rows have the same value
-    assert latest_vals[0] == pytest.approx(300.0)  # March's MAX(amount)
+    # type=last returns the latest record's value within each month:
+    # Jan: orders on 15th(100) and 20th(200) → latest = 200
+    # Feb: orders on 10th(50) and 15th(75) → latest = 75
+    # Mar: orders on 5th(300) and 20th(25) → latest = 25
+    assert response.data[0]["orders.latest_amount"] == pytest.approx(200.0)
+    assert response.data[1]["orders.latest_amount"] == pytest.approx(75.0)
+    assert response.data[2]["orders.latest_amount"] == pytest.approx(25.0)
+
+
+def test_last_function(integration_env):
+    """last() function should broadcast the most recent time bucket's value to all rows."""
+    engine = integration_env
+
+    # 3 months: Jan(300), Feb(125), Mar(325)
+    # last(total_amount) = March's total (325) broadcast to all rows
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="last(total_amount)", name="latest"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # last() broadcasts the most recent bucket's value to ALL rows
+    latest_vals = [r["orders.latest"] for r in response.data]
+    assert len(set(latest_vals)) == 1  # Same value everywhere
+    assert latest_vals[0] == pytest.approx(325.0)  # March's SUM
 
 
 def test_having_filter(integration_env):

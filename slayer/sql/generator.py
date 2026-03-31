@@ -24,8 +24,7 @@ _AGG_FUNCTION_MAP = {
     DataType.AVERAGE: "AVG",
     DataType.MIN: "MIN",
     DataType.MAX: "MAX",
-    DataType.LAST: "MAX",  # Base aggregation for `last` type; the actual "most recent" logic
-                           # is handled by auto-adding a last() transform during enrichment
+    # DataType.LAST is not here — it uses a special ROW_NUMBER + conditional aggregate
 }
 
 # Transforms that use self-join CTEs instead of window functions.
@@ -180,23 +179,38 @@ class SQLGenerator:
         """
         from_clause = self._build_from_clause(enriched=enriched)
 
+        # If any measure has type=last, prepend a ROW_NUMBER CTE to mark the
+        # latest row per group. The FROM is replaced with this ranked subquery.
+        has_last_measures = any(m.type == DataType.LAST for m in enriched.measures)
+        if has_last_measures and enriched.last_agg_time_column:
+            from_clause = self._build_last_ranked_from(
+                enriched=enriched, base_from=from_clause, time_offset=time_offset,
+            )
+
         select_columns = []
         group_by_columns = []
 
         for dim in enriched.dimensions:
             col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+            if has_last_measures:
+                # In ranked subquery, dimensions are already columns — reference directly
+                col_expr = exp.Column(this=exp.to_identifier(dim.name))
             select_columns.append(col_expr.as_(dim.alias))
             group_by_columns.append(col_expr)
 
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-            # Apply time offset before DATE_TRUNC (for shifted CTEs)
-            if time_offset is not None:
-                offset_val, offset_gran = time_offset
-                col_expr = self._build_time_offset_expr(
-                    col_expr=col_expr, offset=offset_val, granularity=offset_gran,
-                )
-            col_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
+            if has_last_measures:
+                # Time dimension is already truncated in the ranked subquery
+                col_expr = exp.Column(this=exp.to_identifier(f"_td_{td.name}"))
+            else:
+                # Apply time offset before DATE_TRUNC (for shifted CTEs)
+                if time_offset is not None:
+                    offset_val, offset_gran = time_offset
+                    col_expr = self._build_time_offset_expr(
+                        col_expr=col_expr, offset=offset_val, granularity=offset_gran,
+                    )
+                col_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
             select_columns.append(col_expr.as_(td.alias))
             group_by_columns.append(col_expr)
 
@@ -215,7 +229,8 @@ class SQLGenerator:
 
         select = select.from_(from_clause)
 
-        if where_clause is not None:
+        # When using ranked subquery for type=last, WHERE is already inside the subquery
+        if where_clause is not None and not has_last_measures:
             select = select.where(where_clause)
 
         if has_aggregation and group_by_columns:
@@ -558,7 +573,69 @@ class SQLGenerator:
         else:
             raise ValueError(f"Model '{enriched.model_name}' has neither sql_table nor sql defined")
 
+    def _build_last_ranked_from(self, enriched: EnrichedQuery,
+                                 base_from: exp.Expression,
+                                 time_offset: Optional[tuple[int, str]] = None) -> exp.Expression:
+        """Build a ranked subquery for `type: last` aggregation.
 
+        Wraps the source table in a subquery that adds:
+          ROW_NUMBER() OVER (PARTITION BY [group-dims] ORDER BY time_col DESC) AS _last_rn
+        Plus all original columns and pre-computed time dimension expressions.
+        The outer query then uses MAX(CASE WHEN _last_rn = 1 THEN col END) for last-type measures.
+        """
+        model = enriched.model_name
+        time_col = enriched.last_agg_time_column
+
+        # Build SELECT * plus ROW_NUMBER
+        parts = [f"{model}.*"]
+
+        # Add pre-computed time dimension expressions (DATE_TRUNC)
+        for td in enriched.time_dimensions:
+            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=model)
+            if time_offset is not None:
+                offset_val, offset_gran = time_offset
+                col_expr = self._build_time_offset_expr(
+                    col_expr=col_expr, offset=offset_val, granularity=offset_gran,
+                )
+            td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
+            parts.append(f"{td_expr.sql(dialect=self.dialect)} AS _td_{td.name}")
+
+        # Build PARTITION BY from query dimensions + time dimensions
+        # Must use full expressions (not aliases) since aliases aren't visible in OVER()
+        partition_parts = []
+        for dim in enriched.dimensions:
+            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=model)
+            partition_parts.append(col_expr.sql(dialect=self.dialect))
+        for td in enriched.time_dimensions:
+            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=model)
+            if time_offset is not None:
+                offset_val, offset_gran = time_offset
+                col_expr = self._build_time_offset_expr(
+                    col_expr=col_expr, offset=offset_val, granularity=offset_gran,
+                )
+            td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
+            partition_parts.append(td_expr.sql(dialect=self.dialect))
+
+        partition_clause = f"PARTITION BY {', '.join(partition_parts)}" if partition_parts else ""
+
+        # ORDER BY the resolved time column
+        time_col_expr = self._resolve_sql(sql=None, name=time_col, model_name=model)
+        order_sql = time_col_expr.sql(dialect=self.dialect)
+
+        rn_expr = f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} DESC) AS _last_rn"
+        parts.append(rn_expr)
+
+        select_sql = ", ".join(parts)
+        from_sql = base_from.sql(dialect=self.dialect)
+        ranked_sql = f"SELECT {select_sql} FROM {from_sql}"
+
+        # Apply WHERE filters to the subquery (they filter raw data before ranking)
+        where_clause, _ = self._build_where_and_having(enriched=enriched)
+        if where_clause is not None:
+            ranked_sql += f" WHERE {where_clause.sql(dialect=self.dialect)}"
+
+        parsed = sqlglot.parse_one(ranked_sql, dialect=self.dialect)
+        return exp.Subquery(this=parsed, alias=exp.to_identifier(model))
 
     # ------------------------------------------------------------------
     # Column / measure resolution (from enriched SQL expressions)
@@ -575,6 +652,13 @@ class SQLGenerator:
 
     def _build_agg(self, measure: EnrichedMeasure) -> tuple[exp.Expression, bool]:
         """Build an aggregation expression from an enriched measure."""
+        # type=last: MAX(CASE WHEN _last_rn = 1 THEN col END)
+        # The _last_rn column comes from _build_last_ranked_from
+        if measure.type == DataType.LAST:
+            col = measure.sql or measure.name
+            case_sql = f"MAX(CASE WHEN _last_rn = 1 THEN {measure.model_name}.{col} END)"
+            return sqlglot.parse_one(case_sql, dialect=self.dialect), True
+
         agg_func = _AGG_FUNCTION_MAP.get(measure.type)
         if agg_func is None:
             # Not an aggregation — raw expression

@@ -79,7 +79,22 @@ Measures are aggregated values — counts, sums, averages.
 | `avg` | `AVG(expr)` | Average |
 | `min` | `MIN(expr)` | Minimum |
 | `max` | `MAX(expr)` | Maximum |
-| `last` | Most recent value | Auto-wraps with `last()` transform; returns the most recent time bucket's value. Useful for snapshot metrics like balances or inventory counts. |
+| `last` | Latest record's value | See below |
+
+### The `last` Aggregation Type
+
+`type: last` returns the value from the **most recent record** within each grouped bucket — like `min`/`max`, but ordered by time instead of value. Useful for snapshot metrics like balances, inventory counts, or status fields where you want the latest state.
+
+```yaml
+measures:
+  - name: balance
+    sql: balance
+    type: last
+```
+
+When grouped by month, each month returns the `balance` value from the latest record in that month. The time column for ordering is resolved via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
+
+Not to be confused with the [`last()` formula function](formulas.md#last-function), which is a window-function transform that broadcasts a single value across all rows.
 
 ## SQL Expressions
 

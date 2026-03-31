@@ -156,6 +156,41 @@ class SlayerQueryEngine:
             if model.default_time_dimension:
                 resolved_time_alias = f"{model.name}.{model.default_time_dimension}"
 
+        # Resolve time column for `type: last` aggregation.
+        # Unlike transforms (which need granularity), this only needs a time column
+        # for ORDER BY within each group — no bucketing required.
+        # Resolution: main_time_dimension → first time dim in dimensions →
+        #   first time dim in filters → model default_time_dimension
+        last_agg_time_column = None
+        if query.main_time_dimension:
+            last_agg_time_column = query.main_time_dimension
+        if last_agg_time_column is None:
+            # Check regular dimensions for time/date types
+            for dim_ref in (query.dimensions or []):
+                dim_def = model.get_dimension(dim_ref.name)
+                if dim_def and dim_def.type in (DataType.TIMESTAMP, DataType.DATE):
+                    last_agg_time_column = dim_ref.name
+                    break
+        if last_agg_time_column is None:
+            # Check time_dimensions
+            if time_dimensions:
+                last_agg_time_column = time_dimensions[0].name
+        if last_agg_time_column is None and query.filters:
+            # Check filters for time dimension references
+            time_dim_names = {
+                d.name for d in model.dimensions
+                if d.type in (DataType.TIMESTAMP, DataType.DATE)
+            }
+            for f_str in (query.filters or []):
+                for td_name in time_dim_names:
+                    if td_name in f_str:
+                        last_agg_time_column = td_name
+                        break
+                if last_agg_time_column:
+                    break
+        if last_agg_time_column is None and model.default_time_dimension:
+            last_agg_time_column = model.default_time_dimension
+
         # Process fields — parse formulas and flatten into measures/expressions/transforms
         import re
         from slayer.core.formula import (
@@ -199,10 +234,10 @@ class SlayerQueryEngine:
                     f"Field '{name}' ({transform}) requires a time dimension. "
                     f"Add a time_dimension to the query or set default_time_dimension on the model."
                 )
-            # Self-join transforms need actual time dimensions in the query for
-            # meaningful time bucketing. A bare default_time_dimension fallback
-            # (no time dimensions) produces no grouping → meaningless results.
-            if transform in _self_join_transforms and not time_dimensions:
+            # Self-join transforms and last() need actual time dimensions in the
+            # query for meaningful time bucketing. A bare default_time_dimension
+            # fallback (no time dimensions) produces no grouping → wrong results.
+            if transform in (_self_join_transforms | {"last"}) and not time_dimensions:
                 raise ValueError(
                     f"Field '{name}' ({transform}) requires a time_dimension in the query "
                     f"with a granularity for time bucketing."
@@ -303,27 +338,15 @@ class SlayerQueryEngine:
 
             if isinstance(spec, MeasureRef):
                 _ensure_measure(spec.name)
-                # If the measure has type=last, auto-wrap with last() transform
+                # Validate type=last has a time column for ordering
                 measure_def = model.get_measure(spec.name)
-                if measure_def and measure_def.type == DataType.LAST:
-                    # Rename the base measure's alias to an internal name
-                    # so it doesn't collide with the transform's output alias
-                    base_alias = f"{query.model}.{spec.name}"
-                    internal_alias = f"{query.model}._base_{spec.name}"
-                    for m in measures:
-                        if m.alias == base_alias:
-                            m.alias = internal_alias
-                            known_aliases[spec.name] = internal_alias
-                    _add_transform(
-                        name=field_name, transform="last",
-                        measure_alias=internal_alias, offset=1,
+                if measure_def and measure_def.type == DataType.LAST and last_agg_time_column is None:
+                    raise ValueError(
+                        f"Measure '{spec.name}' has type=last but no time column could be resolved. "
+                        f"Add a time dimension, set main_time_dimension, or set default_time_dimension on the model."
                     )
-                    if field.label:
-                        for t in enriched_transforms:
-                            if t.alias == f"{query.model}.{field_name}":
-                                t.label = field.label
                 # Apply label to the measure if provided
-                elif field.label:
+                if field.label:
                     for m in measures:
                         if m.name == spec.name:
                             m.label = field.label
@@ -352,6 +375,9 @@ class SlayerQueryEngine:
                 _flatten_spec(spec, name)
             processed_filters.append(rewritten)
 
+        # Only include last_agg_time_column if there are actual type=last measures
+        has_last_measures = any(m.type == DataType.LAST for m in measures)
+
         return EnrichedQuery(
             model_name=model.name,
             sql_table=model.sql_table,
@@ -361,6 +387,7 @@ class SlayerQueryEngine:
             time_dimensions=time_dimensions,
             expressions=enriched_expressions,
             transforms=enriched_transforms,
+            last_agg_time_column=last_agg_time_column if has_last_measures else None,
             filters=SlayerQueryEngine._classify_filters(
                 filters=[parse_filter(f) for f in processed_filters],
                 measure_names={m.name for m in measures},

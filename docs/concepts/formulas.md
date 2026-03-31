@@ -102,6 +102,26 @@ With multiple dimensions (e.g., `status` + `month`), each status/month combinati
 
 Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at rank 2, the next row is rank 4.
 
+### Last Function
+
+`last(x)` is a window-function transform that takes an aggregated measure and **broadcasts the most recent time bucket's value to every row** in the result.
+
+```json
+{
+  "fields": [
+    {"formula": "revenue_sum"},
+    {"formula": "last(revenue_sum)", "name": "latest_revenue"}
+  ],
+  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+}
+```
+
+This returns monthly revenue with an extra column showing the most recent month's revenue on every row — useful for comparisons like "this month vs latest" or for filtering: `"last(change(revenue)) < 0"` keeps rows only if the trend is negative.
+
+`last()` requires a time dimension with granularity in the query (same resolution as `time_shift`).
+
+Not to be confused with the [`last` aggregation type](models.md#the-last-aggregation-type), which is a per-group aggregate returning the latest *record's* value within each bucket.
+
 ---
 
 ## Parsing Internals

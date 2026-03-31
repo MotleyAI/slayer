@@ -434,7 +434,7 @@ class TestFields:
         assert "DESC" in sql
 
     def test_last_measure_type(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """A measure with type=last should auto-wrap with last() transform."""
+        """A measure with type=last should use ROW_NUMBER + conditional aggregate."""
         orders_model.default_time_dimension = "created_at"
         orders_model.measures.append(Measure(name="balance", sql="balance", type=DataType.LAST))
         query = SlayerQuery(
@@ -443,11 +443,13 @@ class TestFields:
             fields=[Field(formula="balance")],
         )
         sql = _generate(generator, query, orders_model)
-        # Should auto-generate FIRST_VALUE (last() transform)
-        assert "FIRST_VALUE(" in sql
+        # ROW_NUMBER ranked subquery for latest row per group
+        assert "ROW_NUMBER()" in sql
+        assert "_last_rn" in sql
         assert "DESC" in sql
-        # Base aggregation should use MAX
+        # Conditional aggregate: MAX(CASE WHEN _last_rn = 1 THEN col END)
         assert "MAX(" in sql
+        assert "CASE" in sql
 
     def test_time_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
