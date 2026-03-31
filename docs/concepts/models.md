@@ -81,13 +81,13 @@ Measures are aggregated values — counts, sums, averages.
 | `max` | `MAX(expr)` | Maximum |
 | `last` | Most recent value | Auto-wraps with `last()` transform; returns the most recent time bucket's value. Useful for snapshot metrics like balances or inventory counts. |
 
-## SQL Placeholders
+## SQL Expressions
 
 ### In Dimensions and Measures
 
 Use **bare column names** (e.g., `"amount"`) — SLayer automatically qualifies them with the model's table reference at query time.
 
-`${TABLE}` is available for complex expressions that need an explicit table prefix (e.g., `"${TABLE}.amount * ${TABLE}.quantity"`).
+For complex expressions, use the model name as a table prefix: `"orders.amount * orders.quantity"`.
 
 ## Model Fields Reference
 

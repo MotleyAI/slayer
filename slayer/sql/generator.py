@@ -569,12 +569,9 @@ class SQLGenerator:
         if sql is None:
             return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(model_name))
         # Bare column name → qualify with model name
-        if "${" not in sql and "." not in sql and " " not in sql and "(" not in sql:
+        if "." not in sql and " " not in sql and "(" not in sql:
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
-        # ${TABLE} placeholder expansion
-        cleaned = sql.replace("${TABLE}", model_name)
-        cleaned = cleaned.replace("${" + model_name + "}", model_name)
-        return sqlglot.parse_one(sql=cleaned, dialect=self.dialect)
+        return sqlglot.parse_one(sql=sql, dialect=self.dialect)
 
     def _build_agg(self, measure: EnrichedMeasure) -> tuple[exp.Expression, bool]:
         """Build an aggregation expression from an enriched measure."""

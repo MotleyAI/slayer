@@ -45,7 +45,7 @@ measures:
 ## SQL Placeholders
 
 - Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
-- `${TABLE}` is available for complex expressions (e.g., `"${TABLE}.amount * ${TABLE}.quantity"`)
+- For complex expressions, use the model name as table prefix (e.g., `"orders.amount * orders.quantity"`)
 ## Datasource Config
 
 ```yaml
