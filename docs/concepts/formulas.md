@@ -72,6 +72,36 @@ Use `show_sql=True` on the query to see what SQL is generated for complex formul
 
 **Mathematical identity:** `cumsum(change(x)) == x - x[0]` for all rows after the first.
 
+### Rank
+
+`rank(x)` assigns a ranking to each row based on the measure value (highest = rank 1), using `RANK() OVER (ORDER BY x DESC)`. It does not need a time dimension and does not partition — it ranks across the **entire result set**.
+
+The ranking granularity depends on the query's dimensions and time dimensions. Each unique combination of dimension values becomes one row, and rank orders those rows by the measure:
+
+```json
+{
+  "model": "orders",
+  "dimensions": [{"name": "customer_name"}],
+  "fields": [
+    {"formula": "revenue_sum"},
+    {"formula": "rank(revenue_sum)", "name": "rnk"}
+  ],
+  "order": [{"column": {"name": "revenue_sum"}, "direction": "desc"}]
+}
+```
+
+This ranks customers by total revenue. Combine with `limit` to get "top N":
+
+```json
+{
+  "filters": ["rank(revenue_sum) <= 10"]
+}
+```
+
+With multiple dimensions (e.g., `status` + `month`), each status/month combination is ranked together — there is no automatic partitioning by dimension.
+
+Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at rank 2, the next row is rank 4.
+
 ---
 
 ## Parsing Internals
