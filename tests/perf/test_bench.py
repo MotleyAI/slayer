@@ -10,7 +10,7 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerResponse
 
-from .conftest import BenchEnv
+from .conftest import BenchEnv, SCALES
 
 
 # ---------------------------------------------------------------------------
@@ -151,25 +151,23 @@ QUERY_IDS = list(QUERIES.keys())
 
 
 # ---------------------------------------------------------------------------
-# Parametrized benchmarks — one class per scale, queries auto-discovered
+# Dynamically generate one test class per scale from SCALES
 # ---------------------------------------------------------------------------
 
-@pytest.mark.benchmark(group="1k")
-class TestBench1K:
-    @pytest.mark.parametrize("query_name", QUERY_IDS)
-    def test_query(self, benchmark, env_1k: BenchEnv, query_name: str) -> None:
-        benchmark(lambda: _execute(env_1k, **QUERIES[query_name]))
+def _make_test_class(scale_name: str) -> type:
+    fixture_name = f"env_{scale_name}"
+
+    @pytest.mark.benchmark(group=scale_name)
+    class _BenchClass:
+        @pytest.mark.parametrize("query_name", QUERY_IDS)
+        def test_query(self, benchmark, request, query_name: str) -> None:
+            env: BenchEnv = request.getfixturevalue(fixture_name)
+            benchmark(lambda: _execute(env, **QUERIES[query_name]))
+
+    _BenchClass.__name__ = f"TestBench_{scale_name}"
+    _BenchClass.__qualname__ = f"TestBench_{scale_name}"
+    return _BenchClass
 
 
-@pytest.mark.benchmark(group="10k")
-class TestBench10K:
-    @pytest.mark.parametrize("query_name", QUERY_IDS)
-    def test_query(self, benchmark, env_10k: BenchEnv, query_name: str) -> None:
-        benchmark(lambda: _execute(env_10k, **QUERIES[query_name]))
-
-
-@pytest.mark.benchmark(group="100k")
-class TestBench100K:
-    @pytest.mark.parametrize("query_name", QUERY_IDS)
-    def test_query(self, benchmark, env_100k: BenchEnv, query_name: str) -> None:
-        benchmark(lambda: _execute(env_100k, **QUERIES[query_name]))
+for _scale_name in SCALES:
+    globals()[f"TestBench_{_scale_name}"] = _make_test_class(_scale_name)

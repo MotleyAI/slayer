@@ -108,20 +108,24 @@ def _create_env(order_count: int) -> tuple[SlayerQueryEngine, Dataset]:
 
 BenchEnv = tuple[SlayerQueryEngine, Dataset]
 
+# ---------------------------------------------------------------------------
+# Scale definitions — add/remove entries here to adjust benchmark scales
+# ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="session")
-def env_1k() -> BenchEnv:
-    """1,000 orders — fast baseline."""
-    return _create_env(1_000)
+SCALES: dict[str, int] = {
+    "1k": 1_000,
+    "10k": 10_000,
+    "40k": 40_000,
+    "100k": 100_000,
+    "200k": 200_000,
+    "400k": 400_000,
+}
 
-
-@pytest.fixture(scope="session")
-def env_10k() -> BenchEnv:
-    """10,000 orders — moderate scale."""
-    return _create_env(10_000)
-
-
-@pytest.fixture(scope="session")
-def env_100k() -> BenchEnv:
-    """100,000 orders — stress test."""
-    return _create_env(100_000)
+# Dynamically generate session-scoped fixtures: env_1k, env_10k, env_100k, ...
+for _name, _count in SCALES.items():
+    def _make_fixture(n: int) -> BenchEnv:
+        @pytest.fixture(scope="session")
+        def _fixture() -> BenchEnv:
+            return _create_env(n)
+        return _fixture
+    globals()[f"env_{_name}"] = _make_fixture(_count)
