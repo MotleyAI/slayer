@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "agentic-slayer"
+name = "semantic-slayer"
 version = "0.1.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 authors = ["MotleyAI"]
@@ -21,7 +21,7 @@ classifiers = [
 
 [tool.poetry.urls]
 Repository = "https://github.com/MotleyAI/slayer"
-Documentation = "https://agentic-slayer.readthedocs.io/"
+Documentation = "https://semantic-slayer.readthedocs.io/"
 
 [tool.poetry.dependencies]
 python = "^3.11"

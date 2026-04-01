@@ -4,22 +4,22 @@
 
 ```bash
 # Full install (all extras + all database drivers)
-pip install agentic-slayer[all]
+pip install semantic-slayer[all]
 
 # Base install (REST API + CLI included by default, no database drivers)
-pip install agentic-slayer
+pip install semantic-slayer
 
 # Optional extras
-pip install agentic-slayer[client]       # Python SDK (httpx + pandas)
-pip install agentic-slayer[mcp]          # MCP server
+pip install semantic-slayer[client]       # Python SDK (httpx + pandas)
+pip install semantic-slayer[mcp]          # MCP server
 
 # Database driver extras
-pip install agentic-slayer[postgres]     # PostgreSQL (psycopg2)
-pip install agentic-slayer[mysql]        # MySQL / MariaDB (pymysql)
-pip install agentic-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
+pip install semantic-slayer[postgres]     # PostgreSQL (psycopg2)
+pip install semantic-slayer[mysql]        # MySQL / MariaDB (pymysql)
+pip install semantic-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
 ```
 
-Extras can be combined: `pip install agentic-slayer[mcp,postgres]`
+Extras can be combined: `pip install semantic-slayer[mcp,postgres]`
 
 ## Connect a Database
 
