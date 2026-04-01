@@ -9,7 +9,47 @@ Usage:
 import csv
 import io
 import json
+import math
 import sys
+
+from tests.perf.conftest import SCALES
+
+
+def _estimate_complexity(times: list[float], sizes: list[int]) -> str:
+    """Estimate Big-O exponent from timing data via power law regression.
+
+    Fits time = c * n^k by computing k = log(t2/t1) / log(n2/n1) for each
+    adjacent pair, then takes the median. Returns a human-readable label.
+    """
+    exponents = []
+    for i in range(len(times) - 1):
+        t1, t2 = times[i], times[i + 1]
+        n1, n2 = sizes[i], sizes[i + 1]
+        if t1 > 0 and t2 > 0 and n1 > 0 and n2 > 0 and n1 != n2:
+            k = math.log(t2 / t1) / math.log(n2 / n1)
+            exponents.append(k)
+
+    if not exponents:
+        return "?"
+
+    exponents.sort()
+    median_k = exponents[len(exponents) // 2]
+
+    # Map exponent to Big-O label
+    if median_k < 0.15:
+        return "~O(1)"
+    elif median_k < 0.65:
+        return "~O(√n)"
+    elif median_k < 0.85:
+        return "~O(n^0.7)"
+    elif median_k < 1.15:
+        return "~O(n)"
+    elif median_k < 1.65:
+        return "~O(n·log(n))"
+    elif median_k < 2.15:
+        return "~O(n²)"
+    else:
+        return f"~O(n^{median_k:.1f})"
 
 
 def convert(json_path: str) -> str:
@@ -17,13 +57,11 @@ def convert(json_path: str) -> str:
         data = json.load(f)
 
     # Parse benchmark entries: extract group (scale) and query name
-    # Test names look like: tests/perf/test_bench.py::TestBench1K::test_query[monthly_change]
     rows: dict[str, dict[str, float]] = {}  # group → {query_name → mean_ms}
     all_queries: list[str] = []
 
     for bench in data["benchmarks"]:
         group = bench.get("group", "unknown")
-        # Extract query name from params or fullname
         params = bench.get("params", {})
         query_name = params.get("query_name", bench["name"])
 
@@ -43,16 +81,22 @@ def convert(json_path: str) -> str:
         return int(num) if num else 0
 
     sorted_groups = sorted(rows.keys(), key=_sort_key)
+    group_sizes = [SCALES[g] for g in sorted_groups if g in SCALES]
 
-    # Write CSV: queries as rows, scales as columns
+    # Write CSV: queries as rows, scales as columns, plus complexity estimate
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["query"] + sorted_groups)
+    writer.writerow(["query"] + sorted_groups + ["complexity"])
     for q in all_queries:
         row = [q]
+        times = []
         for group in sorted_groups:
             val = rows[group].get(q)
             row.append(val if val is not None else "")
+            times.append(val if val is not None else 0)
+
+        complexity = _estimate_complexity(times, group_sizes)
+        row.append(complexity)
         writer.writerow(row)
 
     return output.getvalue()
