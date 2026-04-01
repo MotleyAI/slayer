@@ -44,13 +44,13 @@ def convert(json_path: str) -> str:
 
     sorted_groups = sorted(rows.keys(), key=_sort_key)
 
-    # Write CSV
+    # Write CSV: queries as rows, scales as columns
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["scale"] + all_queries)
-    for group in sorted_groups:
-        row = [group]
-        for q in all_queries:
+    writer.writerow(["query"] + sorted_groups)
+    for q in all_queries:
+        row = [q]
+        for group in sorted_groups:
             val = rows[group].get(q)
             row.append(val if val is not None else "")
         writer.writerow(row)
