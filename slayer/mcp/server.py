@@ -126,7 +126,7 @@ def create_mcp_server(storage: StorageBackend):
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
-        raise ImportError("MCP support requires the 'mcp' extra: pip install agentic-slayer[mcp]")
+        raise ImportError("MCP support requires the 'mcp' extra: pip install semantic-slayer[mcp]")
 
     mcp = FastMCP(
         "SLayer",

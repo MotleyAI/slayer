@@ -48,9 +48,9 @@ These databases are verified by integration tests and runnable Docker examples. 
 
 | Type | Install Extra | Connection Driver | Example |
 |------|---------------|-------------------|---------|
-| `postgres` / `postgresql` | `pip install agentic-slayer[postgres]` | `postgresql://` | `postgresql://user:pass@localhost:5432/db` |
-| `mysql` / `mariadb` | `pip install agentic-slayer[mysql]` | `mysql+pymysql://` | `mysql+pymysql://user:pass@localhost:3306/db` |
-| `clickhouse` | `pip install agentic-slayer[clickhouse]` | `clickhouse+http://` | `clickhouse+http://user:pass@localhost:8123/db` |
+| `postgres` / `postgresql` | `pip install semantic-slayer[postgres]` | `postgresql://` | `postgresql://user:pass@localhost:5432/db` |
+| `mysql` / `mariadb` | `pip install semantic-slayer[mysql]` | `mysql+pymysql://` | `mysql+pymysql://user:pass@localhost:3306/db` |
+| `clickhouse` | `pip install semantic-slayer[clickhouse]` | `clickhouse+http://` | `clickhouse+http://user:pass@localhost:8123/db` |
 | `sqlite` | (built-in) | `sqlite:///` | `sqlite:///path/to/db.sqlite` |
 
 ### Additional support

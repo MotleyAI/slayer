@@ -5,7 +5,7 @@ The Python SDK supports both **remote mode** (connects to a running server) and 
 ## Installation
 
 ```bash
-pip install agentic-slayer[client]   # httpx + pandas
+pip install semantic-slayer[client]   # httpx + pandas
 ```
 
 ## Usage
