@@ -209,3 +209,4 @@ __marimo__/
 .claude/settings.local.json
 
 examples/postgres/slayer_data/
+benchmarks/
