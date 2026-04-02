@@ -12,6 +12,7 @@ from slayer.core.models import (
     DatasourceConfig,
     Dimension,
     Measure,
+    ModelJoin,
     SlayerModel,
 )
 from slayer.core.query import (
@@ -823,4 +824,97 @@ def test_having_with_non_groupby_dimension_raises(integration_env):
         filters=["count > 1 and status == 'completed'"],
     )
     with pytest.raises(ValueError, match="not in the query's dimensions"):
+        engine.execute(query)
+
+
+# ---------------------------------------------------------------------------
+# Cross-model measures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cross_model_env(tmp_path):
+    """SQLite env with orders + customers models and an explicit join."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, created_at TEXT)")
+    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+        (1, "Alice", 90.0), (2, "Bob", 60.0), (3, "Charlie", 80.0),
+    ])
+    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
+        (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
+        (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
+        (5, 3, 300.0, "2025-03-05"), (6, 1, 25.0, "2025-03-20"),
+    ])
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+
+    storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="db",
+        default_time_dimension="created_at",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="total_amount", sql="amount", type=DataType.SUM),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="db",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="name", sql="name", type=DataType.STRING),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="avg_score", sql="score", type=DataType.AVERAGE),
+            Measure(name="max_score", sql="score", type=DataType.MAX),
+        ],
+    ))
+
+    return SlayerQueryEngine(storage=storage)
+
+
+def test_cross_model_measure_monthly(cross_model_env):
+    """Cross-model measure: monthly order count + avg customer score from joined model."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="count"),
+            Field(formula="customers.avg_score"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # Jan: Alice (90), Feb: Bob (60), Mar: Charlie(80) + Alice(90) = avg 85
+    assert response.data[0]["orders.customers__avg_score"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customers__avg_score"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customers__avg_score"] == pytest.approx(85.0)
+
+
+def test_cross_model_measure_no_join_raises(cross_model_env):
+    """Referencing a model with no join should raise."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        model="orders",
+        fields=[Field(formula="count"), Field(formula="nonexistent.some_measure")],
+    )
+    with pytest.raises(ValueError, match="has no join to"):
         engine.execute(query)

@@ -452,3 +452,42 @@ class TestRollupIngestion:
         assert by_region["EU"]["orders.count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0
+
+    def test_orders_has_joins_metadata(self, pg_ingest_env) -> None:
+        """Ingested models should have explicit join metadata."""
+        models, _, _ = pg_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+
+        # orders → customers (direct FK)
+        join_targets = [j.target_model for j in orders.joins]
+        assert "customers" in join_targets
+
+        # customers → regions (transitive, discovered via BFS)
+        assert "regions" in join_targets
+
+        # Each join has at least one join pair
+        for j in orders.joins:
+            assert len(j.join_pairs) >= 1
+            for pair in j.join_pairs:
+                assert len(pair) == 2  # [source_dim, target_dim]
+
+    def test_regions_has_no_joins(self, pg_ingest_env) -> None:
+        """Models with no FK references should have empty joins."""
+        models, _, _ = pg_ingest_env
+        regions = next(m for m in models if m.name == "regions")
+        assert regions.joins == []
+
+    def test_joins_serialize_to_yaml(self, pg_ingest_env) -> None:
+        """Joins should survive YAML round-trip."""
+        models, ds, _ = pg_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_model(orders)
+
+        loaded = storage.get_model("orders")
+        assert len(loaded.joins) == len(orders.joins)
+        for orig, loaded_j in zip(orders.joins, loaded.joins):
+            assert orig.target_model == loaded_j.target_model
+            assert orig.join_pairs == loaded_j.join_pairs

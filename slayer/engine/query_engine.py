@@ -10,6 +10,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.enriched import (
+    CrossModelMeasure,
     EnrichedDimension,
     EnrichedExpression,
     EnrichedMeasure,
@@ -200,6 +201,7 @@ class SlayerQueryEngine:
 
         enriched_expressions: list[EnrichedExpression] = []
         enriched_transforms: list[EnrichedTransform] = []
+        cross_model_measures: list = []
 
         # Track all known aliases (measures, expressions, transforms) for resolution
         known_aliases: dict[str, str] = {}  # name → alias
@@ -337,6 +339,17 @@ class SlayerQueryEngine:
             field_name = field.name or field.formula.replace(" ", "_").replace("/", "_div_")
 
             if isinstance(spec, MeasureRef):
+                # Check for cross-model measure reference (e.g., "customers.avg_score")
+                if "." in spec.name:
+                    cm = self._resolve_cross_model_measure(
+                        spec_name=spec.name, field_name=field_name,
+                        model=model, query=query,
+                        dimensions=dimensions, time_dimensions=time_dimensions,
+                        label=field.label,
+                    )
+                    cross_model_measures.append(cm)
+                    continue
+
                 _ensure_measure(spec.name)
                 # Validate type=last has a time column for ordering
                 measure_def = model.get_measure(spec.name)
@@ -387,6 +400,7 @@ class SlayerQueryEngine:
             time_dimensions=time_dimensions,
             expressions=enriched_expressions,
             transforms=enriched_transforms,
+            cross_model_measures=cross_model_measures,
             last_agg_time_column=last_agg_time_column if has_last_measures else None,
             filters=SlayerQueryEngine._classify_filters(
                 filters=[parse_filter(f) for f in processed_filters],
@@ -484,6 +498,75 @@ class SlayerQueryEngine:
                             f"Add it to dimensions/time_dimensions or split into separate filters."
                         )
         return filters
+
+    def _resolve_cross_model_measure(
+        self, spec_name: str, field_name: str,
+        model: SlayerModel, query,
+        dimensions: list, time_dimensions: list,
+        label: str = None,
+    ) -> CrossModelMeasure:
+        """Resolve a cross-model measure reference like 'customers.avg_score'.
+
+        Looks up the join from the source model, loads the target model,
+        finds shared dimensions, and returns a CrossModelMeasure for SQL generation.
+        """
+        parts = spec_name.split(".", 1)
+        if len(parts) != 2:
+            raise ValueError(f"Invalid cross-model measure reference: '{spec_name}'")
+        target_model_name, measure_name = parts
+
+        # Find the join to the target model
+        join = None
+        for j in model.joins:
+            if j.target_model == target_model_name:
+                join = j
+                break
+        if join is None:
+            raise ValueError(
+                f"Model '{model.name}' has no join to '{target_model_name}'. "
+                f"Available joins: {[j.target_model for j in model.joins]}"
+            )
+
+        # Load the target model
+        target_model = self.storage.get_model(target_model_name)
+        if target_model is None:
+            raise ValueError(f"Target model '{target_model_name}' not found in storage")
+
+        # Find the measure in the target model
+        measure_def = target_model.get_measure(measure_name)
+        if measure_def is None:
+            raise ValueError(
+                f"Measure '{measure_name}' not found in model '{target_model_name}'. "
+                f"Available: {[m.name for m in target_model.measures]}"
+            )
+
+        # The cross-model sub-query starts FROM the source table with JOIN to
+        # the target, so all source dimensions are available for grouping.
+        # Use all query dimensions and time dimensions as the grouping context.
+        shared_dims = list(dimensions)
+        shared_time_dims = list(time_dimensions)
+
+        alias = f"{query.model}.{target_model_name}__{measure_name}"
+
+        return CrossModelMeasure(
+            name=field_name,
+            alias=alias,
+            target_model_name=target_model_name,
+            target_model_sql_table=target_model.sql_table,
+            target_model_sql=target_model.sql,
+            measure=EnrichedMeasure(
+                name=measure_name, sql=measure_def.sql, type=measure_def.type,
+                alias=f"{target_model_name}.{measure_name}",
+                model_name=target_model_name,
+            ),
+            join_pairs=join.join_pairs,
+            shared_dimensions=shared_dims,
+            shared_time_dimensions=shared_time_dims,
+            source_model_name=model.name,
+            source_sql_table=model.sql_table,
+            source_sql=model.sql,
+            label=label,
+        )
 
     def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
         ds_name = model.data_source
