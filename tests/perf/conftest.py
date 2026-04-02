@@ -1,6 +1,6 @@
 """Fixtures for performance benchmarks.
 
-Provides seeded SQLite databases at various scales with SLayer models configured.
+Provides seeded databases at various scales with SLayer models configured.
 """
 
 import tempfile
@@ -10,9 +10,11 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
+from .params import DATA_END_DATE, DATA_START_DATE, INDEXES, SCALES, SEED
 from .seed import Dataset, generate_dataset, seed_database
 
 
@@ -80,18 +82,32 @@ def _build_customers_model(ds_name: str) -> SlayerModel:
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Environment creation
 # ---------------------------------------------------------------------------
 
-def _create_env(order_count: int) -> tuple[SlayerQueryEngine, Dataset]:
+BenchEnv = tuple[SlayerQueryEngine, Dataset]
+
+
+def _create_env(order_count: int) -> BenchEnv:
     """Create a seeded SQLite database + SLayer engine at a given scale."""
     tmpdir = tempfile.mkdtemp()
     db_path = f"{tmpdir}/bench.db"
 
     # Generate and seed
-    dataset = generate_dataset(order_count=order_count)
-    engine = sa.create_engine(f"sqlite:///{db_path}")
-    seed_database(engine=engine, dataset=dataset)
+    dataset = generate_dataset(
+        order_count=order_count,
+        start_date=DATA_START_DATE,
+        end_date=DATA_END_DATE,
+        seed=SEED,
+    )
+    db_engine = sa.create_engine(f"sqlite:///{db_path}")
+    seed_database(engine=db_engine, dataset=dataset)
+
+    # Create indexes for realistic query performance
+    with db_engine.connect() as conn:
+        for idx_sql in INDEXES:
+            conn.execute(sa.text(idx_sql))
+        conn.commit()
 
     # Configure SLayer
     storage = YAMLStorage(base_dir=tmpdir)
@@ -103,25 +119,19 @@ def _create_env(order_count: int) -> tuple[SlayerQueryEngine, Dataset]:
     storage.save_model(_build_customers_model("bench"))
 
     slayer_engine = SlayerQueryEngine(storage=storage)
+
+    # Warmup: run a simple query to prime DB caches and connection pool
+    slayer_engine.execute(query=SlayerQuery(
+        model="orders", fields=[{"formula": "count"}],
+    ))
+
     return slayer_engine, dataset
 
 
-BenchEnv = tuple[SlayerQueryEngine, Dataset]
-
 # ---------------------------------------------------------------------------
-# Scale definitions — add/remove entries here to adjust benchmark scales
+# Dynamically generate session-scoped fixtures from SCALES
 # ---------------------------------------------------------------------------
 
-SCALES: dict[str, int] = {
-    "1k": 1_000,
-    "10k": 10_000,
-    "40k": 40_000,
-    "100k": 100_000,
-    "200k": 200_000,
-    "400k": 400_000,
-}
-
-# Dynamically generate session-scoped fixtures: env_1k, env_10k, env_100k, ...
 for _name, _count in SCALES.items():
     def _make_fixture(n: int) -> BenchEnv:
         @pytest.fixture(scope="session")

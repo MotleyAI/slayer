@@ -10,7 +10,8 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerResponse
 
-from .conftest import BenchEnv, SCALES
+from .conftest import BenchEnv
+from .params import QUERY_DATE_RANGE, SCALES
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ QUERIES: dict[str, dict] = {
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
-            date_range=["2024-06-01", "2024-12-31"],
+            date_range=QUERY_DATE_RANGE,
         )],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),

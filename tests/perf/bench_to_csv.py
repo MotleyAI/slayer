@@ -12,7 +12,7 @@ import json
 import math
 import sys
 
-from tests.perf.conftest import SCALES
+from tests.perf.params import SCALES
 
 
 def _estimate_complexity(times: list[float], sizes: list[int]) -> str:
