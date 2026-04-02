@@ -10,6 +10,12 @@ Key terms used throughout SLayer documentation and code.
 
 **Measure** — A model-defined aggregation. Each measure has a name, a SQL expression, and an aggregation type (`count`, `sum`, `avg`, `min`, `max`, `count_distinct`, `last`). Examples: `count` (COUNT(*)), `revenue_sum` (SUM(amount)), `balance` (most recent value via `last`).
 
+**Join** — An explicit LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (`[["customer_id", "id"]]`). Enables cross-model measures.
+
+**Cross-model measure** — A measure from a joined model, referenced with dotted syntax (`customers.avg_score`). Computed as a separate sub-query to avoid row multiplication.
+
+**Query-as-model** — Using a query's result as the source for another query, or saving it as a permanent model. Useful for materializing complex aggregations.
+
 **Datasource** — A database connection configuration: host, port, credentials, database type. SLayer supports Postgres, MySQL/MariaDB, ClickHouse, SQLite, BigQuery, and Snowflake.
 
 ## Queries

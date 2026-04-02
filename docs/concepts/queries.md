@@ -210,3 +210,38 @@ Post-filters can be combined with regular filters — base filters (on dimension
 }
 ```
 
+### Cross-model measures
+
+When models have [joins](models.md#joins), you can reference measures from joined models using dotted syntax `model_name.measure_name`:
+
+```json
+{
+  "model": "orders",
+  "fields": [
+    {"formula": "count"},
+    {"formula": "customers.avg_score"}
+  ],
+  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+}
+```
+
+This generates a sub-query for the joined measure, scoped to shared dimensions, and LEFT JOINs it to the main query — avoiding aggregation errors from row multiplication.
+
+### Query as model
+
+The `model` field can be a query object instead of a model name. The inner query is executed first, and its result becomes the source for the outer query:
+
+```json
+{
+  "model": {
+    "model": "orders",
+    "fields": [{"formula": "count"}, {"formula": "total_amount"}],
+    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  },
+  "fields": [{"formula": "count"}],
+  "filters": ["total_amount > 100"]
+}
+```
+
+This counts how many months had total orders above 100. You can also save a query as a permanent model — see [Creating Models from Queries](models.md#creating-models-from-queries).
+
