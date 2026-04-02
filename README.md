@@ -4,9 +4,9 @@
   <img src="docs/images/slayer-hero.png" alt="SLayer — AI agent operating a semantic layer" width="700">
 </p>
 
-[![PyPI](https://img.shields.io/pypi/v/agentic-slayer?label=PyPI)](https://pypi.org/project/agentic-slayer/)
-[![Python](https://img.shields.io/pypi/pyversions/agentic-slayer)](https://pypi.org/project/agentic-slayer/)
-[![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://agentic-slayer.readthedocs.io/)
+[![PyPI](https://img.shields.io/pypi/v/motley-slayer?label=PyPI)](https://pypi.org/project/motley-slayer/)
+[![Python](https://img.shields.io/pypi/pyversions/motley-slayer)](https://pypi.org/project/motley-slayer/)
+[![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://motley-slayer.readthedocs.io/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 
@@ -47,12 +47,12 @@ When AI agents write raw SQL, things break in production — hallucinated column
 
 ```bash
 # Install with everything (all interfaces + all database drivers)
-pip install agentic-slayer[all]
+pip install motley-slayer[all]
 
 # Or install with specific database drivers
-pip install agentic-slayer[postgres]     # PostgreSQL (psycopg2)
-pip install agentic-slayer[mysql]        # MySQL / MariaDB (pymysql)
-pip install agentic-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
+pip install motley-slayer[postgres]     # PostgreSQL (psycopg2)
+pip install motley-slayer[mysql]        # MySQL / MariaDB (pymysql)
+pip install motley-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
 
 # Start the HTTP server
 slayer serve --models-dir ./my_models

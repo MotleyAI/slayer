@@ -36,7 +36,7 @@ class SlayerClient:
         try:
             import httpx
         except ImportError:
-            raise ImportError("Client requires httpx: pip install agentic-slayer[client]")
+            raise ImportError("Client requires httpx: pip install motley-slayer[client]")
         with httpx.Client() as client:
             resp = client.request(method=method, url=f"{self.url}{path}", json=json)
             resp.raise_for_status()
@@ -53,7 +53,7 @@ class SlayerClient:
         try:
             import pandas as pd
         except ImportError:
-            raise ImportError("DataFrame support requires pandas: pip install agentic-slayer[client]")
+            raise ImportError("DataFrame support requires pandas: pip install motley-slayer[client]")
         data = self.query(query=query)
         return pd.DataFrame(data)
 

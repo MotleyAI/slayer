@@ -4,22 +4,22 @@
 
 ```bash
 # Full install (all extras + all database drivers)
-pip install agentic-slayer[all]
+pip install motley-slayer[all]
 
 # Base install (REST API + CLI included by default, no database drivers)
-pip install agentic-slayer
+pip install motley-slayer
 
 # Optional extras
-pip install agentic-slayer[client]       # Python SDK (httpx + pandas)
-pip install agentic-slayer[mcp]          # MCP server
+pip install motley-slayer[client]       # Python SDK (httpx + pandas)
+pip install motley-slayer[mcp]          # MCP server
 
 # Database driver extras
-pip install agentic-slayer[postgres]     # PostgreSQL (psycopg2)
-pip install agentic-slayer[mysql]        # MySQL / MariaDB (pymysql)
-pip install agentic-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
+pip install motley-slayer[postgres]     # PostgreSQL (psycopg2)
+pip install motley-slayer[mysql]        # MySQL / MariaDB (pymysql)
+pip install motley-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
 ```
 
-Extras can be combined: `pip install agentic-slayer[mcp,postgres]`
+Extras can be combined: `pip install motley-slayer[mcp,postgres]`
 
 ## Connect a Database
 

@@ -2,7 +2,7 @@
 
 A lightweight, open-source semantic layer by [MotleyAI](https://github.com/motleyai). Instead of writing raw SQL, agents describe what data they want — measures, dimensions, filters — and SLayer generates and executes the query.
 
-[GitHub](https://github.com/MotleyAI/slayer) · [PyPI](https://pypi.org/project/agentic-slayer/) · [Getting Started](getting-started.md)
+[GitHub](https://github.com/MotleyAI/slayer) · [PyPI](https://pypi.org/project/motley-slayer/) · [Getting Started](getting-started.md)
 
 ## Key Features
 
@@ -16,7 +16,7 @@ A lightweight, open-source semantic layer by [MotleyAI](https://github.com/motle
 ## Quick Install
 
 ```bash
-pip install agentic-slayer[all]
+pip install motley-slayer[all]
 ```
 
 ## How It Works
