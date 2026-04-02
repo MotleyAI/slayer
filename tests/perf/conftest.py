@@ -112,6 +112,11 @@ def _create_env(order_count: int) -> BenchEnv:
     if DB_BACKEND == "url":
         if not DB_URL or not DB_TYPE:
             raise ValueError("DB_BACKEND='url' requires DB_URL and DB_TYPE in params.py")
+        if "bench" not in DB_URL.lower():
+            raise ValueError(
+                f"DB_URL must contain 'bench' in the database name as a safety check "
+                f"(e.g., 'slayer_bench'). Got: {DB_URL}"
+            )
         db_engine = sa.create_engine(DB_URL)
         seed_database(engine=db_engine, dataset=dataset, clean=True)
         ds = DatasourceConfig(name="bench", type=DB_TYPE, connection_string=DB_URL)
@@ -123,12 +128,17 @@ def _create_env(order_count: int) -> BenchEnv:
         ds = DatasourceConfig(name="bench", type="sqlite", database=db_path)
 
     # Create indexes for realistic query performance
+    import warnings
+    dialect = db_engine.dialect.name
     with db_engine.connect() as conn:
         for idx_sql in INDEXES:
             try:
                 conn.execute(sa.text(idx_sql))
-            except Exception:
-                pass  # Some DBs may not support all index syntax
+            except Exception as e:
+                warnings.warn(
+                    f"[{dialect}] Index creation failed: {idx_sql!r} — {e}",
+                    stacklevel=2,
+                )
         conn.commit()
 
     # Configure SLayer
@@ -154,9 +164,9 @@ def _create_env(order_count: int) -> BenchEnv:
 # ---------------------------------------------------------------------------
 
 for _name, _count in SCALES.items():
-    def _make_fixture(n: int) -> BenchEnv:
-        @pytest.fixture(scope="session")
+    def _make_fixture(n: int, fixture_name: str) -> BenchEnv:
+        @pytest.fixture(scope="session", name=fixture_name)
         def _fixture() -> BenchEnv:
             return _create_env(n)
         return _fixture
-    globals()[f"env_{_name}"] = _make_fixture(_count)
+    globals()[f"env_{_name}"] = _make_fixture(_count, f"env_{_name}")

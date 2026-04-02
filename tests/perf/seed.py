@@ -151,14 +151,18 @@ def generate_dataset(
         end_date: Last possible order date (YYYY-MM-DD).
         seed: Base seed for the LCG.
     """
+    if order_count < 0:
+        raise ValueError(f"order_count must be non-negative, got {order_count}")
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d")
+    dt_end = datetime.strptime(end_date, "%Y-%m-%d")
+    if dt_start > dt_end:
+        raise ValueError(f"start_date ({start_date}) must be <= end_date ({end_date})")
+
     s = _prng(seed)
 
     region_count = 2 + round(math.log(max(order_count, 2), 30))
     shop_count = 4 + round(math.log(max(order_count, 2), 15))
     customer_count = 100 + 100 * round(math.log(max(order_count, 10), 10))
-
-    dt_start = datetime.strptime(start_date, "%Y-%m-%d")
-    dt_end = datetime.strptime(end_date, "%Y-%m-%d")
 
     # --- Regions ---
     regions = []
@@ -412,6 +416,13 @@ CREATE TABLE IF NOT EXISTS orders (
 """
 
 
+def _fmt_dt(dt: datetime | None, use_iso: bool) -> str | datetime | None:
+    """Format a datetime for insertion — isoformat for SQLite, native for others."""
+    if dt is None:
+        return None
+    return dt.isoformat() if use_iso else dt
+
+
 def seed_database(engine, dataset: Dataset, clean: bool = False) -> None:
     """Seed a database via SQLAlchemy engine. Works with any supported dialect.
 
@@ -457,6 +468,8 @@ def seed_database(engine, dataset: Dataset, clean: bool = False) -> None:
                 "primary_shop_id": c.shop_ids[0]})
 
         # Orders (batch insert for performance)
+        # SQLite needs isoformat strings; other DBs use native datetime
+        use_iso = engine.dialect.name == "sqlite"
         batch_size = 1000
         for i in range(0, len(dataset.orders), batch_size):
             batch = dataset.orders[i:i + batch_size]
@@ -469,9 +482,9 @@ def seed_database(engine, dataset: Dataset, clean: bool = False) -> None:
                 ),
                 [{"id": o.id, "customer_id": o.customer_id, "shop_id": o.shop_id,
                   "category": o.category, "cost": o.cost,
-                  "created_at": o.created_at.isoformat(),
-                  "completed_at": o.completed_at.isoformat() if o.completed_at else None,
-                  "cancelled_at": o.cancelled_at.isoformat() if o.cancelled_at else None,
+                  "created_at": _fmt_dt(o.created_at, use_iso),
+                  "completed_at": _fmt_dt(o.completed_at, use_iso),
+                  "cancelled_at": _fmt_dt(o.cancelled_at, use_iso),
                   } for o in batch],
             )
 

@@ -1,5 +1,4 @@
-# Common benchmark flags: disable GC during measurement, warmup enabled,
-# minimum 10 rounds per test for stable results
+# Common benchmark flags
 BENCH_FLAGS = --benchmark-only --benchmark-disable-gc --benchmark-warmup=on --benchmark-warmup-iterations=3 --benchmark-min-rounds=5 --benchmark-max-time=10.0
 
 .PHONY: test lint bench bench-report bench-csv
