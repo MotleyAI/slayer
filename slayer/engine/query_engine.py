@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.enriched import (
     CrossModelMeasure,
@@ -56,9 +56,17 @@ class SlayerQueryEngine:
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
 
-        model = self.storage.get_model(query.model)
-        if model is None:
-            raise ValueError(f"Model '{query.model}' not found")
+        # Resolve model: either by name or from a nested query (query-as-model)
+        if isinstance(query.model, str):
+            model = self.storage.get_model(query.model)
+            if model is None:
+                raise ValueError(f"Model '{query.model}' not found")
+        else:
+            # Nested query: execute the inner query to get SQL, build a virtual model
+            inner_query = query.model
+            model = self._query_as_model(inner_query=inner_query)
+            # Replace query.model with the virtual model name for alias resolution
+            query = query.model_copy(update={"model": model.name})
 
         datasource = self._resolve_datasource(model=model)
 
@@ -94,6 +102,34 @@ class SlayerQueryEngine:
                 labels[t.alias] = t.label
 
         return SlayerResponse(data=rows, sql=sql, labels=labels)
+
+    def create_model_from_query(
+        self, query: SlayerQuery, name: str,
+        description: str = None, save: bool = True,
+    ) -> SlayerModel:
+        """Create a permanent model from a query's result.
+
+        Generates SQL for the query and builds a SlayerModel with
+        auto-introspected dimensions and measures. Optionally saves to storage.
+
+        Args:
+            query: The source query to materialize as a model.
+            name: Name for the new model.
+            description: Optional model description.
+            save: If True, persist to storage immediately.
+        """
+        virtual = self._query_as_model(inner_query=query)
+        model = SlayerModel(
+            name=name,
+            sql=virtual.sql,
+            data_source=virtual.data_source,
+            dimensions=virtual.dimensions,
+            measures=virtual.measures,
+            description=description,
+        )
+        if save:
+            self.storage.save_model(model)
+        return model
 
     def _enrich(
         self,
@@ -498,6 +534,74 @@ class SlayerQueryEngine:
                             f"Add it to dimensions/time_dimensions or split into separate filters."
                         )
         return filters
+
+    def _query_as_model(self, inner_query: SlayerQuery) -> SlayerModel:
+        """Build a virtual SlayerModel from a nested query's result.
+
+        Enriches and generates SQL for the inner query, then creates a model
+        whose `sql` is the inner query's SQL and whose dimensions/measures
+        are derived from the inner query's enriched columns.
+        """
+        # Resolve the inner model (supports recursive nesting)
+        if isinstance(inner_query.model, str):
+            inner_model = self.storage.get_model(inner_query.model)
+            if inner_model is None:
+                raise ValueError(f"Inner query model '{inner_query.model}' not found")
+        else:
+            inner_model = self._query_as_model(inner_query=inner_query.model)
+
+        # Enrich the inner query
+        enriched = self._enrich(query=inner_query, model=inner_model)
+
+        # Generate SQL
+        datasource = self._resolve_datasource(model=inner_model)
+        dialect = self._dialect_for_type(datasource.type)
+        generator = SQLGenerator(dialect=dialect)
+        inner_sql = generator.generate(enriched=enriched)
+
+        # Build virtual model from enriched columns.
+        # Result columns use "model.name" alias format (e.g., "orders.count").
+        # The virtual model uses the alias as the SQL reference and the short
+        # name (after the dot) as the dimension/measure name for the outer query.
+        virtual_name = f"_subquery_{inner_model.name}"
+
+        # Inner query columns have aliases like "orders.count" (with dots).
+        # For the virtual model, we use quoted SQL references so the dot is
+        # treated as part of the column name, not a table.column separator.
+        def _quoted(alias: str) -> str:
+            return f'"{alias}"'
+
+        dims = []
+        for d in enriched.dimensions:
+            dims.append(Dimension(name=d.name, sql=_quoted(d.alias), type=d.type))
+        for td in enriched.time_dimensions:
+            dims.append(Dimension(name=td.name, sql=_quoted(td.alias), type=DataType.TIMESTAMP))
+
+        # Inner measures, transforms, expressions all become dimensions in the
+        # outer query — they're already computed/aggregated values.
+        for m in enriched.measures:
+            dims.append(Dimension(name=m.name, sql=_quoted(m.alias), type=DataType.NUMBER))
+        for t in enriched.transforms:
+            dims.append(Dimension(name=t.name, sql=_quoted(t.alias), type=DataType.NUMBER))
+        for e in enriched.expressions:
+            dims.append(Dimension(name=e.name, sql=_quoted(e.alias), type=DataType.NUMBER))
+
+        # Provide standard aggregation measures for the outer query
+        measures = [
+            Measure(name="count", type=DataType.COUNT),
+        ]
+        # Add SUM/AVG for numeric inner columns
+        for m in enriched.measures:
+            measures.append(Measure(name=f"{m.name}_sum", sql=_quoted(m.alias), type=DataType.SUM))
+            measures.append(Measure(name=f"{m.name}_avg", sql=_quoted(m.alias), type=DataType.AVERAGE))
+
+        return SlayerModel(
+            name=virtual_name,
+            sql=inner_sql,
+            data_source=inner_model.data_source,
+            dimensions=dims,
+            measures=measures,
+        )
 
     def _resolve_cross_model_measure(
         self, spec_name: str, field_name: str,

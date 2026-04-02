@@ -4,10 +4,11 @@ SlayerQuery is the user-facing query object — minimal, just enough to express 
 It is later converted into EnrichedQuery (see slayer/engine/enriched.py) which carries
 fully resolved SQL expressions, model metadata, and is ready for SQL generation.
 """
+from __future__ import annotations
 
 import datetime
 import re
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, field_validator
 
@@ -93,7 +94,7 @@ class SlayerQuery(BaseModel):
         filters=["status == 'completed'", "amount > 100"]
     """
 
-    model: str
+    model: Union[str, "SlayerQuery"]  # Model name or nested query (query-as-model)
     fields: Optional[List[Field]] = None
     dimensions: Optional[List[ColumnRef]] = None
     time_dimensions: Optional[List[TimeDimension]] = None

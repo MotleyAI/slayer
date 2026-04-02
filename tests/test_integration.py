@@ -918,3 +918,85 @@ def test_cross_model_measure_no_join_raises(cross_model_env):
     )
     with pytest.raises(ValueError, match="has no join to"):
         engine.execute(query)
+
+
+# ---------------------------------------------------------------------------
+# Query as model (multistage queries)
+# ---------------------------------------------------------------------------
+
+def test_query_as_model_count(integration_env):
+    """A query can be used as the model for another query."""
+    engine = integration_env
+
+    # Inner: monthly order counts (3 months)
+    inner = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="count"), Field(formula="total_amount")],
+    )
+
+    # Outer: count how many months exist
+    outer = SlayerQuery(model=inner, fields=[Field(formula="count")])
+    response = engine.execute(query=outer)
+
+    assert response.row_count == 1
+    assert response.data[0]["_subquery_orders.count"] == 3
+
+
+def test_query_as_model_aggregate(integration_env):
+    """Outer query can aggregate over inner query's computed values."""
+    engine = integration_env
+
+    # Inner: monthly totals → Jan(300), Feb(125), Mar(325)
+    inner = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+    )
+
+    # Outer: sum of monthly totals
+    outer = SlayerQuery(model=inner, fields=[Field(formula="total_amount_sum")])
+    response = engine.execute(query=outer)
+
+    assert response.row_count == 1
+    assert response.data[0]["_subquery_orders.total_amount_sum"] == pytest.approx(750.0)
+
+
+def test_create_model_from_query(integration_env):
+    """A query can be saved as a permanent model and then queried by name."""
+    engine = integration_env
+
+    # Create a monthly summary model from a query
+    source_query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="count"), Field(formula="total_amount")],
+    )
+    saved = engine.create_model_from_query(
+        query=source_query, name="monthly_summary",
+    )
+
+    # Verify model structure
+    dim_names = [d.name for d in saved.dimensions]
+    assert "created_at" in dim_names
+    assert "count" in dim_names
+    assert "total_amount" in dim_names
+    assert saved.sql is not None
+
+    # Query the saved model by name
+    result = engine.execute(query=SlayerQuery(
+        model="monthly_summary", fields=[Field(formula="count")],
+    ))
+    assert result.data[0]["monthly_summary.count"] == 3
+
+    # Re-aggregate over saved model
+    result2 = engine.execute(query=SlayerQuery(
+        model="monthly_summary", fields=[Field(formula="total_amount_sum")],
+    ))
+    assert result2.data[0]["monthly_summary.total_amount_sum"] == pytest.approx(750.0)
