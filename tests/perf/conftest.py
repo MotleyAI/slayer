@@ -14,7 +14,10 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-from .params import DATA_END_DATE, DATA_START_DATE, INDEXES, SCALES, SEED
+from .params import (
+    DATA_END_DATE, DATA_START_DATE, DB_BACKEND, DB_TYPE, DB_URL,
+    INDEXES, SCALES, SEED,
+)
 from .seed import Dataset, generate_dataset, seed_database
 
 
@@ -89,29 +92,47 @@ BenchEnv = tuple[SlayerQueryEngine, Dataset]
 
 
 def _create_env(order_count: int) -> BenchEnv:
-    """Create a seeded SQLite database + SLayer engine at a given scale."""
-    tmpdir = tempfile.mkdtemp()
-    db_path = f"{tmpdir}/bench.db"
+    """Create a seeded database + SLayer engine at a given scale.
 
-    # Generate and seed
+    Uses DB_BACKEND from params.py:
+      - "sqlite": auto-created temp file (default)
+      - "url": connect to external DB via DB_URL (Postgres, MySQL, etc.)
+    """
+    tmpdir = tempfile.mkdtemp()
+
+    # Generate dataset
     dataset = generate_dataset(
         order_count=order_count,
         start_date=DATA_START_DATE,
         end_date=DATA_END_DATE,
         seed=SEED,
     )
-    db_engine = sa.create_engine(f"sqlite:///{db_path}")
-    seed_database(engine=db_engine, dataset=dataset)
+
+    # Create DB engine and seed
+    if DB_BACKEND == "url":
+        if not DB_URL or not DB_TYPE:
+            raise ValueError("DB_BACKEND='url' requires DB_URL and DB_TYPE in params.py")
+        db_engine = sa.create_engine(DB_URL)
+        seed_database(engine=db_engine, dataset=dataset, clean=True)
+        ds = DatasourceConfig(name="bench", type=DB_TYPE, connection_string=DB_URL)
+    else:
+        # Default: SQLite
+        db_path = f"{tmpdir}/bench.db"
+        db_engine = sa.create_engine(f"sqlite:///{db_path}")
+        seed_database(engine=db_engine, dataset=dataset)
+        ds = DatasourceConfig(name="bench", type="sqlite", database=db_path)
 
     # Create indexes for realistic query performance
     with db_engine.connect() as conn:
         for idx_sql in INDEXES:
-            conn.execute(sa.text(idx_sql))
+            try:
+                conn.execute(sa.text(idx_sql))
+            except Exception:
+                pass  # Some DBs may not support all index syntax
         conn.commit()
 
     # Configure SLayer
     storage = YAMLStorage(base_dir=tmpdir)
-    ds = DatasourceConfig(name="bench", type="sqlite", database=db_path)
     storage.save_datasource(ds)
 
     storage.save_model(_build_orders_model("bench"))

@@ -370,6 +370,13 @@ def _bisect(cumsum: list[int], value: int) -> int:
 # Database seeding (SQLAlchemy-agnostic)
 # ---------------------------------------------------------------------------
 
+_DROP_TABLES_SQL = """
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS customers;
+DROP TABLE IF EXISTS shops;
+DROP TABLE IF EXISTS regions;
+"""
+
 _CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS regions (
     id INTEGER PRIMARY KEY,
@@ -405,11 +412,23 @@ CREATE TABLE IF NOT EXISTS orders (
 """
 
 
-def seed_database(engine, dataset: Dataset) -> None:
-    """Seed a database via SQLAlchemy engine. Works with any supported dialect."""
+def seed_database(engine, dataset: Dataset, clean: bool = False) -> None:
+    """Seed a database via SQLAlchemy engine. Works with any supported dialect.
+
+    Args:
+        clean: If True, drop and recreate tables before seeding.
+            Use for external DBs that persist between runs.
+    """
     import sqlalchemy as sa
 
     with engine.connect() as conn:
+        if clean:
+            for stmt in _DROP_TABLES_SQL.strip().split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(sa.text(stmt))
+            conn.commit()
+
         for stmt in _CREATE_TABLES_SQL.strip().split(";"):
             stmt = stmt.strip()
             if stmt:

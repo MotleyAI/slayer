@@ -4,6 +4,20 @@ Adjust these to change benchmark behavior without touching test logic.
 """
 
 # ---------------------------------------------------------------------------
+# Database backend
+# ---------------------------------------------------------------------------
+
+# "sqlite" — auto-created temp file, zero setup (default)
+# "url" — connect to an external DB (Docker, remote, any SQLAlchemy-supported dialect)
+DB_BACKEND = "sqlite"
+
+# Settings for DB_BACKEND = "url"
+# DB_URL = "postgresql://user:pass@localhost:5432/slayer_bench"
+# DB_TYPE = "postgres"  # SLayer datasource type: postgres, mysql, clickhouse, etc.
+DB_URL = ""
+DB_TYPE = ""
+
+# ---------------------------------------------------------------------------
 # Data scales — each entry generates a fixture and a test class
 # ---------------------------------------------------------------------------
 
@@ -11,9 +25,9 @@ SCALES: dict[str, int] = {
     "1k": 1_000,
     "10k": 10_000,
     "40k": 40_000,
-    "100k": 100_000,
-    "200k": 200_000,
-    "400k": 400_000,
+    # "100k": 100_000,
+    # "200k": 200_000,
+    # "400k": 400_000,
 }
 
 # ---------------------------------------------------------------------------
