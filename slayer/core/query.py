@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import datetime
 import re
-from typing import List, Optional, Union
+from typing import List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -18,8 +18,17 @@ _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class ColumnRef(BaseModel):
+    """Reference to a dimension — by name, formula, or SQL expression.
+
+    Three modes:
+      - {"name": "status"} — existing model dimension
+      - {"formula": "revenue / count", "name": "aov"} — computed from measures
+      - {"sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"} — raw SQL
+    """
     name: str
     model: Optional[str] = None
+    formula: Optional[str] = None  # Computed dimension (parsed like a field formula)
+    sql: Optional[str] = None  # Raw SQL expression for the dimension
     label: Optional[str] = None  # Human-readable label for output
 
     @field_validator("name")
@@ -94,7 +103,9 @@ class SlayerQuery(BaseModel):
         filters=["status == 'completed'", "amount > 100"]
     """
 
-    model: Union[str, "SlayerQuery"]  # Model name or nested query (query-as-model)
+    name: Optional[str] = None  # For referencing this query from other queries in a list
+    model: str  # Base model name
+    joins: Optional[List] = None  # Joins to other models/queries (list of ModelJoin-like dicts)
     fields: Optional[List[Field]] = None
     dimensions: Optional[List[ColumnRef]] = None
     time_dimensions: Optional[List[TimeDimension]] = None

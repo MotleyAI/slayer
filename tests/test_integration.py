@@ -925,11 +925,12 @@ def test_cross_model_measure_no_join_raises(cross_model_env):
 # ---------------------------------------------------------------------------
 
 def test_query_as_model_count(integration_env):
-    """A query can be used as the model for another query."""
+    """A named query can be used as the model for another query via list."""
     engine = integration_env
 
-    # Inner: monthly order counts (3 months)
+    # Inner: monthly order counts (3 months), named for reference
     inner = SlayerQuery(
+        name="monthly",
         model="orders",
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
@@ -937,20 +938,20 @@ def test_query_as_model_count(integration_env):
         fields=[Field(formula="count"), Field(formula="total_amount")],
     )
 
-    # Outer: count how many months exist
-    outer = SlayerQuery(model=inner, fields=[Field(formula="count")])
-    response = engine.execute(query=outer)
+    # Outer: count how many months exist (references "monthly" by name)
+    outer = SlayerQuery(model="monthly", fields=[Field(formula="count")])
+    response = engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
-    assert response.data[0]["_subquery_orders.count"] == 3
+    assert response.data[0]["monthly.count"] == 3
 
 
 def test_query_as_model_aggregate(integration_env):
     """Outer query can aggregate over inner query's computed values."""
     engine = integration_env
 
-    # Inner: monthly totals → Jan(300), Feb(125), Mar(325)
     inner = SlayerQuery(
+        name="monthly",
         model="orders",
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
@@ -958,12 +959,11 @@ def test_query_as_model_aggregate(integration_env):
         fields=[Field(formula="total_amount")],
     )
 
-    # Outer: sum of monthly totals
-    outer = SlayerQuery(model=inner, fields=[Field(formula="total_amount_sum")])
-    response = engine.execute(query=outer)
+    outer = SlayerQuery(model="monthly", fields=[Field(formula="total_amount_sum")])
+    response = engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
-    assert response.data[0]["_subquery_orders.total_amount_sum"] == pytest.approx(750.0)
+    assert response.data[0]["monthly.total_amount_sum"] == pytest.approx(750.0)
 
 
 def test_create_model_from_query(integration_env):
@@ -987,7 +987,7 @@ def test_create_model_from_query(integration_env):
     assert "created_at" in dim_names
     assert "count" in dim_names
     assert "total_amount" in dim_names
-    assert saved.sql is not None
+    assert saved.source_queries is not None
 
     # Query the saved model by name
     result = engine.execute(query=SlayerQuery(
@@ -1000,3 +1000,84 @@ def test_create_model_from_query(integration_env):
         model="monthly_summary", fields=[Field(formula="total_amount_sum")],
     ))
     assert result2.data[0]["monthly_summary.total_amount_sum"] == pytest.approx(750.0)
+
+
+def test_query_list_with_joins(cross_model_env):
+    """A query list where the main query joins to a named sub-query."""
+    engine = cross_model_env
+
+    # Sub-query: average customer score per customer
+    sub = SlayerQuery(
+        name="customer_scores",
+        model="customers",
+        dimensions=[ColumnRef(name="id")],
+        fields=[Field(formula="avg_score")],
+    )
+
+    # Main query: monthly orders joined to customer_scores
+    # In the virtual model, inner measures become dimensions with auto-generated
+    # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
+    main = SlayerQuery(
+        model="orders",
+        joins=[{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="count"),
+            Field(formula="customer_scores.avg_score_avg"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+
+    response = engine.execute(query=[sub, main])
+
+    assert response.row_count == 3
+    # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
+    assert response.data[0]["orders.customer_scores__avg_score_avg"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customer_scores__avg_score_avg"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customer_scores__avg_score_avg"] == pytest.approx(85.0)
+
+
+# ---------------------------------------------------------------------------
+# Expanded dimensions (SQL expressions)
+# ---------------------------------------------------------------------------
+
+def test_sql_dimension(integration_env):
+    """SQL expression dimension: CASE to bucket amounts."""
+    engine = integration_env
+
+    # Seed data: amounts are 100, 200, 50, 75, 300, 25
+    # high (>100): 200, 300 → 2 orders; low: 100, 50, 75, 25 → 4 orders
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[
+            ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
+        ],
+        fields=[Field(formula="count")],
+    )
+    response = engine.execute(query)
+
+    by_tier = {r["orders.tier"]: r["orders.count"] for r in response.data}
+    assert by_tier["high"] == 2
+    assert by_tier["low"] == 4
+
+
+def test_sql_dimension_with_regular(integration_env):
+    """SQL dimension mixed with regular dimension."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[
+            ColumnRef(name="status"),
+            ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
+        ],
+        fields=[Field(formula="count")],
+    )
+    response = engine.execute(query)
+
+    # completed has 3 orders: 100(low), 200(high), 300(high)
+    data = {(r["orders.status"], r["orders.tier"]): r["orders.count"] for r in response.data}
+    assert data[("completed", "high")] == 2
+    assert data[("completed", "low")] == 1

@@ -51,27 +51,38 @@ class SlayerQueryEngine:
     def __init__(self, storage: StorageBackend):
         self.storage = storage
 
-    def execute(self, query: SlayerQuery) -> SlayerResponse:
+    def execute(self, query: "SlayerQuery | list[SlayerQuery]") -> SlayerResponse:
+        # Accept single query or list (last is main)
+        if isinstance(query, list):
+            queries = query
+            query = queries[-1]
+            named_queries = {q.name: q for q in queries[:-1] if q.name}
+        else:
+            named_queries = {}
+
         # Preprocessing
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
 
-        # Resolve model: either by name or from a nested query (query-as-model)
-        if isinstance(query.model, str):
-            model = self.storage.get_model(query.model)
-            if model is None:
-                raise ValueError(f"Model '{query.model}' not found")
-        else:
-            # Nested query: execute the inner query to get SQL, build a virtual model
-            inner_query = query.model
-            model = self._query_as_model(inner_query=inner_query)
-            # Replace query.model with the virtual model name for alias resolution
-            query = query.model_copy(update={"model": model.name})
+        # Resolve model: check named queries first, then storage
+        model = self._resolve_model(
+            model_name=query.model, named_queries=named_queries,
+        )
+
+        # Merge query-level joins with model-level joins
+        if query.joins:
+            from slayer.core.models import ModelJoin
+            extra_joins = [ModelJoin.model_validate(j) if isinstance(j, dict) else j
+                           for j in query.joins]
+            model = model.model_copy(update={
+                "joins": list(model.joins) + extra_joins,
+            })
 
         datasource = self._resolve_datasource(model=model)
 
         # Enrich: SlayerQuery + model → EnrichedQuery
-        enriched = self._enrich(query=query, model=model)
+        enriched = self._enrich(query=query, model=model,
+                                named_queries=named_queries)
 
         # Generate SQL from EnrichedQuery
         dialect = self._dialect_for_type(datasource.type)
@@ -103,25 +114,58 @@ class SlayerQueryEngine:
 
         return SlayerResponse(data=rows, sql=sql, labels=labels)
 
+    def _resolve_model(self, model_name: str,
+                        named_queries: dict[str, SlayerQuery] = None) -> SlayerModel:
+        """Resolve a model by name — checks named queries first, then storage."""
+        named_queries = named_queries or {}
+
+        # Named query overrides stored model
+        if model_name in named_queries:
+            return self._query_as_model(inner_query=named_queries[model_name],
+                                        named_queries=named_queries)
+
+        model = self.storage.get_model(model_name)
+        if model is None:
+            raise ValueError(f"Model '{model_name}' not found")
+
+        # If model has source_queries, re-enrich from stored queries
+        if hasattr(model, 'source_queries') and model.source_queries:
+            # Parse stored queries (may be dicts from YAML round-trip)
+            parsed = [
+                SlayerQuery.model_validate(q) if isinstance(q, dict) else q
+                for q in model.source_queries
+            ]
+            return self._query_as_model(
+                inner_query=parsed[-1],
+                named_queries={q.name: q for q in parsed[:-1] if q.name},
+                override_name=model.name,
+            )
+
+        return model
+
     def create_model_from_query(
-        self, query: SlayerQuery, name: str,
+        self, query: "SlayerQuery | list[SlayerQuery]", name: str,
         description: str = None, save: bool = True,
     ) -> SlayerModel:
-        """Create a permanent model from a query's result.
+        """Create a permanent model from a query (or list of queries).
 
-        Generates SQL for the query and builds a SlayerModel with
-        auto-introspected dimensions and measures. Optionally saves to storage.
+        Saves the query structure in the model so it can be re-enriched
+        when underlying models change. Also snapshots dimensions/measures
+        for discoverability.
 
         Args:
-            query: The source query to materialize as a model.
+            query: The source query or list of queries (last is main).
             name: Name for the new model.
             description: Optional model description.
             save: If True, persist to storage immediately.
         """
-        virtual = self._query_as_model(inner_query=query)
+        queries = query if isinstance(query, list) else [query]
+        main_query = queries[-1]
+        named = {q.name: q for q in queries[:-1] if q.name}
+        virtual = self._query_as_model(inner_query=main_query, named_queries=named)
         model = SlayerModel(
             name=name,
-            sql=virtual.sql,
+            source_queries=queries,
             data_source=virtual.data_source,
             dimensions=virtual.dimensions,
             measures=virtual.measures,
@@ -135,23 +179,51 @@ class SlayerQueryEngine:
         self,
         query: SlayerQuery,
         model: SlayerModel,
+        named_queries: dict[str, SlayerQuery] = None,
     ) -> EnrichedQuery:
         """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
         This is where name-based references (e.g., field="count") get resolved
         to their SQL expressions, aggregation types, and model context.
         """
-        # Resolve dimensions
+        # Resolve dimensions (three modes: field name, formula, raw SQL)
         dimensions = []
+        computed_dimensions = []  # Formula/SQL dims that need CTE wrapping
         for dim_ref in (query.dimensions or []):
-            dim_def = model.get_dimension(dim_ref.name)
-            dimensions.append(EnrichedDimension(
-                name=dim_ref.name,
-                sql=dim_def.sql if dim_def else None,
-                type=dim_def.type if dim_def else model.dimensions[0].type if model.dimensions else None,
-                alias=f"{query.model}.{dim_ref.name}",
-                model_name=model.name,
-                label=dim_ref.label,
+            if dim_ref.sql:
+                # Mode 3: raw SQL expression — becomes a computed dimension
+                dimensions.append(EnrichedDimension(
+                    name=dim_ref.name,
+                    sql=dim_ref.sql,
+                    type=DataType.STRING,
+                    alias=f"{query.model}.{dim_ref.name}",
+                    model_name=model.name,
+                    label=dim_ref.label,
+                ))
+                computed_dimensions.append(dim_ref)
+            elif dim_ref.formula:
+                # Mode 2: formula — will be resolved after measures are known
+                # For now, add a placeholder dimension; the formula will be
+                # resolved into an expression during field processing
+                dimensions.append(EnrichedDimension(
+                    name=dim_ref.name,
+                    sql=None,  # Resolved later
+                    type=DataType.NUMBER,
+                    alias=f"{query.model}.{dim_ref.name}",
+                    model_name=model.name,
+                    label=dim_ref.label,
+                ))
+                computed_dimensions.append(dim_ref)
+            else:
+                # Mode 1: existing model dimension
+                dim_def = model.get_dimension(dim_ref.name)
+                dimensions.append(EnrichedDimension(
+                    name=dim_ref.name,
+                    sql=dim_def.sql if dim_def else None,
+                    type=dim_def.type if dim_def else DataType.STRING,
+                    alias=f"{query.model}.{dim_ref.name}",
+                    model_name=model.name,
+                    label=dim_ref.label,
             ))
 
         # Measures are populated from fields (bare measure names auto-add here)
@@ -381,7 +453,7 @@ class SlayerQueryEngine:
                         spec_name=spec.name, field_name=field_name,
                         model=model, query=query,
                         dimensions=dimensions, time_dimensions=time_dimensions,
-                        label=field.label,
+                        label=field.label, named_queries=named_queries,
                     )
                     cross_model_measures.append(cm)
                     continue
@@ -410,6 +482,24 @@ class SlayerQueryEngine:
                     for t in enriched_transforms:
                         if t.alias == alias:
                             t.label = field.label
+
+        # Resolve formula dimensions now that measures are known
+        for dim_ref in computed_dimensions:
+            if dim_ref.formula:
+                # Ensure measures referenced in the formula exist
+                spec = parse_formula(dim_ref.formula)
+                if isinstance(spec, MeasureRef):
+                    _ensure_measure(spec.name)
+                elif isinstance(spec, ArithmeticField):
+                    for mname in spec.measure_names:
+                        _ensure_measure(mname)
+                # Build the SQL expression with resolved aliases
+                resolved_sql = _resolve_sql(dim_ref.formula)
+                # Update the placeholder dimension's sql
+                for d in dimensions:
+                    if d.name == dim_ref.name and d.sql is None:
+                        d.sql = resolved_sql
+                        break
 
         # Pre-process filters: extract inline transform expressions
         # (e.g., "last(change(revenue)) < 0" → hidden field + rewritten filter)
@@ -535,20 +625,21 @@ class SlayerQueryEngine:
                         )
         return filters
 
-    def _query_as_model(self, inner_query: SlayerQuery) -> SlayerModel:
+    def _query_as_model(self, inner_query: SlayerQuery,
+                         named_queries: dict[str, SlayerQuery] = None,
+                         override_name: str = None) -> SlayerModel:
         """Build a virtual SlayerModel from a nested query's result.
 
         Enriches and generates SQL for the inner query, then creates a model
         whose `sql` is the inner query's SQL and whose dimensions/measures
         are derived from the inner query's enriched columns.
         """
-        # Resolve the inner model (supports recursive nesting)
-        if isinstance(inner_query.model, str):
-            inner_model = self.storage.get_model(inner_query.model)
-            if inner_model is None:
-                raise ValueError(f"Inner query model '{inner_query.model}' not found")
-        else:
-            inner_model = self._query_as_model(inner_query=inner_query.model)
+        named_queries = named_queries or {}
+
+        # Resolve the inner model (checks named queries, then storage)
+        inner_model = self._resolve_model(
+            model_name=inner_query.model, named_queries=named_queries,
+        )
 
         # Enrich the inner query
         enriched = self._enrich(query=inner_query, model=inner_model)
@@ -560,44 +651,45 @@ class SlayerQueryEngine:
         inner_sql = generator.generate(enriched=enriched)
 
         # Build virtual model from enriched columns.
-        # Result columns use "model.name" alias format (e.g., "orders.count").
-        # The virtual model uses the alias as the SQL reference and the short
-        # name (after the dot) as the dimension/measure name for the outer query.
-        virtual_name = f"_subquery_{inner_model.name}"
-
         # Inner query columns have aliases like "orders.count" (with dots).
-        # For the virtual model, we use quoted SQL references so the dot is
-        # treated as part of the column name, not a table.column separator.
-        def _quoted(alias: str) -> str:
-            return f'"{alias}"'
+        # We wrap the inner SQL in a renaming subquery so the virtual model
+        # has clean column names that work naturally in JOINs and references.
+        virtual_name = override_name or inner_query.name or f"_subquery_{inner_model.name}"
+
+        # Collect all inner aliases and their short names
+        column_map = []  # (inner_alias, short_name, data_type, is_measure)
+        for d in enriched.dimensions:
+            column_map.append((d.alias, d.name, d.type, False))
+        for td in enriched.time_dimensions:
+            column_map.append((td.alias, td.name, DataType.TIMESTAMP, False))
+        for m in enriched.measures:
+            column_map.append((m.alias, m.name, DataType.NUMBER, True))
+        for t in enriched.transforms:
+            column_map.append((t.alias, t.name, DataType.NUMBER, True))
+        for e in enriched.expressions:
+            column_map.append((e.alias, e.name, DataType.NUMBER, True))
+
+        # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
+        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _ in column_map]
+        wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
 
         dims = []
-        for d in enriched.dimensions:
-            dims.append(Dimension(name=d.name, sql=_quoted(d.alias), type=d.type))
-        for td in enriched.time_dimensions:
-            dims.append(Dimension(name=td.name, sql=_quoted(td.alias), type=DataType.TIMESTAMP))
-
-        # Inner measures, transforms, expressions all become dimensions in the
-        # outer query — they're already computed/aggregated values.
-        for m in enriched.measures:
-            dims.append(Dimension(name=m.name, sql=_quoted(m.alias), type=DataType.NUMBER))
-        for t in enriched.transforms:
-            dims.append(Dimension(name=t.name, sql=_quoted(t.alias), type=DataType.NUMBER))
-        for e in enriched.expressions:
-            dims.append(Dimension(name=e.name, sql=_quoted(e.alias), type=DataType.NUMBER))
+        for alias, short, dtype, is_measure in column_map:
+            dims.append(Dimension(name=short, sql=short, type=dtype))
 
         # Provide standard aggregation measures for the outer query
         measures = [
             Measure(name="count", type=DataType.COUNT),
         ]
-        # Add SUM/AVG for numeric inner columns
-        for m in enriched.measures:
-            measures.append(Measure(name=f"{m.name}_sum", sql=_quoted(m.alias), type=DataType.SUM))
-            measures.append(Measure(name=f"{m.name}_avg", sql=_quoted(m.alias), type=DataType.AVERAGE))
+        # Add SUM/AVG for numeric inner columns (measures, transforms, expressions)
+        for alias, short, dtype, is_measure in column_map:
+            if is_measure:
+                measures.append(Measure(name=f"{short}_sum", sql=short, type=DataType.SUM))
+                measures.append(Measure(name=f"{short}_avg", sql=short, type=DataType.AVERAGE))
 
         return SlayerModel(
             name=virtual_name,
-            sql=inner_sql,
+            sql=wrapped_sql,
             data_source=inner_model.data_source,
             dimensions=dims,
             measures=measures,
@@ -607,12 +699,13 @@ class SlayerQueryEngine:
         self, spec_name: str, field_name: str,
         model: SlayerModel, query,
         dimensions: list, time_dimensions: list,
-        label: str = None,
+        label: str = None, named_queries: dict = None,
     ) -> CrossModelMeasure:
         """Resolve a cross-model measure reference like 'customers.avg_score'.
 
-        Looks up the join from the source model, loads the target model,
-        finds shared dimensions, and returns a CrossModelMeasure for SQL generation.
+        Looks up the join from the source model, loads the target model
+        (checking named queries first), finds shared dimensions, and returns
+        a CrossModelMeasure for SQL generation.
         """
         parts = spec_name.split(".", 1)
         if len(parts) != 2:
@@ -631,10 +724,10 @@ class SlayerQueryEngine:
                 f"Available joins: {[j.target_model for j in model.joins]}"
             )
 
-        # Load the target model
-        target_model = self.storage.get_model(target_model_name)
-        if target_model is None:
-            raise ValueError(f"Target model '{target_model_name}' not found in storage")
+        # Load the target model (named queries take precedence)
+        target_model = self._resolve_model(
+            model_name=target_model_name, named_queries=named_queries or {},
+        )
 
         # Find the measure in the target model
         measure_def = target_model.get_measure(measure_name)

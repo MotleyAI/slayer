@@ -36,7 +36,8 @@ class SlayerModel(BaseModel):
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
-    data_source: str
+    source_queries: Optional[List] = None  # List of SlayerQuery dicts — saved query structure
+    data_source: Optional[str] = None
     dimensions: List[Dimension] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
     joins: List[ModelJoin] = Field(default_factory=list)
