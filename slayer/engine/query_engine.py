@@ -70,11 +70,7 @@ class SlayerQueryEngine:
         sql = generator.generate(enriched=enriched)
         logger.debug("Generated SQL:\n%s", sql)
 
-        # Execute
-        client = SlayerSQLClient(datasource=datasource)
-        rows = client.execute(sql=sql)
-
-        # Collect labels from enriched query
+        # Collect labels from enriched query (needed for both dry_run and normal path)
         labels = {}
         for d in enriched.dimensions:
             if d.label:
@@ -92,6 +88,20 @@ class SlayerQueryEngine:
             if t.label:
                 labels[t.alias] = t.label
 
+        # dry_run: return SQL without executing
+        if query.dry_run:
+            return SlayerResponse(data=[], sql=sql, labels=labels)
+
+        # Execute
+        client = SlayerSQLClient(datasource=datasource)
+
+        # explain: run EXPLAIN ANALYZE instead of the query itself
+        if query.explain:
+            explain_sql = f"EXPLAIN ANALYZE {sql}"
+            rows = client.execute(sql=explain_sql)
+            return SlayerResponse(data=rows, sql=sql, labels=labels)
+
+        rows = client.execute(sql=sql)
         return SlayerResponse(data=rows, sql=sql, labels=labels)
 
     def _enrich(

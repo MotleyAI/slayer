@@ -151,6 +151,8 @@ def create_mcp_server(storage: StorageBackend):
         offset: Optional[int] = None,
         whole_periods_only: bool = False,
         show_sql: bool = False,
+        dry_run: bool = False,
+        explain: bool = False,
     ) -> str:
         """Query data from a semantic model. Call inspect_model first to see available fields and dimensions.
 
@@ -176,6 +178,8 @@ def create_mcp_server(storage: StorageBackend):
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             show_sql: When true, include the generated SQL in the response for debugging.
+            dry_run: When true, generate and return the SQL without executing it.
+            explain: When true, run EXPLAIN ANALYZE and return the query plan.
 
         Example: query(model="orders", fields=[{"formula": "count"}], dimensions=["status"], filters=["status == 'completed'"])
         """
@@ -194,11 +198,21 @@ def create_mcp_server(storage: StorageBackend):
             data["offset"] = offset
         if whole_periods_only:
             data["whole_periods_only"] = True
+        if dry_run:
+            data["dry_run"] = True
+        if explain:
+            data["explain"] = True
         if fields:
             data["fields"] = fields
         try:
             slayer_query = SlayerQuery.model_validate(data)
             result = engine.execute(query=slayer_query)
+            if dry_run:
+                return f"SQL:\n{result.sql}"
+            if explain:
+                output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
+                output += _format_table(data=result.data, columns=result.columns)
+                return output
             output = _format_table(data=result.data, columns=result.columns)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
