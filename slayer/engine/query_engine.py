@@ -114,11 +114,27 @@ class SlayerQueryEngine:
 
         return SlayerResponse(data=rows, sql=sql, labels=labels)
 
+    _resolving: set = set()  # Track currently resolving models to detect cycles
+
     def _resolve_model(self, model_name: str,
                         named_queries: dict[str, SlayerQuery] = None) -> SlayerModel:
         """Resolve a model by name — checks named queries first, then storage."""
         named_queries = named_queries or {}
 
+        # Circular reference protection
+        if model_name in self._resolving:
+            raise ValueError(
+                f"Circular reference detected: '{model_name}' references itself "
+                f"(resolution chain: {' → '.join(self._resolving)} → {model_name})"
+            )
+        self._resolving.add(model_name)
+        try:
+            return self._resolve_model_inner(model_name, named_queries)
+        finally:
+            self._resolving.discard(model_name)
+
+    def _resolve_model_inner(self, model_name: str,
+                              named_queries: dict[str, SlayerQuery]) -> SlayerModel:
         # Named query overrides stored model
         if model_name in named_queries:
             return self._query_as_model(inner_query=named_queries[model_name],
@@ -367,6 +383,18 @@ class SlayerQueryEngine:
             or transform alias) so parent specs can reference it.
             """
             if isinstance(spec, MeasureRef):
+                # Cross-model measure reference (e.g., "customers.avg_score")
+                if "." in spec.name:
+                    cm = self._resolve_cross_model_measure(
+                        spec_name=spec.name, field_name=field_name,
+                        model=model, query=query,
+                        dimensions=dimensions, time_dimensions=time_dimensions,
+                        named_queries=named_queries,
+                    )
+                    cross_model_measures.append(cm)
+                    known_aliases[field_name] = cm.alias
+                    return cm.alias
+
                 _ensure_measure(spec.name)
                 return f"{query.model}.{spec.name}"
 
@@ -396,6 +424,14 @@ class SlayerQueryEngine:
                 return alias
 
             elif isinstance(spec, TransformField):
+                # Validate: transforms on cross-model measures not yet supported
+                if isinstance(spec.inner, MeasureRef) and "." in spec.inner.name:
+                    raise ValueError(
+                        f"Transforms on cross-model measures ('{spec.inner.name}') are not yet supported "
+                        f"in a single query. Use a query list instead: compute the cross-model measure "
+                        f"in an inner query, then apply the transform in the outer query."
+                    )
+
                 # Validate: nesting a self-join transform inside another is not supported
                 # (e.g., change(time_shift(x)) — the outer's shifted CTE can't replay the inner)
                 if (spec.transform in _self_join_transforms
@@ -483,19 +519,32 @@ class SlayerQueryEngine:
                         if t.alias == alias:
                             t.label = field.label
 
-        # Resolve formula dimensions now that measures are known
+        # Resolve formula dimensions now that measures are known.
+        # Formula dimensions referencing aggregated measures can't be computed
+        # in the same query — they need a multistage approach (query list).
+        measure_names_set = {m.name for m in measures}
         for dim_ref in computed_dimensions:
             if dim_ref.formula:
-                # Ensure measures referenced in the formula exist
                 spec = parse_formula(dim_ref.formula)
+                refs = []
                 if isinstance(spec, MeasureRef):
-                    _ensure_measure(spec.name)
+                    refs = [spec.name]
                 elif isinstance(spec, ArithmeticField):
-                    for mname in spec.measure_names:
-                        _ensure_measure(mname)
-                # Build the SQL expression with resolved aliases
+                    refs = spec.measure_names
+
+                # Check if the formula references aggregated measures
+                if any(r in measure_names_set for r in refs):
+                    raise ValueError(
+                        f"Formula dimension '{dim_ref.name}' references aggregated measures "
+                        f"({', '.join(r for r in refs if r in measure_names_set)}). "
+                        f"Use a query list instead: compute measures in the inner query, "
+                        f"then group by the formula in the outer query."
+                    )
+
+                # Non-measure formula: resolve as SQL expression
+                for r in refs:
+                    _ensure_measure(r)
                 resolved_sql = _resolve_sql(dim_ref.formula)
-                # Update the placeholder dimension's sql
                 for d in dimensions:
                     if d.name == dim_ref.name and d.sql is None:
                         d.sql = resolved_sql
@@ -668,6 +717,11 @@ class SlayerQueryEngine:
             column_map.append((t.alias, t.name, DataType.NUMBER, True))
         for e in enriched.expressions:
             column_map.append((e.alias, e.name, DataType.NUMBER, True))
+        for cm in enriched.cross_model_measures:
+            # Cross-model measure alias is like "orders.customers__avg_score"
+            # Short name: strip the source model prefix
+            short = cm.alias.split(".", 1)[-1] if "." in cm.alias else cm.alias
+            column_map.append((cm.alias, short, DataType.NUMBER, True))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
         rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _ in column_map]

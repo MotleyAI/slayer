@@ -920,6 +920,21 @@ def test_cross_model_measure_no_join_raises(cross_model_env):
         engine.execute(query)
 
 
+def test_transform_on_cross_model_raises(cross_model_env):
+    """Transforms on cross-model measures should error with guidance."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="cumsum(customers.avg_score)", name="running")],
+    )
+    with pytest.raises(ValueError, match="not yet supported"):
+        engine.execute(query)
+
+
 # ---------------------------------------------------------------------------
 # Query as model (multistage queries)
 # ---------------------------------------------------------------------------
@@ -1081,3 +1096,59 @@ def test_sql_dimension_with_regular(integration_env):
     data = {(r["orders.status"], r["orders.tier"]): r["orders.count"] for r in response.data}
     assert data[("completed", "high")] == 2
     assert data[("completed", "low")] == 1
+
+
+def test_formula_dimension_on_measures_raises(integration_env):
+    """Formula dimensions referencing aggregated measures should error with guidance."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[ColumnRef(formula="total_amount / count", name="avg_amount")],
+        fields=[Field(formula="count")],
+    )
+    with pytest.raises(ValueError, match="references aggregated measures"):
+        engine.execute(query)
+
+
+def test_formula_dimension_via_query_list(integration_env):
+    """Formula dimensions on aggregates work via multistage query list."""
+    engine = integration_env
+
+    # Inner: compute monthly totals
+    inner = SlayerQuery(
+        name="monthly",
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+    )
+
+    # Outer: group by amount tier using SQL dimension on the inner query's result
+    outer = SlayerQuery(
+        model="monthly",
+        dimensions=[
+            ColumnRef(sql="CASE WHEN total_amount > 200 THEN 'high' ELSE 'low' END",
+                      name="amount_tier"),
+        ],
+        fields=[Field(formula="count")],
+    )
+
+    response = engine.execute(query=[inner, outer])
+
+    # Jan(300)=high, Feb(125)=low, Mar(325)=high
+    by_tier = {r["monthly.amount_tier"]: r["monthly.count"] for r in response.data}
+    assert by_tier["high"] == 2
+    assert by_tier["low"] == 1
+
+
+def test_circular_query_reference_raises(integration_env):
+    """Circular references between named queries should error clearly."""
+    engine = integration_env
+
+    q1 = SlayerQuery(name="a", model="b", fields=[Field(formula="count")])
+    q2 = SlayerQuery(name="b", model="a", fields=[Field(formula="count")])
+    main = SlayerQuery(model="a", fields=[Field(formula="count")])
+    with pytest.raises(ValueError, match="Circular reference"):
+        engine.execute(query=[q1, q2, main])

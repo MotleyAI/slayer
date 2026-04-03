@@ -491,11 +491,17 @@ class SQLGenerator:
         for t in enriched.transforms:
             main_columns.append(t.alias)
 
-        # Generate a CTE for each cross-model measure
+        # Generate a CTE for each cross-model measure (deduplicate by CTE name)
         cm_cte_names = []
+        seen_ctes = set()
         for cm in enriched.cross_model_measures:
             cte_name = f"_cm_{cm.target_model_name}_{cm.measure.name}"
+            is_duplicate = cte_name in seen_ctes
+            seen_ctes.add(cte_name)
             cm_cte_names.append((cte_name, cm))
+
+            if is_duplicate:
+                continue  # CTE already generated, just reuse in final SELECT
 
             # Build the sub-query: SELECT shared_dims, AGG(measure) FROM target GROUP BY shared_dims
             select_parts = []
@@ -554,9 +560,13 @@ class SQLGenerator:
         for cte_name, cm in cm_cte_names:
             final_parts.append(f'{cte_name}."{cm.alias}"')
 
-        # Build JOINs: join each cross-model CTE to _main on shared dimensions
+        # Build JOINs: join each cross-model CTE to _main on shared dimensions (deduplicate)
         from_clause = "FROM _main"
+        joined_ctes = set()
         for cte_name, cm in cm_cte_names:
+            if cte_name in joined_ctes:
+                continue
+            joined_ctes.add(cte_name)
             join_on_parts = []
             for dim in cm.shared_dimensions:
                 join_on_parts.append(f'_main."{dim.alias}" = {cte_name}."{dim.alias}"')

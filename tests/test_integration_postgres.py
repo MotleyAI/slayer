@@ -306,6 +306,147 @@ class TestPostgresQueries:
 
 
 @pytest.fixture
+def pg_cross_model_env(postgresql):
+    """Postgres env with orders + customers (with score) and explicit join."""
+    cur = postgresql.cursor()
+    cur.execute("""
+        CREATE TABLE customers (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            region TEXT NOT NULL,
+            score NUMERIC(5,2) NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            amount NUMERIC(10,2) NOT NULL,
+            customer_id INTEGER REFERENCES customers(id),
+            created_at TIMESTAMP NOT NULL
+        )
+    """)
+    cur.executemany(
+        "INSERT INTO customers VALUES (%s, %s, %s, %s)",
+        [(1, "Alice", "US", 90), (2, "Bob", "EU", 60), (3, "Charlie", "US", 80)],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (%s, %s, %s, %s, %s)",
+        [
+            (1, "completed", 100, 1, "2024-01-15 10:00:00"),
+            (2, "completed", 200, 1, "2024-01-20 11:00:00"),
+            (3, "pending", 50, 2, "2024-02-10 09:00:00"),
+            (4, "completed", 150, 2, "2024-02-15 14:00:00"),
+            (5, "completed", 300, 3, "2024-03-01 08:00:00"),
+            (6, "pending", 25, 1, "2024-03-10 16:00:00"),
+        ],
+    )
+    postgresql.commit()
+
+    tmpdir = tempfile.mkdtemp()
+    storage = YAMLStorage(base_dir=tmpdir)
+    info = postgresql.info
+    storage.save_datasource(DatasourceConfig(
+        name="testpg", type="postgres",
+        host=info.host, port=info.port, database=info.dbname,
+        username=info.user, password="",
+    ))
+    from slayer.core.models import ModelJoin
+    storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="testpg",
+        default_time_dimension="created_at",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="status", sql="status", type=DataType.STRING),
+            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Dimension(name="amount", sql="amount", type=DataType.NUMBER),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="total", sql="amount", type=DataType.SUM),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="testpg",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="name", sql="name", type=DataType.STRING),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="avg_score", sql="score", type=DataType.AVERAGE),
+        ],
+    ))
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+class TestCrossModelAndMultistage:
+    def test_cross_model_measure(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """Cross-model measure: monthly order count + avg customer score."""
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            fields=[Field(formula="count"), Field(formula="customers.avg_score")],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = pg_cross_model_env.execute(query=query)
+        assert result.row_count == 3
+        # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
+        assert float(result.data[0]["orders.customers__avg_score"]) == pytest.approx(90.0)
+        assert float(result.data[1]["orders.customers__avg_score"]) == pytest.approx(60.0)
+        assert float(result.data[2]["orders.customers__avg_score"]) == pytest.approx(85.0)
+
+    def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """Query list: named sub-query referenced by main query."""
+        inner = SlayerQuery(
+            name="monthly", model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            fields=[Field(formula="count"), Field(formula="total")],
+        )
+        outer = SlayerQuery(model="monthly", fields=[Field(formula="count")])
+        result = pg_cross_model_env.execute(query=[inner, outer])
+        assert result.data[0]["monthly.count"] == 3
+
+    def test_create_model_from_query(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """Save a query as a permanent model, then query it."""
+        source = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            fields=[Field(formula="count"), Field(formula="total")],
+        )
+        saved = pg_cross_model_env.create_model_from_query(query=source, name="pg_monthly")
+        assert saved.source_queries is not None
+        result = pg_cross_model_env.execute(
+            query=SlayerQuery(model="pg_monthly", fields=[Field(formula="count")])
+        )
+        assert result.data[0]["pg_monthly.count"] == 3
+
+    def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """SQL expression dimension with Postgres."""
+        query = SlayerQuery(
+            model="orders",
+            dimensions=[
+                ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
+            ],
+            fields=[Field(formula="count")],
+        )
+        result = pg_cross_model_env.execute(query=query)
+        by_tier = {r["orders.tier"]: r["orders.count"] for r in result.data}
+        # high: 200, 150, 300 = 3; low: 100, 50, 25 = 3
+        assert by_tier["high"] == 3
+        assert by_tier["low"] == 3
+
+
+@pytest.fixture
 def pg_ingest_env(postgresql):
     """Set up tables with FK relationships and ingest via rollup."""
     cur = postgresql.cursor()
