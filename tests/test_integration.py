@@ -12,6 +12,7 @@ from slayer.core.models import (
     DatasourceConfig,
     Dimension,
     Measure,
+    ModelJoin,
     SlayerModel,
 )
 from slayer.core.query import (
@@ -824,3 +825,330 @@ def test_having_with_non_groupby_dimension_raises(integration_env):
     )
     with pytest.raises(ValueError, match="not in the query's dimensions"):
         engine.execute(query)
+
+
+# ---------------------------------------------------------------------------
+# Cross-model measures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cross_model_env(tmp_path):
+    """SQLite env with orders + customers models and an explicit join."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, score REAL)")
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL, created_at TEXT)")
+    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+        (1, "Alice", 90.0), (2, "Bob", 60.0), (3, "Charlie", 80.0),
+    ])
+    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
+        (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
+        (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
+        (5, 3, 300.0, "2025-03-05"), (6, 1, 25.0, "2025-03-20"),
+    ])
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+
+    storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="db",
+        default_time_dimension="created_at",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="total_amount", sql="amount", type=DataType.SUM),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="db",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="name", sql="name", type=DataType.STRING),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="avg_score", sql="score", type=DataType.AVERAGE),
+            Measure(name="max_score", sql="score", type=DataType.MAX),
+        ],
+    ))
+
+    return SlayerQueryEngine(storage=storage)
+
+
+def test_cross_model_measure_monthly(cross_model_env):
+    """Cross-model measure: monthly order count + avg customer score from joined model."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="count"),
+            Field(formula="customers.avg_score"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # Jan: Alice (90), Feb: Bob (60), Mar: Charlie(80) + Alice(90) = avg 85
+    assert response.data[0]["orders.customers__avg_score"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customers__avg_score"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customers__avg_score"] == pytest.approx(85.0)
+
+
+def test_cross_model_measure_no_join_raises(cross_model_env):
+    """Referencing a model with no join should raise."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        model="orders",
+        fields=[Field(formula="count"), Field(formula="nonexistent.some_measure")],
+    )
+    with pytest.raises(ValueError, match="has no join to"):
+        engine.execute(query)
+
+
+def test_transform_on_cross_model_raises(cross_model_env):
+    """Transforms on cross-model measures should error with guidance."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="cumsum(customers.avg_score)", name="running")],
+    )
+    with pytest.raises(ValueError, match="not yet supported"):
+        engine.execute(query)
+
+
+# ---------------------------------------------------------------------------
+# Query as model (multistage queries)
+# ---------------------------------------------------------------------------
+
+def test_query_as_model_count(integration_env):
+    """A named query can be used as the model for another query via list."""
+    engine = integration_env
+
+    # Inner: monthly order counts (3 months), named for reference
+    inner = SlayerQuery(
+        name="monthly",
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="count"), Field(formula="total_amount")],
+    )
+
+    # Outer: count how many months exist (references "monthly" by name)
+    outer = SlayerQuery(model="monthly", fields=[Field(formula="count")])
+    response = engine.execute(query=[inner, outer])
+
+    assert response.row_count == 1
+    assert response.data[0]["monthly.count"] == 3
+
+
+def test_query_as_model_aggregate(integration_env):
+    """Outer query can aggregate over inner query's computed values."""
+    engine = integration_env
+
+    inner = SlayerQuery(
+        name="monthly",
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+    )
+
+    outer = SlayerQuery(model="monthly", fields=[Field(formula="total_amount_sum")])
+    response = engine.execute(query=[inner, outer])
+
+    assert response.row_count == 1
+    assert response.data[0]["monthly.total_amount_sum"] == pytest.approx(750.0)
+
+
+def test_create_model_from_query(integration_env):
+    """A query can be saved as a permanent model and then queried by name."""
+    engine = integration_env
+
+    # Create a monthly summary model from a query
+    source_query = SlayerQuery(
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="count"), Field(formula="total_amount")],
+    )
+    saved = engine.create_model_from_query(
+        query=source_query, name="monthly_summary",
+    )
+
+    # Verify model structure
+    dim_names = [d.name for d in saved.dimensions]
+    assert "created_at" in dim_names
+    assert "count" in dim_names
+    assert "total_amount" in dim_names
+    assert saved.source_queries is not None
+
+    # Query the saved model by name
+    result = engine.execute(query=SlayerQuery(
+        model="monthly_summary", fields=[Field(formula="count")],
+    ))
+    assert result.data[0]["monthly_summary.count"] == 3
+
+    # Re-aggregate over saved model
+    result2 = engine.execute(query=SlayerQuery(
+        model="monthly_summary", fields=[Field(formula="total_amount_sum")],
+    ))
+    assert result2.data[0]["monthly_summary.total_amount_sum"] == pytest.approx(750.0)
+
+
+def test_query_list_with_joins(cross_model_env):
+    """A query list where the main query joins to a named sub-query."""
+    engine = cross_model_env
+
+    # Sub-query: average customer score per customer
+    sub = SlayerQuery(
+        name="customer_scores",
+        model="customers",
+        dimensions=[ColumnRef(name="id")],
+        fields=[Field(formula="avg_score")],
+    )
+
+    # Main query: monthly orders joined to customer_scores
+    # In the virtual model, inner measures become dimensions with auto-generated
+    # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
+    main = SlayerQuery(
+        model="orders",
+        joins=[{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="count"),
+            Field(formula="customer_scores.avg_score_avg"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+
+    response = engine.execute(query=[sub, main])
+
+    assert response.row_count == 3
+    # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
+    assert response.data[0]["orders.customer_scores__avg_score_avg"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customer_scores__avg_score_avg"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customer_scores__avg_score_avg"] == pytest.approx(85.0)
+
+
+# ---------------------------------------------------------------------------
+# Expanded dimensions (SQL expressions)
+# ---------------------------------------------------------------------------
+
+def test_sql_dimension(integration_env):
+    """SQL expression dimension: CASE to bucket amounts."""
+    engine = integration_env
+
+    # Seed data: amounts are 100, 200, 50, 75, 300, 25
+    # high (>100): 200, 300 → 2 orders; low: 100, 50, 75, 25 → 4 orders
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[
+            ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
+        ],
+        fields=[Field(formula="count")],
+    )
+    response = engine.execute(query)
+
+    by_tier = {r["orders.tier"]: r["orders.count"] for r in response.data}
+    assert by_tier["high"] == 2
+    assert by_tier["low"] == 4
+
+
+def test_sql_dimension_with_regular(integration_env):
+    """SQL dimension mixed with regular dimension."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[
+            ColumnRef(name="status"),
+            ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
+        ],
+        fields=[Field(formula="count")],
+    )
+    response = engine.execute(query)
+
+    # completed has 3 orders: 100(low), 200(high), 300(high)
+    data = {(r["orders.status"], r["orders.tier"]): r["orders.count"] for r in response.data}
+    assert data[("completed", "high")] == 2
+    assert data[("completed", "low")] == 1
+
+
+def test_formula_dimension_on_measures_raises(integration_env):
+    """Formula dimensions referencing aggregated measures should error with guidance."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        model="orders",
+        dimensions=[ColumnRef(formula="total_amount / count", name="avg_amount")],
+        fields=[Field(formula="count")],
+    )
+    with pytest.raises(ValueError, match="references aggregated measures"):
+        engine.execute(query)
+
+
+def test_formula_dimension_via_query_list(integration_env):
+    """Formula dimensions on aggregates work via multistage query list."""
+    engine = integration_env
+
+    # Inner: compute monthly totals
+    inner = SlayerQuery(
+        name="monthly",
+        model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[Field(formula="total_amount")],
+    )
+
+    # Outer: group by amount tier using SQL dimension on the inner query's result
+    outer = SlayerQuery(
+        model="monthly",
+        dimensions=[
+            ColumnRef(sql="CASE WHEN total_amount > 200 THEN 'high' ELSE 'low' END",
+                      name="amount_tier"),
+        ],
+        fields=[Field(formula="count")],
+    )
+
+    response = engine.execute(query=[inner, outer])
+
+    # Jan(300)=high, Feb(125)=low, Mar(325)=high
+    by_tier = {r["monthly.amount_tier"]: r["monthly.count"] for r in response.data}
+    assert by_tier["high"] == 2
+    assert by_tier["low"] == 1
+
+
+def test_circular_query_reference_raises(integration_env):
+    """Circular references between named queries should error clearly."""
+    engine = integration_env
+
+    q1 = SlayerQuery(name="a", model="b", fields=[Field(formula="count")])
+    q2 = SlayerQuery(name="b", model="a", fields=[Field(formula="count")])
+    main = SlayerQuery(model="a", fields=[Field(formula="count")])
+    with pytest.raises(ValueError, match="Circular reference"):
+        engine.execute(query=[q1, q2, main])

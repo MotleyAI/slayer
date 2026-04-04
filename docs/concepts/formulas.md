@@ -31,7 +31,7 @@ The `name` is optional — if omitted, it's auto-generated from the formula. The
 
 Parentheses work as expected: `"(revenue - cost) / count"`.
 
-All measure names referenced in the formula must exist in the model.
+All measure names referenced in the formula must exist in the model. For measures from joined models, use dotted syntax: `"customers.avg_score"` — see [Cross-Model Measures](queries.md#cross-model-measures).
 
 ### Transform Functions
 

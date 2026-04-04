@@ -6,9 +6,11 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `model` | string | Yes | Target model name |
-| `fields` | list[Field] | No | Data columns — measures, arithmetic, transforms. Each field has a `formula` (required), optional `name`, and optional `label` (human-readable display name). See [Field Formulas](formulas.md#field-formulas). |
-| `dimensions` | list[ColumnRef] | No | Dimensions to group by |
+| `name` | string | No | Name for this query — used to reference it from other queries in a list |
+| `model` | string | Yes | Target model name (or name of a query in the same list) |
+| `joins` | list[ModelJoin] | No | Additional joins to other models or named queries |
+| `fields` | list[Field] | No | Data columns — measures, arithmetic, transforms. See [Field Formulas](formulas.md#field-formulas). |
+| `dimensions` | list[ColumnRef] | No | Dimensions to group by — field names, SQL expressions, or formulas |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
 | `filters` | list[str] | No | Conditions as formula strings. See [Filters](#filters). |
@@ -17,16 +19,26 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
 
+You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
+
 ## ColumnRef
 
-A reference to a dimension. Supports an optional `label` for human-readable output.
+A reference to a dimension. Three modes:
 
 ```json
 {"name": "status"}
 {"name": "status", "label": "Order Status"}
+{"sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"}
 ```
 
-Via MCP, dimensions are passed as simple strings: `dimensions=["status"]`
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Required. Result column name. For existing dimensions, also the column to look up. |
+| `sql` | string | Raw SQL expression — used as a computed grouping dimension |
+| `formula` | string | Formula expression referencing measures (e.g., `"revenue / count"`) |
+| `label` | string | Human-readable display name |
+
+Via MCP, simple dimensions are passed as strings: `dimensions=["status"]`
 
 ## TimeDimension
 
@@ -209,4 +221,79 @@ Post-filters can be combined with regular filters — base filters (on dimension
   "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
 }
 ```
+
+### Cross-model measures
+
+When models have [joins](models.md#joins), you can reference measures from joined models using dotted syntax `model_name.measure_name`:
+
+```json
+{
+  "model": "orders",
+  "fields": [
+    {"formula": "count"},
+    {"formula": "customers.avg_score"}
+  ],
+  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+}
+```
+
+This generates a sub-query for the joined measure, scoped to shared dimensions, and LEFT JOINs it to the main query — avoiding aggregation errors from row multiplication.
+
+### Query lists
+
+Pass a list of queries to `execute()`. Earlier queries are named sub-queries, the last is the main query. Named queries can be referenced by `model` name or joined via `joins`:
+
+```json
+[
+  {
+    "name": "monthly",
+    "model": "orders",
+    "fields": [{"formula": "count"}, {"formula": "total_amount"}],
+    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  },
+  {
+    "model": "monthly",
+    "fields": [{"formula": "count"}]
+  }
+]
+```
+
+This counts how many months exist in the monthly summary. The main query references `"monthly"` by name — if a named query and a stored model share a name, the query takes precedence.
+
+You can also join named queries to models:
+
+```json
+[
+  {
+    "name": "customer_scores",
+    "model": "customers",
+    "dimensions": [{"name": "id"}],
+    "fields": [{"formula": "avg_score"}]
+  },
+  {
+    "model": "orders",
+    "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+    "fields": [{"formula": "count"}, {"formula": "customer_scores.avg_score_avg"}],
+    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  }
+]
+```
+
+Queries can also be saved as permanent models — see [Creating Models from Queries](models.md#creating-models-from-queries).
+
+### SQL dimensions
+
+Use SQL expressions as grouping dimensions for bucketing, conditional logic, or computed categories:
+
+```json
+{
+  "model": "orders",
+  "dimensions": [
+    {"sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"}
+  ],
+  "fields": [{"formula": "count"}, {"formula": "total_amount"}]
+}
+```
+
+SQL dimensions can be mixed with regular dimensions. The expression goes directly into SELECT and GROUP BY.
 

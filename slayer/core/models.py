@@ -26,13 +26,21 @@ class Measure(BaseModel):
     hidden: bool = False
 
 
+class ModelJoin(BaseModel):
+    """A LEFT JOIN relationship to another model."""
+    target_model: str                               # Name of the joined model
+    join_pairs: List[List[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
+
+
 class SlayerModel(BaseModel):
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
-    data_source: str
+    source_queries: Optional[List] = None  # List of SlayerQuery dicts — saved query structure
+    data_source: str = ""
     dimensions: List[Dimension] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
+    joins: List[ModelJoin] = Field(default_factory=list)
     default_time_dimension: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False

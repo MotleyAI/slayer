@@ -87,6 +87,10 @@ def _parse_node(node: ast.AST, original: str) -> FieldSpec:
     if isinstance(node, ast.Name):
         return MeasureRef(name=node.id)
 
+    # Dotted name → cross-model measure reference (e.g., customers.avg_score)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return MeasureRef(name=f"{node.value.id}.{node.attr}")
+
     # Function call → transform
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):

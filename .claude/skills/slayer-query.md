@@ -100,6 +100,28 @@ Available formula functions: `cumsum`, `time_shift`, `change`, `change_pct`, `ra
 
 Time dimension resolution: single `time_dimensions` entry is used automatically. With 2+, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims). With none, falls back to model default.
 
+## Cross-Model Measures
+
+When models have joins, reference measures from joined models with `model.measure` syntax:
+
+```python
+fields=[
+    {"formula": "count"},
+    {"formula": "customers.avg_score"},
+]
+```
+
+## Query as Model
+
+The `model` parameter can be a query object for multistage queries:
+
+```python
+inner = SlayerQuery(model="orders", fields=[...], time_dimensions=[...])
+outer = SlayerQuery(model=inner, fields=[{"formula": "count"}])
+```
+
+Or save a query as a permanent model with `create_model_from_query`.
+
 ## Result Format
 
 Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.status"`.
