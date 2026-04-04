@@ -865,6 +865,25 @@ packaging = ">=21"
 sqlalchemy = ">=1.3.22"
 
 [[package]]
+name = "faker"
+version = "40.12.0"
+description = "Faker is a Python package that generates fake data for you."
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"examples\" or extra == \"all\""
+files = [
+    {file = "faker-40.12.0-py3-none-any.whl", hash = "sha256:6238a4058a8b581892e3d78fe5fdfa7568739e1c8283e4ede83f1dde0bfc1a3b"},
+    {file = "faker-40.12.0.tar.gz", hash = "sha256:58b5a9054c367bd5fb2e948634105364cc570e78a98a8e5161a74691c45f158f"},
+]
+
+[package.dependencies]
+tzdata = {version = "*", markers = "platform_system == \"Windows\""}
+
+[package.extras]
+tzdata = ["tzdata"]
+
+[[package]]
 name = "fastapi"
 version = "0.135.1"
 description = "FastAPI framework, high performance, easy to learn, fast to code, ready for production"
@@ -1077,6 +1096,31 @@ files = [
 ]
 
 [[package]]
+name = "jafgen"
+version = "0.4.14"
+description = "A synthetic data generator CLI for a fictional Jaffle Shop"
+optional = true
+python-versions = "*"
+groups = ["main"]
+markers = "extra == \"examples\" or extra == \"all\""
+files = []
+develop = false
+
+[package.dependencies]
+Faker = "*"
+numpy = "*"
+typer = "*"
+
+[package.extras]
+dev = ["pytest", "ruff"]
+
+[package.source]
+type = "git"
+url = "https://github.com/rossbowen/jaffle-shop-generator.git"
+reference = "09557a1118b000071f8171aa97d54d5029bf0f0b"
+resolved_reference = "09557a1118b000071f8171aa97d54d5029bf0f0b"
+
+[[package]]
 name = "jinja2"
 version = "3.1.6"
 description = "A very fast and expressive template engine."
@@ -1238,6 +1282,31 @@ docs = ["mdx_gh_links (>=0.2)", "mkdocs (>=1.6)", "mkdocs-gen-files", "mkdocs-li
 testing = ["coverage", "pyyaml"]
 
 [[package]]
+name = "markdown-it-py"
+version = "4.0.0"
+description = "Python port of markdown-it. Markdown parsing, done right!"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"examples\" or extra == \"all\""
+files = [
+    {file = "markdown_it_py-4.0.0-py3-none-any.whl", hash = "sha256:87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147"},
+    {file = "markdown_it_py-4.0.0.tar.gz", hash = "sha256:cb0a2b4aa34f932c007117b194e945bd74e0ec24133ceb5bac59009cda1cb9f3"},
+]
+
+[package.dependencies]
+mdurl = ">=0.1,<1.0"
+
+[package.extras]
+benchmarking = ["psutil", "pytest", "pytest-benchmark"]
+compare = ["commonmark (>=0.9,<1.0)", "markdown (>=3.4,<4.0)", "markdown-it-pyrs", "mistletoe (>=1.0,<2.0)", "mistune (>=3.0,<4.0)", "panflute (>=2.3,<3.0)"]
+linkify = ["linkify-it-py (>=1,<3)"]
+plugins = ["mdit-py-plugins (>=0.5.0)"]
+profiling = ["gprof2dot"]
+rtd = ["ipykernel", "jupyter_sphinx", "mdit-py-plugins (>=0.5.0)", "myst-parser", "pyyaml", "sphinx", "sphinx-book-theme (>=1.0,<2.0)", "sphinx-copybutton", "sphinx-design"]
+testing = ["coverage", "pytest", "pytest-cov", "pytest-regressions", "requests"]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 description = "Safely add untrusted strings to HTML/XML markup."
@@ -1372,6 +1441,19 @@ rich = ["rich (>=13.9.4)"]
 ws = ["websockets (>=15.0.1)"]
 
 [[package]]
+name = "mdurl"
+version = "0.1.2"
+description = "Markdown URL utilities"
+optional = true
+python-versions = ">=3.7"
+groups = ["main"]
+markers = "extra == \"examples\" or extra == \"all\""
+files = [
+    {file = "mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"},
+    {file = "mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba"},
+]
+
+[[package]]
 name = "mergedeep"
 version = "1.3.4"
 description = "A deep merge function for 🐍."
@@ -1500,7 +1582,7 @@ description = "Fundamental package for array computing in Python"
 optional = true
 python-versions = ">=3.11"
 groups = ["main"]
-markers = "extra == \"client\" or extra == \"all\""
+markers = "extra == \"client\" or extra == \"all\" or extra == \"examples\""
 files = [
     {file = "numpy-2.4.3-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:33b3bf58ee84b172c067f56aeadc7ee9ab6de69c5e800ab5b10295d54c581adb"},
     {file = "numpy-2.4.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:8ba7b51e71c05aa1f9bc3641463cd82308eab40ce0d5c7e1fd4038cbf9938147"},
@@ -2112,7 +2194,7 @@ files = [
     {file = "pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b"},
     {file = "pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887"},
 ]
-markers = {main = "extra == \"docs\""}
+markers = {main = "extra == \"docs\" or extra == \"examples\" or extra == \"all\""}
 
 [package.extras]
 windows-terminal = ["colorama (>=0.4.6)"]
@@ -2487,6 +2569,26 @@ socks = ["PySocks (>=1.5.6,!=1.5.7)"]
 use-chardet-on-py3 = ["chardet (>=3.0.2,<6)"]
 
 [[package]]
+name = "rich"
+version = "14.3.3"
+description = "Render rich text, tables, progress bars, syntax highlighting, markdown and more to the terminal"
+optional = true
+python-versions = ">=3.8.0"
+groups = ["main"]
+markers = "extra == \"examples\" or extra == \"all\""
+files = [
+    {file = "rich-14.3.3-py3-none-any.whl", hash = "sha256:793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d"},
+    {file = "rich-14.3.3.tar.gz", hash = "sha256:b8daa0b9e4eef54dd8cf7c86c03713f53241884e814f4e2f5fb342fe520f639b"},
+]
+
+[package.dependencies]
+markdown-it-py = ">=2.2.0"
+pygments = ">=2.13.0,<3.0.0"
+
+[package.extras]
+jupyter = ["ipywidgets (>=7.5.1,<9)"]
+
+[[package]]
 name = "rpds-py"
 version = "0.30.0"
 description = "Python bindings to Rust's persistent data structures (rpds)"
@@ -2638,6 +2740,19 @@ files = [
     {file = "ruff-0.15.6-py3-none-win_amd64.whl", hash = "sha256:aee25bc84c2f1007ecb5037dff75cef00414fdf17c23f07dc13e577883dca406"},
     {file = "ruff-0.15.6-py3-none-win_arm64.whl", hash = "sha256:c34de3dd0b0ba203be50ae70f5910b17188556630e2178fd7d79fc030eb0d837"},
     {file = "ruff-0.15.6.tar.gz", hash = "sha256:8394c7bb153a4e3811a4ecdacd4a8e6a4fa8097028119160dffecdcdf9b56ae4"},
+]
+
+[[package]]
+name = "shellingham"
+version = "1.5.4"
+description = "Tool to Detect Surrounding Shell"
+optional = true
+python-versions = ">=3.7"
+groups = ["main"]
+markers = "extra == \"examples\" or extra == \"all\""
+files = [
+    {file = "shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686"},
+    {file = "shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de"},
 ]
 
 [[package]]
@@ -2814,6 +2929,25 @@ typing-extensions = {version = ">=4.10.0", markers = "python_version < \"3.13\""
 full = ["httpx (>=0.27.0,<0.29.0)", "itsdangerous", "jinja2", "python-multipart (>=0.0.18)", "pyyaml"]
 
 [[package]]
+name = "typer"
+version = "0.24.1"
+description = "Typer, build great CLIs. Easy to code. Based on Python type hints."
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"examples\" or extra == \"all\""
+files = [
+    {file = "typer-0.24.1-py3-none-any.whl", hash = "sha256:112c1f0ce578bfb4cab9ffdabc68f031416ebcc216536611ba21f04e9aa84c9e"},
+    {file = "typer-0.24.1.tar.gz", hash = "sha256:e39b4732d65fbdcde189ae76cf7cd48aeae72919dea1fdfc16593be016256b45"},
+]
+
+[package.dependencies]
+annotated-doc = ">=0.0.2"
+click = ">=8.2.1"
+rich = ">=12.3.0"
+shellingham = ">=1.3.0"
+
+[[package]]
 name = "typing-extensions"
 version = "4.15.0"
 description = "Backported and Experimental Type Hints for Python 3.9+"
@@ -2851,7 +2985,7 @@ files = [
     {file = "tzdata-2025.3-py2.py3-none-any.whl", hash = "sha256:06a47e5700f3081aab02b2e513160914ff0694bce9947d6b76ebd6bf57cfc5d1"},
     {file = "tzdata-2025.3.tar.gz", hash = "sha256:de39c2ca5dc7b0344f2eba86f49d614019d29f060fc4ebc8a417896a620b56a7"},
 ]
-markers = {main = "(sys_platform == \"win32\" or sys_platform == \"emscripten\" or extra == \"clickhouse\" or extra == \"all\") and (sys_platform == \"win32\" or sys_platform == \"emscripten\" or platform_system == \"Windows\") and (extra == \"client\" or extra == \"all\" or extra == \"clickhouse\") and (extra == \"client\" or extra == \"all\" or platform_system == \"Windows\")", dev = "sys_platform == \"win32\""}
+markers = {main = "(sys_platform == \"win32\" or sys_platform == \"emscripten\" or extra == \"clickhouse\" or extra == \"all\" or extra == \"examples\") and (sys_platform == \"win32\" or sys_platform == \"emscripten\" or platform_system == \"Windows\") and (extra == \"client\" or extra == \"all\" or platform_system == \"Windows\") and (extra == \"client\" or extra == \"all\" or extra == \"clickhouse\" or extra == \"examples\")", dev = "sys_platform == \"win32\""}
 
 [[package]]
 name = "tzlocal"
@@ -3130,11 +3264,12 @@ files = [
 ]
 
 [extras]
-all = ["clickhouse-sqlalchemy", "duckdb", "duckdb-engine", "httpx", "mcp", "pandas", "psycopg2-binary", "pymysql"]
+all = ["clickhouse-sqlalchemy", "duckdb", "duckdb-engine", "httpx", "jafgen", "mcp", "pandas", "psycopg2-binary", "pymysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
 client = ["httpx", "pandas"]
 docs = ["mkdocs-material"]
 duckdb = ["duckdb", "duckdb-engine"]
+examples = ["duckdb", "duckdb-engine", "jafgen"]
 mcp = ["mcp"]
 mysql = ["pymysql"]
 postgres = ["psycopg2-binary"]
@@ -3142,4 +3277,4 @@ postgres = ["psycopg2-binary"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "29fd0d164695bed8f42873ffc932a1abe364e64160a0a244699a05c65ccb4395"
+content-hash = "20c6dfacc80210c2802a1a355d87410a07e2e0c5dcef0f697801122a3a5b9e8c"
