@@ -190,12 +190,30 @@ def _get_columns_fallback(
     schema: Optional[str],
 ) -> List[Dict]:
     """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
-    schema_filter = f"AND table_schema = '{schema}'" if schema else ""
-    sql = (
-        f"SELECT column_name, data_type "
-        f"FROM information_schema.columns "
-        f"WHERE table_name = '{table_name}' {schema_filter} "
-        f"ORDER BY ordinal_position"
+def _get_columns_fallback(
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> List[Dict]:
+    """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
+    if schema:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name AND table_schema = :schema "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name, "schema": schema}
+    else:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name}
+    with sa_engine.connect() as conn:
+        rows = conn.execute(sa.text(sql), params).fetchall()
     )
     with sa_engine.connect() as conn:
         rows = conn.execute(sa.text(sql)).fetchall()
