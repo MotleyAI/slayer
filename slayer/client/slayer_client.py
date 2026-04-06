@@ -49,6 +49,24 @@ class SlayerClient:
         result = self._request("POST", "/query", json=query.model_dump(exclude_none=True))
         return result["data"]
 
+    def sql(self, query: SlayerQuery) -> str:
+        """Generate SQL for a query without executing it."""
+        dry_query = query.model_copy(update={"dry_run": True})
+        if self._engine is not None:
+            result = self._engine.execute(query=dry_query)
+            return result.sql
+        result = self._request("POST", "/query", json=dry_query.model_dump(exclude_none=True))
+        return result["sql"]
+
+    def explain(self, query: SlayerQuery) -> List[Dict[str, Any]]:
+        """Run EXPLAIN ANALYZE on a query and return the query plan."""
+        explain_query = query.model_copy(update={"explain": True})
+        if self._engine is not None:
+            result = self._engine.execute(query=explain_query)
+            return result.data
+        result = self._request("POST", "/query", json=explain_query.model_dump(exclude_none=True))
+        return result["data"]
+
     def query_df(self, query: SlayerQuery):
         try:
             import pandas as pd
