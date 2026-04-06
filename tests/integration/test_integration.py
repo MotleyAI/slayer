@@ -1,6 +1,6 @@
 """Integration tests — end-to-end queries against a real SQLite database.
 
-Run with: pytest tests/test_integration.py -m integration
+Run with: pytest tests/integration/test_integration.py -m integration
 """
 
 import sqlite3

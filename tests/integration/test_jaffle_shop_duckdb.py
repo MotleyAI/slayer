@@ -11,9 +11,9 @@ pytest.importorskip("jafgen")
 import duckdb
 
 # Add docs/examples to path so we can import the script
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "docs", "examples"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "docs", "examples"))
 
-from jaffle_shop_duckdb import LOAD_ORDER, TABLE_NAMES, create_schema, generate_data, load_data, verify
+from jaffle_shop_duckdb import TABLE_NAMES, create_schema, generate_data, load_data, verify
 
 
 @pytest.fixture(scope="module")
@@ -25,7 +25,7 @@ def jaffle_db(tmp_path_factory):
     db_path = tmpdir / "test_jaffle.duckdb"
     conn = duckdb.connect(str(db_path))
 
-    schema_path = os.path.join(os.path.dirname(__file__), "..", "docs", "examples", "jaffle_shop_schema.sql")
+    schema_path = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "examples", "jaffle_shop_schema.sql")
     create_schema(conn, schema_path)
     load_data(conn, data_dir)
 

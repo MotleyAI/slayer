@@ -8,32 +8,6 @@ SLayer (Semantic Layer) is a lightweight, open-source (MIT) semantic layer for A
 
 Default API port: **5143**.
 
-## Package Structure
-
-```
-slayer/
-  core/           # Domain models and enums
-    enums.py      # DataType, TimeGranularity, OrderDirection
-    models.py     # SlayerModel (has default_time_dimension), Dimension, Measure, DatasourceConfig
-    query.py      # SlayerQuery, ColumnRef, TimeDimension, OrderItem
-    formula.py    # Formula parser (Python ast-based) for `fields` API
-  sql/            # SQL generation and execution
-    generator.py  # SQLGenerator — sqlglot-based, dialect-aware SQL generation
-    client.py     # SlayerSQLClient — SQLAlchemy execution with retry
-  engine/         # Query orchestration
-    query_engine.py  # SlayerQueryEngine — central orchestrator
-    ingestion.py     # Auto-ingestion with rollup-style FK joins
-    enriched.py      # EnrichedQuery — fully resolved query for SQL generation
-  storage/        # Model and datasource persistence
-    base.py          # StorageBackend ABC
-    yaml_storage.py  # YAMLStorage — files in models/ and datasources/ dirs
-    sqlite_storage.py # SQLiteStorage — single SQLite DB
-  api/server.py   # FastAPI REST API
-  mcp/server.py   # MCP server (FastMCP)
-  client/slayer_client.py  # Python SDK (remote + local mode)
-  cli.py          # CLI entry point (serve, mcp, query, ingest, models, datasources)
-```
-
 ## Common Commands
 
 ```bash
@@ -44,13 +18,13 @@ poetry install -E all
 poetry run pytest
 
 # Run SQLite integration tests
-poetry run pytest tests/test_integration.py -m integration
+poetry run pytest tests/integration/test_integration.py -m integration
 
 # Run Postgres integration tests (auto-spawns temp Postgres via pytest-postgresql)
-poetry run pytest tests/test_integration_postgres.py -m integration
+poetry run pytest tests/integration/test_integration_postgres.py -m integration
 
 # Run DuckDB integration tests (no Docker, runs in-process)
-poetry run pytest tests/test_integration_duckdb.py -m integration
+poetry run pytest tests/integration/test_integration_duckdb.py -m integration
 
 # Run a specific test file
 poetry run pytest tests/test_sql_generator.py -v
@@ -89,9 +63,9 @@ poetry run ruff check slayer/ tests/
 SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at two tiers:
 
 **Tier 1 — fully tested** (integration tests + Docker examples, must not regress):
-- **SQLite** — integration tests in `test_integration.py`, embedded example
-- **Postgres** — integration tests in `test_integration_postgres.py`, Docker example
-- **DuckDB** — integration tests in `test_integration_duckdb.py` (no Docker, runs in-process)
+- **SQLite** — integration tests in `tests/integration/test_integration.py`, embedded example
+- **Postgres** — integration tests in `tests/integration/test_integration_postgres.py`, Docker example
+- **DuckDB** — integration tests in `tests/integration/test_integration_duckdb.py` (no Docker, runs in-process)
 - **MySQL** — Docker example with `verify.py`
 - **ClickHouse** — Docker example with `verify.py`
 
@@ -103,7 +77,7 @@ Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific
 ## Testing
 
 - Unit tests: `tests/test_models.py`, `test_sql_generator.py`, `test_storage.py`, `test_sqlite_storage.py`, `test_mcp_server.py`
-- Integration tests (SQLite): `tests/test_integration.py`
-- Integration tests (Postgres): `tests/test_integration_postgres.py` — uses pytest-postgresql (auto-spawns temp Postgres)
-- Integration tests (DuckDB): `tests/test_integration_duckdb.py` — uses duckdb directly (no Docker)
+- Integration tests (SQLite): `tests/integration/test_integration.py`
+- Integration tests (Postgres): `tests/integration/test_integration_postgres.py` — uses pytest-postgresql (auto-spawns temp Postgres)
+- Integration tests (DuckDB): `tests/integration/test_integration_duckdb.py` — uses duckdb directly (no Docker)
 - Shared fixtures in `tests/conftest.py`

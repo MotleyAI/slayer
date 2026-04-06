@@ -15,13 +15,13 @@ poetry install -E all
 poetry run pytest
 
 # Postgres integration tests (auto-spawns temporary Postgres via pytest-postgresql)
-poetry run pytest tests/test_integration_postgres.py -m integration
+poetry run pytest tests/integration/test_integration_postgres.py -m integration
 
 # DuckDB integration tests (no Docker, runs in-process)
-poetry run pytest tests/test_integration_duckdb.py -m integration
+poetry run pytest tests/integration/test_integration_duckdb.py -m integration
 
 # SQLite integration tests
-poetry run pytest tests/test_integration.py
+poetry run pytest tests/integration/test_integration.py
 
 # Specific test file
 poetry run pytest tests/test_mcp_server.py -v
@@ -64,9 +64,12 @@ tests/
   test_storage.py         # YAML storage tests
   test_sqlite_storage.py  # SQLite storage tests
   test_mcp_server.py      # MCP server tool tests
-  test_integration.py     # SQLite integration tests
-  test_integration_postgres.py  # Postgres integration + rollup tests
-  test_integration_duckdb.py    # DuckDB integration tests
+  integration/
+    test_integration.py           # SQLite integration tests
+    test_integration_postgres.py  # Postgres integration + rollup tests
+    test_integration_duckdb.py    # DuckDB integration tests
+    test_jaffle_shop_duckdb.py    # Jaffle Shop DuckDB example tests
+    test_jaffle_shop_notebook.py  # Jaffle Shop notebook tests
   conftest.py             # Shared fixtures
 ```
 
