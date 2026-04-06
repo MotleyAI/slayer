@@ -48,6 +48,27 @@ _SA_TYPE_MAP = {
 _NUMERIC_TYPES = {DataType.NUMBER}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
 
+# Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback)
+_INFO_SCHEMA_TYPE_MAP = {
+    "INTEGER": DataType.NUMBER,
+    "BIGINT": DataType.NUMBER,
+    "SMALLINT": DataType.NUMBER,
+    "TINYINT": DataType.NUMBER,
+    "HUGEINT": DataType.NUMBER,
+    "FLOAT": DataType.NUMBER,
+    "DOUBLE": DataType.NUMBER,
+    "REAL": DataType.NUMBER,
+    "VARCHAR": DataType.STRING,
+    "CHAR": DataType.STRING,
+    "TEXT": DataType.STRING,
+    "BOOLEAN": DataType.BOOLEAN,
+    "TIMESTAMP": DataType.TIMESTAMP,
+    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
+    "DATETIME": DataType.TIMESTAMP,
+    "DATE": DataType.DATE,
+    "TIME": DataType.TIMESTAMP,
+}
+
 
 def _is_id_column(name: str) -> bool:
     """Check if a column name looks like an ID/key rather than a quantity."""
@@ -159,11 +180,121 @@ def _compute_transitive_closure(graph: Dict[str, Set[str]], source: str) -> Set[
 
 
 # ---------------------------------------------------------------------------
+# INFORMATION_SCHEMA fallbacks (for databases like DuckDB where
+# the SQLAlchemy Inspector's pg_catalog queries may not be supported)
+# ---------------------------------------------------------------------------
+
+def _get_columns_fallback(
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> List[Dict]:
+    """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
+    if schema:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name "
+            "AND table_schema = :schema "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name, "schema": schema}
+    else:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name}
+    with sa_engine.connect() as conn:
+        rows = conn.execute(sa.text(sql), params).fetchall()
+    result = []
+    for col_name, data_type_str in rows:
+        # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL")
+        base_type = data_type_str.split("(")[0].upper().strip()
+        sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
+        if sa_type is None and "INT" in base_type:
+            sa_type = DataType.NUMBER
+        elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
+            sa_type = DataType.STRING
+        elif sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type):
+            sa_type = DataType.NUMBER
+        result.append({"name": col_name, "type": sa_type or DataType.STRING})
+    return result
+
+
+def _get_pk_constraint_fallback(
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> Dict:
+    """Get PK constraint via INFORMATION_SCHEMA when Inspector.get_pk_constraint() fails."""
+    if schema:
+        sql = (
+            "SELECT kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name = kcu.constraint_name "
+            "  AND tc.table_schema = kcu.table_schema "
+            "WHERE tc.table_name = :table_name "
+            "  AND tc.constraint_type = 'PRIMARY KEY' "
+            "  AND tc.table_schema = :schema"
+        )
+        params = {"table_name": table_name, "schema": schema}
+    else:
+        sql = (
+            "SELECT kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name = kcu.constraint_name "
+            "  AND tc.table_schema = kcu.table_schema "
+            "WHERE tc.table_name = :table_name "
+            "  AND tc.constraint_type = 'PRIMARY KEY'"
+        )
+        params = {"table_name": table_name}
+    with sa_engine.connect() as conn:
+        rows = conn.execute(sa.text(sql), params).fetchall()
+    return {"constrained_columns": [row[0] for row in rows]}
+
+
+def _safe_get_columns(
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> List[Dict]:
+    """Get columns, falling back to INFORMATION_SCHEMA on failure."""
+    try:
+        return inspector.get_columns(table_name, schema=schema)
+    except Exception:
+        return _get_columns_fallback(sa_engine, table_name, schema)
+
+
+def _safe_get_pk_constraint(
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> Dict:
+    """Get PK constraint, falling back to INFORMATION_SCHEMA on failure."""
+    try:
+        result = inspector.get_pk_constraint(table_name, schema=schema)
+        if result.get("constrained_columns"):
+            return result
+        # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA
+        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
+    except Exception:
+        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
+
+
+# ---------------------------------------------------------------------------
 # Rollup SQL generation
 # ---------------------------------------------------------------------------
 
 def _generate_rollup_sql(
     inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
     source_table: str,
     referenced_tables: Set[str],
     schema: Optional[str],
@@ -173,7 +304,7 @@ def _generate_rollup_sql(
     sql_table = f"{schema}.{source_table}" if schema else source_table
 
     # Collect source columns
-    source_cols = inspector.get_columns(source_table, schema=schema)
+    source_cols = _safe_get_columns(inspector, sa_engine, source_table, schema)
     select_parts = [f"{sql_table}.{col['name']} AS {col['name']}" for col in source_cols]
 
     # Build reverse FK mapping
@@ -209,7 +340,7 @@ def _generate_rollup_sql(
 
         for ref_table in next_tables:
             ref_sql_table = f"{schema}.{ref_table}" if schema else ref_table
-            ref_cols = inspector.get_columns(ref_table, schema=schema)
+            ref_cols = _safe_get_columns(inspector, sa_engine, ref_table, schema)
             ref_fk_cols = fk_columns_by_table[ref_table]
 
             for col in ref_cols:
@@ -283,20 +414,21 @@ def _introspect_query_columns_via_inspector(
     results = []
 
     # Source table columns
-    columns = inspector.get_columns(table_name, schema=schema)
-    pk_constraint = inspector.get_pk_constraint(table_name, schema=schema)
+    columns = _safe_get_columns(inspector, sa_engine, table_name, schema)
+    pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
 
     for col in columns:
         col_name = col["name"]
-        data_type = _sa_type_to_data_type(col["type"])
+        col_type = col["type"]
+        data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
         is_pk = col_name in pk_columns
         results.append((col_name, data_type, is_pk))
 
     # Referenced table columns (rollup)
     for ref_table in referenced_tables:
-        ref_cols = inspector.get_columns(ref_table, schema=schema)
-        ref_pk = inspector.get_pk_constraint(ref_table, schema=schema)
+        ref_cols = _safe_get_columns(inspector, sa_engine, ref_table, schema)
+        ref_pk = _safe_get_pk_constraint(inspector, sa_engine, ref_table, schema)
         ref_pk_cols = set(ref_pk.get("constrained_columns", []))
         ref_fk_cols = fk_columns_by_table.get(ref_table, set())
 
@@ -304,7 +436,8 @@ def _introspect_query_columns_via_inspector(
             if col["name"] in ref_fk_cols:
                 continue
             alias = f"{ref_table}__{col['name']}"
-            data_type = _sa_type_to_data_type(col["type"])
+            col_type = col["type"]
+            data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
             is_pk = col["name"] in ref_pk_cols
             results.append((alias, data_type, is_pk))
 
@@ -419,7 +552,7 @@ def ingest_datasource(
         if referenced:
             # Build rollup SQL, introspect columns from the joined query
             rollup_sql = _generate_rollup_sql(
-                inspector=inspector, source_table=table_name,
+                inspector=inspector, sa_engine=sa_engine, source_table=table_name,
                 referenced_tables=referenced, schema=schema, table_set=table_set,
             )
             columns = _introspect_query_columns_via_inspector(

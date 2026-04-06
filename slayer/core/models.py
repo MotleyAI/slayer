@@ -72,8 +72,8 @@ class DatasourceConfig(BaseModel):
     def get_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
-        if self.type in ("sqlite",):
-            return f"sqlite:///{self.database}"
+        if self.type in ("sqlite", "duckdb"):
+            return f"{self.type}:///{self.database}"
         driver_map = {
             "postgres": "postgresql",
             "postgresql": "postgresql",
