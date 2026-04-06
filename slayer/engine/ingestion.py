@@ -190,15 +190,25 @@ def _get_columns_fallback(
     schema: Optional[str],
 ) -> List[Dict]:
     """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
-    schema_filter = f"AND table_schema = '{schema}'" if schema else ""
-    sql = (
-        f"SELECT column_name, data_type "
-        f"FROM information_schema.columns "
-        f"WHERE table_name = '{table_name}' {schema_filter} "
-        f"ORDER BY ordinal_position"
-    )
+    if schema:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name "
+            "AND table_schema = :schema "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name, "schema": schema}
+    else:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name}
     with sa_engine.connect() as conn:
-        rows = conn.execute(sa.text(sql)).fetchall()
+        rows = conn.execute(sa.text(sql), params).fetchall()
     result = []
     for col_name, data_type_str in rows:
         # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL")
@@ -220,18 +230,31 @@ def _get_pk_constraint_fallback(
     schema: Optional[str],
 ) -> Dict:
     """Get PK constraint via INFORMATION_SCHEMA when Inspector.get_pk_constraint() fails."""
-    schema_filter = f"AND tc.table_schema = '{schema}'" if schema else ""
-    sql = (
-        f"SELECT kcu.column_name "
-        f"FROM information_schema.table_constraints tc "
-        f"JOIN information_schema.key_column_usage kcu "
-        f"  ON tc.constraint_name = kcu.constraint_name "
-        f"  AND tc.table_schema = kcu.table_schema "
-        f"WHERE tc.table_name = '{table_name}' "
-        f"  AND tc.constraint_type = 'PRIMARY KEY' {schema_filter}"
-    )
+    if schema:
+        sql = (
+            "SELECT kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name = kcu.constraint_name "
+            "  AND tc.table_schema = kcu.table_schema "
+            "WHERE tc.table_name = :table_name "
+            "  AND tc.constraint_type = 'PRIMARY KEY' "
+            "  AND tc.table_schema = :schema"
+        )
+        params = {"table_name": table_name, "schema": schema}
+    else:
+        sql = (
+            "SELECT kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name = kcu.constraint_name "
+            "  AND tc.table_schema = kcu.table_schema "
+            "WHERE tc.table_name = :table_name "
+            "  AND tc.constraint_type = 'PRIMARY KEY'"
+        )
+        params = {"table_name": table_name}
     with sa_engine.connect() as conn:
-        rows = conn.execute(sa.text(sql)).fetchall()
+        rows = conn.execute(sa.text(sql), params).fetchall()
     return {"constrained_columns": [row[0] for row in rows]}
 
 
