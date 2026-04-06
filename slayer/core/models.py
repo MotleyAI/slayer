@@ -4,7 +4,7 @@ import os
 import re
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.enums import DataType
 
@@ -30,6 +30,18 @@ class ModelJoin(BaseModel):
     """A LEFT JOIN relationship to another model."""
     target_model: str                               # Name of the joined model
     join_pairs: List[List[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
+
+    @field_validator("join_pairs")
+    @classmethod
+    def _validate_join_pairs(cls, v: List[List[str]]) -> List[List[str]]:
+        if not v:
+            raise ValueError("join_pairs must be non-empty")
+        for i, pair in enumerate(v):
+            if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
+                raise ValueError(
+                    f"join_pairs[{i}] must be [source_dim, target_dim] with non-empty strings, got {pair}"
+                )
+        return v
 
 
 class SlayerModel(BaseModel):

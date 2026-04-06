@@ -747,6 +747,7 @@ class SlayerQueryEngine:
             data_source=inner_model.data_source,
             dimensions=dims,
             measures=measures,
+            default_time_dimension=inner_model.default_time_dimension,
         )
 
     def _resolve_cross_model_measure(

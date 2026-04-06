@@ -64,7 +64,11 @@ class SQLGenerator:
             return base_sql
 
         # Wrap base query as CTE, compute expressions/transforms in outer SELECT
-        sql = self._generate_with_computed(enriched=enriched, base_sql=base_sql)
+        # Skip ORDER/LIMIT if cross-model measures will wrap this as a CTE
+        sql = self._generate_with_computed(
+            enriched=enriched, base_sql=base_sql,
+            skip_pagination=has_cross_model,
+        )
 
         # Add cross-model measure CTEs and join them
         if has_cross_model:
@@ -255,7 +259,8 @@ class SQLGenerator:
 
         return select.sql(dialect=self.dialect, pretty=True)
 
-    def _generate_with_computed(self, enriched: EnrichedQuery, base_sql: str) -> str:
+    def _generate_with_computed(self, enriched: EnrichedQuery, base_sql: str,
+                                skip_pagination: bool = False) -> str:
         """Wrap the base query as a CTE and add expressions/transforms as stacked CTE layers.
 
         Transforms that reference other transforms' outputs get their own CTE layer.
@@ -422,21 +427,22 @@ class SQLGenerator:
 
         sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
 
-        # Apply order/limit/offset to the outer query
-        if enriched.order:
-            order_parts = []
-            for order_item in enriched.order:
-                col = order_item.column
-                col_name = f"{col.model or enriched.model_name}.{col.name}"
-                direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'"{col_name}" {direction}')
-            sql += "\nORDER BY " + ", ".join(order_parts)
+        # Apply order/limit/offset — skip if cross-model measures will wrap this
+        if not skip_pagination:
+            if enriched.order:
+                order_parts = []
+                for order_item in enriched.order:
+                    col = order_item.column
+                    col_name = f"{col.model or enriched.model_name}.{col.name}"
+                    direction = "ASC" if order_item.direction == "asc" else "DESC"
+                    order_parts.append(f'"{col_name}" {direction}')
+                sql += "\nORDER BY " + ", ".join(order_parts)
 
-        if enriched.limit is not None:
-            sql += f"\nLIMIT {enriched.limit}"
+            if enriched.limit is not None:
+                sql += f"\nLIMIT {enriched.limit}"
 
-        if enriched.offset is not None:
-            sql += f"\nOFFSET {enriched.offset}"
+            if enriched.offset is not None:
+                sql += f"\nOFFSET {enriched.offset}"
 
         # Apply post-filters (filters referencing computed columns)
         post_filters = [f for f in enriched.filters if f.is_post_filter]
