@@ -7,7 +7,7 @@ A lightweight, open-source semantic layer by [MotleyAI](https://github.com/motle
 ## Key Features
 
 - **Agent-first design** — MCP, Python SDK, and REST API interfaces
-- **Datasource-agnostic** — first-class support for Postgres, MySQL, ClickHouse, and SQLite; additional support for Snowflake, BigQuery, Oracle, Redshift, DuckDB, and more via sqlglot
+- **Datasource-agnostic** — first-class support for Postgres, MySQL, ClickHouse, SQLite, and DuckDB; additional support for Snowflake, BigQuery, Oracle, Redshift, and more via sqlglot
 - **`fields` API** — derived metrics with formulas, transforms (`cumsum`, `time_shift`, `change`), and inline transform filters
 - **Auto-ingestion with rollup joins** — Connect to a DB, introspect schema, generate denormalized models with FK-based LEFT JOINs automatically
 - **Incremental model editing** — Add/remove measures and dimensions without replacing the full model

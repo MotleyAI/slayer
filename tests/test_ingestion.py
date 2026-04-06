@@ -10,19 +10,21 @@ from slayer.engine.ingestion import (
 )
 
 
+def _setup_mock_engine(rows):
+    """Create a mock SQLAlchemy engine with stubbed connection/execute."""
+    engine = MagicMock(spec=sa.Engine)
+    conn = MagicMock()
+    engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    conn.execute.return_value.fetchall.return_value = rows
+    return engine, conn
+
+
 class TestGetColumnsFallback:
     """Tests for _get_columns_fallback parameterized queries."""
 
-    def _setup_engine(self, rows):
-        engine = MagicMock(spec=sa.Engine)
-        conn = MagicMock()
-        engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-        engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-        conn.execute.return_value.fetchall.return_value = rows
-        return engine, conn
-
     def test_without_schema(self):
-        engine, conn = self._setup_engine([("id", "INTEGER"), ("name", "VARCHAR")])
+        engine, conn = _setup_mock_engine([("id", "INTEGER"), ("name", "VARCHAR")])
         result = _get_columns_fallback(sa_engine=engine, table_name="orders", schema=None)
 
         assert len(result) == 2
@@ -41,7 +43,7 @@ class TestGetColumnsFallback:
         assert params == {"table_name": "orders"}
 
     def test_with_schema(self):
-        engine, conn = self._setup_engine([("id", "INTEGER")])
+        engine, conn = _setup_mock_engine([("id", "INTEGER")])
         result = _get_columns_fallback(sa_engine=engine, table_name="orders", schema="public")
 
         assert len(result) == 1
@@ -59,7 +61,7 @@ class TestGetColumnsFallback:
 
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
-        engine, conn = self._setup_engine([])
+        engine, conn = _setup_mock_engine([])
         _get_columns_fallback(sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--")
 
         args, _ = conn.execute.call_args
@@ -71,16 +73,8 @@ class TestGetColumnsFallback:
 class TestGetPkConstraintFallback:
     """Tests for _get_pk_constraint_fallback parameterized queries."""
 
-    def _setup_engine(self, rows):
-        engine = MagicMock(spec=sa.Engine)
-        conn = MagicMock()
-        engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
-        engine.connect.return_value.__exit__ = MagicMock(return_value=False)
-        conn.execute.return_value.fetchall.return_value = rows
-        return engine, conn
-
     def test_without_schema(self):
-        engine, conn = self._setup_engine([("id",)])
+        engine, conn = _setup_mock_engine([("id",)])
         result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", schema=None)
 
         assert result == {"constrained_columns": ["id"]}
@@ -96,7 +90,7 @@ class TestGetPkConstraintFallback:
         assert params == {"table_name": "orders"}
 
     def test_with_schema(self):
-        engine, conn = self._setup_engine([("id",), ("tenant_id",)])
+        engine, conn = _setup_mock_engine([("id",), ("tenant_id",)])
         result = _get_pk_constraint_fallback(sa_engine=engine, table_name="orders", schema="public")
 
         assert result == {"constrained_columns": ["id", "tenant_id"]}
@@ -112,13 +106,13 @@ class TestGetPkConstraintFallback:
         assert params == {"table_name": "orders", "schema": "public"}
 
     def test_empty_result(self):
-        engine, conn = self._setup_engine([])
+        engine, conn = _setup_mock_engine([])
         result = _get_pk_constraint_fallback(sa_engine=engine, table_name="no_pk_table", schema=None)
         assert result == {"constrained_columns": []}
 
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
-        engine, conn = self._setup_engine([])
+        engine, conn = _setup_mock_engine([])
         _get_pk_constraint_fallback(sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--")
 
         args, _ = conn.execute.call_args

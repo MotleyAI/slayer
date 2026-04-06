@@ -52,6 +52,7 @@ These databases are verified by integration tests and runnable Docker examples. 
 | `mysql` / `mariadb` | `pip install motley-slayer[mysql]` | `mysql+pymysql://` | `mysql+pymysql://user:pass@localhost:3306/db` |
 | `clickhouse` | `pip install motley-slayer[clickhouse]` | `clickhouse+http://` | `clickhouse+http://user:pass@localhost:8123/db` |
 | `sqlite` | (built-in) | `sqlite:///` | `sqlite:///path/to/db.sqlite` |
+| `duckdb` | `pip install motley-slayer[duckdb]` | `duckdb:///` | `duckdb:///path/to/db.duckdb` |
 
 ### Additional support
 
@@ -62,7 +63,6 @@ These databases have SQL generation covered by unit tests, but are not verified 
 | `snowflake` | Analytical/cloud warehouse; no foreign keys (like ClickHouse), so auto-ingestion won't discover joins |
 | `bigquery` | Analytical/cloud warehouse; no foreign keys, same caveat as Snowflake |
 | `redshift` | Postgres-based cloud warehouse; FKs are informational only (not enforced) |
-| `duckdb` | Fully Postgres-compatible; great for local analytics and testing |
 | `trino` / `presto` / `athena` | Federated query engines; no FKs, schema depends on the underlying connector |
 | `databricks` / `spark` | Spark SQL-based; no FKs |
 | `oracle` / `mssql` / `sqlserver` / `tsql` | Broadly compatible with Postgres feature set |
