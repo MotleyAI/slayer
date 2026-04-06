@@ -49,6 +49,9 @@ poetry run pytest tests/test_integration.py -m integration
 # Run Postgres integration tests (auto-spawns temp Postgres via pytest-postgresql)
 poetry run pytest tests/test_integration_postgres.py -m integration
 
+# Run DuckDB integration tests (no Docker, runs in-process)
+poetry run pytest tests/test_integration_duckdb.py -m integration
+
 # Run a specific test file
 poetry run pytest tests/test_sql_generator.py -v
 
@@ -92,11 +95,12 @@ SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at
 **Tier 1 — fully tested** (integration tests + Docker examples, must not regress):
 - **SQLite** — integration tests in `test_integration.py`, embedded example
 - **Postgres** — integration tests in `test_integration_postgres.py`, Docker example
+- **DuckDB** — integration tests in `test_integration_duckdb.py` (no Docker, runs in-process)
 - **MySQL** — Docker example with `verify.py`
 - **ClickHouse** — Docker example with `verify.py`
 
 **Tier 2 — code-covered** (unit tests for SQL generation, no live instance verification):
-- Snowflake, BigQuery, Redshift, DuckDB, Trino/Presto, Databricks/Spark, MS SQL Server, Oracle
+- Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, Oracle
 
 Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_shift_join` (per-dialect date arithmetic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_shift_join` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrized tests in `TestMultiDialectGeneration`.
 
@@ -105,4 +109,5 @@ Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific
 - Unit tests: `tests/test_models.py`, `test_sql_generator.py`, `test_storage.py`, `test_sqlite_storage.py`, `test_mcp_server.py`
 - Integration tests (SQLite): `tests/test_integration.py`
 - Integration tests (Postgres): `tests/test_integration_postgres.py` — uses pytest-postgresql (auto-spawns temp Postgres)
+- Integration tests (DuckDB): `tests/test_integration_duckdb.py` — uses duckdb directly (no Docker)
 - Shared fixtures in `tests/conftest.py`
