@@ -20,10 +20,10 @@ NOTEBOOK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "exa
 def test_notebook_runs_without_errors():
     """Execute every cell in the notebook and verify no exceptions are raised."""
     with open(NOTEBOOK_PATH) as f:
-        nb = nbformat.read(f, as_version=4)
+        nb = nbformat.read(fp=f, as_version=4)
 
     client = nbclient.NotebookClient(
-        nb,
+        nb=nb,
         timeout=600,
         kernel_name="python3",
         resources={"metadata": {"path": os.path.dirname(NOTEBOOK_PATH)}},

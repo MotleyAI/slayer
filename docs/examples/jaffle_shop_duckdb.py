@@ -137,38 +137,38 @@ def main() -> None:
         # Create DuckDB and load
         db_path = os.path.join(tmpdir, "jaffle_shop.duckdb")
         conn = duckdb.connect(db_path)
+        try:
+            print("\n=== Creating schema ===")
+            create_schema(conn)
 
-        print("\n=== Creating schema ===")
-        create_schema(conn)
+            print("\n=== Loading data ===")
+            load_data(conn, data_dir)
 
-        print("\n=== Loading data ===")
-        load_data(conn, data_dir)
+            # Verify
+            print("\n=== Verification ===")
+            results = verify(conn)
 
-        # Verify
-        print("\n=== Verification ===")
-        results = verify(conn)
+            print("\nRow counts:")
+            for table, count in results["row_counts"].items():
+                print(f"  {table}: {count}")
 
-        print("\nRow counts:")
-        for table, count in results["row_counts"].items():
-            print(f"  {table}: {count}")
+            print("\nFK integrity (orphaned records, should all be 0):")
+            all_ok = True
+            for fk, count in results["fk_orphans"].items():
+                status = "OK" if count == 0 else f"FAIL ({count} orphans)"
+                if count > 0:
+                    all_ok = False
+                print(f"  {fk}: {status}")
 
-        print("\nFK integrity (orphaned records, should all be 0):")
-        all_ok = True
-        for fk, count in results["fk_orphans"].items():
-            status = "OK" if count == 0 else f"FAIL ({count} orphans)"
-            if count > 0:
-                all_ok = False
-            print(f"  {fk}: {status}")
+            print("\nRevenue by store:")
+            for name, order_count, revenue in results["revenue_by_store"]:
+                print(f"  {name}: {order_count} orders, ${revenue:,.2f}")
 
-        print("\nRevenue by store:")
-        for name, order_count, revenue in results["revenue_by_store"]:
-            print(f"  {name}: {order_count} orders, ${revenue:,.2f}")
-
-        print("\nTop 5 customers by order count:")
-        for name, order_count in results["top_customers"]:
-            print(f"  {name}: {order_count} orders")
-
-        conn.close()
+            print("\nTop 5 customers by order count:")
+            for name, order_count in results["top_customers"]:
+                print(f"  {name}: {order_count} orders")
+        finally:
+            conn.close()
 
         if not all_ok:
             print("\nFAILED: FK integrity violations found!")
