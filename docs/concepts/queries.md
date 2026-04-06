@@ -7,10 +7,9 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `model` | string | Yes | Target model name (or name of a query in the same list) |
-| `joins` | list[ModelJoin] | No | Additional joins to other models or named queries |
+| `model` | string, SlayerModel, or ModelExtension | Yes | Target model name, inline model, or model extension (adds dimensions/measures/joins) |
 | `fields` | list[Field] | No | Data columns — measures, arithmetic, transforms. See [Field Formulas](formulas.md#field-formulas). |
-| `dimensions` | list[ColumnRef] | No | Dimensions to group by — field names, SQL expressions, or formulas |
+| `dimensions` | list[ColumnRef] | No | Dimensions to group by. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
 | `filters` | list[str] | No | Conditions as formula strings. See [Filters](#filters). |
@@ -271,29 +270,46 @@ You can also join named queries to models:
     "fields": [{"formula": "avg_score"}]
   },
   {
-    "model": "orders",
-    "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+    "model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
     "fields": [{"formula": "count"}, {"formula": "customer_scores.avg_score_avg"}],
     "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
   }
 ]
 ```
 
-Queries can also be saved as permanent models — see [Creating Models from Queries](models.md#creating-models-from-queries).
+The main query uses a `ModelExtension` to add a join to the named sub-query. Queries can also be saved as permanent models — see [Creating Models from Queries](models.md#creating-models-from-queries).
 
-### SQL dimensions
+### ModelExtension
 
-Use SQL expressions as grouping dimensions for bucketing, conditional logic, or computed categories:
+Extend a model inline with extra dimensions, measures, or joins — without modifying the stored model:
+
+```json
+{
+  "model": {
+    "source_name": "orders",
+    "dimensions": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+    "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
+  },
+  "dimensions": [{"name": "tier"}],
+  "fields": [{"formula": "count"}]
+}
+```
+
+`ModelExtension` fields: `source_name` (required — model to extend), `dimensions`, `measures`, `joins` (all optional — merged with the source model's).
+
+### Multi-hop dimensions
+
+Dimensions from transitively joined models can be referenced with dotted paths. SLayer auto-resolves the join chain:
 
 ```json
 {
   "model": "orders",
-  "dimensions": [
-    {"sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"}
-  ],
-  "fields": [{"formula": "count"}, {"formula": "total_amount"}]
+  "dimensions": [{"name": "customers.regions.name"}],
+  "fields": [{"formula": "count"}]
 }
 ```
+
+This walks `orders → customers → regions` via the join graph and resolves `name` from the `regions` model. Works with both ingested rollup models and explicit joins.
 
 SQL dimensions can be mixed with regular dimensions. The expression goes directly into SELECT and GROUP BY.
 

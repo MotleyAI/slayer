@@ -52,7 +52,11 @@ joins:
     join_pairs: [["customer_id", "id"]]
 ```
 
-Enables cross-model measures (`customers.avg_score` in an orders query). Auto-generated from FKs during ingestion.
+Enables cross-model measures (`customers.avg_score`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.avg_score)`). Auto-generated from FKs during ingestion. Joins are auto-resolved transitively by walking the join graph.
+
+## Model Filters
+
+Models can have always-applied WHERE filters: `filters: ["deleted_at is None"]`. Only WHERE conditions on underlying table columns.
 
 ## Creating Models from Queries
 
