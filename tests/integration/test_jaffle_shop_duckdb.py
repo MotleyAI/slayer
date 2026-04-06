@@ -20,14 +20,14 @@ from jaffle_shop_duckdb import TABLE_NAMES, create_schema, generate_data, load_d
 def jaffle_db(tmp_path_factory):
     """Generate 30 days of data and load into DuckDB. Shared across all tests in this module."""
     tmpdir = tmp_path_factory.mktemp("jaffle")
-    data_dir = generate_data(str(tmpdir), years=0, days=30)
+    data_dir = generate_data(output_dir=str(tmpdir), years=1)
 
     db_path = tmpdir / "test_jaffle.duckdb"
     conn = duckdb.connect(str(db_path))
 
     schema_path = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "examples", "jaffle_shop_schema.sql")
-    create_schema(conn, schema_path)
-    load_data(conn, data_dir)
+    create_schema(conn=conn, schema_path=schema_path)
+    load_data(conn=conn, data_dir=data_dir)
 
     yield conn
     conn.close()

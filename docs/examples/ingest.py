@@ -38,13 +38,15 @@ def ensure_database(years: int = 3) -> str:
     os.makedirs(WORK_DIR, exist_ok=True)
 
     print(f"=== Generating {years} years of Jaffle Shop data ===")
-    data_dir = generate_data(WORK_DIR, years=years)
+    data_dir = generate_data(output_dir=WORK_DIR, years=years)
 
     print("\n=== Creating DuckDB schema and loading data ===")
     conn = duckdb.connect(DB_PATH)
-    create_schema(conn, SCHEMA_FILE)
-    load_data(conn, data_dir)
-    conn.close()
+    try:
+        create_schema(conn=conn, schema_path=SCHEMA_FILE)
+        load_data(conn=conn, data_dir=data_dir)
+    finally:
+        conn.close()
 
     print(f"\nDatabase created at {DB_PATH}")
     return DB_PATH
