@@ -64,19 +64,10 @@ class SlayerQueryEngine:
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
 
-        # Resolve model: check named queries first, then storage
-        model = self._resolve_model(
-            model_name=query.model, named_queries=named_queries,
+        # Resolve model from query.model (str, SlayerModel, or ModelExtension)
+        model = self._resolve_query_model(
+            query_model=query.model, named_queries=named_queries,
         )
-
-        # Merge query-level joins with model-level joins
-        if query.joins:
-            from slayer.core.models import ModelJoin
-            extra_joins = [ModelJoin.model_validate(j) if isinstance(j, dict) else j
-                           for j in query.joins]
-            model = model.model_copy(update={
-                "joins": list(model.joins) + extra_joins,
-            })
 
         datasource = self._resolve_datasource(model=model)
 
@@ -113,6 +104,43 @@ class SlayerQueryEngine:
                 labels[t.alias] = t.label
 
         return SlayerResponse(data=rows, sql=sql, labels=labels)
+
+    def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
+        """Resolve query.model — handles str, SlayerModel, and ModelExtension."""
+        from slayer.core.query import ModelExtension
+        named_queries = named_queries or {}
+
+        if isinstance(query_model, str):
+            return self._resolve_model(model_name=query_model, named_queries=named_queries)
+        elif isinstance(query_model, SlayerModel):
+            return query_model
+        elif isinstance(query_model, ModelExtension):
+            base = self._resolve_model(
+                model_name=query_model.source_name, named_queries=named_queries,
+            )
+            # Extend the base model with extra dims/measures/joins
+            from slayer.core.models import ModelJoin
+            extra_dims = [Dimension.model_validate(d) if isinstance(d, dict) else d
+                          for d in (query_model.dimensions or [])]
+            extra_measures = [Measure.model_validate(m) if isinstance(m, dict) else m
+                              for m in (query_model.measures or [])]
+            extra_joins = [ModelJoin.model_validate(j) if isinstance(j, dict) else j
+                           for j in (query_model.joins or [])]
+            return base.model_copy(update={
+                "dimensions": list(base.dimensions) + extra_dims,
+                "measures": list(base.measures) + extra_measures,
+                "joins": list(base.joins) + extra_joins,
+            })
+        elif isinstance(query_model, dict):
+            # Dict — could be ModelExtension or SlayerModel
+            if "source_name" in query_model:
+                ext = ModelExtension.model_validate(query_model)
+                return self._resolve_query_model(ext, named_queries)
+            else:
+                model = SlayerModel.model_validate(query_model)
+                return model
+        else:
+            raise ValueError(f"Invalid query.model type: {type(query_model)}")
 
     _resolving: set = set()  # Track currently resolving models to detect cycles
 
@@ -202,44 +230,40 @@ class SlayerQueryEngine:
         This is where name-based references (e.g., field="count") get resolved
         to their SQL expressions, aggregation types, and model context.
         """
-        # Resolve dimensions (three modes: field name, formula, raw SQL)
+        # Resolve dimensions — look up each from the model definition.
+        # Supports multi-hop dotted names (e.g., "customers.regions.name") by
+        # translating to the __ convention used by rollup dimensions.
+        model_name_str = query.model if isinstance(query.model, str) else model.name
         dimensions = []
-        computed_dimensions = []  # Formula/SQL dims that need CTE wrapping
         for dim_ref in (query.dimensions or []):
-            if dim_ref.sql:
-                # Mode 3: raw SQL expression — becomes a computed dimension
-                dimensions.append(EnrichedDimension(
-                    name=dim_ref.name,
-                    sql=dim_ref.sql,
-                    type=DataType.STRING,
-                    alias=f"{query.model}.{dim_ref.name}",
-                    model_name=model.name,
-                    label=dim_ref.label,
-                ))
-                computed_dimensions.append(dim_ref)
-            elif dim_ref.formula:
-                # Mode 2: formula — will be resolved after measures are known
-                # For now, add a placeholder dimension; the formula will be
-                # resolved into an expression during field processing
-                dimensions.append(EnrichedDimension(
-                    name=dim_ref.name,
-                    sql=None,  # Resolved later
-                    type=DataType.NUMBER,
-                    alias=f"{query.model}.{dim_ref.name}",
-                    model_name=model.name,
-                    label=dim_ref.label,
-                ))
-                computed_dimensions.append(dim_ref)
-            else:
-                # Mode 1: existing model dimension
-                dim_def = model.get_dimension(dim_ref.name)
-                dimensions.append(EnrichedDimension(
-                    name=dim_ref.name,
-                    sql=dim_def.sql if dim_def else None,
-                    type=dim_def.type if dim_def else DataType.STRING,
-                    alias=f"{query.model}.{dim_ref.name}",
-                    model_name=model.name,
-                    label=dim_ref.label,
+            dim_name = dim_ref.name
+            # Multi-hop dotted name → translate to __ convention
+            # "customers.regions.name" → "customers__regions__name"
+            # Also try direct lookup first (for explicitly named dims)
+            dim_def = model.get_dimension(dim_name)
+            if dim_def is None and "." in dim_name:
+                # Try progressively shorter __ translations (for rollup dims):
+                parts = dim_name.split(".")
+                for start in range(len(parts)):
+                    candidate = "__".join(parts[start:])
+                    dim_def = model.get_dimension(candidate)
+                    if dim_def:
+                        dim_name = candidate
+                        break
+
+                # If still not found, walk the join graph
+                if dim_def is None:
+                    dim_def = self._resolve_dimension_via_joins(
+                        model=model, parts=parts, named_queries=named_queries or {},
+                    )
+                    if dim_def:
+                        dim_name = dim_def.name
+            dimensions.append(EnrichedDimension(
+                name=dim_ref.name,  # Keep original dotted name for the user
+                sql=dim_def.sql if dim_def else None,
+                type=dim_def.type if dim_def else DataType.STRING,
+                alias=f"{model_name_str}.{dim_ref.name}",
+                model_name=model.name, label=dim_ref.label,
             ))
 
         # Measures are populated from fields (bare measure names auto-add here)
@@ -254,7 +278,7 @@ class SlayerQueryEngine:
                 sql=dim_def.sql if dim_def else None,
                 granularity=td.granularity,
                 date_range=td.date_range,
-                alias=f"{query.model}.{td.dimension.name}",
+                alias=f"{model_name_str}.{td.dimension.name}",
                 model_name=model.name,
                 label=td.label,
             ))
@@ -338,9 +362,9 @@ class SlayerQueryEngine:
                     raise ValueError(f"Measure '{mname}' not found in model '{model.name}'")
                 measures.append(EnrichedMeasure(
                     name=mname, sql=measure_def.sql, type=measure_def.type,
-                    alias=f"{query.model}.{mname}", model_name=model.name,
+                    alias=f"{model_name_str}.{mname}", model_name=model.name,
                 ))
-                known_aliases[mname] = f"{query.model}.{mname}"
+                known_aliases[mname] = f"{model_name_str}.{mname}"
 
         def _resolve_sql(sql: str) -> str:
             """Replace known names with their quoted aliases."""
@@ -368,7 +392,7 @@ class SlayerQueryEngine:
                     f"Field '{name}' ({transform}) requires a time_dimension in the query "
                     f"with a granularity for time bucketing."
                 )
-            alias = f"{query.model}.{name}"
+            alias = f"{model_name_str}.{name}"
             enriched_transforms.append(EnrichedTransform(
                 name=name, transform=transform, measure_alias=measure_alias,
                 alias=alias, offset=offset, granularity=granularity,
@@ -396,12 +420,12 @@ class SlayerQueryEngine:
                     return cm.alias
 
                 _ensure_measure(spec.name)
-                return f"{query.model}.{spec.name}"
+                return f"{model_name_str}.{spec.name}"
 
             elif isinstance(spec, ArithmeticField):
                 for mname in spec.measure_names:
                     _ensure_measure(mname)
-                alias = f"{query.model}.{field_name}"
+                alias = f"{model_name_str}.{field_name}"
                 enriched_expressions.append(EnrichedExpression(
                     name=field_name, sql=_resolve_sql(spec.sql), alias=alias,
                 ))
@@ -416,7 +440,7 @@ class SlayerQueryEngine:
                 for placeholder, sub_transform in spec.sub_transforms:
                     _flatten_spec(sub_transform, placeholder)
                 # Now build the arithmetic referencing placeholders
-                alias = f"{query.model}.{field_name}"
+                alias = f"{model_name_str}.{field_name}"
                 enriched_expressions.append(EnrichedExpression(
                     name=field_name, sql=_resolve_sql(spec.sql), alias=alias,
                 ))
@@ -424,13 +448,6 @@ class SlayerQueryEngine:
                 return alias
 
             elif isinstance(spec, TransformField):
-                # Validate: transforms on cross-model measures not yet supported
-                if isinstance(spec.inner, MeasureRef) and "." in spec.inner.name:
-                    raise ValueError(
-                        f"Transforms on cross-model measures ('{spec.inner.name}') are not yet supported "
-                        f"in a single query. Use a query list instead: compute the cross-model measure "
-                        f"in an inner query, then apply the transform in the outer query."
-                    )
 
                 # Validate: nesting a self-join transform inside another is not supported
                 # (e.g., change(time_shift(x)) — the outer's shifted CTE can't replay the inner)
@@ -473,7 +490,7 @@ class SlayerQueryEngine:
                     name=field_name, transform=spec.transform,
                     measure_alias=inner_alias, offset=offset, granularity=granularity,
                 )
-                return f"{query.model}.{field_name}"
+                return f"{model_name_str}.{field_name}"
 
             raise ValueError(f"Unsupported field spec: {spec!r}")
 
@@ -511,7 +528,7 @@ class SlayerQueryEngine:
                 _flatten_spec(spec, field_name)
                 # Apply label to the last enriched expression or transform
                 if field.label:
-                    alias = f"{query.model}.{field_name}"
+                    alias = f"{model_name_str}.{field_name}"
                     for e in enriched_expressions:
                         if e.alias == alias:
                             e.label = field.label
@@ -519,42 +536,26 @@ class SlayerQueryEngine:
                         if t.alias == alias:
                             t.label = field.label
 
-        # Resolve formula dimensions now that measures are known.
-        # Formula dimensions referencing aggregated measures can't be computed
-        # in the same query — they need a multistage approach (query list).
         measure_names_set = {m.name for m in measures}
-        for dim_ref in computed_dimensions:
-            if dim_ref.formula:
-                spec = parse_formula(dim_ref.formula)
-                refs = []
-                if isinstance(spec, MeasureRef):
-                    refs = [spec.name]
-                elif isinstance(spec, ArithmeticField):
-                    refs = spec.measure_names
 
-                # Check if the formula references aggregated measures
-                if any(r in measure_names_set for r in refs):
+        # Validate model-level filters: must be WHERE-only (underlying table columns)
+        for mf in model.filters:
+            parsed_mf = parse_filter(mf)
+            for col in parsed_mf.columns:
+                if col in measure_names_set:
                     raise ValueError(
-                        f"Formula dimension '{dim_ref.name}' references aggregated measures "
-                        f"({', '.join(r for r in refs if r in measure_names_set)}). "
-                        f"Use a query list instead: compute measures in the inner query, "
-                        f"then group by the formula in the outer query."
+                        f"Model filter '{mf}' references measure '{col}'. "
+                        f"Model filters can only reference underlying table columns (WHERE). "
+                        f"Use query-level filters for measure conditions."
                     )
-
-                # Non-measure formula: resolve as SQL expression
-                for r in refs:
-                    _ensure_measure(r)
-                resolved_sql = _resolve_sql(dim_ref.formula)
-                for d in dimensions:
-                    if d.name == dim_ref.name and d.sql is None:
-                        d.sql = resolved_sql
-                        break
 
         # Pre-process filters: extract inline transform expressions
         # (e.g., "last(change(revenue)) < 0" → hidden field + rewritten filter)
+        # Combine model-level filters with query-level filters
+        all_filter_strs = list(model.filters) + list(query.filters or [])
         processed_filters = []
         ft_counter = [0]  # Shared counter across all filters for unique _ftN names
-        for f_str in (query.filters or []):
+        for f_str in all_filter_strs:
             rewritten, extra_fields = SlayerQueryEngine._extract_filter_transforms(
                 f_str, counter=ft_counter,
             )
@@ -750,6 +751,36 @@ class SlayerQueryEngine:
             default_time_dimension=inner_model.default_time_dimension,
         )
 
+    def _resolve_dimension_via_joins(
+        self, model: SlayerModel, parts: list[str],
+        named_queries: dict = None,
+    ) -> "Dimension | None":
+        """Walk the join graph to resolve a multi-hop dimension.
+
+        For "customers.regions.name", walks: model → customers → regions,
+        then looks up "name" on the regions model.
+        """
+        current_model = model
+        # Walk intermediate models (all parts except the last, which is the dim name)
+        for hop_name in parts[:-1]:
+            # Find join to this hop
+            join = None
+            for j in current_model.joins:
+                if j.target_model == hop_name:
+                    join = j
+                    break
+            if join is None:
+                return None  # No join found for this hop
+            # Load the target model
+            target = self._resolve_model(
+                model_name=hop_name, named_queries=named_queries or {},
+            )
+            current_model = target
+
+        # Look up the final dimension on the terminal model
+        dim_name = parts[-1]
+        return current_model.get_dimension(dim_name)
+
     def _resolve_cross_model_measure(
         self, spec_name: str, field_name: str,
         model: SlayerModel, query,
@@ -798,7 +829,8 @@ class SlayerQueryEngine:
         shared_dims = list(dimensions)
         shared_time_dims = list(time_dimensions)
 
-        alias = f"{query.model}.{target_model_name}__{measure_name}"
+        query_model_name = query.model if isinstance(query.model, str) else model.name
+        alias = f"{query_model_name}.{target_model_name}__{measure_name}"
 
         return CrossModelMeasure(
             name=field_name,
@@ -822,13 +854,17 @@ class SlayerQueryEngine:
 
     def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
         ds_name = model.data_source
-        if ds_name:
-            ds = self.storage.get_datasource(ds_name)
-            if ds is not None:
-                return ds
-        raise ValueError(
-            f"Datasource '{ds_name}' not found for model '{model.name}'"
-        )
+        if not ds_name:
+            raise ValueError(
+                f"Model '{model.name}' has no data_source configured. "
+                f"Set data_source on the model or ensure the source model has one."
+            )
+        ds = self.storage.get_datasource(ds_name)
+        if ds is None:
+            raise ValueError(
+                f"Datasource '{ds_name}' not found for model '{model.name}'"
+            )
+        return ds
 
     @staticmethod
     def _dialect_for_type(ds_type: Optional[str]) -> str:

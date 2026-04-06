@@ -431,12 +431,14 @@ class TestCrossModelAndMultistage:
         assert result.data[0]["pg_monthly.count"] == 3
 
     def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
-        """SQL expression dimension with Postgres."""
+        """SQL expression dimension via ModelExtension with Postgres."""
+        from slayer.core.query import ModelExtension
         query = SlayerQuery(
-            model="orders",
-            dimensions=[
-                ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
-            ],
+            model=ModelExtension(
+                source_name="orders",
+                dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+            ),
+            dimensions=[ColumnRef(name="tier")],
             fields=[Field(formula="count")],
         )
         result = pg_cross_model_env.execute(query=query)
@@ -593,6 +595,52 @@ class TestRollupIngestion:
         assert by_region["EU"]["orders.count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0
+
+    def test_dotted_dimension_single_hop(self, pg_ingest_env) -> None:
+        """Dotted dimension 'customers.name' resolves to 'customers__name'."""
+        models, ds, _ = pg_ingest_env
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_datasource(ds)
+        for m in models:
+            storage.save_model(m)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "customers.name"}],
+        )
+        result = engine.execute(query=query)
+
+        by_name = {r["orders.customers.name"]: r["orders.count"] for r in result.data}
+        assert by_name["Acme"] == 2
+        assert by_name["Globex"] == 1
+        assert by_name["Initech"] == 1
+
+    def test_dotted_dimension_multi_hop(self, pg_ingest_env) -> None:
+        """Multi-hop dotted dimension 'customers.regions.name' resolves transitively."""
+        models, ds, _ = pg_ingest_env
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_datasource(ds)
+        for m in models:
+            storage.save_model(m)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "customers.regions.name"}],
+        )
+        result = engine.execute(query=query)
+
+        # Same as regions__name: US=3, EU=1
+        by_region = {r["orders.customers.regions.name"]: r["orders.count"] for r in result.data}
+        assert by_region["US"] == 3
+        assert by_region["EU"] == 1
 
     def test_orders_has_joins_metadata(self, pg_ingest_env) -> None:
         """Ingested models should have explicit join metadata."""

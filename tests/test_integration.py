@@ -18,6 +18,7 @@ from slayer.core.models import (
 from slayer.core.query import (
     ColumnRef,
     Field,
+    ModelExtension,
     OrderItem,
     SlayerQuery,
     TimeDimension,
@@ -920,19 +921,28 @@ def test_cross_model_measure_no_join_raises(cross_model_env):
         engine.execute(query)
 
 
-def test_transform_on_cross_model_raises(cross_model_env):
-    """Transforms on cross-model measures should error with guidance."""
+def test_transform_on_cross_model(cross_model_env):
+    """Transforms on cross-model measures work (applied after the cross-model join)."""
     engine = cross_model_env
 
+    # cumsum of avg customer score per month
     query = SlayerQuery(
         model="orders",
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="cumsum(customers.avg_score)", name="running")],
+        fields=[
+            Field(formula="customers.avg_score"),
+            Field(formula="cumsum(customers.avg_score)", name="running"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    with pytest.raises(ValueError, match="not yet supported"):
-        engine.execute(query)
+    response = engine.execute(query)
+
+    # Jan: Alice(90) → cumsum=90, Feb: Bob(60) → cumsum=150, Mar: Charlie(80)+Alice(90)=85 → cumsum=235
+    assert response.data[0]["orders.running"] == pytest.approx(90.0)
+    assert response.data[1]["orders.running"] == pytest.approx(150.0)
+    assert response.data[2]["orders.running"] == pytest.approx(235.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1032,9 +1042,12 @@ def test_query_list_with_joins(cross_model_env):
     # Main query: monthly orders joined to customer_scores
     # In the virtual model, inner measures become dimensions with auto-generated
     # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
+    from slayer.core.query import ModelExtension
     main = SlayerQuery(
-        model="orders",
-        joins=[{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+        model=ModelExtension(
+            source_name="orders",
+            joins=[{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+        ),
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
@@ -1058,17 +1071,16 @@ def test_query_list_with_joins(cross_model_env):
 # Expanded dimensions (SQL expressions)
 # ---------------------------------------------------------------------------
 
-def test_sql_dimension(integration_env):
-    """SQL expression dimension: CASE to bucket amounts."""
+def test_sql_dimension_via_model_extension(integration_env):
+    """SQL expression dimension via ModelExtension: CASE to bucket amounts."""
     engine = integration_env
 
-    # Seed data: amounts are 100, 200, 50, 75, 300, 25
-    # high (>100): 200, 300 → 2 orders; low: 100, 50, 75, 25 → 4 orders
     query = SlayerQuery(
-        model="orders",
-        dimensions=[
-            ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
-        ],
+        model=ModelExtension(
+            source_name="orders",
+            dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        ),
+        dimensions=[ColumnRef(name="tier")],
         fields=[Field(formula="count")],
     )
     response = engine.execute(query)
@@ -1079,15 +1091,15 @@ def test_sql_dimension(integration_env):
 
 
 def test_sql_dimension_with_regular(integration_env):
-    """SQL dimension mixed with regular dimension."""
+    """SQL dimension via ModelExtension mixed with regular dimension."""
     engine = integration_env
 
     query = SlayerQuery(
-        model="orders",
-        dimensions=[
-            ColumnRef(name="status"),
-            ColumnRef(sql="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier"),
-        ],
+        model=ModelExtension(
+            source_name="orders",
+            dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+        ),
+        dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
         fields=[Field(formula="count")],
     )
     response = engine.execute(query)
@@ -1096,19 +1108,6 @@ def test_sql_dimension_with_regular(integration_env):
     data = {(r["orders.status"], r["orders.tier"]): r["orders.count"] for r in response.data}
     assert data[("completed", "high")] == 2
     assert data[("completed", "low")] == 1
-
-
-def test_formula_dimension_on_measures_raises(integration_env):
-    """Formula dimensions referencing aggregated measures should error with guidance."""
-    engine = integration_env
-
-    query = SlayerQuery(
-        model="orders",
-        dimensions=[ColumnRef(formula="total_amount / count", name="avg_amount")],
-        fields=[Field(formula="count")],
-    )
-    with pytest.raises(ValueError, match="references aggregated measures"):
-        engine.execute(query)
 
 
 def test_formula_dimension_via_query_list(integration_env):
@@ -1125,13 +1124,14 @@ def test_formula_dimension_via_query_list(integration_env):
         fields=[Field(formula="total_amount")],
     )
 
-    # Outer: group by amount tier using SQL dimension on the inner query's result
+    # Outer: group by amount tier via ModelExtension on the inner query's result
     outer = SlayerQuery(
-        model="monthly",
-        dimensions=[
-            ColumnRef(sql="CASE WHEN total_amount > 200 THEN 'high' ELSE 'low' END",
-                      name="amount_tier"),
-        ],
+        model=ModelExtension(
+            source_name="monthly",
+            dimensions=[{"name": "amount_tier",
+                         "sql": "CASE WHEN total_amount > 200 THEN 'high' ELSE 'low' END"}],
+        ),
+        dimensions=[ColumnRef(name="amount_tier")],
         fields=[Field(formula="count")],
     )
 

@@ -53,6 +53,7 @@ class SlayerModel(BaseModel):
     dimensions: List[Dimension] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
     joins: List[ModelJoin] = Field(default_factory=list)
+    filters: List[str] = Field(default_factory=list)  # Model-level filters (always applied)
     default_time_dimension: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False

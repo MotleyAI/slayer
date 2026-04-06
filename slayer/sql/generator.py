@@ -245,7 +245,10 @@ class SQLGenerator:
         if where_clause is not None and not has_last_measures:
             select = select.where(where_clause)
 
-        if has_aggregation and group_by_columns:
+        # Group by when there are aggregations, or when cross-model measures
+        # exist (to deduplicate the base rows for the cross-model join)
+        needs_group_by = has_aggregation or bool(enriched.cross_model_measures)
+        if needs_group_by and group_by_columns:
             for gb in group_by_columns:
                 select = select.group_by(gb)
 
@@ -284,8 +287,11 @@ class SQLGenerator:
         # (time_shift, change, change_pct) get their own CTE with a LEFT JOIN.
         # Window transforms (cumsum, lag, lead, rank, last) are batched into a
         # single CTE layer with OVER() expressions.
+        # Exclude transforms that depend on cross-model measure aliases —
+        # those are applied after the cross-model join in _generate_with_cross_model
+        cm_aliases = {cm.alias for cm in enriched.cross_model_measures}
         pending_expressions = list(enriched.expressions)
-        pending_transforms = list(enriched.transforms)
+        pending_transforms = [t for t in enriched.transforms if t.measure_alias not in cm_aliases]
         layer_num = 0
         while pending_expressions or pending_transforms:
             layer_num += 1
@@ -494,8 +500,12 @@ class SQLGenerator:
             main_columns.append(m.alias)
         for expr in enriched.expressions:
             main_columns.append(expr.alias)
+        # Transforms that depend on cross-model aliases are computed in the
+        # outer SELECT, not inside _main — exclude them from main_columns
+        cm_aliases_pre = {cm.alias for cm in enriched.cross_model_measures}
         for t in enriched.transforms:
-            main_columns.append(t.alias)
+            if t.measure_alias not in cm_aliases_pre:
+                main_columns.append(t.alias)
 
         # Generate a CTE for each cross-model measure (deduplicate by CTE name)
         cm_cte_names = []
@@ -556,15 +566,43 @@ class SQLGenerator:
                 f"FROM {from_sql}\n"
                 f"LEFT JOIN {target_from} ON {join_on}"
             )
+
+            # Apply the main query's WHERE filters to the cross-model CTE
+            where_clause, _ = self._build_where_and_having(enriched=enriched)
+            if where_clause is not None:
+                cte_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
+
             if group_parts:
                 cte_sql += f"\nGROUP BY {', '.join(group_parts)}"
 
             ctes.append(f"{cte_name} AS (\n{cte_sql}\n)")
 
-        # Build final SELECT: main columns + cross-model measure columns
+        # Identify transforms that depend on cross-model measure aliases
+        cm_aliases = {cm.alias for _, cm in cm_cte_names}
+        post_cm_transforms = [t for t in enriched.transforms if t.measure_alias in cm_aliases]
+
+        # Build final SELECT: main columns + cross-model measure columns + post-CM transforms
         final_parts = [f'_main."{a}"' for a in main_columns]
+        seen_cm_aliases = set()
         for cte_name, cm in cm_cte_names:
-            final_parts.append(f'{cte_name}."{cm.alias}"')
+            if cm.alias not in seen_cm_aliases:
+                seen_cm_aliases.add(cm.alias)
+                final_parts.append(f'{cte_name}."{cm.alias}"')
+        for t in post_cm_transforms:
+            window_sql = self._build_transform_sql(t)
+            # Replace the quoted measure alias with the cross-model CTE reference
+            for cte_name, cm in cm_cte_names:
+                if cm.alias == t.measure_alias:
+                    window_sql = window_sql.replace(
+                        f'"{t.measure_alias}"', f'{cte_name}."{cm.alias}"'
+                    )
+                    break
+            # Qualify time alias with _main to avoid ambiguity in JOINed context
+            if t.time_alias:
+                window_sql = window_sql.replace(
+                    f'"{t.time_alias}"', f'_main."{t.time_alias}"'
+                )
+            final_parts.append(f'{window_sql} AS "{t.alias}"')
 
         # Build JOINs: join each cross-model CTE to _main on shared dimensions (deduplicate)
         from_clause = "FROM _main"

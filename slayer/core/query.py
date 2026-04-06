@@ -18,24 +18,23 @@ _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class ColumnRef(BaseModel):
-    """Reference to a dimension — by name, formula, or SQL expression.
+    """Reference to a dimension by name.
 
-    Three modes:
-      - {"name": "status"} — existing model dimension
-      - {"formula": "revenue / count", "name": "aov"} — computed from measures
-      - {"sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"} — raw SQL
+    Supports dotted names for joined models: "status", "customers.name",
+    "customers.regions.name" (multi-hop). Computed dimensions (SQL expressions)
+    should be defined via ModelExtension on the query's model.
     """
     name: str
     model: Optional[str] = None
-    formula: Optional[str] = None  # Computed dimension (parsed like a field formula)
-    sql: Optional[str] = None  # Raw SQL expression for the dimension
-    label: Optional[str] = None  # Human-readable label for output
+    label: Optional[str] = None
 
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        if not _NAME_PATTERN.match(v):
-            raise ValueError(f"Invalid name '{v}': must contain only letters, digits, and underscores, and start with a letter or underscore")
+        # Allow dotted names for multi-hop joined dimensions (e.g., "customers.regions.name")
+        for part in v.split("."):
+            if not _NAME_PATTERN.match(part):
+                raise ValueError(f"Invalid name '{v}': each part must contain only letters, digits, and underscores")
         return v
 
     @property
@@ -45,7 +44,7 @@ class ColumnRef(BaseModel):
         return self.name
 
     @classmethod
-    def from_string(cls, s: str) -> "ColumnRef":
+    def from_string(cls, s: str) -> ColumnRef:
         if "." in s:
             model, name = s.split(".", 1)
             return cls(name=name, model=model)
@@ -56,7 +55,7 @@ class TimeDimension(BaseModel):
     dimension: ColumnRef
     granularity: TimeGranularity
     date_range: Optional[List[str]] = None
-    label: Optional[str] = None  # Human-readable label for output
+    label: Optional[str] = None
 
 
 class OrderItem(BaseModel):
@@ -92,6 +91,18 @@ class Field(BaseModel):
         return v
 
 
+class ModelExtension(BaseModel):
+    """Extend an existing model with extra dimensions, measures, or joins.
+
+    Used inline on a query to add computed dimensions (SQL expressions),
+    extra joins, or additional measures without modifying the stored model.
+    """
+    source_name: str                    # Model/query to extend
+    dimensions: Optional[List] = None   # Extra Dimension objects
+    measures: Optional[List] = None     # Extra Measure objects
+    joins: Optional[List] = None        # Extra ModelJoin objects
+
+
 class SlayerQuery(BaseModel):
     """User-facing query object. Specifies what data to retrieve from a model.
 
@@ -104,8 +115,7 @@ class SlayerQuery(BaseModel):
     """
 
     name: Optional[str] = None  # For referencing this query from other queries in a list
-    model: str  # Base model name
-    joins: Optional[List] = None  # Joins to other models/queries (list of ModelJoin-like dicts)
+    model: object  # str (model name), SlayerModel (inline), or ModelExtension
     fields: Optional[List[Field]] = None
     dimensions: Optional[List[ColumnRef]] = None
     time_dimensions: Optional[List[TimeDimension]] = None

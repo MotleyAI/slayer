@@ -193,22 +193,28 @@ def _generate_joins(
                        if ref_table in referenced_tables and ref_table not in processed}
 
         for ref_table in next_tables:
-            # Find the join condition: which processed table references this ref_table
+            # Collect ALL join pairs for this ref_table from a processed referencing table
+            # (handles composite FKs with multiple columns)
+            join_pairs = []
+            found_referencing = None
             for referencing_table, fk_col, tgt_col in reverse_refs[ref_table]:
                 if referencing_table in processed:
-                    # For transitive joins, the source dim needs to be qualified
-                    # with the referencing table if it's not the source table
-                    if referencing_table == source_table:
-                        source_dim = fk_col
-                    else:
-                        source_dim = f"{referencing_table}__{fk_col}"
-                    joins.append(ModelJoin(
-                        target_model=ref_table,
-                        join_pairs=[[source_dim, tgt_col]],
-                    ))
-                    processed.add(ref_table)
-                    queue.append(ref_table)
-                    break
+                    if found_referencing is None:
+                        found_referencing = referencing_table
+                    if referencing_table == found_referencing:
+                        if referencing_table == source_table:
+                            source_dim = fk_col
+                        else:
+                            source_dim = f"{referencing_table}__{fk_col}"
+                        join_pairs.append([source_dim, tgt_col])
+
+            if join_pairs:
+                joins.append(ModelJoin(
+                    target_model=ref_table,
+                    join_pairs=join_pairs,
+                ))
+                processed.add(ref_table)
+                queue.append(ref_table)
 
     return joins
 
