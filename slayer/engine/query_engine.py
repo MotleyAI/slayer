@@ -529,7 +529,8 @@ class SlayerQueryEngine:
 
             if isinstance(spec, MeasureRef):
                 # Check for cross-model measure reference (e.g., "customers.avg_score")
-                if "." in spec.name:
+                # But check local measures first (dotted names from ingestion like "customers.count")
+                if "." in spec.name and model.get_measure(spec.name) is None:
                     cm = self._resolve_cross_model_measure(
                         spec_name=spec.name, field_name=field_name,
                         model=model, query=query,
