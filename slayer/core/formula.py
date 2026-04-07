@@ -310,6 +310,12 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
         inner = _filter_node_to_sql(node.operand, original, columns)
         return f"NOT ({inner})"
 
+    # Dotted name → joined column reference (e.g., customers.name)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        dotted = f"{node.value.id}.{node.attr}"
+        columns.append(dotted)
+        return dotted
+
     # Name → column reference
     if isinstance(node, ast.Name):
         if node.id != "None":

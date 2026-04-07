@@ -938,13 +938,18 @@ class SQLGenerator:
                 having_parts.append(having_sql)
             else:
                 # WHERE: qualify column names with model name
+                # Dotted names (joined columns) are already table-qualified
                 qualified_sql = f.sql
                 for col_name in dict.fromkeys(f.columns):
-                    qualified_sql = re.sub(
-                        rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
-                        f"{model}.{col_name}",
-                        qualified_sql,
-                    )
+                    if "." in col_name:
+                        # Already qualified (e.g., "customers.name") — keep as-is
+                        pass
+                    else:
+                        qualified_sql = re.sub(
+                            rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
+                            f"{model}.{col_name}",
+                            qualified_sql,
+                        )
                 where_parts.append(qualified_sql)
 
         where_clause = None

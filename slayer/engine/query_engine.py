@@ -559,14 +559,16 @@ class SlayerQueryEngine:
 
         measure_names_set = {m.name for m in measures}
 
-        # Validate model-level filters: must be WHERE-only (underlying table columns)
+        # Validate model-level filters: must be WHERE-only (table columns, including joined).
+        # Dotted names (e.g., "customers.status") reference joined table columns — allowed.
+        # Measure references are not allowed (those are HAVING, not WHERE).
         for mf in model.filters:
             parsed_mf = parse_filter(mf)
             for col in parsed_mf.columns:
                 if col in measure_names_set:
                     raise ValueError(
                         f"Model filter '{mf}' references measure '{col}'. "
-                        f"Model filters can only reference underlying table columns (WHERE). "
+                        f"Model filters can only reference table columns (WHERE). "
                         f"Use query-level filters for measure conditions."
                     )
 
@@ -605,6 +607,14 @@ class SlayerQueryEngine:
                     needed_tables.add(part)
         for cm in cross_model_measures:
             needed_tables.add(cm.target_model_name)
+        # Scan processed filters for dotted column references (joined table columns)
+        for f_str in processed_filters:
+            parsed_f = parse_filter(f_str)
+            for col in parsed_f.columns:
+                if "." in col:
+                    parts = col.split(".")
+                    for part in parts[:-1]:
+                        needed_tables.add(part)
 
         # Compute transitive dependencies: if "regions" is needed but it's reached
         # via "customers", include "customers" too. Walk the join graph backward.

@@ -1198,3 +1198,63 @@ def test_circular_join_graph_raises(tmp_path):
     )
     with pytest.raises(ValueError, match="Circular join"):
         engine.execute(query)
+
+
+# ---------------------------------------------------------------------------
+# Model filters on joined columns
+# ---------------------------------------------------------------------------
+
+def test_model_filter_on_joined_column(tmp_path):
+    """Model-level filter on a joined column applies WHERE correctly."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region TEXT)")
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)")
+    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+        (1, "Alice", "US"), (2, "Bob", "EU"), (3, "Charlie", "US")])
+    conn.executemany("INSERT INTO orders VALUES (?, ?, ?)", [
+        (1, 1, 100), (2, 1, 200), (3, 2, 50), (4, 3, 300)])
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="db",
+        dimensions=[
+            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Dimension(name="customers.name", sql="name", type=DataType.STRING),
+            Dimension(name="customers.region", sql="region", type=DataType.STRING),
+        ],
+        measures=[Measure(name="count", type=DataType.COUNT),
+                  Measure(name="total", sql="amount", type=DataType.SUM)],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        filters=["customers.region == 'US'"],
+    ))
+    storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="db",
+        dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
+                    Dimension(name="name", sql="name", type=DataType.STRING),
+                    Dimension(name="region", sql="region", type=DataType.STRING)],
+        measures=[Measure(name="count", type=DataType.COUNT)],
+    ))
+
+    engine = SlayerQueryEngine(storage=storage)
+
+    # Model filter "customers.region == 'US'" should exclude Bob (EU)
+    result = engine.execute(SlayerQuery(
+        model="orders",
+        dimensions=[ColumnRef(name="customers.name")],
+        fields=[Field(formula="count")],
+    ))
+
+    names = {r["orders.customers.name"] for r in result.data}
+    assert "Alice" in names
+    assert "Charlie" in names
+    assert "Bob" not in names  # Filtered by model filter
+
+    # JOIN must be included even though the filter (not the dimension) needs it
+    assert "LEFT JOIN" in result.sql
+    assert "customers" in result.sql
