@@ -152,7 +152,7 @@ You can save a query's result as a permanent model. The query structure is prese
 ```python
 engine.create_model_from_query(
     query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[...],
         fields=[{"formula": "count"}, {"formula": "total_amount"}],
     ),

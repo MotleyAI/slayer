@@ -19,7 +19,7 @@ from slayer.core.query import SlayerQuery, ColumnRef
 client = SlayerClient(url="http://localhost:5143")
 
 query = SlayerQuery(
-    model="orders",
+    source_model="orders",
     fields=[{"formula": "count"}, {"formula": "revenue_sum"}],
     dimensions=[ColumnRef(name="status")],
     limit=10,

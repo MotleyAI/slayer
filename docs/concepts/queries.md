@@ -7,7 +7,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `model` | string, SlayerModel, or ModelExtension | Yes | Target model name, inline model, or model extension (adds dimensions/measures/joins) |
+| `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds dimensions/measures/joins) |
 | `fields` | list[Field] | No | Data columns — measures, arithmetic, transforms. See [Field Formulas](formulas.md#field-formulas). |
 | `dimensions` | list[ColumnRef] | No | Dimensions to group by. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
@@ -164,7 +164,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}],
   "dimensions": [{"name": "status"}]
 }
@@ -174,7 +174,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "revenue_sum"}],
   "time_dimensions": [{
     "dimension": {"name": "created_at"},
@@ -188,7 +188,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "revenue_sum"}],
   "dimensions": [{"name": "customer_name"}],
   "order": [{"column": {"name": "revenue_sum"}, "direction": "desc"}],
@@ -200,7 +200,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}],
   "filters": ["status == 'completed' or status == 'pending'"]
 }
@@ -210,7 +210,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [
     {"formula": "count"},
     {"formula": "revenue_sum"},
@@ -228,7 +228,7 @@ When models have [joins](models.md#joins), you can reference measures from joine
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [
     {"formula": "count"},
     {"formula": "customers.avg_score"}
@@ -241,18 +241,18 @@ This generates a sub-query for the joined measure, scoped to shared dimensions, 
 
 ### Query lists
 
-Pass a list of queries to `execute()`. Earlier queries are named sub-queries, the last is the main query. Named queries can be referenced by `model` name or joined via `joins`:
+Pass a list of queries to `execute()`. Earlier queries are named sub-queries, the last is the main query. Named queries can be referenced by `source_model` name or joined via `joins`:
 
 ```json
 [
   {
     "name": "monthly",
-    "model": "orders",
+    "source_model": "orders",
     "fields": [{"formula": "count"}, {"formula": "total_amount"}],
     "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
   },
   {
-    "model": "monthly",
+    "source_model": "monthly",
     "fields": [{"formula": "count"}]
   }
 ]
@@ -266,12 +266,12 @@ You can also join named queries to models:
 [
   {
     "name": "customer_scores",
-    "model": "customers",
+    "source_model": "customers",
     "dimensions": [{"name": "id"}],
     "fields": [{"formula": "avg_score"}]
   },
   {
-    "model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
+    "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
     "fields": [{"formula": "count"}, {"formula": "customer_scores.avg_score_avg"}],
     "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
   }
@@ -286,7 +286,7 @@ Extend a model inline with extra dimensions, measures, or joins — without modi
 
 ```json
 {
-  "model": {
+  "source_model": {
     "source_name": "orders",
     "dimensions": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
     "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
@@ -304,7 +304,7 @@ Dimensions from transitively joined models can be referenced with dotted paths. 
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "dimensions": [{"name": "customers.regions.name"}],
   "fields": [{"formula": "count"}]
 }

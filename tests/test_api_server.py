@@ -164,7 +164,7 @@ class TestDatasources:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"model": "nonexistent", "fields": [{"formula": "count"}]})
+        resp = client.post("/query", json={"source_model": "nonexistent", "fields": [{"formula": "count"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -174,5 +174,5 @@ class TestQuery:
             data_source="missing_ds",
             measures=[Measure(name="count", type=DataType.COUNT)],
         ))
-        resp = client.post("/query", json={"model": "orders", "fields": [{"formula": "count"}]})
+        resp = client.post("/query", json={"source_model": "orders", "fields": [{"formula": "count"}]})
         assert resp.status_code == 400

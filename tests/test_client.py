@@ -46,6 +46,6 @@ class TestLocalMode:
         ))
         # This will fail at SQL execution (no actual table), but proves local dispatch works
         from slayer.core.query import SlayerQuery
-        query = SlayerQuery(model="orders", fields=[{"formula": "count"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "count"}])
         with pytest.raises(Exception):
             client.query(query)

@@ -21,7 +21,7 @@ from .params import QUERY_DATE_RANGE, SCALES
 def _execute(env: BenchEnv, **query_kwargs) -> SlayerResponse:
     """Execute a query and return the response."""
     engine, _ = env
-    query = SlayerQuery(model="orders", **query_kwargs)
+    query = SlayerQuery(source_model="orders", **query_kwargs)
     return engine.execute(query=query)
 
 
@@ -35,7 +35,7 @@ WEEKLY_TD = [TimeDimension(
 
 
 # ---------------------------------------------------------------------------
-# Query definitions — each returns kwargs for SlayerQuery(model="orders", ...)
+# Query definitions — each returns kwargs for SlayerQuery(source_model="orders", ...)
 # ---------------------------------------------------------------------------
 
 QUERIES: dict[str, dict] = {

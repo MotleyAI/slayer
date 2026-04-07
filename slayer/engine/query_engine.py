@@ -70,9 +70,9 @@ class SlayerQueryEngine:
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
 
-        # Resolve model from query.model (str, SlayerModel, or ModelExtension)
+        # Resolve model from query.source_model (str, SlayerModel, or ModelExtension)
         model = self._resolve_query_model(
-            query_model=query.model, named_queries=named_queries,
+            query_model=query.source_model, named_queries=named_queries,
         )
 
         datasource = self._resolve_datasource(model=model)
@@ -112,7 +112,7 @@ class SlayerQueryEngine:
         return SlayerResponse(data=rows, sql=sql, labels=labels)
 
     def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
-        """Resolve query.model — handles str, SlayerModel, and ModelExtension."""
+        """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
         from slayer.core.query import ModelExtension
         named_queries = named_queries or {}
 
@@ -146,7 +146,7 @@ class SlayerQueryEngine:
                 model = SlayerModel.model_validate(query_model)
                 return model
         else:
-            raise ValueError(f"Invalid query.model type: {type(query_model)}")
+            raise ValueError(f"Invalid query.source_model type: {type(query_model)}")
 
     def _resolve_model(self, model_name: str,
                         named_queries: dict[str, SlayerQuery] = None) -> SlayerModel:
@@ -237,7 +237,7 @@ class SlayerQueryEngine:
         # Resolve dimensions — look up each from the model definition.
         # Supports multi-hop dotted names (e.g., "customers.regions.name") by
         # translating to the __ convention used by rollup dimensions.
-        model_name_str = query.model if isinstance(query.model, str) else model.name
+        model_name_str = query.source_model if isinstance(query.source_model, str) else model.name
         dimensions = []
         for dim_ref in (query.dimensions or []):
             dim_name = dim_ref.name
@@ -790,7 +790,7 @@ class SlayerQueryEngine:
 
         # Resolve the inner model (handles str, SlayerModel, ModelExtension)
         inner_model = self._resolve_query_model(
-            query_model=inner_query.model, named_queries=named_queries,
+            query_model=inner_query.source_model, named_queries=named_queries,
         )
 
         # Enrich the inner query
@@ -946,7 +946,7 @@ class SlayerQueryEngine:
         shared_dims = list(dimensions)
         shared_time_dims = list(time_dimensions)
 
-        query_model_name = query.model if isinstance(query.model, str) else model.name
+        query_model_name = query.source_model if isinstance(query.source_model, str) else model.name
         alias = f"{query_model_name}.{target_model_name}__{measure_name}"
 
         return CrossModelMeasure(

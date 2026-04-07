@@ -57,7 +57,7 @@ def main():
 
     print("\n=== Query 1: Order count by status ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}],
         dimensions=[{"name": "status"}],
     ))
@@ -66,7 +66,7 @@ def main():
 
     print("\n=== Query 2: Revenue by product category (rollup join) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}, {"formula": "quantity_sum"}],
         dimensions=[{"name": "products.category"}],
         order=[{"column": {"name": "quantity_sum"}, "direction": "desc"}],
@@ -76,7 +76,7 @@ def main():
 
     print("\n=== Query 3: Orders by customer region (transitive rollup) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}],
         dimensions=[{"name": "regions.name"}],
     ))
@@ -85,7 +85,7 @@ def main():
 
     print("\n=== Query 4: Completed orders only (filter) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}, {"formula": "quantity_sum"}],
         filters=["status == 'completed'"],
     ))
@@ -94,7 +94,7 @@ def main():
 
     print("\n=== Query 5: Top 3 customers by order count (rollup + order + limit) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}],
         dimensions=[{"name": "customers.name"}],
         order=[{"column": {"name": "count"}, "direction": "desc"}],
@@ -105,7 +105,7 @@ def main():
 
     print("\n=== Query 6: Monthly orders with average quantity (field) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[Field(formula="count"), Field(formula="quantity_sum"), Field(formula="quantity_sum / count", name="avg_qty")],
         order=[{"column": {"name": "created_at"}, "direction": "asc"}],
@@ -116,7 +116,7 @@ def main():
 
     print("\n=== Query 7: Monthly orders with cumulative sum (field) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[Field(formula="count"), Field(formula="cumsum(count)", name="cumulative")],
         order=[{"column": {"name": "created_at"}, "direction": "asc"}],
@@ -127,7 +127,7 @@ def main():
 
     print("\n=== Query 8: Monthly orders with month-over-month change (field) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[
             Field(formula="count"),
@@ -144,7 +144,7 @@ def main():
 
     print("\n=== Query 9: Customer ranking by order count (field) ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         dimensions=[{"name": "customers.name"}],
         fields=[Field(formula="count"), Field(formula="rank(count)", name="rank")],
         order=[{"column": {"name": "count"}, "direction": "desc"}],
@@ -156,7 +156,7 @@ def main():
 
     print("\n=== Query 10: Unified fields — measures + expression in one list ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         dimensions=[{"name": "products.category"}],
         fields=[
             Field(formula="count"),
@@ -170,7 +170,7 @@ def main():
 
     print("\n=== Query 11: Unified fields — cumsum + change as formulas ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[
             Field(formula="count"),
@@ -186,7 +186,7 @@ def main():
 
     print("\n=== Query 12: Unified fields — last() most recent value ===")
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[
             Field(formula="count"),

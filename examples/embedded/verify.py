@@ -83,12 +83,12 @@ def main():
     print("\nBasic queries:")
 
     result = engine.execute(query=SlayerQuery(
-        model="orders", fields=[{"formula": "count"}],
+        source_model="orders", fields=[{"formula": "count"}],
     ))
     check(f"total orders = {TOTAL_ORDERS}", result.data[0]["orders.count"] == TOTAL_ORDERS)
 
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}],
         dimensions=[{"name": "status"}],
     ))
@@ -98,7 +98,7 @@ def main():
 
     # Rollup: by product category
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}],
         dimensions=[{"name": "products.category"}],
     ))
@@ -107,7 +107,7 @@ def main():
 
     # Filter
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}],
         filters=["status == 'completed'"],
     ))
@@ -115,7 +115,7 @@ def main():
 
     # Order + limit
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         fields=[{"formula": "count"}],
         dimensions=[{"name": "customers.name"}],
         order=[{"column": {"name": "count"}, "direction": "desc"}],
@@ -127,7 +127,7 @@ def main():
     print("\nFields (arithmetic):")
 
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[Field(formula="count"), Field(formula="quantity_sum"), Field(formula="quantity_sum / count", name="avg_qty")],
         order=[{"column": {"name": "created_at"}, "direction": "asc"}],
@@ -141,7 +141,7 @@ def main():
 
     # Cumulative sum
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[Field(formula="count"), Field(formula="cumsum(count)", name="cumulative")],
         order=[{"column": {"name": "created_at"}, "direction": "asc"}],
@@ -154,7 +154,7 @@ def main():
 
     # time_shift (row-based, previous period)
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[Field(formula="count"), Field(formula="time_shift(count, -1)", name="prev")],
         order=[{"column": {"name": "created_at"}, "direction": "asc"}],
@@ -164,7 +164,7 @@ def main():
 
     # Change
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[Field(formula="count"), Field(formula="change(count)", name="chg")],
         order=[{"column": {"name": "created_at"}, "direction": "asc"}],
@@ -175,7 +175,7 @@ def main():
 
     # Rank
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         dimensions=[{"name": "customers.name"}],
         fields=[Field(formula="count"), Field(formula="rank(count)", name="rnk")],
         order=[{"column": {"name": "count"}, "direction": "desc"}],
@@ -188,7 +188,7 @@ def main():
 
     # Fields: measure + expression
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         dimensions=[{"name": "products.category"}],
         fields=[
             Field(formula="count"),
@@ -202,7 +202,7 @@ def main():
 
     # Fields: transform as formula
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[
             Field(formula="count"),
@@ -218,7 +218,7 @@ def main():
 
     # Fields: last()
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[
             Field(formula="count"),
@@ -238,7 +238,7 @@ def main():
     # Mathematical identity: cumsum(change(x)) == x - x[0]
     # For monthly counts, cumsum of changes should equal count minus first month's count
     result = engine.execute(query=SlayerQuery(
-        model="orders",
+        source_model="orders",
         time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         fields=[
             Field(formula="count"),

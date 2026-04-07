@@ -141,7 +141,7 @@ def create_mcp_server(storage: StorageBackend):
 
     @mcp.tool()
     def query(
-        model: str,
+        source_model: str,
         fields: Optional[List[Dict[str, str]]] = None,
         dimensions: Optional[List[str]] = None,
         filters: Optional[List[str]] = None,
@@ -155,7 +155,7 @@ def create_mcp_server(storage: StorageBackend):
         """Query data from a semantic model. Call inspect_model first to see available fields and dimensions.
 
         Args:
-            model: Name of the model to query (from datasource_summary).
+            source_model: Name of the model to query (from datasource_summary).
             fields: Data columns to return. Each is a formula: {"formula": "count"} (measure),
                 {"formula": "revenue / count", "name": "aov"} (arithmetic),
                 {"formula": "cumsum(revenue)"} (cumulative sum), {"formula": "change(revenue)"} (diff from previous row),
@@ -177,9 +177,9 @@ def create_mcp_server(storage: StorageBackend):
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             show_sql: When true, include the generated SQL in the response for debugging.
 
-        Example: query(model="orders", fields=[{"formula": "count"}], dimensions=["status"], filters=["status == 'completed'"])
+        Example: query(source_model="orders", fields=[{"formula": "count"}], dimensions=["status"], filters=["status == 'completed'"])
         """
-        data: Dict[str, Any] = {"model": model}
+        data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
             data["dimensions"] = [_parse_column_ref(d) for d in dimensions]
         if filters:
@@ -275,7 +275,7 @@ def create_mcp_server(storage: StorageBackend):
         # Include sample data
         try:
             sample_query = SlayerQuery(
-                model=model_name,
+                source_model=model_name,
                 fields=[{"formula": m.name} for m in model.measures if not m.hidden][:3],
                 dimensions=[
                     {"name": d.name}
@@ -343,7 +343,7 @@ def create_mcp_server(storage: StorageBackend):
 
         Args:
             name: Name for the new model (lowercase, underscores).
-            query: A SLayer query dict, e.g. {"model": "orders", "fields": [{"formula": "count"}],
+            query: A SLayer query dict, e.g. {"source_model": "orders", "fields": [{"formula": "count"}],
                 "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]}.
             description: What this derived model represents.
         """

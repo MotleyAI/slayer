@@ -109,7 +109,7 @@ from slayer.core.query import SlayerQuery, ColumnRef
 engine = SlayerQueryEngine(storage=storage)
 
 query = SlayerQuery(
-    model="orders",
+    source_model="orders",
     fields=[{"formula": "count"}],
     dimensions=[ColumnRef(name="status")],
     limit=10,

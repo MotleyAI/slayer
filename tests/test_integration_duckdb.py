@@ -104,25 +104,25 @@ def duckdb_env(tmp_path):
 @pytest.mark.integration
 class TestDuckDBQueries:
     def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(model="orders", fields=[{"formula": "count"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "count"}])
         result = duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders.count"] == 6
 
     def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(model="orders", fields=[{"formula": "total"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "total"}])
         result = duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total"]) == 875.0
 
     def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(model="orders", fields=[{"formula": "avg_amount"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount"}])
         result = duckdb_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount"])
         assert abs(avg - 145.83) < 0.1
 
     def test_group_by_status(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             dimensions=[{"name": "status"}],
         )
@@ -134,7 +134,7 @@ class TestDuckDBQueries:
 
     def test_filter_equals(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             filters=["status == 'completed'"],
         )
@@ -143,7 +143,7 @@ class TestDuckDBQueries:
 
     def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             filters=["amount > 100"],
         )
@@ -152,7 +152,7 @@ class TestDuckDBQueries:
 
     def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             dimensions=[{"name": "status"}],
             order=[{"column": {"name": "count"}, "direction": "desc"}],
@@ -162,7 +162,7 @@ class TestDuckDBQueries:
 
     def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             dimensions=[{"name": "status"}],
             limit=2,
@@ -172,7 +172,7 @@ class TestDuckDBQueries:
 
     def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}, {"formula": "total"}],
             dimensions=[{"name": "status"}],
         )
@@ -184,7 +184,7 @@ class TestDuckDBQueries:
     def test_time_dimension_month_granularity(self, duckdb_env: SlayerQueryEngine) -> None:
         """DuckDB supports DATE_TRUNC natively."""
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         )
@@ -193,7 +193,7 @@ class TestDuckDBQueries:
 
     def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             time_dimensions=[{
                 "dimension": {"name": "created_at"},
@@ -208,7 +208,7 @@ class TestDuckDBQueries:
 
     def test_composite_filter(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             filters=["status == 'completed' or status == 'pending'"],
         )
@@ -220,7 +220,7 @@ class TestDuckDBQueries:
         # Query only March, ask for previous month (February)
         # Seed: Jan(300), Feb(200), Mar(375)
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
@@ -240,7 +240,7 @@ class TestDuckDBQueries:
     def test_change_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         """change() with date_range should fetch previous period from outside the filtered range."""
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
@@ -259,7 +259,7 @@ class TestDuckDBQueries:
     def test_change_pct_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         """change_pct() with date_range should compute correct percentage from shifted data."""
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
@@ -279,7 +279,7 @@ class TestDuckDBQueries:
         """Multiple self-join transforms with different offsets should each get correct data."""
         # Query Feb only, ask for both previous (Jan) and next (Mar)
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
@@ -409,7 +409,7 @@ class TestDuckDBIngestion:
         engine = SlayerQueryEngine(storage=storage)
 
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}],
             dimensions=[{"name": "customers.name"}],
         )
@@ -432,7 +432,7 @@ class TestDuckDBIngestion:
         engine = SlayerQueryEngine(storage=storage)
 
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[{"formula": "count"}, {"formula": "amount_sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )

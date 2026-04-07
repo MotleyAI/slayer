@@ -84,7 +84,7 @@ After ingestion, you can query rolled-up dimensions directly:
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}, {"formula": "amount_sum"}],
   "dimensions": [{"name": "customers.name"}]
 }
@@ -94,7 +94,7 @@ Or transitively joined dimensions (using full path):
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}],
   "dimensions": [{"name": "customers.regions.name"}]
 }
@@ -111,7 +111,7 @@ This avoids table alias collisions and allows querying both paths simultaneously
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "dimensions": [
     {"name": "customers.regions.name"},
     {"name": "warehouses.regions.name"}
