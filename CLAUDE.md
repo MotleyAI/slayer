@@ -77,6 +77,7 @@ poetry run ruff check slayer/ tests/
 - Available formula functions: cumsum, time_shift, change, change_pct, rank, last (FIRST_VALUE window), lag, lead. time_shift, change, and change_pct always use self-join CTEs (no edge NULLs, gap-safe). time_shift uses row-number-based join without granularity, date-arithmetic-based with granularity. lag/lead use LAG/LEAD window functions directly (more efficient but produce NULLs at edges)
 - Filters can reference computed field names or contain inline transform expressions (e.g., `"change(revenue) > 0"`, `"last(change(revenue)) < 0"`). These are auto-extracted as hidden fields and applied as post-filters on the outer query
 - Models can have explicit `joins` to other models (LEFT JOINs). Cross-model measures use dotted syntax (`customers.avg_score`) and multi-hop (`customers.regions.name`). Joins are auto-resolved by walking the join graph. Transforms work on cross-model measures (`cumsum(customers.avg_score)`)
+- **Path-based table aliases**: Joined tables use `__`-delimited path aliases in SQL to disambiguate diamond joins. In queries, dots denote paths (`customers.regions.name`); in model SQL definitions, `__` denotes the table alias (`customers__regions.name`). For diamond joins (same table reached via different paths, e.g., `orders → customers → regions` AND `orders → warehouses → regions`), each path gets a unique alias (`customers__regions` vs `warehouses__regions`). Ingestion auto-detects diamond joins via FK graph BFS
 - `SlayerQuery.model` accepts a model name, inline `SlayerModel`, or `ModelExtension` (extends a model with extra dims/measures/joins). `create_model_from_query()` saves a query as a permanent model
 - Models can have `filters` (always-applied WHERE conditions, e.g., `"deleted_at is None"`)
 - **Core principle**: adding a measure/field must never affect result cardinality or other fields' values — achieved via CTEs, sub-queries, and correct JOIN dimensions
@@ -84,7 +85,7 @@ poetry run ruff check slayer/ tests/
 - SlayerModel has optional `default_time_dimension` field for time-dependent formula resolution
 - SQLite dialect uses STRFTIME instead of DATE_TRUNC (handled automatically by sqlglot)
 - See "Database Support" section below for dialect tiers and testing expectations
-- Result column keys use `model_name.column_name` format (e.g., `"orders.count"`)
+- Result column keys use `model_name.column_name` format (e.g., `"orders.count"`). For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`
 - Datasource configs support `${ENV_VAR}` references resolved at read time
 - Integration tests are marked with `@pytest.mark.integration` and skip when DB is unavailable
 

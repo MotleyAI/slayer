@@ -70,7 +70,7 @@ Query results are returned as a `SlayerResponse`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `data` | list[dict] | Rows as dictionaries |
-| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders.count"`) |
+| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders.count"`, `"orders.customers.regions.name"` for multi-hop) |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `labels` | dict | Column alias → human-readable label (from `label` on fields/dimensions) |

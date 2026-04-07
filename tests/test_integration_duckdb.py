@@ -358,8 +358,8 @@ class TestDuckDBIngestion:
         assert "customers.name" in dim_names
         assert "customers.id" in dim_names
         # Transitive: orders -> customers -> regions
-        assert "regions.name" in dim_names
-        assert "regions.id" in dim_names
+        assert "customers.regions.name" in dim_names
+        assert "customers.regions.id" in dim_names
 
     def test_orders_excludes_fk_from_rollup(self, duckdb_ingest_env) -> None:
         models, _ = duckdb_ingest_env
@@ -395,7 +395,7 @@ class TestDuckDBIngestion:
 
         measure_names = [m.name for m in orders.measures]
         assert "customers.count" in measure_names
-        assert "regions.count" in measure_names
+        assert "customers.regions.count" in measure_names
 
     def test_rollup_query_group_by_customer(self, duckdb_ingest_env) -> None:
         """Query orders grouped by rolled-up customer name."""
@@ -434,11 +434,11 @@ class TestDuckDBIngestion:
         query = SlayerQuery(
             model="orders",
             fields=[{"formula": "count"}, {"formula": "amount_sum"}],
-            dimensions=[{"name": "regions.name"}],
+            dimensions=[{"name": "customers.regions.name"}],
         )
         result = engine.execute(query=query)
 
-        by_region = {r["orders.regions.name"]: r for r in result.data}
+        by_region = {r["orders.customers.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders.count"] == 3  # Acme(2) + Initech(1)
         assert by_region["EU"]["orders.count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150

@@ -190,52 +190,48 @@ def _generate_joins(
     schema: Optional[str],
     table_set: Set[str],
 ) -> List[ModelJoin]:
-    """Generate ModelJoin objects from FK relationships via BFS traversal."""
-    joins = []
-    processed = {source_table}
-    queue = deque([source_table])
+    """Generate ModelJoin objects from FK relationships via BFS traversal.
 
-    # Build reverse FK mapping (who references whom)
-    reverse_refs: Dict[str, List[tuple]] = defaultdict(list)
-    all_tables = {source_table} | referenced_tables
-    for table in all_tables:
-        for src_col, ref_table, tgt_col in _get_fk_relationships(
-            inspector=inspector, table_name=table, schema=schema, table_set=table_set,
-        ):
-            if ref_table in all_tables:
-                reverse_refs[ref_table].append((table, src_col, tgt_col))
+    Supports diamond joins: the same table can be reached via multiple paths
+    (e.g., orders → customers → regions AND orders → warehouses → regions).
+    Each path produces a separate ModelJoin with path-qualified source columns.
+    """
+    joins = []
+    # Track (referencing_table, target_table) edges already processed
+    processed_edges: Set[tuple] = set()
+    # BFS queue entries: table name
+    queue = deque([source_table])
+    visited_for_expansion = {source_table}
 
     while queue:
         current = queue.popleft()
         current_fk_rels = _get_fk_relationships(
             inspector=inspector, table_name=current, schema=schema, table_set=table_set,
         )
-        next_tables = {ref_table for _, ref_table, _ in current_fk_rels
-                       if ref_table in referenced_tables and ref_table not in processed}
 
-        for ref_table in next_tables:
-            # Collect ALL join pairs for this ref_table from a processed referencing table
-            # (handles composite FKs with multiple columns)
-            join_pairs = []
-            found_referencing = None
-            for referencing_table, fk_col, tgt_col in reverse_refs[ref_table]:
-                if referencing_table in processed:
-                    if found_referencing is None:
-                        found_referencing = referencing_table
-                    if referencing_table == found_referencing:
-                        # For dynamic joins, reference the column on its actual table
-                        if referencing_table == source_table:
-                            source_dim = fk_col
-                        else:
-                            source_dim = f"{referencing_table}.{fk_col}"
-                        join_pairs.append([source_dim, tgt_col])
+        for src_col, ref_table, tgt_col in current_fk_rels:
+            if ref_table not in referenced_tables:
+                continue
+            edge = (current, ref_table)
+            if edge in processed_edges:
+                continue
+            processed_edges.add(edge)
 
-            if join_pairs:
-                joins.append(ModelJoin(
-                    target_model=ref_table,
-                    join_pairs=join_pairs,
-                ))
-                processed.add(ref_table)
+            # Build join pair: qualify source column with table name for non-root
+            if current == source_table:
+                source_dim = src_col
+            else:
+                source_dim = f"{current}.{src_col}"
+            join_pairs = [[source_dim, tgt_col]]
+
+            joins.append(ModelJoin(
+                target_model=ref_table,
+                join_pairs=join_pairs,
+            ))
+
+            # Continue BFS from the referenced table (but only expand once)
+            if ref_table not in visited_for_expansion:
+                visited_for_expansion.add(ref_table)
                 queue.append(ref_table)
 
     return joins
@@ -358,6 +354,7 @@ def _introspect_query_columns_via_inspector(
     rollup_sql: Optional[str],
     referenced_tables: Set[str],
     fk_columns_by_table: Dict[str, Set[str]],
+    joins: Optional[List[ModelJoin]] = None,
 ) -> List[tuple]:
     """Introspect columns from a rollup query or plain table.
 
@@ -379,8 +376,24 @@ def _introspect_query_columns_via_inspector(
         is_pk = col_name in pk_columns
         results.append((col_name, data_type, is_pk))
 
-    # Referenced table columns (rollup)
-    for ref_table in referenced_tables:
+    # Build list of (ref_table, dotted_path) from joins — supports diamond joins
+    # where the same table appears via multiple paths
+    table_path_pairs: List[tuple] = []
+    if joins:
+        for mj in joins:
+            if mj.join_pairs and "." in mj.join_pairs[0][0]:
+                prefix = mj.join_pairs[0][0].split(".")[0]
+                path = f"{prefix}.{mj.target_model}"
+            else:
+                path = mj.target_model
+            table_path_pairs.append((mj.target_model, path))
+    else:
+        # Fallback: one entry per referenced table
+        for ref_table in referenced_tables:
+            table_path_pairs.append((ref_table, ref_table))
+
+    # Referenced table columns — emit once per join path
+    for ref_table, path in table_path_pairs:
         ref_cols = _safe_get_columns(inspector, sa_engine, ref_table, schema)
         ref_pk = _safe_get_pk_constraint(inspector, sa_engine, ref_table, schema)
         ref_pk_cols = set(ref_pk.get("constrained_columns", []))
@@ -389,7 +402,7 @@ def _introspect_query_columns_via_inspector(
         for col in ref_cols:
             if col["name"] in ref_fk_cols:
                 continue
-            alias = f"{ref_table}.{col['name']}"
+            alias = f"{path}.{col['name']}"
             col_type = col["type"]
             data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
             is_pk = col["name"] in ref_pk_cols
@@ -416,23 +429,27 @@ def _columns_to_model(
     numeric_columns = []
 
     for col_name, data_type, is_pk in columns:
-        # For joined columns (table.col), sql is the raw column name;
-        # the SQL generator qualifies it with the join table alias.
+        # For joined columns (path.col), sql uses path-based alias:
+        # "customers.name" → sql="customers.name" (table alias = path with __ )
+        # "customers.regions.name" → sql="customers__regions.name"
         is_joined = "." in col_name
         if is_joined:
-            parts = col_name.rsplit(".", 1)
+            parts = col_name.split(".")
             raw_col = parts[-1]
-            ref_table = parts[0]
+            path = parts[:-1]  # e.g., ["customers", "regions"]
+            table_alias = "__".join(path)  # e.g., "customers__regions"
+            sql_expr = f"{table_alias}.{raw_col}"
         else:
             raw_col = col_name
-            ref_table = None
+            sql_expr = col_name
+            path = None
 
         dimensions.append(Dimension(
             name=col_name,
-            sql=raw_col,
+            sql=sql_expr,
             type=data_type,
             primary_key=is_pk and not is_joined,
-            description=f"From {ref_table}" if is_joined else None,
+            description=f"From {'.'.join(path)}" if path else None,
         ))
 
         if data_type in _NUMERIC_TYPES and not is_pk and not _is_id_column(raw_col):
@@ -443,10 +460,15 @@ def _columns_to_model(
 
     # Add SUM and AVG for numeric non-ID columns
     for col_name in numeric_columns:
-        # For joined columns, sql references the raw column name
-        raw_col = col_name.rsplit(".", 1)[-1] if "." in col_name else col_name
-        measures.append(Measure(name=f"{col_name}_sum", sql=raw_col, type=DataType.SUM))
-        measures.append(Measure(name=f"{col_name}_avg", sql=raw_col, type=DataType.AVERAGE))
+        is_joined = "." in col_name
+        if is_joined:
+            parts = col_name.split(".")
+            table_alias = "__".join(parts[:-1])
+            sql_expr = f"{table_alias}.{parts[-1]}"
+        else:
+            sql_expr = col_name
+        measures.append(Measure(name=f"{col_name}_sum", sql=sql_expr, type=DataType.SUM))
+        measures.append(Measure(name=f"{col_name}_avg", sql=sql_expr, type=DataType.AVERAGE))
 
     # Add count_distinct for joined table PKs
     seen_tables = set()
@@ -455,7 +477,9 @@ def _columns_to_model(
             ref_table = col_name.rsplit(".", 1)[0]
             if ref_table not in seen_tables:
                 seen_tables.add(ref_table)
-                raw_col = col_name.rsplit(".", 1)[-1]
+                parts = col_name.split(".")
+                table_alias = "__".join(parts[:-1])
+                raw_col = parts[-1]
                 measures.append(Measure(
                     name=f"{ref_table}.count",
                     sql=raw_col,
@@ -527,6 +551,7 @@ def ingest_datasource(
                 table_name=table_name, schema=schema,
                 rollup_sql=None, referenced_tables=referenced,
                 fk_columns_by_table=fk_columns_by_table,
+                joins=model_joins,
             )
             model = _columns_to_model(
                 name=table_name, columns=columns,

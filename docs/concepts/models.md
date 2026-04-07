@@ -122,6 +122,15 @@ Joins enable **cross-model measures** — querying a measure from a joined model
 
 During [auto-ingestion](ingestion.md), joins are generated automatically from foreign key relationships (including transitive joins like `orders → customers → regions`). Multi-hop dimensions are auto-resolved by walking the join graph — `customers.regions.name` in a query on `orders` follows `orders → customers → regions` automatically.
 
+### Path-Based Table Aliases
+
+Joined tables use `__`-delimited path aliases in generated SQL to disambiguate **diamond joins** — when the same table is reachable via multiple paths. For example, if `orders` joins both `customers` and `warehouses`, each referencing `regions`:
+
+- `customers.regions.name` → table alias `customers__regions`
+- `warehouses.regions.name` → table alias `warehouses__regions`
+
+In queries, use dots to denote paths (`customers.regions.name`). In model SQL definitions (dimension/measure `sql` fields), use the `__` alias convention (`customers__regions.name`). See [Diamond Joins](ingestion.md#diamond-joins) for details.
+
 ## Model Filters
 
 Models can have always-applied WHERE filters on the underlying table:
@@ -173,8 +182,9 @@ Via MCP, use the `create_model_from_query` tool. Via API, `POST /models/from_que
 
 ## Result Column Format
 
-Query results use `model_name.column_name` format for column keys:
+Query results use `model_name.column_name` format for column keys. For multi-hop joined dimensions, the full path is included:
 
 ```json
 {"orders.status": "completed", "orders.count": 42}
+{"orders.customers.regions.name": "US", "orders.count": 3}
 ```

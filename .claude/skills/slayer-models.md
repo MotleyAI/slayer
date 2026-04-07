@@ -52,7 +52,7 @@ joins:
     join_pairs: [["customer_id", "id"]]
 ```
 
-Enables cross-model measures (`customers.avg_score`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.avg_score)`). Auto-generated from FKs during ingestion. Joins are auto-resolved transitively by walking the join graph.
+Enables cross-model measures (`customers.avg_score`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.avg_score)`). Auto-generated from FKs during ingestion. Joins are auto-resolved transitively by walking the join graph. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias (e.g., `customers__regions` vs `warehouses__regions`).
 
 ## Model Filters
 
@@ -93,7 +93,7 @@ Generates:
 - Dimensions for all columns
 - `count` measure, `{col}_sum` and `{col}_avg` for numeric non-ID columns
 - **Dynamic joins**: detects FK relationships, creates models with explicit join metadata (LEFT JOINs built at query time)
-- Joined dimensions use dotted naming (`customers.name`, `regions.name`)
+- Joined dimensions use full-path dotted naming (`customers.name`, `customers.regions.name`)
 - FK columns are excluded; ID-like columns (`*_id`, `*_key`) skip sum/avg measures
 - Count-distinct measures for each referenced table's PK (`customers.count`)
 

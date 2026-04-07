@@ -266,8 +266,8 @@ class SlayerQueryEngine:
             # so _resolve_sql qualifies the column with the right table alias
             if "." in dim_ref.name:
                 table_prefix = dim_ref.name.rsplit(".", 1)[0]
-                # For multi-hop, use the last hop as the table alias
-                effective_model = table_prefix.split(".")[-1] if "." in table_prefix else table_prefix
+                # Use path-based alias: "customers.regions" → "customers__regions"
+                effective_model = "__".join(table_prefix.split("."))
             else:
                 effective_model = model.name
             dimensions.append(EnrichedDimension(
@@ -648,15 +648,23 @@ class SlayerQueryEngine:
                 target_table = f"({target.sql})"
             else:
                 target_table = mj.target_model
+            # Compute path-based alias for the joined table.
+            # Direct join: alias = target_model (e.g., "customers")
+            # Transitive join: alias = path__target (e.g., "customers__regions")
+            # This disambiguates diamond joins where the same table is reached via different paths.
             join_conds = []
+            path_prefix = ""
             for src_col, tgt_col in mj.join_pairs:
                 if "." in src_col:
-                    src_table = src_col.rsplit(".", 1)[0]
-                    src_raw = src_col.rsplit(".", 1)[1]
-                    join_conds.append(f"{src_table}.{src_raw} = {mj.target_model}.{tgt_col}")
+                    src_parts = src_col.rsplit(".", 1)
+                    src_table = src_parts[0]
+                    src_raw = src_parts[1]
+                    path_prefix = src_table + "__"
+                    join_conds.append(f"{src_table}.{src_raw} = {path_prefix}{mj.target_model}.{tgt_col}")
                 else:
                     join_conds.append(f"{model_name_str}.{src_col} = {mj.target_model}.{tgt_col}")
-            resolved_joins.append((target_table, mj.target_model, " AND ".join(join_conds)))
+            table_alias = f"{path_prefix}{mj.target_model}"
+            resolved_joins.append((target_table, table_alias, " AND ".join(join_conds)))
 
         return EnrichedQuery(
             model_name=model.name,

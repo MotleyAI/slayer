@@ -20,10 +20,11 @@ The graph is validated to be acyclic (a `RollupGraphError` is raised if cycles a
 
 For tables with FK references, SLayer creates explicit join metadata and dotted dimensions. For example, `orders → customers → regions` produces:
 
-- **Joins**: `orders → customers` (on `customer_id = id`), `customers → regions` (on `region_id = id`)
-- **Dotted dimensions**: `customers.name`, `customers.id`, `regions.name`, `regions.id`
+- **Joins**: `orders → customers` (on `customer_id = id`), `customers → regions` (on `customers.region_id = id`)
+- **Dotted dimensions**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id`
+- **Path-based SQL**: Dimension SQL uses `__`-delimited table aliases (e.g., `customers__regions.name`) to disambiguate joined tables
 
-At query time, LEFT JOINs are constructed dynamically from this metadata — no SQL is baked into the model.
+At query time, LEFT JOINs are constructed dynamically from this metadata — no SQL is baked into the model. Each joined table gets a path-based alias (e.g., `LEFT JOIN regions AS customers__regions`).
 
 Tables with no FK references use their plain table name with no joins.
 
@@ -31,10 +32,10 @@ Tables with no FK references use their plain table name with no joins.
 
 SLayer introspects the column types and generates a model:
 
-- **Dimensions** for every column (dotted names for joined columns, e.g., `customers.name`)
+- **Dimensions** for every column (full-path dotted names for joined columns, e.g., `customers.name`, `customers.regions.name`)
 - **`count` measure** (always)
 - **`{col}_sum` and `{col}_avg` measures** for numeric columns that aren't IDs
-- **Count-distinct measures**: `customers.count`, `regions.count` for each referenced table's PK
+- **Count-distinct measures**: `customers.count`, `customers.regions.count` for each referenced table's PK
 
 ID-like columns (`id`, `*_id`, `*_key`, `*_pk`, `*_fk`) are excluded from sum/avg generation. FK columns from referenced tables are excluded from dimensions to avoid redundancy.
 
@@ -88,13 +89,33 @@ After ingestion, you can query rolled-up dimensions directly:
 }
 ```
 
-Or transitively joined dimensions:
+Or transitively joined dimensions (using full path):
 
 ```json
 {
   "model": "orders",
   "fields": [{"formula": "count"}],
-  "dimensions": [{"name": "regions.name"}]
+  "dimensions": [{"name": "customers.regions.name"}]
+}
+```
+
+## Diamond Joins
+
+When the same table is reachable via multiple FK paths (e.g., `orders → customers → regions` AND `orders → warehouses → regions`), ingestion creates separate joins for each path. Each path gets a unique alias:
+
+- `customers.regions.name` → SQL alias `customers__regions`
+- `warehouses.regions.name` → SQL alias `warehouses__regions`
+
+This avoids table alias collisions and allows querying both paths simultaneously:
+
+```json
+{
+  "model": "orders",
+  "dimensions": [
+    {"name": "customers.regions.name"},
+    {"name": "warehouses.regions.name"}
+  ],
+  "fields": [{"formula": "count"}]
 }
 ```
 

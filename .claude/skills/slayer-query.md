@@ -142,4 +142,4 @@ Or save a query as a permanent model with `create_model_from_query`.
 
 ## Result Format
 
-Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.status"`.
+Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.status"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`.

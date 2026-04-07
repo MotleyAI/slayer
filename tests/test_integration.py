@@ -1258,3 +1258,108 @@ def test_model_filter_on_joined_column(tmp_path):
     # JOIN must be included even though the filter (not the dimension) needs it
     assert "LEFT JOIN" in result.sql
     assert "customers" in result.sql
+
+
+# ---------------------------------------------------------------------------
+# Diamond joins — same table reached via two different paths
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def diamond_env(tmp_path):
+    """Schema: shipments → customers → regions, shipments → warehouses → regions.
+
+    Two paths to regions, requiring path-based aliases to disambiguate.
+    """
+    db_path = tmp_path / "diamond.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
+    conn.execute("CREATE TABLE warehouses (id INTEGER PRIMARY KEY, name TEXT, region_id INTEGER REFERENCES regions(id))")
+    conn.execute("""
+        CREATE TABLE shipments (
+            id INTEGER PRIMARY KEY,
+            amount REAL,
+            customer_id INTEGER REFERENCES customers(id),
+            warehouse_id INTEGER REFERENCES warehouses(id)
+        )
+    """)
+    conn.executemany("INSERT INTO regions VALUES (?, ?)", [
+        (1, "US"), (2, "EU"), (3, "Asia"),
+    ])
+    conn.executemany("INSERT INTO customers VALUES (?, ?, ?)", [
+        (1, "Alice", 1), (2, "Bob", 2),
+    ])
+    conn.executemany("INSERT INTO warehouses VALUES (?, ?, ?)", [
+        (1, "WH-East", 1), (2, "WH-West", 3),
+    ])
+    conn.executemany("INSERT INTO shipments VALUES (?, ?, ?, ?)", [
+        (1, 100, 1, 1),  # Alice(US) from WH-East(US)
+        (2, 200, 1, 2),  # Alice(US) from WH-West(Asia)
+        (3, 50, 2, 1),   # Bob(EU) from WH-East(US)
+        (4, 150, 2, 2),  # Bob(EU) from WH-West(Asia)
+    ])
+    conn.commit()
+    conn.close()
+
+    from slayer.engine.ingestion import ingest_datasource
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
+    ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
+    storage.save_datasource(ds)
+    models = ingest_datasource(datasource=ds)
+    for m in models:
+        storage.save_model(m)
+
+    engine = SlayerQueryEngine(storage=storage)
+    return engine, storage
+
+
+def test_diamond_joins_both_paths(diamond_env):
+    """Query both customer region and warehouse region in one query — must not collide."""
+    engine, storage = diamond_env
+
+    # Verify the ingested model has both paths
+    shipments = storage.get_model("shipments")
+    dim_names = {d.name for d in shipments.dimensions}
+    assert "customers.regions.name" in dim_names
+    assert "warehouses.regions.name" in dim_names
+
+    # Query both region paths simultaneously
+    result = engine.execute(query=SlayerQuery(
+        model="shipments",
+        dimensions=[
+            ColumnRef(name="customers.regions.name"),
+            ColumnRef(name="warehouses.regions.name"),
+        ],
+        fields=[Field(formula="count")],
+    ))
+
+    # Should have 4 rows: (US, US), (US, Asia), (EU, US), (EU, Asia)
+    rows = {
+        (r["shipments.customers.regions.name"], r["shipments.warehouses.regions.name"]): r["shipments.count"]
+        for r in result.data
+    }
+    assert len(rows) == 4
+    assert rows[("US", "US")] == 1    # Alice from WH-East
+    assert rows[("US", "Asia")] == 1  # Alice from WH-West
+    assert rows[("EU", "US")] == 1    # Bob from WH-East
+    assert rows[("EU", "Asia")] == 1  # Bob from WH-West
+
+    # SQL must have two different aliases for regions
+    assert "customers__regions" in result.sql
+    assert "warehouses__regions" in result.sql
+
+
+def test_diamond_joins_single_path(diamond_env):
+    """Query only one path — should work without including the other."""
+    engine, _ = diamond_env
+
+    result = engine.execute(query=SlayerQuery(
+        model="shipments",
+        dimensions=[ColumnRef(name="customers.regions.name")],
+        fields=[Field(formula="count")],
+    ))
+
+    by_region = {r["shipments.customers.regions.name"]: r["shipments.count"] for r in result.data}
+    assert by_region["US"] == 2  # Alice: 2 shipments
+    assert by_region["EU"] == 2  # Bob: 2 shipments
