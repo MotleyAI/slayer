@@ -34,7 +34,8 @@ SLayer introspects the column types and generates a model:
 
 - **Dimensions** for every column (full-path dotted names for joined columns, e.g., `customers.name`, `customers.regions.name`)
 - **`count` measure** (always)
-- **`{col}_sum` and `{col}_avg` measures** for numeric columns that aren't IDs
+- **Numeric non-ID columns**: `{col}_sum`, `{col}_avg`, `{col}_min`, `{col}_max`, `{col}_distinct`
+- **Non-numeric non-ID columns**: `{col}_distinct` (COUNT DISTINCT), `{col}_count` (COUNT non-null)
 - **Count-distinct measures**: `customers.count`, `customers.regions.count` for each referenced table's PK
 
 ID-like columns (`id`, `*_id`, `*_key`, `*_pk`, `*_fk`) are excluded from sum/avg generation. FK columns from referenced tables are excluded from dimensions to avoid redundancy.

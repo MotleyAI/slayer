@@ -91,7 +91,7 @@ models = ingest_datasource(datasource=ds, schema="public")
 
 Generates:
 - Dimensions for all columns
-- `count` measure, `{col}_sum` and `{col}_avg` for numeric non-ID columns
+- `count` measure; numeric non-ID cols get `_sum`, `_avg`, `_min`, `_max`, `_distinct`; non-numeric non-ID cols get `_distinct`, `_count`
 - **Dynamic joins**: detects FK relationships, creates models with explicit join metadata (LEFT JOINs built at query time)
 - Joined dimensions use full-path dotted naming (`customers.name`, `customers.regions.name`)
 - FK columns are excluded; ID-like columns (`*_id`, `*_key`) skip sum/avg measures

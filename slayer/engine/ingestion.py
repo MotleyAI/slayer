@@ -428,6 +428,8 @@ def _columns_to_model(
     measures = []
     numeric_columns = []
 
+    non_numeric_columns = []
+
     for col_name, data_type, is_pk in columns:
         # For joined columns (path.col), sql uses path-based alias:
         # "customers.name" → sql="customers.name" (table alias = path with __ )
@@ -452,13 +454,17 @@ def _columns_to_model(
             description=f"From {'.'.join(path)}" if path else None,
         ))
 
-        if data_type in _NUMERIC_TYPES and not is_pk and not _is_id_column(raw_col):
+        if is_pk or _is_id_column(raw_col):
+            continue
+        if data_type in _NUMERIC_TYPES:
             numeric_columns.append(col_name)
+        else:
+            non_numeric_columns.append(col_name)
 
     # Add COUNT measure
     measures.append(Measure(name="count", type=DataType.COUNT))
 
-    # Add SUM and AVG for numeric non-ID columns
+    # Add SUM, AVG, MIN, MAX, COUNT_DISTINCT for numeric non-ID columns
     for col_name in numeric_columns:
         is_joined = "." in col_name
         if is_joined:
@@ -469,6 +475,21 @@ def _columns_to_model(
             sql_expr = col_name
         measures.append(Measure(name=f"{col_name}_sum", sql=sql_expr, type=DataType.SUM))
         measures.append(Measure(name=f"{col_name}_avg", sql=sql_expr, type=DataType.AVERAGE))
+        measures.append(Measure(name=f"{col_name}_min", sql=sql_expr, type=DataType.MIN))
+        measures.append(Measure(name=f"{col_name}_max", sql=sql_expr, type=DataType.MAX))
+        measures.append(Measure(name=f"{col_name}_distinct", sql=sql_expr, type=DataType.COUNT_DISTINCT))
+
+    # Add COUNT_DISTINCT and COUNT (non-null) for non-numeric non-ID columns
+    for col_name in non_numeric_columns:
+        is_joined = "." in col_name
+        if is_joined:
+            parts = col_name.split(".")
+            table_alias = "__".join(parts[:-1])
+            sql_expr = f"{table_alias}.{parts[-1]}"
+        else:
+            sql_expr = col_name
+        measures.append(Measure(name=f"{col_name}_distinct", sql=sql_expr, type=DataType.COUNT_DISTINCT))
+        measures.append(Measure(name=f"{col_name}_count", sql=sql_expr, type=DataType.COUNT))
 
     # Add count_distinct for joined table PKs
     seen_tables = set()

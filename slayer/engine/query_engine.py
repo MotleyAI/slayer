@@ -838,11 +838,19 @@ class SlayerQueryEngine:
         measures = [
             Measure(name="count", type=DataType.COUNT),
         ]
-        # Add SUM/AVG for numeric inner columns (measures, transforms, expressions)
+        # Add aggregation measures for inner columns
         for alias, short, dtype, is_measure in column_map:
             if is_measure:
+                # Numeric: SUM, AVG, MIN, MAX, COUNT_DISTINCT
                 measures.append(Measure(name=f"{short}_sum", sql=short, type=DataType.SUM))
                 measures.append(Measure(name=f"{short}_avg", sql=short, type=DataType.AVERAGE))
+                measures.append(Measure(name=f"{short}_min", sql=short, type=DataType.MIN))
+                measures.append(Measure(name=f"{short}_max", sql=short, type=DataType.MAX))
+                measures.append(Measure(name=f"{short}_distinct", sql=short, type=DataType.COUNT_DISTINCT))
+            else:
+                # Non-numeric dimensions: COUNT_DISTINCT and COUNT (non-null)
+                measures.append(Measure(name=f"{short}_distinct", sql=short, type=DataType.COUNT_DISTINCT))
+                measures.append(Measure(name=f"{short}_count", sql=short, type=DataType.COUNT))
 
         return SlayerModel(
             name=virtual_name,
