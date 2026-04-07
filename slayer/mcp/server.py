@@ -331,6 +331,35 @@ def create_mcp_server(storage: StorageBackend):
         return f"Model '{model.name}' {verb}."
 
     @mcp.tool()
+    def create_model_from_query(
+        name: str,
+        query: Dict,
+        description: Optional[str] = None,
+    ) -> str:
+        """Create a model from a query — saves the query's SQL as a reusable model.
+
+        This lets you build complex queries (with transforms, filters, time dimensions)
+        and save the result as a permanent model that can be queried like any other.
+
+        Args:
+            name: Name for the new model (lowercase, underscores).
+            query: A SLayer query dict, e.g. {"model": "orders", "fields": [{"formula": "count"}],
+                "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]}.
+            description: What this derived model represents.
+        """
+        from slayer.core.query import SlayerQuery as SQ
+        parsed_query = SQ.model_validate(query)
+        model = engine.create_model_from_query(
+            query=parsed_query, name=name, description=description,
+        )
+        dims = [d.name for d in model.dimensions]
+        measures = [m.name for m in model.measures]
+        return (
+            f"Model '{name}' created from query. "
+            f"Dimensions: {dims}. Measures: {measures}."
+        )
+
+    @mcp.tool()
     def edit_model(
         model_name: str,
         description: Optional[str] = None,

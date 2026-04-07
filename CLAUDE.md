@@ -76,6 +76,10 @@ poetry run ruff check slayer/ tests/
 - Queries support `fields` — list of `{"formula": "...", "name": "...", "label": "..."}` parsed by `slayer/core/formula.py`. `label` is an optional human-readable display name (also supported on `ColumnRef` and `TimeDimension`)
 - Available formula functions: cumsum, time_shift, change, change_pct, rank, last (FIRST_VALUE window), lag, lead. time_shift, change, and change_pct always use self-join CTEs (no edge NULLs, gap-safe). time_shift uses row-number-based join without granularity, date-arithmetic-based with granularity. lag/lead use LAG/LEAD window functions directly (more efficient but produce NULLs at edges)
 - Filters can reference computed field names or contain inline transform expressions (e.g., `"change(revenue) > 0"`, `"last(change(revenue)) < 0"`). These are auto-extracted as hidden fields and applied as post-filters on the outer query
+- Models can have explicit `joins` to other models (LEFT JOINs). Cross-model measures use dotted syntax (`customers.avg_score`) and multi-hop (`customers.regions.name`). Joins are auto-resolved by walking the join graph. Transforms work on cross-model measures (`cumsum(customers.avg_score)`)
+- `SlayerQuery.model` accepts a model name, inline `SlayerModel`, or `ModelExtension` (extends a model with extra dims/measures/joins). `create_model_from_query()` saves a query as a permanent model
+- Models can have `filters` (always-applied WHERE conditions, e.g., `"deleted_at is None"`)
+- **Core principle**: adding a measure/field must never affect result cardinality or other fields' values — achieved via CTEs, sub-queries, and correct JOIN dimensions
 - Functions needing time ordering: single time_dimensions entry is used automatically; with 2+ time dimensions, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims); with none, falls back to model default
 - SlayerModel has optional `default_time_dimension` field for time-dependent formula resolution
 - SQLite dialect uses STRFTIME instead of DATE_TRUNC (handled automatically by sqlglot)
@@ -98,7 +102,7 @@ SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at
 **Tier 2 — code-covered** (unit tests for SQL generation, no live instance verification):
 - Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, Oracle
 
-Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_shift_join` (per-dialect date arithmetic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_shift_join` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrized tests in `TestMultiDialectGeneration`.
+Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_offset_expr` (date arithmetic for shifted CTEs). Calendar-based time shifts use timestamp offset inside DATE_TRUNC with simple equality joins (no per-dialect join logic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_offset_expr` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrized tests in `TestMultiDialectGeneration`.
 
 ## Testing
 

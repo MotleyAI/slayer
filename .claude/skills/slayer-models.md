@@ -42,7 +42,27 @@ measures:
 
 **Measure aggregation types**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `last` (most recent time bucket's value — for snapshot metrics like balances)
 
-## SQL Placeholders
+## Joins
+
+Models can declare LEFT JOIN relationships to other models:
+
+```yaml
+joins:
+  - target_model: customers
+    join_pairs: [["customer_id", "id"]]
+```
+
+Enables cross-model measures (`customers.avg_score`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.avg_score)`). Auto-generated from FKs during ingestion. Joins are auto-resolved transitively by walking the join graph.
+
+## Model Filters
+
+Models can have always-applied WHERE filters: `filters: ["deleted_at is None"]`. Only WHERE conditions on underlying table columns.
+
+## Creating Models from Queries
+
+`create_model_from_query(query, name)` saves a query's SQL as a permanent model with auto-introspected dimensions and measures.
+
+## SQL Expressions
 
 - Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
 - For complex expressions, use the model name as table prefix (e.g., `"orders.amount * orders.quantity"`)

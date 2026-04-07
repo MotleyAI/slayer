@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Set
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import DatasourceConfig, Dimension, Measure, ModelJoin, SlayerModel
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +177,67 @@ def _compute_transitive_closure(graph: Dict[str, Set[str]], source: str) -> Set[
                 reachable.add(neighbor)
                 queue.append(neighbor)
     return reachable
+
+
+# ---------------------------------------------------------------------------
+# Join generation from FK relationships
+# ---------------------------------------------------------------------------
+
+def _generate_joins(
+    inspector: sa.engine.Inspector,
+    source_table: str,
+    referenced_tables: Set[str],
+    schema: Optional[str],
+    table_set: Set[str],
+) -> List[ModelJoin]:
+    """Generate ModelJoin objects from FK relationships via BFS traversal."""
+    joins = []
+    processed = {source_table}
+    queue = deque([source_table])
+
+    # Build reverse FK mapping (who references whom)
+    reverse_refs: Dict[str, List[tuple]] = defaultdict(list)
+    all_tables = {source_table} | referenced_tables
+    for table in all_tables:
+        for src_col, ref_table, tgt_col in _get_fk_relationships(
+            inspector=inspector, table_name=table, schema=schema, table_set=table_set,
+        ):
+            if ref_table in all_tables:
+                reverse_refs[ref_table].append((table, src_col, tgt_col))
+
+    while queue:
+        current = queue.popleft()
+        current_fk_rels = _get_fk_relationships(
+            inspector=inspector, table_name=current, schema=schema, table_set=table_set,
+        )
+        next_tables = {ref_table for _, ref_table, _ in current_fk_rels
+                       if ref_table in referenced_tables and ref_table not in processed}
+
+        for ref_table in next_tables:
+            # Collect ALL join pairs for this ref_table from a processed referencing table
+            # (handles composite FKs with multiple columns)
+            join_pairs = []
+            found_referencing = None
+            for referencing_table, fk_col, tgt_col in reverse_refs[ref_table]:
+                if referencing_table in processed:
+                    if found_referencing is None:
+                        found_referencing = referencing_table
+                    if referencing_table == found_referencing:
+                        if referencing_table == source_table:
+                            source_dim = fk_col
+                        else:
+                            source_dim = f"{referencing_table}__{fk_col}"
+                        join_pairs.append([source_dim, tgt_col])
+
+            if join_pairs:
+                joins.append(ModelJoin(
+                    target_model=ref_table,
+                    join_pairs=join_pairs,
+                ))
+                processed.add(ref_table)
+                queue.append(ref_table)
+
+    return joins
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +516,7 @@ def _columns_to_model(
     sql_table: Optional[str] = None,
     sql: Optional[str] = None,
     source_table_pk_columns: Optional[Set[str]] = None,
+    joins: Optional[List[ModelJoin]] = None,
 ) -> SlayerModel:
     """Generate a SlayerModel from introspected (column_name, DataType, is_pk) tuples."""
     dimensions = []
@@ -503,6 +565,7 @@ def _columns_to_model(
         data_source=data_source,
         dimensions=dimensions,
         measures=measures,
+        joins=joins or [],
     )
 
 
@@ -550,9 +613,13 @@ def ingest_datasource(
         sql_table = f"{schema}.{table_name}" if schema else table_name
 
         if referenced:
-            # Build rollup SQL, introspect columns from the joined query
+            # Build rollup SQL and explicit joins
             rollup_sql = _generate_rollup_sql(
                 inspector=inspector, sa_engine=sa_engine, source_table=table_name,
+                referenced_tables=referenced, schema=schema, table_set=table_set,
+            )
+            model_joins = _generate_joins(
+                inspector=inspector, source_table=table_name,
                 referenced_tables=referenced, schema=schema, table_set=table_set,
             )
             columns = _introspect_query_columns_via_inspector(
@@ -564,6 +631,7 @@ def ingest_datasource(
             model = _columns_to_model(
                 name=table_name, columns=columns,
                 data_source=datasource.name, sql=rollup_sql,
+                joins=model_joins,
             )
         else:
             # Simple table — introspect directly

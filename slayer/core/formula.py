@@ -87,6 +87,10 @@ def _parse_node(node: ast.AST, original: str) -> FieldSpec:
     if isinstance(node, ast.Name):
         return MeasureRef(name=node.id)
 
+    # Dotted name → cross-model measure reference (e.g., customers.avg_score)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return MeasureRef(name=f"{node.value.id}.{node.attr}")
+
     # Function call → transform
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):
@@ -397,9 +401,16 @@ def _get_string_arg(node: ast.AST, original: str) -> str:
 
 
 def _collect_names(node: ast.AST) -> List[str]:
-    """Collect all Name references from an AST subtree (measure names in arithmetic)."""
+    """Collect all Name and dotted Attribute references from an AST subtree."""
     names = []
+    # Collect dotted names (model.measure) first to avoid also collecting the bare Name part
+    dotted = set()
     for child in ast.walk(node):
-        if isinstance(child, ast.Name):
+        if isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name):
+            dotted_name = f"{child.value.id}.{child.attr}"
+            names.append(dotted_name)
+            dotted.add(id(child.value))  # Mark the Name node as consumed
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and id(child) not in dotted:
             names.append(child.id)
     return names
