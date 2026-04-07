@@ -372,9 +372,14 @@ class SlayerQueryEngine:
                 measure_def = model.get_measure(mname)
                 if measure_def is None:
                     raise ValueError(f"Measure '{mname}' not found in model '{model.name}'")
+                # For joined measures (dotted names), model_name is the join target
+                if "." in mname:
+                    effective_model = mname.rsplit(".", 1)[0].split(".")[-1]
+                else:
+                    effective_model = model.name
                 measures.append(EnrichedMeasure(
                     name=mname, sql=measure_def.sql, type=measure_def.type,
-                    alias=f"{model_name_str}.{mname}", model_name=model.name,
+                    alias=f"{model_name_str}.{mname}", model_name=effective_model,
                 ))
                 known_aliases[mname] = f"{model_name_str}.{mname}"
 
@@ -419,8 +424,12 @@ class SlayerQueryEngine:
             or transform alias) so parent specs can reference it.
             """
             if isinstance(spec, MeasureRef):
-                # Cross-model measure reference (e.g., "customers.avg_score")
-                if "." in spec.name:
+                # Check local measure first (dotted names from ingestion like "customers.count")
+                # Only treat as cross-model if not found locally
+                if "." in spec.name and model.get_measure(spec.name) is not None:
+                    # Local measure with dotted name — treat as regular measure
+                    pass
+                elif "." in spec.name:
                     cm = self._resolve_cross_model_measure(
                         spec_name=spec.name, field_name=field_name,
                         model=model, query=query,

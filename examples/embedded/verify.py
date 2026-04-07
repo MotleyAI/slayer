@@ -63,6 +63,8 @@ def main():
 
     orders_model = storage.get_model("orders")
     check("orders model exists", orders_model is not None)
+    if orders_model is None:
+        return
     check("orders has dynamic joins", len(orders_model.joins) > 0 and orders_model.sql_table is not None)
     check("orders has default_time_dimension", orders_model.default_time_dimension == "created_at")
 
