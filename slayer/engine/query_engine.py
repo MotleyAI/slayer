@@ -57,7 +57,12 @@ class SlayerQueryEngine:
         if isinstance(query, list):
             queries = query
             query = queries[-1]
-            named_queries = {q.name: q for q in queries[:-1] if q.name}
+            named_queries = {}
+            for q in queries[:-1]:
+                if q.name:
+                    if q.name in named_queries:
+                        raise ValueError(f"Duplicate query name '{q.name}' in query list")
+                    named_queries[q.name] = q
         else:
             named_queries = {}
 
@@ -685,9 +690,9 @@ class SlayerQueryEngine:
         """
         named_queries = named_queries or {}
 
-        # Resolve the inner model (checks named queries, then storage)
-        inner_model = self._resolve_model(
-            model_name=inner_query.model, named_queries=named_queries,
+        # Resolve the inner model (handles str, SlayerModel, ModelExtension)
+        inner_model = self._resolve_query_model(
+            query_model=inner_query.model, named_queries=named_queries,
         )
 
         # Enrich the inner query
