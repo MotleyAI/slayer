@@ -82,7 +82,7 @@ engine = SlayerQueryEngine(storage=storage)
 result = engine.execute(query=query)
 # result.data      — list of row dicts
 # result.columns   — list of column names
-# result.labels    — dict mapping column names to human-readable labels (from field/dimension label)
+# result.meta      — dict mapping column names to FieldMetadata (label, and more coming soon)
 # result.row_count — number of rows
 # result.sql       — generated SQL string
 ```

@@ -25,15 +25,22 @@ from slayer.storage.base import StorageBackend
 logger = logging.getLogger(__name__)
 
 
+class FieldMetadata:
+    """Metadata for a single field in the query response."""
+
+    def __init__(self, label: Optional[str] = None):
+        self.label = label
+
+
 class SlayerResponse:
     """Response from a SLayer query."""
 
     def __init__(self, data: List[Dict[str, Any]], columns: Optional[List[str]] = None,
-                 sql: Optional[str] = None, labels: Optional[Dict[str, str]] = None):
+                 sql: Optional[str] = None, meta: Optional[Dict[str, "FieldMetadata"]] = None):
         self.data = data
         self.columns = columns or (list(data[0].keys()) if data else [])
         self.sql = sql
-        self.labels = labels or {}  # column alias → human-readable label
+        self.meta = meta or {}  # column alias → FieldMetadata
 
     @property
     def row_count(self) -> int:
@@ -91,25 +98,25 @@ class SlayerQueryEngine:
         client = SlayerSQLClient(datasource=datasource)
         rows = client.execute(sql=sql)
 
-        # Collect labels from enriched query
-        labels = {}
+        # Collect field metadata from enriched query
+        meta: Dict[str, FieldMetadata] = {}
         for d in enriched.dimensions:
             if d.label:
-                labels[d.alias] = d.label
+                meta[d.alias] = FieldMetadata(label=d.label)
         for td in enriched.time_dimensions:
             if td.label:
-                labels[td.alias] = td.label
+                meta[td.alias] = FieldMetadata(label=td.label)
         for m in enriched.measures:
             if m.label:
-                labels[m.alias] = m.label
+                meta[m.alias] = FieldMetadata(label=m.label)
         for e in enriched.expressions:
             if e.label:
-                labels[e.alias] = e.label
+                meta[e.alias] = FieldMetadata(label=e.label)
         for t in enriched.transforms:
             if t.label:
-                labels[t.alias] = t.label
+                meta[t.alias] = FieldMetadata(label=t.label)
 
-        return SlayerResponse(data=rows, sql=sql, labels=labels)
+        return SlayerResponse(data=rows, sql=sql, meta=meta)
 
     def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
