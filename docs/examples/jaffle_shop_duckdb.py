@@ -41,7 +41,7 @@ def generate_data(output_dir: str, years: int = 3, days: int = 0) -> str:
     cmd = ["jafgen", str(years)]
     if days > 0:
         cmd.extend(["--days", str(days)])
-    subprocess.run(cmd, cwd=output_dir, check=True)
+    subprocess.run(args=cmd, cwd=output_dir, check=True)
     return os.path.join(output_dir, "jaffle-data")
 
 
@@ -132,7 +132,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="jaffle_shop_") as tmpdir:
         # Generate data
         print("=== Generating 3 years of Jaffle Shop data ===")
-        data_dir = generate_data(tmpdir, years=3)
+        data_dir = generate_data(output_dir=tmpdir, years=3)
 
         # Create DuckDB and load
         db_path = os.path.join(tmpdir, "jaffle_shop.duckdb")
@@ -142,7 +142,7 @@ def main() -> None:
             create_schema(conn)
 
             print("\n=== Loading data ===")
-            load_data(conn, data_dir)
+            load_data(conn=conn, data_dir=data_dir)
 
             # Verify
             print("\n=== Verification ===")
