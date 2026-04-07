@@ -760,8 +760,14 @@ class SlayerQueryEngine:
         then looks up "name" on the regions model.
         """
         current_model = model
+        visited = {model.name}
         # Walk intermediate models (all parts except the last, which is the dim name)
         for hop_name in parts[:-1]:
+            if hop_name in visited:
+                raise ValueError(
+                    f"Circular join detected while resolving '{'.'.join(parts)}': "
+                    f"'{hop_name}' already visited ({' → '.join(visited)} → {hop_name})"
+                )
             # Find join to this hop
             join = None
             for j in current_model.joins:
@@ -774,6 +780,7 @@ class SlayerQueryEngine:
             target = self._resolve_model(
                 model_name=hop_name, named_queries=named_queries or {},
             )
+            visited.add(hop_name)
             current_model = target
 
         # Look up the final dimension on the terminal model

@@ -1152,3 +1152,49 @@ def test_circular_query_reference_raises(integration_env):
     main = SlayerQuery(model="a", fields=[Field(formula="count")])
     with pytest.raises(ValueError, match="Circular reference"):
         engine.execute(query=[q1, q2, main])
+
+
+def test_circular_join_graph_raises(tmp_path):
+    """Circular joins between stored models should error when walking the join graph."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER)")
+    conn.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER)")
+    conn.executemany("INSERT INTO a VALUES (?, ?)", [(1, 1)])
+    conn.executemany("INSERT INTO b VALUES (?, ?)", [(1, 1)])
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+
+    # Circular joins: a → b → a
+    storage.save_model(SlayerModel(
+        name="a", sql_table="a", data_source="db",
+        dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
+                    Dimension(name="b_id", sql="b_id", type=DataType.NUMBER)],
+        measures=[Measure(name="count", type=DataType.COUNT)],
+        joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+    ))
+    storage.save_model(SlayerModel(
+        name="b", sql_table="b", data_source="db",
+        dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
+                    Dimension(name="a_id", sql="a_id", type=DataType.NUMBER),
+                    Dimension(name="unique_b_field", sql="id", type=DataType.NUMBER)],
+        measures=[Measure(name="count", type=DataType.COUNT)],
+        joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
+    ))
+
+    engine = SlayerQueryEngine(storage=storage)
+
+    # Trying to resolve b.a.unique_b_field — walks a→b→a which is a cycle.
+    # "unique_b_field" only exists on model b, so __ translation can't short-circuit.
+    query = SlayerQuery(
+        model="a",
+        dimensions=[ColumnRef(name="b.a.unique_b_field")],
+        fields=[Field(formula="count")],
+    )
+    with pytest.raises(ValueError, match="Circular join"):
+        engine.execute(query)
