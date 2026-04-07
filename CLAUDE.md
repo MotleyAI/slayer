@@ -102,7 +102,7 @@ SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at
 **Tier 2 — code-covered** (unit tests for SQL generation, no live instance verification):
 - Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, Oracle
 
-Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_shift_join` (per-dialect date arithmetic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_shift_join` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrized tests in `TestMultiDialectGeneration`.
+Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_offset_expr` (date arithmetic for shifted CTEs). Calendar-based time shifts use timestamp offset inside DATE_TRUNC with simple equality joins (no per-dialect join logic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_offset_expr` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrized tests in `TestMultiDialectGeneration`.
 
 ## Testing
 

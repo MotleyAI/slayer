@@ -50,6 +50,7 @@ class SlayerQueryEngine:
 
     def __init__(self, storage: StorageBackend):
         self.storage = storage
+        self._resolving: set = set()  # Track currently resolving models to detect cycles
 
     def execute(self, query: "SlayerQuery | list[SlayerQuery]") -> SlayerResponse:
         # Accept single query or list (last is main)
@@ -141,8 +142,6 @@ class SlayerQueryEngine:
                 return model
         else:
             raise ValueError(f"Invalid query.model type: {type(query_model)}")
-
-    _resolving: set = set()  # Track currently resolving models to detect cycles
 
     def _resolve_model(self, model_name: str,
                         named_queries: dict[str, SlayerQuery] = None) -> SlayerModel:

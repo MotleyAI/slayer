@@ -22,20 +22,21 @@ You can pass a single query or a **list of queries** to `execute()`. When passin
 
 ## ColumnRef
 
-A reference to a dimension. Three modes:
+A reference to a model dimension. Supports dotted names for joined models.
 
 ```json
 {"name": "status"}
 {"name": "status", "label": "Order Status"}
-{"sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "name": "tier"}
+{"name": "customers.name"}
+{"name": "customers.regions.name"}
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Required. Result column name. For existing dimensions, also the column to look up. |
-| `sql` | string | Raw SQL expression — used as a computed grouping dimension |
-| `formula` | string | Formula expression referencing measures (e.g., `"revenue / count"`) |
-| `label` | string | Human-readable display name |
+| `name` | string | Dimension name. Supports dotted paths for joined models (auto-resolved via join graph). |
+| `label` | string | Optional human-readable display name |
+
+For computed dimensions (SQL expressions like CASE), use [ModelExtension](#modelextension) on the query's `model` field. For derived metrics, use [Field formulas](formulas.md#field-formulas) in `fields`.
 
 Via MCP, simple dimensions are passed as strings: `dimensions=["status"]`
 
