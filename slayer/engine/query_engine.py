@@ -588,11 +588,44 @@ class SlayerQueryEngine:
         # Only include last_agg_time_column if there are actual type=last measures
         has_last_measures = any(m.type == DataType.LAST for m in measures)
 
-        # Resolve JOIN clauses from model.joins for the SQL generator
+        # Resolve JOIN clauses — only include JOINs the query actually needs.
+        # Collect referenced join targets from dimensions, measures, and cross-model measures.
+        needed_tables = set()
+        for d in dimensions:
+            if "." in d.name:
+                # e.g., "customers.name" → need "customers"
+                # e.g., "customers.regions.name" → need "customers" and "regions"
+                parts = d.name.split(".")
+                for part in parts[:-1]:  # all except the column name
+                    needed_tables.add(part)
+        for m in measures:
+            if "." in m.name:
+                parts = m.name.split(".")
+                for part in parts[:-1]:
+                    needed_tables.add(part)
+        for cm in cross_model_measures:
+            needed_tables.add(cm.target_model_name)
+
+        # Compute transitive dependencies: if "regions" is needed but it's reached
+        # via "customers", include "customers" too. Walk the join graph backward.
+        expanded = set()
+        for table in needed_tables:
+            # Walk join pairs backward to find intermediate tables
+            expanded.add(table)
+            for mj in model.joins:
+                for src_col, _ in mj.join_pairs:
+                    if "." in src_col:
+                        intermediate = src_col.split(".")[0]
+                        if mj.target_model == table:
+                            expanded.add(intermediate)
+        needed_tables = expanded
+
+        # Resolve only the needed joins (in model.joins order for stability)
+        nq = named_queries or {}
         resolved_joins = []
         for mj in model.joins:
-            # Check named queries first, then storage
-            nq = named_queries or {}
+            if mj.target_model not in needed_tables:
+                continue
             if mj.target_model in nq:
                 target = self._query_as_model(
                     inner_query=nq[mj.target_model], named_queries=nq,
@@ -604,10 +637,9 @@ class SlayerQueryEngine:
             elif target and target.sql:
                 target_table = f"({target.sql})"
             else:
-                target_table = mj.target_model  # fallback: use model name as table
+                target_table = mj.target_model
             join_conds = []
             for src_col, tgt_col in mj.join_pairs:
-                # Source column may be dotted (for transitive joins like customers.region_id)
                 if "." in src_col:
                     src_table = src_col.rsplit(".", 1)[0]
                     src_raw = src_col.rsplit(".", 1)[1]

@@ -640,6 +640,69 @@ class TestRollupIngestion:
         assert by_region["US"] == 3
         assert by_region["EU"] == 1
 
+    def test_selective_joins_no_joined_dims(self, pg_ingest_env) -> None:
+        """Query using only source-table dimensions should not include JOINs."""
+        models, ds, _ = pg_ingest_env
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_datasource(ds)
+        for m in models:
+            storage.save_model(m)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            model="orders",
+            fields=[{"formula": "count"}],
+        )
+        result = engine.execute(query=query)
+        # No joined dimensions → SQL should not have LEFT JOIN
+        assert "LEFT JOIN" not in result.sql
+        assert result.data[0]["orders.count"] == 4
+
+    def test_selective_joins_single_hop(self, pg_ingest_env) -> None:
+        """Query with customer dimension should JOIN customers but NOT regions."""
+        models, ds, _ = pg_ingest_env
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_datasource(ds)
+        for m in models:
+            storage.save_model(m)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "customers.name"}],
+        )
+        result = engine.execute(query=query)
+        # Should JOIN customers but NOT regions
+        assert "LEFT JOIN" in result.sql
+        assert "customers" in result.sql
+        assert "regions" not in result.sql
+
+    def test_selective_joins_transitive(self, pg_ingest_env) -> None:
+        """Query with region dimension should include both customers and regions JOINs."""
+        models, ds, _ = pg_ingest_env
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_datasource(ds)
+        for m in models:
+            storage.save_model(m)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "regions.name"}],
+        )
+        result = engine.execute(query=query)
+        # Needs both customers (intermediate) and regions (target)
+        assert "customers" in result.sql
+        assert "regions" in result.sql
+
     def test_orders_has_joins_metadata(self, pg_ingest_env) -> None:
         """Ingested models should have explicit join metadata."""
         models, _, _ = pg_ingest_env
