@@ -617,17 +617,19 @@ class SlayerQueryEngine:
                         needed_tables.add(part)
 
         # Compute transitive dependencies: if "regions" is needed but it's reached
-        # via "customers", include "customers" too. Walk the join graph backward.
-        expanded = set()
-        for table in needed_tables:
-            # Walk join pairs backward to find intermediate tables
-            expanded.add(table)
+        # via "customers", include "customers" too. BFS walk the join graph backward.
+        expanded = set(needed_tables)
+        queue = list(needed_tables)
+        while queue:
+            table = queue.pop()
             for mj in model.joins:
-                for src_col, _ in mj.join_pairs:
-                    if "." in src_col:
-                        intermediate = src_col.split(".")[0]
-                        if mj.target_model == table:
-                            expanded.add(intermediate)
+                if mj.target_model == table:
+                    for src_col, _ in mj.join_pairs:
+                        if "." in src_col:
+                            intermediate = src_col.split(".")[0]
+                            if intermediate not in expanded:
+                                expanded.add(intermediate)
+                                queue.append(intermediate)
         needed_tables = expanded
 
         # Resolve only the needed joins (in model.joins order for stability)

@@ -310,9 +310,15 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
         inner = _filter_node_to_sql(node.operand, original, columns)
         return f"NOT ({inner})"
 
-    # Dotted name → joined column reference (e.g., customers.name)
-    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-        dotted = f"{node.value.id}.{node.attr}"
+    # Dotted name → joined column reference (e.g., customers.name, customers.regions.name)
+    if isinstance(node, ast.Attribute):
+        def _resolve_dotted(n: ast.expr) -> str:
+            if isinstance(n, ast.Name):
+                return n.id
+            if isinstance(n, ast.Attribute):
+                return f"{_resolve_dotted(n.value)}.{n.attr}"
+            raise ValueError(f"Unsupported node in dotted reference: {ast.dump(n)}")
+        dotted = f"{_resolve_dotted(node.value)}.{node.attr}"
         columns.append(dotted)
         return dotted
 
