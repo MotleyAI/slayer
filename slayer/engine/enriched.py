@@ -116,6 +116,9 @@ class EnrichedQuery:
     expressions: List[EnrichedExpression] = field(default_factory=list)
     transforms: List[EnrichedTransform] = field(default_factory=list)
 
+    # Cross-model measures (from joined models, computed as separate sub-queries)
+    cross_model_measures: List["CrossModelMeasure"] = field(default_factory=list)
+
     # Time column for `type: last` aggregation (ORDER BY for ROW_NUMBER)
     last_agg_time_column: Optional[str] = None
 
@@ -124,3 +127,26 @@ class EnrichedQuery:
     order: Optional[List[OrderItem]] = None
     limit: Optional[int] = None
     offset: Optional[int] = None
+
+
+@dataclass
+class CrossModelMeasure:
+    """A measure from a joined model, computed as a separate sub-query.
+
+    The sub-query aggregates the measure from the target model scoped to
+    the shared dimensions, then the result is LEFT JOINed to the main query.
+    """
+
+    name: str
+    alias: str                          # Result column name (e.g., "orders.customers__avg_score")
+    target_model_name: str              # The joined model name
+    target_model_sql_table: Optional[str]
+    target_model_sql: Optional[str]
+    measure: EnrichedMeasure            # The measure to aggregate
+    join_pairs: List[List[str]]         # [[source_dim, target_dim], ...] from ModelJoin
+    shared_dimensions: List[EnrichedDimension]  # Dimensions shared between main and target
+    shared_time_dimensions: List[EnrichedTimeDimension]  # Time dims shared between main and target
+    source_model_name: str              # The main query's model name
+    source_sql_table: Optional[str]     # Main model's table
+    source_sql: Optional[str]           # Main model's SQL
+    label: Optional[str] = None

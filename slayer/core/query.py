@@ -4,6 +4,7 @@ SlayerQuery is the user-facing query object — minimal, just enough to express 
 It is later converted into EnrichedQuery (see slayer/engine/enriched.py) which carries
 fully resolved SQL expressions, model metadata, and is ready for SQL generation.
 """
+from __future__ import annotations
 
 import datetime
 import re
@@ -17,15 +18,23 @@ _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class ColumnRef(BaseModel):
+    """Reference to a dimension by name.
+
+    Supports dotted names for joined models: "status", "customers.name",
+    "customers.regions.name" (multi-hop). Computed dimensions (SQL expressions)
+    should be defined via ModelExtension on the query's model.
+    """
     name: str
     model: Optional[str] = None
-    label: Optional[str] = None  # Human-readable label for output
+    label: Optional[str] = None
 
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        if not _NAME_PATTERN.match(v):
-            raise ValueError(f"Invalid name '{v}': must contain only letters, digits, and underscores, and start with a letter or underscore")
+        # Allow dotted names for multi-hop joined dimensions (e.g., "customers.regions.name")
+        for part in v.split("."):
+            if not _NAME_PATTERN.match(part):
+                raise ValueError(f"Invalid name '{v}': each part must contain only letters, digits, and underscores")
         return v
 
     @property
@@ -35,7 +44,7 @@ class ColumnRef(BaseModel):
         return self.name
 
     @classmethod
-    def from_string(cls, s: str) -> "ColumnRef":
+    def from_string(cls, s: str) -> ColumnRef:
         if "." in s:
             model, name = s.split(".", 1)
             return cls(name=name, model=model)
@@ -46,7 +55,7 @@ class TimeDimension(BaseModel):
     dimension: ColumnRef
     granularity: TimeGranularity
     date_range: Optional[List[str]] = None
-    label: Optional[str] = None  # Human-readable label for output
+    label: Optional[str] = None
 
 
 class OrderItem(BaseModel):
@@ -82,6 +91,18 @@ class Field(BaseModel):
         return v
 
 
+class ModelExtension(BaseModel):
+    """Extend an existing model with extra dimensions, measures, or joins.
+
+    Used inline on a query to add computed dimensions (SQL expressions),
+    extra joins, or additional measures without modifying the stored model.
+    """
+    source_name: str                    # Model/query to extend
+    dimensions: Optional[List] = None   # Extra Dimension objects
+    measures: Optional[List] = None     # Extra Measure objects
+    joins: Optional[List] = None        # Extra ModelJoin objects
+
+
 class SlayerQuery(BaseModel):
     """User-facing query object. Specifies what data to retrieve from a model.
 
@@ -93,7 +114,8 @@ class SlayerQuery(BaseModel):
         filters=["status == 'completed'", "amount > 100"]
     """
 
-    model: str
+    name: Optional[str] = None  # For referencing this query from other queries in a list
+    model: object  # str (model name), SlayerModel (inline), or ModelExtension
     fields: Optional[List[Field]] = None
     dimensions: Optional[List[ColumnRef]] = None
     time_dimensions: Optional[List[TimeDimension]] = None

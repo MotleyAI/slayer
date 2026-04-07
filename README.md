@@ -26,11 +26,11 @@ When AI agents write raw SQL, things break in production — hallucinated column
 - **Dynamic model manipulation** — Agents create and edit models at runtime. Changes take effect immediately — no rebuild, no deploy, no restart.
 - **Query-time expressions** — Compose derived metrics on the fly with the `fields` API (`"revenue / count"`, `"cumsum(revenue)"`, `"change_pct(revenue)"`). No need to pre-define every metric.
 - **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"last(change(revenue))"`).
+- **Cross-model measures** — Query measures from joined models with dotted syntax (`"customers.avg_score"`, multi-hop: `"customers.regions.name"`). Joins auto-resolved via graph walk. Transforms work on cross-model measures (`"cumsum(customers.avg_score)"`).
+- **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model for reuse. `ModelExtension` extends models inline with extra dimensions/joins.
+- **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at is None"`).
 
 ### Roadmap
-
-- Measures from joined models
-- Multistage queries
 - Unpivoting
 - Smart output formatting (currency, percentages)
 - Auto-propagating filters
@@ -135,6 +135,7 @@ MCP tools:
 | `inspect_model` | Detailed model info with sample data |
 | `query` | Execute semantic queries |
 | `create_model` | Create a new model from table/SQL |
+| `create_model_from_query` | Save a query as a reusable model with auto-introspected schema |
 | `edit_model` | Edit an existing model: update metadata, add measures/dimensions, remove fields — all in one call |
 | `delete_model` | Delete a model |
 | `create_datasource` | Configure a database connection (with connection test and auto-ingestion; set `auto_ingest=false` to skip) |

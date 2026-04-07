@@ -306,6 +306,149 @@ class TestPostgresQueries:
 
 
 @pytest.fixture
+def pg_cross_model_env(postgresql):
+    """Postgres env with orders + customers (with score) and explicit join."""
+    cur = postgresql.cursor()
+    cur.execute("""
+        CREATE TABLE customers (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            region TEXT NOT NULL,
+            score NUMERIC(5,2) NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            amount NUMERIC(10,2) NOT NULL,
+            customer_id INTEGER REFERENCES customers(id),
+            created_at TIMESTAMP NOT NULL
+        )
+    """)
+    cur.executemany(
+        "INSERT INTO customers VALUES (%s, %s, %s, %s)",
+        [(1, "Alice", "US", 90), (2, "Bob", "EU", 60), (3, "Charlie", "US", 80)],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (%s, %s, %s, %s, %s)",
+        [
+            (1, "completed", 100, 1, "2024-01-15 10:00:00"),
+            (2, "completed", 200, 1, "2024-01-20 11:00:00"),
+            (3, "pending", 50, 2, "2024-02-10 09:00:00"),
+            (4, "completed", 150, 2, "2024-02-15 14:00:00"),
+            (5, "completed", 300, 3, "2024-03-01 08:00:00"),
+            (6, "pending", 25, 1, "2024-03-10 16:00:00"),
+        ],
+    )
+    postgresql.commit()
+
+    tmpdir = tempfile.mkdtemp()
+    storage = YAMLStorage(base_dir=tmpdir)
+    info = postgresql.info
+    storage.save_datasource(DatasourceConfig(
+        name="testpg", type="postgres",
+        host=info.host, port=info.port, database=info.dbname,
+        username=info.user, password="",
+    ))
+    from slayer.core.models import ModelJoin
+    storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="testpg",
+        default_time_dimension="created_at",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="status", sql="status", type=DataType.STRING),
+            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Dimension(name="amount", sql="amount", type=DataType.NUMBER),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="total", sql="amount", type=DataType.SUM),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    storage.save_model(SlayerModel(
+        name="customers", sql_table="customers", data_source="testpg",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="name", sql="name", type=DataType.STRING),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="avg_score", sql="score", type=DataType.AVERAGE),
+        ],
+    ))
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+class TestCrossModelAndMultistage:
+    def test_cross_model_measure(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """Cross-model measure: monthly order count + avg customer score."""
+        query = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            fields=[Field(formula="count"), Field(formula="customers.avg_score")],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = pg_cross_model_env.execute(query=query)
+        assert result.row_count == 3
+        # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
+        assert float(result.data[0]["orders.customers__avg_score"]) == pytest.approx(90.0)
+        assert float(result.data[1]["orders.customers__avg_score"]) == pytest.approx(60.0)
+        assert float(result.data[2]["orders.customers__avg_score"]) == pytest.approx(85.0)
+
+    def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """Query list: named sub-query referenced by main query."""
+        inner = SlayerQuery(
+            name="monthly", model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            fields=[Field(formula="count"), Field(formula="total")],
+        )
+        outer = SlayerQuery(model="monthly", fields=[Field(formula="count")])
+        result = pg_cross_model_env.execute(query=[inner, outer])
+        assert result.data[0]["monthly.count"] == 3
+
+    def test_create_model_from_query(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """Save a query as a permanent model, then query it."""
+        source = SlayerQuery(
+            model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            fields=[Field(formula="count"), Field(formula="total")],
+        )
+        saved = pg_cross_model_env.create_model_from_query(query=source, name="pg_monthly")
+        assert saved.source_queries is not None
+        result = pg_cross_model_env.execute(
+            query=SlayerQuery(model="pg_monthly", fields=[Field(formula="count")])
+        )
+        assert result.data[0]["pg_monthly.count"] == 3
+
+    def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+        """SQL expression dimension via ModelExtension with Postgres."""
+        from slayer.core.query import ModelExtension
+        query = SlayerQuery(
+            model=ModelExtension(
+                source_name="orders",
+                dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+            ),
+            dimensions=[ColumnRef(name="tier")],
+            fields=[Field(formula="count")],
+        )
+        result = pg_cross_model_env.execute(query=query)
+        by_tier = {r["orders.tier"]: r["orders.count"] for r in result.data}
+        # high: 200, 150, 300 = 3; low: 100, 50, 25 = 3
+        assert by_tier["high"] == 3
+        assert by_tier["low"] == 3
+
+
+@pytest.fixture
 def pg_ingest_env(postgresql):
     """Set up tables with FK relationships and ingest via rollup."""
     cur = postgresql.cursor()
@@ -452,3 +595,88 @@ class TestRollupIngestion:
         assert by_region["EU"]["orders.count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0
+
+    def test_dotted_dimension_single_hop(self, pg_ingest_env) -> None:
+        """Dotted dimension 'customers.name' resolves to 'customers__name'."""
+        models, ds, _ = pg_ingest_env
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_datasource(ds)
+        for m in models:
+            storage.save_model(m)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "customers.name"}],
+        )
+        result = engine.execute(query=query)
+
+        by_name = {r["orders.customers.name"]: r["orders.count"] for r in result.data}
+        assert by_name["Acme"] == 2
+        assert by_name["Globex"] == 1
+        assert by_name["Initech"] == 1
+
+    def test_dotted_dimension_multi_hop(self, pg_ingest_env) -> None:
+        """Multi-hop dotted dimension 'customers.regions.name' resolves transitively."""
+        models, ds, _ = pg_ingest_env
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_datasource(ds)
+        for m in models:
+            storage.save_model(m)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "customers.regions.name"}],
+        )
+        result = engine.execute(query=query)
+
+        # Same as regions__name: US=3, EU=1
+        by_region = {r["orders.customers.regions.name"]: r["orders.count"] for r in result.data}
+        assert by_region["US"] == 3
+        assert by_region["EU"] == 1
+
+    def test_orders_has_joins_metadata(self, pg_ingest_env) -> None:
+        """Ingested models should have explicit join metadata."""
+        models, _, _ = pg_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+
+        # orders → customers (direct FK)
+        join_targets = [j.target_model for j in orders.joins]
+        assert "customers" in join_targets
+
+        # customers → regions (transitive, discovered via BFS)
+        assert "regions" in join_targets
+
+        # Each join has at least one join pair
+        for j in orders.joins:
+            assert len(j.join_pairs) >= 1
+            for pair in j.join_pairs:
+                assert len(pair) == 2  # [source_dim, target_dim]
+
+    def test_regions_has_no_joins(self, pg_ingest_env) -> None:
+        """Models with no FK references should have empty joins."""
+        models, _, _ = pg_ingest_env
+        regions = next(m for m in models if m.name == "regions")
+        assert regions.joins == []
+
+    def test_joins_serialize_to_yaml(self, pg_ingest_env) -> None:
+        """Joins should survive YAML round-trip."""
+        models, ds, _ = pg_ingest_env
+        orders = next(m for m in models if m.name == "orders")
+
+        tmpdir = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmpdir)
+        storage.save_model(orders)
+
+        loaded = storage.get_model("orders")
+        assert len(loaded.joins) == len(orders.joins)
+        for orig, loaded_j in zip(orders.joins, loaded.joins):
+            assert orig.target_model == loaded_j.target_model
+            assert orig.join_pairs == loaded_j.join_pairs

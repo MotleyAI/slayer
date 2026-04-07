@@ -104,6 +104,57 @@ Use **bare column names** (e.g., `"amount"`) — SLayer automatically qualifies 
 
 For complex expressions, use the model name as a table prefix: `"orders.amount * orders.quantity"`.
 
+## Joins
+
+Models can declare explicit LEFT JOIN relationships to other models:
+
+```yaml
+name: orders
+sql_table: public.orders
+joins:
+  - target_model: customers
+    join_pairs: [["customer_id", "id"]]
+  - target_model: products
+    join_pairs: [["product_id", "id"]]
+```
+
+Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures).
+
+During [auto-ingestion](ingestion.md), joins are generated automatically from foreign key relationships (including transitive joins like `orders → customers → regions`). Multi-hop dimensions are auto-resolved by walking the join graph — `customers.regions.name` in a query on `orders` follows `orders → customers → regions` automatically.
+
+## Model Filters
+
+Models can have always-applied WHERE filters on the underlying table:
+
+```yaml
+name: active_orders
+sql_table: public.orders
+filters:
+  - "deleted_at is None"
+  - "status != 'test'"
+```
+
+Model filters only support conditions on underlying table columns (WHERE). For measure-based conditions, use query-level filters instead.
+
+## Creating Models from Queries
+
+You can save a query's result as a permanent model. The query's SQL is baked into the model, and its dimensions and measures are auto-introspected:
+
+```python
+engine.create_model_from_query(
+    query=SlayerQuery(
+        model="orders",
+        time_dimensions=[...],
+        fields=[{"formula": "count"}, {"formula": "total_amount"}],
+    ),
+    name="monthly_summary",
+)
+```
+
+The saved model can then be queried by name like any other model — useful for materializing complex aggregations.
+
+Via MCP, use the `create_model_from_query` tool. Via API, `POST /models/from_query`.
+
 ## Model Fields Reference
 
 | Field | Type | Required | Default | Description |
@@ -114,6 +165,8 @@ For complex expressions, use the model name as a table prefix: `"orders.amount *
 | `data_source` | string | Yes | — | Datasource name |
 | `dimensions` | list | No | `[]` | Dimension definitions |
 | `measures` | list | No | `[]` | Measure definitions |
+| `joins` | list | No | `[]` | JOIN relationships to other models |
+| `filters` | list[str] | No | `[]` | Model-level WHERE filters (always applied, e.g., `"deleted_at is None"`) |
 | `description` | string | No | — | Helps agents and users understand the model |
 | `hidden` | bool | No | `false` | Hide from model listings |
 | `default_time_dimension` | string | No | — | Default time dimension name for time-dependent formulas (e.g. `"created_at"`) |
