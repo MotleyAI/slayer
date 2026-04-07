@@ -260,7 +260,19 @@ class SQLGenerator:
         if not enriched.expressions and not enriched.transforms:
             select = self._apply_order_limit(select=select, enriched=enriched)
 
-        return select.sql(dialect=self.dialect, pretty=True)
+        sql = select.sql(dialect=self.dialect, pretty=True)
+
+        # Append LEFT JOINs from resolved joins (string-level, after sqlglot rendering)
+        if enriched.resolved_joins:
+            join_parts = []
+            for target_table, target_alias, join_cond in enriched.resolved_joins:
+                join_parts.append(f"LEFT JOIN {target_table} AS {target_alias} ON {join_cond}")
+            # Insert joins after the FROM clause line
+            from_marker = f"FROM {enriched.sql_table} AS {enriched.model_name}"
+            if from_marker in sql:
+                sql = sql.replace(from_marker, from_marker + "\n" + "\n".join(join_parts))
+
+        return sql
 
     def _generate_with_computed(self, enriched: EnrichedQuery, base_sql: str,
                                 skip_pagination: bool = False) -> str:

@@ -73,7 +73,7 @@ SLayer compiles these queries into the correct SQL for your database, handling j
 * **Four interfaces, one query language** — MCP (stdio + SSE), REST API, CLI and Python SDK all expose the same capabilities. Agents, apps, and humans use the same models.
 * **13 database dialects** — CI-tested against Postgres, MySQL, ClickHouse, and SQLite; additional support for Snowflake, BigQuery, Redshift, DuckDB, Trino/Presto, Databricks/Spark, MS SQL Server, and Oracle via sqlglot.
 * **Composable `fields` API** — Derived metrics as formula strings (`"revenue / count"`, `"cumsum(revenue)"`, `"time_shift(revenue, -1, 'year')"`). Arbitrary nesting works — `change(cumsum(revenue))` just compiles.
-* **Zero-config onboarding** — Point SLayer at a database and it introspects the schema, detects foreign keys, and generates denormalized models with transitive LEFT JOINs baked in.
+* **Zero-config onboarding** — Point SLayer at a database and it introspects the schema, detects foreign keys, and generates models with explicit joins. LEFT JOINs are built dynamically at query time.
 * **Instant model editing** — Add or remove measures and dimensions on a running system via API, CLI, or MCP tool. No rebuild, no restart — changes are queryable immediately.
 * **Embeddable** — Use it as a standalone service or import it as a Python module with no network layer.
 
@@ -281,12 +281,12 @@ Filters use simple formula strings — no verbose JSON objects:
 
 ## Auto-Ingestion
 
-Connect to a database and generate models automatically. SLayer introspects the schema, detects foreign key relationships, and creates denormalized models with rollup-style LEFT JOINs.
+Connect to a database and generate models automatically. SLayer introspects the schema, detects foreign key relationships, and creates models with explicit join metadata.
 
 For example, given tables `orders → customers → regions` (via FKs), the `orders` model will automatically include:
-- Rolled-up dimensions: `customers__name`, `regions__name`, etc.
-- Count-distinct measures: `customers__count`, `regions__count`
-- A SQL query with transitive LEFT JOINs baked in
+- Joined dimensions: `customers.name`, `regions.name`, etc. (dotted syntax)
+- Count-distinct measures: `customers.count`, `regions.count`
+- Explicit joins — LEFT JOINs are constructed dynamically at query time
 
 ```bash
 # Via CLI

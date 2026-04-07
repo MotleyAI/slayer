@@ -262,12 +262,20 @@ class SlayerQueryEngine:
                     )
                     if dim_def:
                         dim_name = dim_def.name
+            # For joined dimensions (dotted names), model_name is the join target
+            # so _resolve_sql qualifies the column with the right table alias
+            if "." in dim_ref.name:
+                table_prefix = dim_ref.name.rsplit(".", 1)[0]
+                # For multi-hop, use the last hop as the table alias
+                effective_model = table_prefix.split(".")[-1] if "." in table_prefix else table_prefix
+            else:
+                effective_model = model.name
             dimensions.append(EnrichedDimension(
-                name=dim_ref.name,  # Keep original dotted name for the user
+                name=dim_ref.name,
                 sql=dim_def.sql if dim_def else None,
                 type=dim_def.type if dim_def else DataType.STRING,
                 alias=f"{model_name_str}.{dim_ref.name}",
-                model_name=model.name, label=dim_ref.label,
+                model_name=effective_model, label=dim_ref.label,
             ))
 
         # Measures are populated from fields (bare measure names auto-add here)
@@ -571,10 +579,39 @@ class SlayerQueryEngine:
         # Only include last_agg_time_column if there are actual type=last measures
         has_last_measures = any(m.type == DataType.LAST for m in measures)
 
+        # Resolve JOIN clauses from model.joins for the SQL generator
+        resolved_joins = []
+        for mj in model.joins:
+            # Check named queries first, then storage
+            nq = named_queries or {}
+            if mj.target_model in nq:
+                target = self._query_as_model(
+                    inner_query=nq[mj.target_model], named_queries=nq,
+                )
+            else:
+                target = self.storage.get_model(mj.target_model) if self.storage else None
+            if target and target.sql_table:
+                target_table = target.sql_table
+            elif target and target.sql:
+                target_table = f"({target.sql})"
+            else:
+                target_table = mj.target_model  # fallback: use model name as table
+            join_conds = []
+            for src_col, tgt_col in mj.join_pairs:
+                # Source column may be dotted (for transitive joins like customers.region_id)
+                if "." in src_col:
+                    src_table = src_col.rsplit(".", 1)[0]
+                    src_raw = src_col.rsplit(".", 1)[1]
+                    join_conds.append(f"{src_table}.{src_raw} = {mj.target_model}.{tgt_col}")
+                else:
+                    join_conds.append(f"{model_name_str}.{src_col} = {mj.target_model}.{tgt_col}")
+            resolved_joins.append((target_table, mj.target_model, " AND ".join(join_conds)))
+
         return EnrichedQuery(
             model_name=model.name,
             sql_table=model.sql_table,
             sql=model.sql,
+            resolved_joins=resolved_joins,
             dimensions=dimensions,
             measures=measures,
             time_dimensions=time_dimensions,

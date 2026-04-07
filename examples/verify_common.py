@@ -133,30 +133,31 @@ def run_common_checks():
 
 
 def check_rollup(expect_rollup=True):
-    """Check rollup dimensions on the orders model."""
+    """Check joined dimensions on the orders model."""
     print("\nRollup:")
     orders_model = api("GET", "/models/orders")
     dim_names = [d["name"] for d in orders_model.get("dimensions", [])]
-    has_rollup = any("__" in d for d in dim_names)
+    # Joined dimensions use dotted names (e.g., "products.category")
+    has_joins = any("." in d for d in dim_names)
 
     if expect_rollup:
-        check("rollup dimensions present", has_rollup)
-        if has_rollup:
+        check("rollup dimensions present", has_joins)
+        if has_joins:
             result = api("POST", "/query", {
                 "model": "orders",
                 "fields": [{"formula": "count"}],
-                "dimensions": [{"name": "products__category"}],
+                "dimensions": [{"name": "products.category"}],
             })
-            by_cat = {r["orders.products__category"]: r["orders.count"] for r in result["data"]}
+            by_cat = {r["orders.products.category"]: r["orders.count"] for r in result["data"]}
             check("rollup by product category works", len(by_cat) > 0)
             check(f"all categories sum to {TOTAL_ORDERS}", sum(by_cat.values()) == TOTAL_ORDERS)
 
             result = api("POST", "/query", {
                 "model": "orders",
                 "fields": [{"formula": "count"}],
-                "dimensions": [{"name": "regions__name"}],
+                "dimensions": [{"name": "regions.name"}],
             })
-            by_region = {r["orders.regions__name"]: r["orders.count"] for r in result["data"]}
+            by_region = {r["orders.regions.name"]: r["orders.count"] for r in result["data"]}
             check("transitive rollup by region works", len(by_region) > 0)
     else:
-        check("no rollup dimensions (expected)", not has_rollup)
+        check("no rollup dimensions (expected)", not has_joins)

@@ -92,10 +92,10 @@ models = ingest_datasource(datasource=ds, schema="public")
 Generates:
 - Dimensions for all columns
 - `count` measure, `{col}_sum` and `{col}_avg` for numeric non-ID columns
-- **Rollup joins**: detects FK relationships, computes transitive closure, creates denormalized models with LEFT JOINs baked into the SQL
-- Rolled-up dimensions use `{table}__{column}` naming (e.g., `customers__name`)
-- FK columns are excluded from rollup; ID-like columns (`*_id`, `*_key`) skip sum/avg measures
-- Count-distinct measures added for each referenced table's PK (e.g., `customers__count`)
+- **Dynamic joins**: detects FK relationships, creates models with explicit join metadata (LEFT JOINs built at query time)
+- Joined dimensions use dotted naming (`customers.name`, `regions.name`)
+- FK columns are excluded; ID-like columns (`*_id`, `*_key`) skip sum/avg measures
+- Count-distinct measures for each referenced table's PK (`customers.count`)
 
 ## MCP Incremental Editing
 

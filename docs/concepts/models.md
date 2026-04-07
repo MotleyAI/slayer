@@ -138,7 +138,7 @@ Model filters only support conditions on underlying table columns (WHERE). For m
 
 ## Creating Models from Queries
 
-You can save a query's result as a permanent model. The query's SQL is baked into the model, and its dimensions and measures are auto-introspected:
+You can save a query's result as a permanent model. The query structure is preserved, and dimensions and measures are auto-introspected:
 
 ```python
 engine.create_model_from_query(

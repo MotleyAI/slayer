@@ -63,16 +63,16 @@ def main():
 
     orders_model = storage.get_model("orders")
     check("orders model exists", orders_model is not None)
-    check("orders has rollup SQL", orders_model.sql is not None and "LEFT JOIN" in orders_model.sql)
+    check("orders has dynamic joins", len(orders_model.joins) > 0 and orders_model.sql_table is not None)
     check("orders has default_time_dimension", orders_model.default_time_dimension == "created_at")
 
     dim_names = [d.name for d in orders_model.dimensions]
-    check("orders has customers__name rollup dim", "customers__name" in dim_names)
-    check("orders has products__category rollup dim", "products__category" in dim_names)
+    check("orders has customers.name rollup dim", "customers.name" in dim_names)
+    check("orders has products.category rollup dim", "products.category" in dim_names)
 
     measure_names = [m.name for m in orders_model.measures]
     check("orders has quantity_sum measure", "quantity_sum" in measure_names)
-    check("orders has customers__count measure", "customers__count" in measure_names)
+    check("orders has customers.count measure", "customers.count" in measure_names)
 
     regions_model = storage.get_model("regions")
     check("regions has no rollup (sql_table set)", regions_model.sql_table is not None)
@@ -98,9 +98,9 @@ def main():
     result = engine.execute(query=SlayerQuery(
         model="orders",
         fields=[{"formula": "count"}],
-        dimensions=[{"name": "products__category"}],
+        dimensions=[{"name": "products.category"}],
     ))
-    by_cat = {r["orders.products__category"]: r["orders.count"] for r in result.data}
+    by_cat = {r["orders.products.category"]: r["orders.count"] for r in result.data}
     check("all categories sum to total", sum(by_cat.values()) == TOTAL_ORDERS)
 
     # Filter
@@ -115,7 +115,7 @@ def main():
     result = engine.execute(query=SlayerQuery(
         model="orders",
         fields=[{"formula": "count"}],
-        dimensions=[{"name": "customers__name"}],
+        dimensions=[{"name": "customers.name"}],
         order=[{"column": {"name": "count"}, "direction": "desc"}],
         limit=3,
     ))
@@ -174,7 +174,7 @@ def main():
     # Rank
     result = engine.execute(query=SlayerQuery(
         model="orders",
-        dimensions=[{"name": "customers__name"}],
+        dimensions=[{"name": "customers.name"}],
         fields=[Field(formula="count"), Field(formula="rank(count)", name="rnk")],
         order=[{"column": {"name": "count"}, "direction": "desc"}],
     ))
@@ -187,7 +187,7 @@ def main():
     # Fields: measure + expression
     result = engine.execute(query=SlayerQuery(
         model="orders",
-        dimensions=[{"name": "products__category"}],
+        dimensions=[{"name": "products.category"}],
         fields=[
             Field(formula="count"),
             Field(formula="quantity_sum"),

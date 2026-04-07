@@ -505,14 +505,14 @@ class TestRollupIngestion:
         orders = next(m for m in models if m.name == "orders")
 
         dim_names = [d.name for d in orders.dimensions]
-        # Should have own columns + rolled-up from customers and regions (transitive)
+        # Should have own columns + joined from customers and regions (transitive)
         assert "id" in dim_names
         assert "amount" in dim_names
-        assert "customers__name" in dim_names
-        assert "customers__id" in dim_names
+        assert "customers.name" in dim_names
+        assert "customers.id" in dim_names
         # Transitive: orders -> customers -> regions
-        assert "regions__name" in dim_names
-        assert "regions__id" in dim_names
+        assert "regions.name" in dim_names
+        assert "regions.id" in dim_names
 
     def test_orders_excludes_fk_from_rollup(self, pg_ingest_env) -> None:
         models, _, _ = pg_ingest_env
@@ -520,18 +520,16 @@ class TestRollupIngestion:
 
         dim_names = [d.name for d in orders.dimensions]
         # FK columns should not be rolled up
-        assert "customers__region_id" not in dim_names
+        assert "customers.region_id" not in dim_names
 
-    def test_orders_uses_sql_not_sql_table(self, pg_ingest_env) -> None:
+    def test_orders_uses_sql_table_with_joins(self, pg_ingest_env) -> None:
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
-        # Rollup model uses sql (with JOINs), not sql_table
-        assert orders.sql is not None
-        assert orders.sql_table is None
-        assert "LEFT JOIN" in orders.sql
-        assert "customers" in orders.sql
-        assert "regions" in orders.sql
+        # Models with joins use sql_table (not baked sql) + explicit joins
+        assert orders.sql_table is not None
+        assert orders.sql is None
+        assert len(orders.joins) > 0
 
     def test_regions_has_no_rollup(self, pg_ingest_env) -> None:
         models, _, _ = pg_ingest_env
@@ -546,8 +544,8 @@ class TestRollupIngestion:
         orders = next(m for m in models if m.name == "orders")
 
         measure_names = [m.name for m in orders.measures]
-        assert "customers__count" in measure_names
-        assert "regions__count" in measure_names
+        assert "customers.count" in measure_names
+        assert "regions.count" in measure_names
 
     def test_rollup_query_group_by_customer(self, pg_ingest_env) -> None:
         """Query orders grouped by rolled-up customer name."""
@@ -563,11 +561,11 @@ class TestRollupIngestion:
         query = SlayerQuery(
             model="orders",
             fields=[{"formula": "count"}],
-            dimensions=[{"name": "customers__name"}],
+            dimensions=[{"name": "customers.name"}],
         )
         result = engine.execute(query=query)
 
-        by_name = {r["orders.customers__name"]: r["orders.count"] for r in result.data}
+        by_name = {r["orders.customers.name"]: r["orders.count"] for r in result.data}
         assert by_name["Acme"] == 2
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
@@ -586,11 +584,11 @@ class TestRollupIngestion:
         query = SlayerQuery(
             model="orders",
             fields=[{"formula": "count"}, {"formula": "amount_sum"}],
-            dimensions=[{"name": "regions__name"}],
+            dimensions=[{"name": "regions.name"}],
         )
         result = engine.execute(query=query)
 
-        by_region = {r["orders.regions__name"]: r for r in result.data}
+        by_region = {r["orders.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders.count"] == 3  # Acme(2) + Initech(1)
         assert by_region["EU"]["orders.count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
