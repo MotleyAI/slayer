@@ -30,3 +30,7 @@ Here, `subtotal > tax_paid * 5` is a raw SQL condition on the underlying table c
 What if you want to get fancy, and use expressions such as time-shift for defining derived measures or dimensions?
 
 That is also doable - all you need to do is to use the [“Query result as model” semantics](../../concepts/models.md#creating-models-from-queries). That powerful mechanism will be covered in an upcoming post.
+
+---
+
+See the [companion notebook](sql_vs_dsl.ipynb) for runnable code demonstrating the SQL/DSL boundary.

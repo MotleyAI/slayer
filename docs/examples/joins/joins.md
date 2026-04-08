@@ -33,3 +33,7 @@ If that is not the desired behavior, you can add to the model a filter `B__C.col
 ## Dynamic joins
 
 Finally, it’s worth reminding the reader that joins can be added to a model at query time via dynamic model extension [link]. This is especially useful to join models that are themselves dynamically created as the result of a query (see the upcoming post on how that mechanism enables powerful and elegant multi-stage query semantics).
+
+---
+
+See the [companion notebook](joins.ipynb) for runnable code demonstrating all join patterns.
