@@ -21,14 +21,11 @@ def _parse_column_ref(value: Any) -> dict:
     """Parse a string or dict into a ColumnRef-compatible dict.
 
     Accepts: "name", "model.name", or {"name": "x", "model": "y"}.
+    Dotted names are passed as-is — ColumnRef's validator handles parsing.
     """
     if isinstance(value, dict):
         return value
-    s = str(value)
-    if "." in s:
-        model, name = s.split(".", 1)
-        return {"name": name, "model": model}
-    return {"name": s}
+    return {"name": str(value)}
 
 
 

@@ -317,7 +317,8 @@ class TestNormalization:
 
     def test_normalize_order_cross_model(self) -> None:
         result = _normalize_order([{"column": "orders.total", "direction": "asc"}])
-        assert result[0]["column"] == {"name": "total", "model": "orders"}
+        # Dotted names are passed as-is; ColumnRef's validator parses them later
+        assert result[0]["column"] == {"name": "orders.total"}
 
     def test_normalize_order_dict_passthrough(self) -> None:
         result = _normalize_order([{"column": {"name": "count"}, "direction": "desc"}])

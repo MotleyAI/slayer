@@ -96,10 +96,10 @@ class SlayerQueryEngine:
         self.storage = storage
         self._resolving: set = set()  # Track currently resolving models to detect cycles
 
-    def execute(self, query: "SlayerQuery | list[SlayerQuery]") -> SlayerResponse:
-        # Accept single query or list (last is main)
+    def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+        # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
-            queries = query
+            queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
             query = queries[-1]
             named_queries = {}
             for q in queries[:-1]:
@@ -108,6 +108,8 @@ class SlayerQueryEngine:
                         raise ValueError(f"Duplicate query name '{q.name}' in query list")
                     named_queries[q.name] = q
         else:
+            if isinstance(query, dict):
+                query = SlayerQuery.model_validate(query)
             named_queries = {}
 
         # Preprocessing
@@ -301,46 +303,29 @@ class SlayerQueryEngine:
         to their SQL expressions, aggregation types, and model context.
         """
         # Resolve dimensions — look up each from the model definition.
-        # Supports multi-hop dotted names (e.g., "customers.regions.name") by
-        # translating to the __ convention used by rollup dimensions.
+        # If ColumnRef.model is set, walk the join graph to the target model.
+        # If ColumnRef.model is None, look up directly on the root model.
         model_name_str = query.source_model if isinstance(query.source_model, str) else model.name
         dimensions = []
         for dim_ref in (query.dimensions or []):
-            dim_name = dim_ref.name
-            # Multi-hop dotted name → translate to __ convention
-            # "customers.regions.name" → "customers__regions__name"
-            # Also try direct lookup first (for explicitly named dims)
-            dim_def = model.get_dimension(dim_name)
-            if dim_def is None and "." in dim_name:
-                # Try progressively shorter __ translations (for rollup dims):
-                parts = dim_name.split(".")
-                for start in range(len(parts)):
-                    candidate = "__".join(parts[start:])
-                    dim_def = model.get_dimension(candidate)
-                    if dim_def:
-                        dim_name = candidate
-                        break
-
-                # If still not found, walk the join graph
-                if dim_def is None:
-                    dim_def = self._resolve_dimension_via_joins(
-                        model=model, parts=parts, named_queries=named_queries or {},
-                    )
-                    if dim_def:
-                        dim_name = dim_def.name
-            # For joined dimensions (dotted names), model_name is the join target
-            # so _resolve_sql qualifies the column with the right table alias
-            if "." in dim_ref.name:
-                table_prefix = dim_ref.name.rsplit(".", 1)[0]
-                # Use path-based alias: "customers.regions" → "customers__regions"
-                effective_model = "__".join(table_prefix.split("."))
-            else:
+            if dim_ref.model is None:
+                # Local dimension — look up on root model
+                dim_def = model.get_dimension(dim_ref.name)
                 effective_model = model.name
+            else:
+                # Joined dimension — walk the join graph
+                parts = dim_ref.model.split(".") + [dim_ref.name]
+                dim_def = self._resolve_dimension_via_joins(
+                    model=model, parts=parts, named_queries=named_queries or {},
+                )
+                # effective_model is the __-joined path for SQL table alias
+                effective_model = "__".join(dim_ref.model.split("."))
+
             dimensions.append(EnrichedDimension(
                 name=dim_ref.name,
                 sql=dim_def.sql if dim_def else None,
                 type=dim_def.type if dim_def else DataType.STRING,
-                alias=f"{model_name_str}.{dim_ref.name}",
+                alias=f"{model_name_str}.{dim_ref.full_name}",
                 model_name=effective_model, label=dim_ref.label,
             ))
 
@@ -350,14 +335,22 @@ class SlayerQueryEngine:
         # Resolve time dimensions
         time_dimensions = []
         for td in (query.time_dimensions or []):
-            dim_def = model.get_dimension(td.dimension.name)
+            if td.dimension.model is None:
+                dim_def = model.get_dimension(td.dimension.name)
+                td_model_name = model.name
+            else:
+                parts = td.dimension.model.split(".") + [td.dimension.name]
+                dim_def = self._resolve_dimension_via_joins(
+                    model=model, parts=parts, named_queries=named_queries or {},
+                )
+                td_model_name = "__".join(td.dimension.model.split("."))
             time_dimensions.append(EnrichedTimeDimension(
                 name=td.dimension.name,
                 sql=dim_def.sql if dim_def else None,
                 granularity=td.granularity,
                 date_range=td.date_range,
-                alias=f"{model_name_str}.{td.dimension.name}",
-                model_name=model.name,
+                alias=f"{model_name_str}.{td.dimension.full_name}",
+                model_name=td_model_name,
                 label=td.label,
             ))
 
@@ -438,14 +431,9 @@ class SlayerQueryEngine:
                 measure_def = model.get_measure(mname)
                 if measure_def is None:
                     raise ValueError(f"Measure '{mname}' not found in model '{model.name}'")
-                # For joined measures (dotted names), model_name is the join target
-                if "." in mname:
-                    effective_model = mname.rsplit(".", 1)[0].split(".")[-1]
-                else:
-                    effective_model = model.name
                 measures.append(EnrichedMeasure(
                     name=mname, sql=measure_def.sql, type=measure_def.type,
-                    alias=f"{model_name_str}.{mname}", model_name=effective_model,
+                    alias=f"{model_name_str}.{mname}", model_name=model.name,
                 ))
                 known_aliases[mname] = f"{model_name_str}.{mname}"
 
@@ -490,12 +478,8 @@ class SlayerQueryEngine:
             or transform alias) so parent specs can reference it.
             """
             if isinstance(spec, MeasureRef):
-                # Check local measure first (dotted names from ingestion like "customers.count")
-                # Only treat as cross-model if not found locally
-                if "." in spec.name and model.get_measure(spec.name) is not None:
-                    # Local measure with dotted name — treat as regular measure
-                    pass
-                elif "." in spec.name:
+                # Dotted measure names are cross-model references (e.g., "customers.avg_score")
+                if "." in spec.name:
                     cm = self._resolve_cross_model_measure(
                         spec_name=spec.name, field_name=field_name,
                         model=model, query=query,
@@ -661,19 +645,25 @@ class SlayerQueryEngine:
         # Collect referenced join targets from dimensions, measures, and cross-model measures.
         needed_tables = set()
         for d in dimensions:
-            if "." in d.name:
-                # e.g., "customers.name" → need "customers"
-                # e.g., "customers.regions.name" → need "customers" and "regions"
-                parts = d.name.split(".")
-                for part in parts[:-1]:  # all except the column name
+            if d.model_name != model.name:
+                # Joined dimension — need all tables in the path
+                # model_name is like "customers__regions"; split to get individual tables
+                for part in d.model_name.split("__"):
                     needed_tables.add(part)
-        for m in measures:
-            if "." in m.name:
-                parts = m.name.split(".")
-                for part in parts[:-1]:
+        for td in time_dimensions:
+            if td.model_name != model.name:
+                for part in td.model_name.split("__"):
                     needed_tables.add(part)
         for cm in cross_model_measures:
             needed_tables.add(cm.target_model_name)
+        # Scan dimension SQL expressions for table references (e.g., inline dims
+        # from ModelExtension that reference joined tables in their SQL).
+        # Use regex since SQL expressions can be arbitrary (CASE, etc.).
+        _TABLE_COL_RE = re.compile(r'\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b')
+        for d in dimensions:
+            if d.sql and "." in d.sql:
+                for match in _TABLE_COL_RE.finditer(d.sql):
+                    needed_tables.add(match.group(1))
         # Scan processed filters for dotted column references (joined table columns)
         for f_str in processed_filters:
             parsed_f = parse_filter(f_str)
@@ -964,14 +954,34 @@ class SlayerQueryEngine:
         source_dim_desc = {d.name: d.description for d in inner_model.dimensions if d.description}
         source_measure_desc = {m.name: m.description for m in inner_model.measures if m.description}
 
-        # Collect all inner aliases and their short names
+        # Collect all inner aliases and their short names.
+        # Short names must be valid SQL identifiers (no dots). We derive them
+        # from the alias by stripping the source model prefix and replacing
+        # dots with underscores.
+        def _alias_to_short(alias: str) -> str:
+            """Convert result alias to a flat column name for the virtual model.
+
+            The query result is a self-contained table without the joins the
+            source model may have had, so dot syntax (join paths) is not
+            applicable. We use ``__`` to preserve the path information:
+
+            'orders.customers.regions.name' → 'customers__regions__name'
+            'orders.count'                  → 'count'
+            """
+            # Strip source model prefix
+            stripped = alias.split(".", 1)[-1] if "." in alias else alias
+            # Replace remaining dots with __ to encode the original join path
+            return stripped.replace(".", "__")
+
         column_map = []  # (inner_alias, short_name, data_type, is_measure, label)
         for d in enriched.dimensions:
+            short = _alias_to_short(d.alias)
             label = d.label or source_dim_desc.get(d.name)
-            column_map.append((d.alias, d.name, d.type, False, label))
+            column_map.append((d.alias, short, d.type, False, label))
         for td in enriched.time_dimensions:
+            short = _alias_to_short(td.alias)
             label = td.label or source_dim_desc.get(td.name)
-            column_map.append((td.alias, td.name, DataType.TIMESTAMP, False, label))
+            column_map.append((td.alias, short, DataType.TIMESTAMP, False, label))
         for m in enriched.measures:
             label = m.label or source_measure_desc.get(m.name)
             column_map.append((m.alias, m.name, DataType.NUMBER, True, label))
@@ -980,9 +990,7 @@ class SlayerQueryEngine:
         for e in enriched.expressions:
             column_map.append((e.alias, e.name, DataType.NUMBER, True, e.label))
         for cm in enriched.cross_model_measures:
-            # Cross-model measure alias is like "orders.customers__avg_score"
-            # Short name: strip the source model prefix
-            short = cm.alias.split(".", 1)[-1] if "." in cm.alias else cm.alias
+            short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.NUMBER, True, None))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner

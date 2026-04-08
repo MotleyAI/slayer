@@ -15,12 +15,37 @@ _MULTIDOT_COLUMN_RE = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){2,})\b')
 _STRING_LITERAL_RE = re.compile(r"'[^']*'")
 
 
-def _validate_no_double_underscore(name: str, context: str) -> str:
-    """Reject names containing ``__`` — reserved for join path aliases in SQL."""
+def _validate_model_name(name: str, context: str) -> str:
+    """Reject model/query names containing ``__`` or ``.``.
+
+    Model and query names become SQL table aliases where ``__`` encodes
+    join paths, so both separators are reserved.
+    """
     if "__" in name:
         raise ValueError(
             f"{context} name '{name}' must not contain '__'. "
             f"Double underscores are reserved for join path aliases in generated SQL."
+        )
+    if "." in name:
+        raise ValueError(
+            f"{context} name '{name}' must not contain '.'. "
+            f"Dots are path syntax for referencing joined models in queries."
+        )
+    return name
+
+
+def _validate_column_name(name: str, context: str) -> str:
+    """Reject dimension/measure names containing ``.``.
+
+    Dots are path syntax in queries (``customers.name``), not part of names.
+    ``__`` is allowed — it encodes flattened join paths in virtual models
+    created by ``_query_as_model`` (e.g., ``stores__name``).
+    """
+    if "." in name:
+        raise ValueError(
+            f"{context} name '{name}' must not contain '.'. "
+            f"Dots are path syntax for referencing joined models in queries, "
+            f"not part of dimension or measure names."
         )
     return name
 
@@ -71,7 +96,7 @@ class Dimension(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        return _validate_no_double_underscore(v, "Dimension")
+        return _validate_column_name(v, "Dimension")
 
     @field_validator("sql")
     @classmethod
@@ -91,7 +116,7 @@ class Measure(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        return _validate_no_double_underscore(v, "Measure")
+        return _validate_column_name(v, "Measure")
 
     @field_validator("sql")
     @classmethod
@@ -131,7 +156,7 @@ class SlayerModel(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        return _validate_no_double_underscore(v, "Model")
+        return _validate_model_name(v, "Model")
     joins: List[ModelJoin] = Field(default_factory=list)
     filters: List[str] = Field(default_factory=list)  # Model-level filters (always applied)
     default_time_dimension: Optional[str] = None

@@ -1225,8 +1225,6 @@ def test_model_filter_on_joined_column(tmp_path):
         name="orders", sql_table="orders", data_source="db",
         dimensions=[
             Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Dimension(name="customers.name", sql="name", type=DataType.STRING),
-            Dimension(name="customers.region", sql="region", type=DataType.STRING),
         ],
         measures=[Measure(name="count", type=DataType.COUNT),
                   Measure(name="total", sql="amount", type=DataType.SUM)],
@@ -1318,13 +1316,15 @@ def test_diamond_joins_both_paths(diamond_env):
     """Query both customer region and warehouse region in one query — must not collide."""
     engine, storage = diamond_env
 
-    # Verify the ingested model has both paths
+    # Verify the ingested model has its own columns (not flattened joined dims)
     shipments = storage.get_model("shipments")
     dim_names = {d.name for d in shipments.dimensions}
-    assert "customers.regions.name" in dim_names
-    assert "warehouses.regions.name" in dim_names
+    assert "customer_id" in dim_names
+    assert "warehouse_id" in dim_names
+    # Joined dimensions are resolved via the join graph, not pre-flattened
+    assert not any("." in name for name in dim_names)
 
-    # Query both region paths simultaneously
+    # Query both region paths simultaneously — resolved via join graph
     result = engine.execute(query=SlayerQuery(
         source_model="shipments",
         dimensions=[

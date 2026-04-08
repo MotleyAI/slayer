@@ -20,6 +20,44 @@ class TestColumnRef:
         assert ref.name == "status"
         assert ref.full_name == "status"
 
+    def test_dotted_name_parsed_into_model(self) -> None:
+        """Dotted name like 'customers.name' is auto-parsed: model='customers', name='name'."""
+        ref = ColumnRef(name="customers.name")
+        assert ref.model == "customers"
+        assert ref.name == "name"
+        assert ref.full_name == "customers.name"
+
+    def test_multihop_dotted_name_parsed(self) -> None:
+        """Multi-hop 'customers.regions.name' splits on last dot."""
+        ref = ColumnRef(name="customers.regions.name")
+        assert ref.model == "customers.regions"
+        assert ref.name == "name"
+        assert ref.full_name == "customers.regions.name"
+
+    def test_simple_name_no_model(self) -> None:
+        """Simple name without dots leaves model as None."""
+        ref = ColumnRef(name="status")
+        assert ref.model is None
+        assert ref.name == "status"
+
+    def test_explicit_model_not_overwritten(self) -> None:
+        """If model is explicitly provided, dotted parsing is skipped."""
+        ref = ColumnRef(model="customers", name="name")
+        assert ref.model == "customers"
+        assert ref.name == "name"
+
+    def test_from_string_multihop(self) -> None:
+        """from_string splits on last dot for multi-hop paths."""
+        ref = ColumnRef.from_string("customers.regions.name")
+        assert ref.model == "customers.regions"
+        assert ref.name == "name"
+        assert ref.full_name == "customers.regions.name"
+
+    def test_invalid_name_part_rejected(self) -> None:
+        """Name parts must match identifier pattern."""
+        with pytest.raises(ValueError):
+            ColumnRef(name="123invalid")
+
 
 class TestSlayerModel:
     def test_get_dimension(self) -> None:
@@ -122,13 +160,15 @@ class TestSlayerModel:
         with pytest.raises(ValueError, match="must not contain '__'"):
             SlayerModel(name="my__model", sql_table="t", data_source="test")
 
-    def test_dimension_name_rejects_double_underscore(self) -> None:
-        with pytest.raises(ValueError, match="must not contain '__'"):
-            Dimension(name="customers__name")
+    def test_dimension_name_allows_double_underscore(self) -> None:
+        """__ is allowed in dimension names — used for flattened join paths in virtual models."""
+        dim = Dimension(name="stores__name")
+        assert dim.name == "stores__name"
 
-    def test_measure_name_rejects_double_underscore(self) -> None:
-        with pytest.raises(ValueError, match="must not contain '__'"):
-            Measure(name="total__sum", type=DataType.SUM)
+    def test_measure_name_allows_double_underscore(self) -> None:
+        """__ is allowed in measure names — used for flattened join paths in virtual models."""
+        meas = Measure(name="stores__tax_rate_sum", type=DataType.SUM)
+        assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_rejects_double_underscore(self) -> None:
         with pytest.raises(ValueError, match="must not contain '__'"):
@@ -141,6 +181,24 @@ class TestSlayerModel:
     def test_dimension_name_single_underscore_allowed(self) -> None:
         dim = Dimension(name="customer_name")
         assert dim.name == "customer_name"
+
+    def test_dimension_name_rejects_dot(self) -> None:
+        """Dots are path syntax, not allowed in dimension names."""
+        with pytest.raises(ValueError, match="must not contain '.'"):
+            Dimension(name="customers.name")
+
+    def test_measure_name_rejects_dot(self) -> None:
+        """Dots are path syntax, not allowed in measure names."""
+        with pytest.raises(ValueError, match="must not contain '.'"):
+            Measure(name="customers.name_sum", type=DataType.SUM)
+
+    def test_dimension_name_without_dot_allowed(self) -> None:
+        dim = Dimension(name="region_name")
+        assert dim.name == "region_name"
+
+    def test_measure_name_without_dot_allowed(self) -> None:
+        meas = Measure(name="order_total_sum", type=DataType.SUM)
+        assert meas.name == "order_total_sum"
 
 
 class TestDatasourceConfig:
