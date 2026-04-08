@@ -582,9 +582,9 @@ class SlayerQueryEngine:
             raise ValueError(f"Unsupported field spec: {spec!r}")
 
         # Process each field
-        for field in (query.fields or []):
-            spec = parse_formula(field.formula)
-            field_name = field.name or field.formula.replace(" ", "_").replace("/", "_div_")
+        for qfield in (query.fields or []):
+            spec = parse_formula(qfield.formula)
+            field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_")
 
             if isinstance(spec, MeasureRef):
                 # Check for cross-model measure reference (e.g., "customers.avg_score")
@@ -594,7 +594,7 @@ class SlayerQueryEngine:
                         spec_name=spec.name, field_name=field_name,
                         model=model, query=query,
                         dimensions=dimensions, time_dimensions=time_dimensions,
-                        label=field.label, named_queries=named_queries,
+                        label=qfield.label, named_queries=named_queries,
                     )
                     cross_model_measures.append(cm)
                     continue
@@ -608,21 +608,21 @@ class SlayerQueryEngine:
                         f"Add a time dimension, set main_time_dimension, or set default_time_dimension on the model."
                     )
                 # Apply label to the measure if provided
-                if field.label:
+                if qfield.label:
                     for m in measures:
                         if m.name == spec.name:
-                            m.label = field.label
+                            m.label = qfield.label
             else:
                 _flatten_spec(spec, field_name)
                 # Apply label to the last enriched expression or transform
-                if field.label:
+                if qfield.label:
                     alias = f"{model_name_str}.{field_name}"
                     for e in enriched_expressions:
                         if e.alias == alias:
-                            e.label = field.label
+                            e.label = qfield.label
                     for t in enriched_transforms:
                         if t.alias == alias:
-                            t.label = field.label
+                            t.label = qfield.label
 
         measure_names_set = {m.name for m in measures}
 
