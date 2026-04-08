@@ -1,5 +1,6 @@
 """Core domain models for SLayer."""
 
+import logging
 import os
 import re
 from typing import Any, List, Optional
@@ -7,6 +8,56 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.enums import DataType
+
+logger = logging.getLogger(__name__)
+
+_MULTIDOT_COLUMN_RE = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){2,})\b')
+_STRING_LITERAL_RE = re.compile(r"'[^']*'")
+
+
+def _validate_no_double_underscore(name: str, context: str) -> str:
+    """Reject names containing ``__`` — reserved for join path aliases in SQL."""
+    if "__" in name:
+        raise ValueError(
+            f"{context} name '{name}' must not contain '__'. "
+            f"Double underscores are reserved for join path aliases in generated SQL."
+        )
+    return name
+
+
+def _convert_multidot_ref(match: re.Match) -> str:
+    """Convert a multi-dot reference like ``a.b.c`` to ``a__b.c``."""
+    ref = match.group(1)
+    parts = ref.split(".")
+    return "__".join(parts[:-1]) + "." + parts[-1]
+
+
+def _fix_multidot_sql(sql: str, context: str) -> str:
+    """Auto-convert multi-dot references in a SQL snippet to __ alias syntax.
+
+    Single-dot references (``table.column``) are left as-is.
+    Multi-dot references (``a.b.c``) are converted to ``a__b.c`` with a warning.
+    String literals are skipped.
+    """
+    # Build a map of string-literal spans to skip
+    literal_spans = [m.span() for m in _STRING_LITERAL_RE.finditer(sql)]
+
+    def _in_literal(start: int) -> bool:
+        return any(s <= start < e for s, e in literal_spans)
+
+    result = sql
+    for match in list(_MULTIDOT_COLUMN_RE.finditer(sql)):
+        if _in_literal(match.start()):
+            continue
+        ref = match.group(1)
+        fixed = _convert_multidot_ref(match)
+        logger.warning(
+            "%s: auto-converting multi-dot reference '%s' to '%s'. "
+            "Use '__' for join paths in SQL snippets (e.g., '%s').",
+            context, ref, fixed, fixed,
+        )
+        result = result.replace(ref, fixed)
+    return result
 
 
 class Dimension(BaseModel):
@@ -17,6 +68,18 @@ class Dimension(BaseModel):
     description: Optional[str] = None
     hidden: bool = False
 
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        return _validate_no_double_underscore(v, "Dimension")
+
+    @field_validator("sql")
+    @classmethod
+    def _fix_multidot_sql(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = _fix_multidot_sql(v, context="Dimension sql")
+        return v
+
 
 class Measure(BaseModel):
     name: str
@@ -24,6 +87,18 @@ class Measure(BaseModel):
     type: DataType = DataType.COUNT
     description: Optional[str] = None
     hidden: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        return _validate_no_double_underscore(v, "Measure")
+
+    @field_validator("sql")
+    @classmethod
+    def _fix_multidot_sql(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = _fix_multidot_sql(v, context="Measure sql")
+        return v
 
 
 class ModelJoin(BaseModel):
@@ -52,11 +127,28 @@ class SlayerModel(BaseModel):
     data_source: str = ""
     dimensions: List[Dimension] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        return _validate_no_double_underscore(v, "Model")
     joins: List[ModelJoin] = Field(default_factory=list)
     filters: List[str] = Field(default_factory=list)  # Model-level filters (always applied)
     default_time_dimension: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
+
+    @field_validator("filters")
+    @classmethod
+    def _fix_multidot_filters(cls, v: List[str]) -> List[str]:
+        """Auto-convert multi-dot column references in model filters.
+
+        Model filters are SQL snippets, so joined column references must use
+        the __ alias syntax (e.g., ``customers__regions.name``), not the
+        multi-dot query syntax (``customers.regions.name``).  Single-dot
+        references like ``customers.name`` (table.column) are left as-is.
+        """
+        return [_fix_multidot_sql(f, context="Model filter") for f in v]
 
     def get_dimension(self, name: str) -> Optional[Dimension]:
         for d in self.dimensions:

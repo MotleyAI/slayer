@@ -7,33 +7,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 SLayer (Semantic Layer) is a lightweight, open-source (MIT) semantic layer for AI agents, built by MotleyAI. Instead of writing raw SQL, agents describe what data they want — measures, dimensions, filters — and SLayer generates and executes the query.
 
 Default API port: **5143**.
-
-## Package Structure
-
-```
-slayer/
-  core/           # Domain models and enums
-    enums.py      # DataType, TimeGranularity, OrderDirection
-    models.py     # SlayerModel (has default_time_dimension), Dimension, Measure, DatasourceConfig
-    query.py      # SlayerQuery, ColumnRef, TimeDimension, OrderItem
-    formula.py    # Formula parser (Python ast-based) for `fields` API
-  sql/            # SQL generation and execution
-    generator.py  # SQLGenerator — sqlglot-based, dialect-aware SQL generation
-    client.py     # SlayerSQLClient — SQLAlchemy execution with retry
-  engine/         # Query orchestration
-    query_engine.py  # SlayerQueryEngine — central orchestrator
-    ingestion.py     # Auto-ingestion with rollup-style FK joins
-    enriched.py      # EnrichedQuery — fully resolved query for SQL generation
-  storage/        # Model and datasource persistence
-    base.py          # StorageBackend ABC
-    yaml_storage.py  # YAMLStorage — files in models/ and datasources/ dirs
-    sqlite_storage.py # SQLiteStorage — single SQLite DB
-  api/server.py   # FastAPI REST API
-  mcp/server.py   # MCP server (FastMCP)
-  client/slayer_client.py  # Python SDK (remote + local mode)
-  cli.py          # CLI entry point (serve, mcp, query, ingest, models, datasources)
-```
-
+ 
 ## Common Commands
 
 ```bash
@@ -44,13 +18,13 @@ poetry install -E all
 poetry run pytest
 
 # Run SQLite integration tests
-poetry run pytest tests/test_integration.py -m integration
+poetry run pytest tests/integration/test_integration.py -m integration
 
 # Run Postgres integration tests (auto-spawns temp Postgres via pytest-postgresql)
-poetry run pytest tests/test_integration_postgres.py -m integration
+poetry run pytest tests/integration/test_integration_postgres.py -m integration
 
 # Run DuckDB integration tests (no Docker, runs in-process)
-poetry run pytest tests/test_integration_duckdb.py -m integration
+poetry run pytest tests/integration/test_integration_duckdb.py -m integration
 
 # Run a specific test file
 poetry run pytest tests/test_sql_generator.py -v
@@ -80,7 +54,7 @@ poetry run ruff check slayer/ tests/
 - Models can have explicit `joins` to other models (LEFT JOINs). Cross-model measures use dotted syntax (`customers.avg_score`) and multi-hop (`customers.regions.name`). Joins are auto-resolved by walking the join graph. Transforms work on cross-model measures (`cumsum(customers.avg_score)`)
 - **Path-based table aliases**: Joined tables use `__`-delimited path aliases in SQL to disambiguate diamond joins. In queries, dots denote paths (`customers.regions.name`); in model SQL definitions, `__` denotes the table alias (`customers__regions.name`). For diamond joins (same table reached via different paths, e.g., `orders → customers → regions` AND `orders → warehouses → regions`), each path gets a unique alias (`customers__regions` vs `warehouses__regions`). Ingestion auto-detects diamond joins via FK graph BFS
 - `SlayerQuery.source_model` accepts a model name, inline `SlayerModel`, or `ModelExtension` (extends a model with extra dims/measures/joins). `create_model_from_query()` saves a query as a permanent model
-- Models can have `filters` (always-applied WHERE conditions, e.g., `"deleted_at is None"`)
+- Models can have `filters` (always-applied WHERE conditions, e.g., `"deleted_at IS NULL"`)
 - **Core principle**: adding a measure/field must never affect result cardinality or other fields' values — achieved via CTEs, sub-queries, and correct JOIN dimensions
 - Functions needing time ordering: single time_dimensions entry is used automatically; with 2+ time dimensions, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims); with none, falls back to model default
 - SlayerModel has optional `default_time_dimension` field for time-dependent formula resolution
@@ -95,9 +69,9 @@ poetry run ruff check slayer/ tests/
 SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at two tiers:
 
 **Tier 1 — fully tested** (integration tests + Docker examples, must not regress):
-- **SQLite** — integration tests in `test_integration.py`, embedded example
-- **Postgres** — integration tests in `test_integration_postgres.py`, Docker example
-- **DuckDB** — integration tests in `test_integration_duckdb.py` (no Docker, runs in-process)
+- **SQLite** — integration tests in `tests/integration/test_integration.py`, embedded example
+- **Postgres** — integration tests in `tests/integration/test_integration_postgres.py`, Docker example
+- **DuckDB** — integration tests in `tests/integration/test_integration_duckdb.py` (no Docker, runs in-process)
 - **MySQL** — Docker example with `verify.py`
 - **ClickHouse** — Docker example with `verify.py`
 
@@ -108,8 +82,39 @@ Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific
 
 ## Testing
 
+**Important**: Always use `poetry run` to run tests — this ensures the correct Poetry-managed virtualenv is used (not the system or conda Python).
+
+```bash
+# Run ALL tests (unit + integration)
+poetry run pytest tests/ -m "integration or not integration" -v
+
+# Run unit tests only (default, excludes integration)
+poetry run pytest
+
+# Run all integration tests
+poetry run pytest tests/integration/ -m integration
+
+# Run specific integration suite
+poetry run pytest tests/integration/test_integration.py -m integration        # SQLite
+poetry run pytest tests/integration/test_integration_postgres.py -m integration  # Postgres
+poetry run pytest tests/integration/test_integration_duckdb.py -m integration    # DuckDB
+```
+
 - Unit tests: `tests/test_models.py`, `test_sql_generator.py`, `test_storage.py`, `test_sqlite_storage.py`, `test_mcp_server.py`
-- Integration tests (SQLite): `tests/test_integration.py`
-- Integration tests (Postgres): `tests/test_integration_postgres.py` — uses pytest-postgresql (auto-spawns temp Postgres)
-- Integration tests (DuckDB): `tests/test_integration_duckdb.py` — uses duckdb directly (no Docker)
+- Integration tests (SQLite): `tests/integration/test_integration.py`
+- Integration tests (Postgres): `tests/integration/test_integration_postgres.py` — uses pytest-postgresql (auto-spawns temp Postgres)
+- Integration tests (DuckDB): `tests/integration/test_integration_duckdb.py` — uses duckdb directly (no Docker)
 - Shared fixtures in `tests/conftest.py`
+
+## Linting
+
+**ALWAYS run the linter at the end of every task and fix any issues before finishing.**
+
+```bash
+poetry run ruff check slayer/ tests/
+```
+
+To auto-fix fixable issues:
+```bash
+poetry run ruff check --fix slayer/ tests/
+```

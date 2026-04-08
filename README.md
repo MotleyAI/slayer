@@ -28,7 +28,7 @@ When AI agents write raw SQL, things break in production — hallucinated column
 - **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"last(change(revenue))"`).
 - **Cross-model measures** — Query measures from joined models with dotted syntax (`"customers.avg_score"`, multi-hop: `"customers.regions.name"`). Joins auto-resolved via graph walk. Transforms work on cross-model measures (`"cumsum(customers.avg_score)"`).
 - **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model for reuse. `ModelExtension` extends models inline with extra dimensions/joins.
-- **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at is None"`).
+- **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at IS NULL"`).
 
 ### Roadmap
 - Unpivoting
@@ -264,11 +264,11 @@ Filters use simple formula strings — no verbose JSON objects:
 }
 ```
 
-**Operators**: `==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `is None`, `is not None`
+**Operators**: `=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`
 
 **Boolean logic**: combine with `and`, `or`, `not` in a single string:
 ```json
-"filters": ["status == 'completed' or status == 'pending'"]
+"filters": ["status = 'completed' or status = 'pending'"]
 ```
 
 **Pattern matching**: `like` and `not like` operators (e.g., `"name like '%acme%'"`, `"name not like '%test%'"`). Filters on measures (e.g., `"count > 10"`) are automatically routed to HAVING.

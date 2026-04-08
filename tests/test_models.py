@@ -1,5 +1,7 @@
 """Tests for core domain models."""
 
+import pytest
+
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
 from slayer.core.query import ColumnRef, Field, SlayerQuery, TimeDimension
@@ -39,6 +41,106 @@ class TestSlayerModel:
         )
         assert model.get_measure("count") is not None
         assert model.get_measure("missing") is None
+
+    def test_filter_bare_column_allowed(self) -> None:
+        """Bare column names in model filters are valid."""
+        model = SlayerModel(
+            name="test", sql_table="t", data_source="test",
+            filters=["status == 'active'", "amount > 100"],
+        )
+        assert model.filters == ["status == 'active'", "amount > 100"]
+
+    def test_filter_single_dot_allowed(self) -> None:
+        """Single-dot (table.column) references in model filters are valid SQL."""
+        model = SlayerModel(
+            name="test", sql_table="t", data_source="test",
+            filters=["customers.region == 'US'"],
+        )
+        assert model.filters == ["customers.region == 'US'"]
+
+    def test_filter_double_underscore_allowed(self) -> None:
+        """Double-underscore alias references in model filters are valid."""
+        model = SlayerModel(
+            name="test", sql_table="t", data_source="test",
+            filters=["customers__regions.name == 'US'"],
+        )
+        assert model.filters == ["customers__regions.name == 'US'"]
+
+    def test_filter_multidot_auto_converted(self) -> None:
+        """Multi-dot references in model filters are auto-converted to __ syntax."""
+        model = SlayerModel(
+            name="test", sql_table="t", data_source="test",
+            filters=["customers.regions.name == 'US'"],
+        )
+        assert model.filters == ["customers__regions.name == 'US'"]
+
+    def test_filter_multidot_complex_auto_converted(self) -> None:
+        """Multi-dot references are converted even in complex filter expressions."""
+        model = SlayerModel(
+            name="test", sql_table="t", data_source="test",
+            filters=["orders.customers.region == warehouses.stores.region"],
+        )
+        assert model.filters == ["orders__customers.region == warehouses__stores.region"]
+
+    def test_filter_string_literal_dots_not_converted(self) -> None:
+        """Dots inside string literals are not converted."""
+        model = SlayerModel(
+            name="test", sql_table="t", data_source="test",
+            filters=["name == 'foo.bar.baz'"],
+        )
+        assert model.filters == ["name == 'foo.bar.baz'"]
+
+    def test_dimension_sql_multidot_auto_converted(self) -> None:
+        """Multi-dot references in dimension sql are auto-converted."""
+        dim = Dimension(name="region_name", sql="customers.regions.name")
+        assert dim.sql == "customers__regions.name"
+
+    def test_dimension_sql_single_dot_unchanged(self) -> None:
+        """Single-dot references in dimension sql are left as-is."""
+        dim = Dimension(name="cust_name", sql="customers.name")
+        assert dim.sql == "customers.name"
+
+    def test_measure_sql_multidot_auto_converted(self) -> None:
+        """Multi-dot references in measure sql are auto-converted."""
+        meas = Measure(name="region_count", sql="customers.regions.id", type=DataType.COUNT_DISTINCT)
+        assert meas.sql == "customers__regions.id"
+
+    def test_measure_sql_single_dot_unchanged(self) -> None:
+        """Single-dot references in measure sql are left as-is."""
+        meas = Measure(name="total", sql="orders.amount", type=DataType.SUM)
+        assert meas.sql == "orders.amount"
+
+    def test_filter_multidot_three_levels_auto_converted(self) -> None:
+        """Three-level multi-dot references are converted correctly."""
+        model = SlayerModel(
+            name="test", sql_table="t", data_source="test",
+            filters=["a.b.c.d == 1"],
+        )
+        assert model.filters == ["a__b__c.d == 1"]
+
+    def test_model_name_rejects_double_underscore(self) -> None:
+        with pytest.raises(ValueError, match="must not contain '__'"):
+            SlayerModel(name="my__model", sql_table="t", data_source="test")
+
+    def test_dimension_name_rejects_double_underscore(self) -> None:
+        with pytest.raises(ValueError, match="must not contain '__'"):
+            Dimension(name="customers__name")
+
+    def test_measure_name_rejects_double_underscore(self) -> None:
+        with pytest.raises(ValueError, match="must not contain '__'"):
+            Measure(name="total__sum", type=DataType.SUM)
+
+    def test_query_name_rejects_double_underscore(self) -> None:
+        with pytest.raises(ValueError, match="must not contain '__'"):
+            SlayerQuery(name="my__query", source_model="orders")
+
+    def test_model_name_single_underscore_allowed(self) -> None:
+        model = SlayerModel(name="my_model", sql_table="t", data_source="test")
+        assert model.name == "my_model"
+
+    def test_dimension_name_single_underscore_allowed(self) -> None:
+        dim = Dimension(name="customer_name")
+        assert dim.name == "customer_name"
 
 
 class TestDatasourceConfig:

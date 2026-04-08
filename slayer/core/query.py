@@ -117,6 +117,16 @@ class SlayerQuery(BaseModel):
     name: Optional[str] = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
     fields: Optional[List[Field]] = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_no_dunder_in_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and "__" in v:
+            raise ValueError(
+                f"Query name '{v}' must not contain '__'. "
+                f"Double underscores are reserved for join path aliases in generated SQL."
+            )
+        return v
     dimensions: Optional[List[ColumnRef]] = None
     time_dimensions: Optional[List[TimeDimension]] = None
     main_time_dimension: Optional[str] = None  # Explicit time dimension for transforms (overrides auto-detection)

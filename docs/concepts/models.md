@@ -139,11 +139,13 @@ Models can have always-applied WHERE filters on the underlying table:
 name: active_orders
 sql_table: public.orders
 filters:
-  - "deleted_at is None"
-  - "status != 'test'"
+  - "deleted_at IS NULL"
+  - "status <> 'test'"
 ```
 
 Model filters only support conditions on underlying table columns (WHERE). For measure-based conditions, use query-level filters instead.
+
+Since model filters are SQL snippets, multi-hop joined column references should use the `__` alias syntax (e.g., `customers__regions.name`), not dots. Single-dot references like `customers.name` (table.column) are fine. Multi-dot references like `customers.regions.name` are auto-converted to `customers__regions.name` with a warning. The same auto-conversion applies to dimension and measure `sql` fields.
 
 ## Creating Models from Queries
 
@@ -175,7 +177,7 @@ Via MCP, use the `create_model_from_query` tool. Via API, `POST /models/from_que
 | `dimensions` | list | No | `[]` | Dimension definitions |
 | `measures` | list | No | `[]` | Measure definitions |
 | `joins` | list | No | `[]` | JOIN relationships to other models |
-| `filters` | list[str] | No | `[]` | Model-level WHERE filters (always applied, e.g., `"deleted_at is None"`) |
+| `filters` | list[str] | No | `[]` | Model-level WHERE filters (always applied, e.g., `"deleted_at IS NULL"`) |
 | `description` | string | No | — | Helps agents and users understand the model |
 | `hidden` | bool | No | `false` | Hide from model listings |
 | `default_time_dimension` | string | No | — | Default time dimension name for time-dependent formulas (e.g. `"created_at"`) |

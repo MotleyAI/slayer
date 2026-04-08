@@ -16,7 +16,7 @@ Key terms used throughout SLayer documentation and code.
 
 **ModelExtension** — Extends a model inline on a query with extra dimensions, measures, or joins — without modifying the stored model. Used for SQL expression dimensions, ad-hoc joins, or adding measures.
 
-**Model filter** — A WHERE filter defined on a model, always applied to every query on that model (e.g., `"deleted_at is None"`).
+**Model filter** — A WHERE filter defined on a model, always applied to every query on that model (e.g., `"deleted_at IS NULL"`).
 
 **Query-as-model** — Using a query's result as the source for another query, or saving it as a permanent model. Useful for materializing complex aggregations.
 
@@ -28,7 +28,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Label** — An optional human-readable display name for a field, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "revenue / count", "name": "aov", "label": "Average Order Value"}`.
 
-**Filter** — A condition that restricts which rows are included. Defined as a formula string: `"status == 'completed'"`, `"amount > 100"`. See [Filter Formulas](formulas.md#filter-formulas).
+**Filter** — A condition that restricts which rows are included. Defined as a formula string: `"status = 'completed'"`, `"amount > 100"`. See [Filter Formulas](formulas.md#filter-formulas).
 
 **Time dimension** — A dimension of type `time` or `date`, used for time-based grouping. When specified in `time_dimensions`, SLayer truncates it to the given granularity (e.g., monthly buckets). The same column can also be used as a regular dimension (without truncation).
 
