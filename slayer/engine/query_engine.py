@@ -689,7 +689,11 @@ class SlayerQueryEngine:
             cross_model_measures=cross_model_measures,
             last_agg_time_column=last_agg_time_column if has_last_measures else None,
             filters=SlayerQueryEngine._classify_filters(
-                filters=[parse_filter(f) for f in processed_filters],
+                filters=SlayerQueryEngine._resolve_filter_columns(
+                    self,
+                    parsed_filters=[parse_filter(f) for f in processed_filters],
+                    model=model, model_name=model_name_str,
+                ),
                 measure_names={m.name for m in measures},
                 computed_names={t.name for t in enriched_transforms}
                               | {e.name for e in enriched_expressions},
@@ -784,6 +788,89 @@ class SlayerQueryEngine:
                             f"Add it to dimensions/time_dimensions or split into separate filters."
                         )
         return filters
+
+    def _resolve_filter_columns(
+        self, parsed_filters: list, model: SlayerModel, model_name: str,
+    ) -> list:
+        """Resolve filter column references through model dimensions/measures.
+
+        Query-level filters reference dimension/measure names (not raw SQL).
+        This method resolves each column reference to the correct SQL expression
+        qualified with the right table alias.
+
+        - Bare names (e.g., ``status``) are looked up as dimensions on the model.
+        - Dotted names (e.g., ``customers.name``, ``customers.regions.name``)
+          are walked through the join graph to find the target model, then
+          the final segment is looked up as a dimension there.
+        - Measure names are left as-is (handled by HAVING classification).
+        - Computed field names are left as-is (handled by post-filter classification).
+        """
+        import re as _re
+
+        measure_names = {m.name for m in model.measures}
+
+        for f in parsed_filters:
+            resolved_sql = f.sql
+            resolved_columns = []
+            for col_name in dict.fromkeys(f.columns):
+                if "." not in col_name:
+                    # Bare name: look up as dimension on the source model
+                    dim = model.get_dimension(col_name)
+                    if dim:
+                        sql_expr = dim.sql or col_name
+                        qualified = f"{model_name}.{sql_expr}"
+                        resolved_sql = _re.sub(
+                            rf'(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)',
+                            qualified, resolved_sql,
+                        )
+                        resolved_columns.append(qualified)
+                    else:
+                        # Measure or computed field — leave as-is for later classification
+                        resolved_columns.append(col_name)
+                else:
+                    # Dotted name: walk joins to resolve
+                    parts = col_name.split(".")
+                    path_parts = parts[:-1]  # model path segments
+                    dim_name = parts[-1]     # dimension name on target model
+
+                    # Walk the join graph
+                    storage = getattr(self, "storage", None) if self is not None else None
+                    current_model = model
+                    resolved = True
+                    for segment in path_parts:
+                        # Find a join to this segment
+                        target_model = None
+                        for mj in current_model.joins:
+                            if mj.target_model == segment:
+                                if storage:
+                                    target_model = storage.get_model(segment)
+                                break
+                        if target_model is None:
+                            resolved = False
+                            break
+                        current_model = target_model
+
+                    if resolved and current_model:
+                        dim = current_model.get_dimension(dim_name)
+                        if dim:
+                            sql_expr = dim.sql or dim_name
+                            # Path-based table alias: customers.regions → customers__regions
+                            table_alias = "__".join(path_parts)
+                            qualified = f"{table_alias}.{sql_expr}"
+                            resolved_sql = _re.sub(
+                                rf'(?<!\w)\b{_re.escape(col_name)}\b',
+                                qualified, resolved_sql,
+                            )
+                            resolved_columns.append(qualified)
+                            continue
+
+                    # Could not resolve — leave as-is (may be a measure or computed field)
+                    resolved_columns.append(col_name)
+
+            f.sql = resolved_sql
+            f.columns = resolved_columns
+
+        return parsed_filters
 
     def _query_as_model(self, inner_query: SlayerQuery,
                          named_queries: dict[str, SlayerQuery] = None,

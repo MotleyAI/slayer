@@ -195,6 +195,24 @@ class TestFilters:
         sql = _generate(generator, query, orders_model)
         assert "HAVING" in sql
 
+    def test_filter_resolves_dimension_sql(self, generator: SQLGenerator) -> None:
+        """Filter column names resolve through dimension sql expressions."""
+        model = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="order_status", sql="status_col", type=DataType.STRING),
+            ],
+            measures=[Measure(name="count", type=DataType.COUNT)],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="count")],
+            filters=["order_status == 'active'"],
+        )
+        sql = _generate(generator, query, model)
+        assert "status_col" in sql
+        assert "order_status" not in sql.split("WHERE")[1]  # dimension name not in WHERE
+
     def test_date_range_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",

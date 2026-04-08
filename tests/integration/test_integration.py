@@ -1350,6 +1350,21 @@ def test_diamond_joins_both_paths(diamond_env):
     assert "warehouses__regions" in result.sql
 
 
+def test_query_filter_on_joined_dimension(diamond_env):
+    """Query-level filter on a joined dimension resolves through the model."""
+    engine, _ = diamond_env
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="shipments",
+        fields=[Field(formula="count")],
+        filters=["customers.regions.name == 'US'"],
+    ))
+
+    assert result.data[0]["shipments.count"] == 2  # Alice's 2 shipments
+    # Filter must use the path-based alias in SQL
+    assert "customers__regions" in result.sql
+
+
 def test_diamond_joins_single_path(diamond_env):
     """Query only one path — should work without including the other."""
     engine, _ = diamond_env

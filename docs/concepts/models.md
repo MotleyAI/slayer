@@ -145,6 +145,8 @@ filters:
 
 Model filters only support conditions on underlying table columns (WHERE). For measure-based conditions, use query-level filters instead.
 
+Since model filters are SQL snippets, multi-hop joined column references should use the `__` alias syntax (e.g., `customers__regions.name`), not dots. Single-dot references like `customers.name` (table.column) are fine. Multi-dot references like `customers.regions.name` are auto-converted to `customers__regions.name` with a warning. The same auto-conversion applies to dimension and measure `sql` fields.
+
 ## Creating Models from Queries
 
 You can save a query's result as a permanent model. The query structure is preserved, and dimensions and measures are auto-introspected:

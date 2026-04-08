@@ -2,7 +2,7 @@
 """Generate Jaffle Shop data and load it into DuckDB with proper relationships.
 
 Dependencies: pip install jafgen duckdb
-Usage: python jaffle_shop_duckdb.py
+Usage: python ingest_jaffle_shop.py
 """
 
 import os
