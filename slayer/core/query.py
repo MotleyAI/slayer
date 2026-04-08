@@ -115,7 +115,7 @@ class SlayerQuery(BaseModel):
     """
 
     name: Optional[str] = None  # For referencing this query from other queries in a list
-    model: object  # str (model name), SlayerModel (inline), or ModelExtension
+    source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
     fields: Optional[List[Field]] = None
     dimensions: Optional[List[ColumnRef]] = None
     time_dimensions: Optional[List[TimeDimension]] = None

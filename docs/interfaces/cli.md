@@ -43,13 +43,13 @@ Execute a query from the terminal.
 
 ```bash
 # Inline JSON
-slayer query '{"model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "status"}]}'
+slayer query '{"source_model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "status"}]}'
 
 # From a file
 slayer query @query.json
 
 # JSON output
-slayer query '{"model": "orders", "fields": [{"formula": "count"}]}' --format json
+slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}' --format json
 ```
 
 | Flag | Default | Description |

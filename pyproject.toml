@@ -67,10 +67,10 @@ duckdb-engine = ">=0.13"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/perf --cov=slayer --cov-report=term-missing --cov-report=html"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
 ]
-addopts = "--cov=slayer --cov-report=term-missing --cov-report=html"
 
 [tool.ruff]
 target-version = "py311"

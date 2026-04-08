@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):
-    model: str
+    source_model: str
     fields: Optional[List[Dict[str, Any]]] = None
     dimensions: Optional[List[Dict[str, Any]]] = None
     time_dimensions: Optional[List[Dict[str, Any]]] = None

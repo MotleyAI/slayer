@@ -153,7 +153,7 @@ def _create_env(order_count: int) -> BenchEnv:
 
     # Warmup: run a simple query to prime DB caches and connection pool
     slayer_engine.execute(query=SlayerQuery(
-        model="orders", fields=[{"formula": "count"}],
+        source_model="orders", fields=[{"formula": "count"}],
     ))
 
     return slayer_engine, dataset

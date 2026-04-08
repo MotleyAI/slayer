@@ -53,7 +53,7 @@ Key terms used throughout SLayer documentation and code.
 
 ## Ingestion
 
-**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates denormalized models with LEFT JOINs baked into the SQL. Columns from joined tables appear as `table__column` dimensions (e.g., `customers__name`).
+**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates models with explicit joins. Columns from joined tables appear as dotted dimensions (e.g., `customers.name`). JOINs are constructed dynamically at query time.
 
 **Transitive closure** — The set of all tables reachable from a source table via foreign key chains. For `orders → customers → regions`, the transitive closure of `orders` includes both `customers` and `regions`.
 

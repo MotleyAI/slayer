@@ -107,6 +107,9 @@ class EnrichedQuery:
     sql_table: Optional[str] = None
     sql: Optional[str] = None
 
+    # Resolved JOIN clauses: [(target_table_sql, target_alias, join_condition), ...]
+    resolved_joins: List[tuple] = field(default_factory=list)
+
     # Resolved columns
     dimensions: List[EnrichedDimension] = field(default_factory=list)
     measures: List[EnrichedMeasure] = field(default_factory=list)
