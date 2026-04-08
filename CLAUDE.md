@@ -82,8 +82,39 @@ Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific
 
 ## Testing
 
+**Important**: Always use `poetry run` to run tests — this ensures the correct Poetry-managed virtualenv is used (not the system or conda Python).
+
+```bash
+# Run ALL tests (unit + integration)
+poetry run pytest tests/ -m "integration or not integration" -v
+
+# Run unit tests only (default, excludes integration)
+poetry run pytest
+
+# Run all integration tests
+poetry run pytest tests/integration/ -m integration
+
+# Run specific integration suite
+poetry run pytest tests/integration/test_integration.py -m integration        # SQLite
+poetry run pytest tests/integration/test_integration_postgres.py -m integration  # Postgres
+poetry run pytest tests/integration/test_integration_duckdb.py -m integration    # DuckDB
+```
+
 - Unit tests: `tests/test_models.py`, `test_sql_generator.py`, `test_storage.py`, `test_sqlite_storage.py`, `test_mcp_server.py`
 - Integration tests (SQLite): `tests/integration/test_integration.py`
 - Integration tests (Postgres): `tests/integration/test_integration_postgres.py` — uses pytest-postgresql (auto-spawns temp Postgres)
 - Integration tests (DuckDB): `tests/integration/test_integration_duckdb.py` — uses duckdb directly (no Docker)
 - Shared fixtures in `tests/conftest.py`
+
+## Linting
+
+**ALWAYS run the linter at the end of every task and fix any issues before finishing.**
+
+```bash
+poetry run ruff check slayer/ tests/
+```
+
+To auto-fix fixable issues:
+```bash
+poetry run ruff check --fix slayer/ tests/
+```

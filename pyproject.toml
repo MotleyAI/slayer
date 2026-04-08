@@ -25,7 +25,7 @@ Documentation = "https://motley-slayer.readthedocs.io/"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-sqlglot = {version = ">=20.0", extras = ["c"]}
+sqlglot = {version = ">=30.0", extras = ["c"]}
 sqlalchemy = ">=2.0"
 pydantic = ">=2.0"
 python-dateutil = ">=2.8"
