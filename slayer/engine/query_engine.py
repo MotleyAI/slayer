@@ -25,6 +25,41 @@ from slayer.storage.base import StorageBackend
 logger = logging.getLogger(__name__)
 
 
+_EXPLAIN_PREFIX = {
+    "postgres": "EXPLAIN ANALYZE",
+    "redshift": "EXPLAIN",
+    "mysql": "EXPLAIN FORMAT=JSON",
+    "sqlite": "EXPLAIN QUERY PLAN",
+    "duckdb": "EXPLAIN ANALYZE",
+    "clickhouse": "EXPLAIN",
+    "snowflake": "EXPLAIN USING JSON",
+    "bigquery": None,  # BigQuery doesn't support EXPLAIN via SQL
+    "trino": "EXPLAIN ANALYZE",
+    "presto": "EXPLAIN ANALYZE",
+    "databricks": "EXPLAIN EXTENDED",
+    "spark": "EXPLAIN EXTENDED",
+    "tsql": "SET SHOWPLAN_ALL ON;",  # SQL Server: batch prefix, needs suffix too
+    "oracle": "EXPLAIN PLAN FOR",
+}
+
+
+_EXPLAIN_POSTFIX = {
+    "tsql": "; SET SHOWPLAN_ALL OFF",
+}
+
+
+def _build_explain_sql(dialect: str, sql: str) -> str:
+    """Build a dialect-appropriate EXPLAIN statement."""
+    prefix = _EXPLAIN_PREFIX.get(dialect)
+    if prefix is None:
+        raise ValueError(
+            f"EXPLAIN is not supported for dialect '{dialect}'. "
+            f"Use dry_run=True to inspect the generated SQL instead."
+        )
+    suffix = _EXPLAIN_POSTFIX.get(dialect, "")
+    return f"{prefix} {sql}{suffix}"
+
+
 class FieldMetadata:
     """Metadata for a single field in the query response."""
 
@@ -129,9 +164,9 @@ class SlayerQueryEngine:
         # Execute
         client = SlayerSQLClient(datasource=datasource)
 
-        # explain: run EXPLAIN ANALYZE instead of the query itself
+        # explain: run dialect-appropriate EXPLAIN on the query
         if query.explain:
-            explain_sql = f"EXPLAIN ANALYZE {sql}"
+            explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
             rows = client.execute(sql=explain_sql)
             return SlayerResponse(data=rows, sql=sql, meta=meta)
 
