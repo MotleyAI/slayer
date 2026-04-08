@@ -665,7 +665,7 @@ class SlayerQueryEngine:
         # from ModelExtension that reference joined tables in their SQL).
         # Use regex since SQL expressions can be arbitrary (CASE, etc.).
         _TABLE_COL_RE = re.compile(r'\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b')
-        sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions]
+        sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions] + [m.sql for m in measures]
         for sql_expr in sql_refs:
             if sql_expr and "." in sql_expr:
                 for match in _TABLE_COL_RE.finditer(sql_expr):

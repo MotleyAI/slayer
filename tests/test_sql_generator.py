@@ -971,3 +971,18 @@ class TestPathAliasJoinInference:
         join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
         assert "users" in join_aliases
         assert "users__orgs" in join_aliases
+
+    def test_measure_sql_with_path_alias_infers_joins(self, engine: SlayerQueryEngine, chained_model: SlayerModel) -> None:
+        """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
+        # Add a measure referencing a path-aliased joined table
+        chained_model.measures.append(
+            Measure(name="region_pop_sum", sql="customers__regions.population", type=DataType.SUM)
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="region_pop_sum")],
+        )
+        enriched = engine._enrich(query=query, model=chained_model)
+        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        assert "customers" in join_aliases
+        assert "customers__regions" in join_aliases
