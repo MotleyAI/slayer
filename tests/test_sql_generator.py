@@ -167,7 +167,27 @@ class TestFilters:
         assert "LIKE" in sql
         assert "%act%" in sql
 
-    def test_not_set_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+    def test_is_null_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="count")],
+            filters=["status IS NULL"],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "IS NULL" in sql
+
+    def test_is_not_null_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="count")],
+            filters=["status IS NOT NULL"],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Python AST may produce "NOT x IS NULL" instead of "x IS NOT NULL" — both valid
+        assert "IS NOT NULL" in sql or "NOT" in sql
+
+    def test_is_null_python_compat(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Python-style 'is None' still works for backward compatibility."""
         query = SlayerQuery(
             source_model="orders",
             fields=[Field(formula="count")],
@@ -175,6 +195,37 @@ class TestFilters:
         )
         sql = _generate(generator, query, orders_model)
         assert "IS NULL" in sql
+
+    def test_sql_equals_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """SQL single = works as equality."""
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="count")],
+            filters=["status = 'active'"],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "= 'active'" in sql
+
+    def test_sql_not_equals_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """SQL <> works as not-equals."""
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="count")],
+            filters=["status <> 'cancelled'"],
+        )
+        sql = _generate(generator, query, orders_model)
+        # sqlglot may output either != or <> depending on dialect — both valid
+        assert "<> 'cancelled'" in sql or "!= 'cancelled'" in sql
+
+    def test_equals_inside_string_literal_not_converted(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """= inside a string literal is not converted to ==."""
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="count")],
+            filters=["status = 'x=y'"],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "'x=y'" in sql
 
     def test_composite_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(

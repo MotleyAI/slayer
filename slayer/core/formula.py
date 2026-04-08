@@ -12,6 +12,7 @@ A formula can be:
 """
 
 import ast
+import re
 from dataclasses import dataclass, field
 from typing import Any, List, Union
 
@@ -221,7 +222,6 @@ def _preprocess_like(formula: str) -> str:
     "name like '%acme%'"       → "__like__(name, '%acme%')"
     "name not like '%acme%'"   → "__notlike__(name, '%acme%')"
     """
-    import re
     # Skip if already preprocessed (contains __like__ or __notlike__)
     if "__like__" in formula or "__notlike__" in formula:
         return formula
@@ -249,23 +249,55 @@ def _preprocess_like(formula: str) -> str:
     return formula
 
 
+_STRING_LITERAL_RE = re.compile(r"'[^']*'")
+
+
+def _preprocess_sql_operators(formula: str) -> str:
+    """Normalize SQL operators to Python equivalents for AST parsing.
+
+    Converts (outside string literals):
+    - ``NULL`` → ``None``  (case-insensitive, so ``IS NULL`` parses as ``is None``)
+    - ``IS``, ``NOT``, ``AND``, ``OR`` → lowercase  (Python requires lowercase keywords)
+    - standalone ``=`` → ``==``  (so ``x = 1`` parses as ``x == 1``)
+    - ``<>`` → ``!=``  (so ``x <> 1`` parses as ``x != 1``)
+    """
+    # Split into literal / non-literal segments to avoid mangling string contents
+    parts = _STRING_LITERAL_RE.split(formula)
+    literals = _STRING_LITERAL_RE.findall(formula)
+
+    result = []
+    for i, part in enumerate(parts):
+        part = re.sub(r'\bNULL\b', 'None', part, flags=re.IGNORECASE)
+        # Lowercase SQL keywords that are also Python keywords
+        for kw in ("IS", "NOT", "AND", "OR", "IN"):
+            part = re.sub(rf'\b{kw}\b', kw.lower(), part, flags=re.IGNORECASE)
+        part = re.sub(r'(?<![<>=!])=(?!=)', '==', part)
+        part = re.sub(r'<>', '!=', part)
+        result.append(part)
+        if i < len(literals):
+            result.append(literals[i])
+    return "".join(result)
+
+
 def parse_filter(formula: str) -> ParsedFilter:
     """Parse a filter formula string into a ParsedFilter.
 
-    Examples:
-        "status == 'completed'"           → WHERE status = 'completed'
+    Accepts both SQL and Python operator syntax:
+        "status = 'completed'"            → WHERE status = 'completed'
         "amount > 100"                    → WHERE amount > 100
-        "status != 'cancelled'"           → WHERE status != 'cancelled'
+        "status <> 'cancelled'"           → WHERE status != 'cancelled'
         "amount >= 50 and amount <= 200"  → WHERE amount >= 50 AND amount <= 200
-        "status == 'a' or status == 'b'"  → WHERE status = 'a' OR status = 'b'
-        "status in ('a', 'b', 'c')"       → WHERE status IN ('a', 'b', 'c')
-        "status is None"                  → WHERE status IS NULL
-        "status is not None"              → WHERE status IS NOT NULL
-        "name like '%acme%'"              → WHERE name LIKE '%acme%'
-        "name not like '%test%'"          → WHERE name NOT LIKE '%test%'
+        "status = 'a' or status = 'b'"   → WHERE status = 'a' OR status = 'b'
+        "status in ('a', 'b', 'c')"      → WHERE status IN ('a', 'b', 'c')
+        "status IS NULL"                 → WHERE status IS NULL
+        "status IS NOT NULL"             → WHERE status IS NOT NULL
+        "name like '%acme%'"             → WHERE name LIKE '%acme%'
+        "name not like '%test%'"         → WHERE name NOT LIKE '%test%'
     """
+    # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing
+    processed = _preprocess_sql_operators(formula)
     # Pre-process `like` / `not like` operators into internal function calls
-    processed = _preprocess_like(formula)
+    processed = _preprocess_like(processed)
     try:
         tree = ast.parse(processed, mode="eval")
     except SyntaxError as e:

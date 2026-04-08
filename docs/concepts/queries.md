@@ -94,22 +94,22 @@ Query results are returned as a `SlayerResponse`:
 Filter formulas define conditions for the query. They go in the `filters` parameter as plain strings:
 
 ```json
-"filters": ["status == 'active'", "amount > 100"]
+"filters": ["status = 'active'", "amount > 100"]
 ```
 
 ### Comparison Operators
 
 | Operator | Example |
 |----------|---------|
-| `==` | `"status == 'active'"` |
-| `!=` | `"status != 'cancelled'"` |
+| `=` | `"status = 'active'"` |
+| `<>` | `"status <> 'cancelled'"` |
 | `>` | `"amount > 100"` |
 | `>=` | `"amount >= 100"` |
 | `<` | `"amount < 1000"` |
 | `<=` | `"amount <= 1000"` |
 | `in` | `"status in ('active', 'pending')"` |
-| `is None` | `"discount is None"` (IS NULL) |
-| `is not None` | `"discount is not None"` (IS NOT NULL) |
+| `IS NULL` | `"discount IS NULL"` |
+| `IS NOT NULL` | `"discount IS NOT NULL"` |
 | `like` | `"name like '%acme%'"` |
 | `not like` | `"name not like '%test%'"` |
 
@@ -119,7 +119,7 @@ Use `and`, `or`, `not` within a single filter string:
 
 ```json
 "filters": [
-    "status == 'completed' or status == 'pending'",
+    "status = 'completed' or status = 'pending'",
     "amount > 100 and amount < 1000"
 ]
 ```
@@ -152,7 +152,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "filters": ["status == 'completed'", "change(revenue) > 0"]
+  "filters": ["status = 'completed'", "change(revenue) > 0"]
 }
 ```
 
@@ -202,7 +202,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 {
   "source_model": "orders",
   "fields": [{"formula": "count"}],
-  "filters": ["status == 'completed' or status == 'pending'"]
+  "filters": ["status = 'completed' or status = 'pending'"]
 }
 ```
 

@@ -56,7 +56,7 @@ Enables cross-model measures (`customers.avg_score`), multi-hop dimensions (`cus
 
 ## Model Filters
 
-Models can have always-applied WHERE filters: `filters: ["deleted_at is None"]`. Only WHERE conditions on underlying table columns.
+Models can have always-applied WHERE filters: `filters: ["deleted_at IS NULL"]`. Only WHERE conditions on underlying table columns.
 
 ## Creating Models from Queries
 

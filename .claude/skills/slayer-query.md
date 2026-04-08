@@ -49,7 +49,7 @@ filters=[
 ]
 ```
 
-**Operators**: `==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `is None`, `is not None`
+**Operators**: `=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`
 
 **Boolean logic**: `and`, `or`, `not` within a single string
 

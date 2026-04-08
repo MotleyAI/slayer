@@ -54,7 +54,7 @@ poetry run ruff check slayer/ tests/
 - Models can have explicit `joins` to other models (LEFT JOINs). Cross-model measures use dotted syntax (`customers.avg_score`) and multi-hop (`customers.regions.name`). Joins are auto-resolved by walking the join graph. Transforms work on cross-model measures (`cumsum(customers.avg_score)`)
 - **Path-based table aliases**: Joined tables use `__`-delimited path aliases in SQL to disambiguate diamond joins. In queries, dots denote paths (`customers.regions.name`); in model SQL definitions, `__` denotes the table alias (`customers__regions.name`). For diamond joins (same table reached via different paths, e.g., `orders → customers → regions` AND `orders → warehouses → regions`), each path gets a unique alias (`customers__regions` vs `warehouses__regions`). Ingestion auto-detects diamond joins via FK graph BFS
 - `SlayerQuery.source_model` accepts a model name, inline `SlayerModel`, or `ModelExtension` (extends a model with extra dims/measures/joins). `create_model_from_query()` saves a query as a permanent model
-- Models can have `filters` (always-applied WHERE conditions, e.g., `"deleted_at is None"`)
+- Models can have `filters` (always-applied WHERE conditions, e.g., `"deleted_at IS NULL"`)
 - **Core principle**: adding a measure/field must never affect result cardinality or other fields' values — achieved via CTEs, sub-queries, and correct JOIN dimensions
 - Functions needing time ordering: single time_dimensions entry is used automatically; with 2+ time dimensions, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims); with none, falls back to model default
 - SlayerModel has optional `default_time_dimension` field for time-dependent formula resolution
