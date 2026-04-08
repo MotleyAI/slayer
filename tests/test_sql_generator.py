@@ -227,6 +227,16 @@ class TestFilters:
         sql = _generate(generator, query, orders_model)
         assert "'x=y'" in sql
 
+    def test_not_equals_inside_string_literal_not_converted(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """<> inside a string literal is not converted to !=."""
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="count")],
+            filters=["status = 'foo<>bar'"],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "'foo<>bar'" in sql
+
     def test_composite_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
