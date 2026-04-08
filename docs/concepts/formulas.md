@@ -88,7 +88,7 @@ The ranking granularity depends on the query's dimensions and time dimensions. E
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "dimensions": [{"name": "customer_name"}],
   "fields": [
     {"formula": "revenue_sum"},
@@ -117,7 +117,7 @@ Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at ra
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [
     {"formula": "revenue_sum"},
     {"formula": "last(revenue_sum)", "name": "latest_revenue"}

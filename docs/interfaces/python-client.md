@@ -19,7 +19,7 @@ from slayer.core.query import SlayerQuery, ColumnRef
 client = SlayerClient(url="http://localhost:5143")
 
 query = SlayerQuery(
-    model="orders",
+    source_model="orders",
     fields=[{"formula": "count"}, {"formula": "revenue_sum"}],
     dimensions=[ColumnRef(name="status")],
     limit=10,
@@ -82,7 +82,7 @@ engine = SlayerQueryEngine(storage=storage)
 result = engine.execute(query=query)
 # result.data      — list of row dicts
 # result.columns   — list of column names
-# result.labels    — dict mapping column names to human-readable labels (from field/dimension label)
+# result.meta      — dict mapping column names to FieldMetadata (label, and more coming soon)
 # result.row_count — number of rows
 # result.sql       — generated SQL string
 ```

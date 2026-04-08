@@ -103,7 +103,7 @@ class TestTimeGranularity:
 class TestWholePeriodsOnly:
     def test_adds_lte_filter_when_none(self) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[Field(formula="count")],
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"),
@@ -117,7 +117,7 @@ class TestWholePeriodsOnly:
 
     def test_noop_when_false(self) -> None:
         query = SlayerQuery(
-            model="orders",
+            source_model="orders",
             fields=[Field(formula="count")],
             whole_periods_only=False,
         )
