@@ -97,6 +97,9 @@ claude mcp list
 | `offset` | int | Skip rows |
 | `whole_periods_only` | bool | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
 | `show_sql` | bool | Include the generated SQL in the response for debugging |
+| `dry_run` | bool | Generate and return the SQL without executing it |
+| `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
+| `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
 
 ### Ingestion
 
