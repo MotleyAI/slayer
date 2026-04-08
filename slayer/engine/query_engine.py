@@ -147,13 +147,14 @@ class SlayerQueryEngine:
             if t.label:
                 meta[t.alias] = FieldMetadata(label=t.label)
 
-        # Derive expected column names from the enriched query
+        # Derive expected column names from the enriched query, excluding internal aliases
+        # (_inner_* from nested transforms, _ft* from filter transform extraction)
         expected_columns = (
             [d.alias for d in enriched.dimensions]
             + [td.alias for td in enriched.time_dimensions]
-            + [m.alias for m in enriched.measures]
+            + [m.alias for m in enriched.measures if not m.name.startswith(("_inner_", "_ft"))]
             + [e.alias for e in enriched.expressions]
-            + [t.alias for t in enriched.transforms]
+            + [t.alias for t in enriched.transforms if not t.name.startswith(("_inner_", "_ft"))]
             + [cm.alias for cm in enriched.cross_model_measures]
         )
 
@@ -171,7 +172,8 @@ class SlayerQueryEngine:
             return SlayerResponse(data=rows, sql=sql, meta=meta)
 
         rows = client.execute(sql=sql)
-        return SlayerResponse(data=rows, sql=sql, meta=meta)
+        columns = expected_columns if not rows else None  # fallback for empty results
+        return SlayerResponse(data=rows, columns=columns, sql=sql, meta=meta)
 
     def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
