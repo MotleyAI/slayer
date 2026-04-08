@@ -64,6 +64,7 @@ psycopg2-binary = "^2.9.11"
 pytest-benchmark = "^5.2.3"
 duckdb = ">=0.9"
 duckdb-engine = ">=0.13"
+pre-commit = "^4.5.1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

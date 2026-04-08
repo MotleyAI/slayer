@@ -25,12 +25,20 @@ class QueryRequest(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     whole_periods_only: Optional[bool] = None
+    dry_run: Optional[bool] = None
+    explain: Optional[bool] = None
+
+
+class FieldMetadataResponse(BaseModel):
+    label: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
     data: List[Dict[str, Any]]
     row_count: int
     columns: List[str]
+    sql: Optional[str] = None
+    meta: Optional[Dict[str, FieldMetadataResponse]] = None
 
 
 class IngestRequest(BaseModel):
@@ -59,7 +67,11 @@ def create_app(storage: StorageBackend) -> FastAPI:
         try:
             slayer_query = SlayerQuery.model_validate(request.model_dump(exclude_none=True))
             result = engine.execute(query=slayer_query)
-            return QueryResponse(data=result.data, row_count=result.row_count, columns=result.columns)
+            meta = {k: FieldMetadataResponse(label=v.label) for k, v in result.meta.items()} if result.meta else None
+            response = QueryResponse(data=result.data, row_count=result.row_count, columns=result.columns, meta=meta)
+            if slayer_query.dry_run or slayer_query.explain:
+                response.sql = result.sql
+            return response
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 

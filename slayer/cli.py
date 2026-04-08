@@ -24,6 +24,8 @@ def main():
     query_parser.add_argument("query_json", help="JSON query string or @file.json")
     query_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
     query_parser.add_argument("--format", choices=["json", "table"], default="table")
+    query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
+    query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
 
     # ingest command
     ingest_parser = subparsers.add_parser("ingest", help="Auto-ingest models from a datasource")
@@ -88,15 +90,26 @@ def _run_query(args):
         with open(query_input[1:]) as f:
             query_input = f.read()
     data = json.loads(query_input)
+    if args.dry_run:
+        data["dry_run"] = True
+    if args.explain:
+        data["explain"] = True
     slayer_query = SlayerQuery.model_validate(data)
 
     storage = YAMLStorage(base_dir=args.models_dir)
     engine = SlayerQueryEngine(storage=storage)
     result = engine.execute(query=slayer_query)
 
+    if slayer_query.dry_run:
+        print(result.sql)
+        return
+
     if args.format == "json":
         print(json.dumps(result.data, indent=2, default=str))
     else:
+        if slayer_query.explain:
+            print(f"SQL:\n{result.sql}\n")
+            print("Query Plan:")
         if not result.data:
             print("No results.")
             return
@@ -106,7 +119,8 @@ def _run_query(args):
         print(separator)
         for row in result.data:
             print(" | ".join(str(row.get(c, "")) for c in result.columns))
-        print(f"\n{result.row_count} row(s)")
+        if not slayer_query.explain:
+            print(f"\n{result.row_count} row(s)")
 
 
 def _run_serve(args):
