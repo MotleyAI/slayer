@@ -53,7 +53,7 @@ class SlayerClient:
             meta[k] = FieldMetadata(label=v.get("label"))
         return SlayerResponse(
             data=result["data"],
-            columns=result.get("columns"),
+            columns=result.get("columns") or [],
             sql=result.get("sql"),
             meta=meta,
         )

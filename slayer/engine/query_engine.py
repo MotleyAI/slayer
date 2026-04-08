@@ -4,6 +4,7 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 """
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from slayer.core.enums import DataType
@@ -60,22 +61,23 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return f"{prefix} {sql}{suffix}"
 
 
+@dataclass
 class FieldMetadata:
     """Metadata for a single field in the query response."""
-
-    def __init__(self, label: Optional[str] = None):
-        self.label = label
+    label: Optional[str] = None
 
 
+@dataclass
 class SlayerResponse:
     """Response from a SLayer query."""
+    data: List[Dict[str, Any]]
+    columns: List[str] = field(default_factory=list)
+    sql: Optional[str] = None
+    meta: Dict[str, FieldMetadata] = field(default_factory=dict)
 
-    def __init__(self, data: List[Dict[str, Any]], columns: Optional[List[str]] = None,
-                 sql: Optional[str] = None, meta: Optional[Dict[str, "FieldMetadata"]] = None):
-        self.data = data
-        self.columns = columns or (list(data[0].keys()) if data else [])
-        self.sql = sql
-        self.meta = meta or {}  # column alias → FieldMetadata
+    def __post_init__(self):
+        if not self.columns and self.data:
+            self.columns = list(self.data[0].keys())
 
     @property
     def row_count(self) -> int:
@@ -172,7 +174,7 @@ class SlayerQueryEngine:
             return SlayerResponse(data=rows, sql=sql, meta=meta)
 
         rows = client.execute(sql=sql)
-        columns = expected_columns if not rows else None  # fallback for empty results
+        columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, meta=meta)
 
     def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
