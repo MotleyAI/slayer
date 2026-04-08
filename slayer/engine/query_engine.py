@@ -379,24 +379,29 @@ class SlayerQueryEngine:
         # Resolve time column for `type: last` aggregation.
         # Unlike transforms (which need granularity), this only needs a time column
         # for ORDER BY within each group — no bucketing required.
-        # Resolution: main_time_dimension → first time dim in dimensions →
-        #   first time dim in filters → model default_time_dimension
+        # Stored as "table_alias.column" so the generator resolves the correct table
+        # (important for joined time dimensions like stores.opened_at).
+        # Resolution: main_time_dimension → first time dim in enriched dimensions →
+        #   first enriched time_dimension → first time dim in filters → model default
         last_agg_time_column = None
         if query.main_time_dimension:
-            last_agg_time_column = query.main_time_dimension
+            mtd = query.main_time_dimension
+            if "." not in mtd:
+                mtd = f"{model.name}.{mtd}"
+            last_agg_time_column = mtd
         if last_agg_time_column is None:
-            # Check regular dimensions for time/date types
-            for dim_ref in (query.dimensions or []):
-                dim_def = model.get_dimension(dim_ref.name)
-                if dim_def and dim_def.type in (DataType.TIMESTAMP, DataType.DATE):
-                    last_agg_time_column = dim_ref.name
+            # Check enriched dimensions for time/date types (already have correct model_name)
+            for d in dimensions:
+                if d.type in (DataType.TIMESTAMP, DataType.DATE):
+                    last_agg_time_column = f"{d.model_name}.{d.sql or d.name}"
                     break
         if last_agg_time_column is None:
-            # Check time_dimensions
+            # Check enriched time_dimensions
             if time_dimensions:
-                last_agg_time_column = time_dimensions[0].name
+                td = time_dimensions[0]
+                last_agg_time_column = f"{td.model_name}.{td.sql or td.name}"
         if last_agg_time_column is None and query.filters:
-            # Check filters for time dimension references
+            # Check filters for time dimension references (always local model dims)
             time_dim_names = {
                 d.name for d in model.dimensions
                 if d.type in (DataType.TIMESTAMP, DataType.DATE)
@@ -404,12 +409,12 @@ class SlayerQueryEngine:
             for f_str in (query.filters or []):
                 for td_name in time_dim_names:
                     if td_name in f_str:
-                        last_agg_time_column = td_name
+                        last_agg_time_column = f"{model.name}.{td_name}"
                         break
                 if last_agg_time_column:
                     break
         if last_agg_time_column is None and model.default_time_dimension:
-            last_agg_time_column = model.default_time_dimension
+            last_agg_time_column = f"{model.name}.{model.default_time_dimension}"
 
         # Process fields — parse formulas and flatten into measures/expressions/transforms
         import re

@@ -814,8 +814,8 @@ class SQLGenerator:
 
         partition_clause = f"PARTITION BY {', '.join(partition_parts)}" if partition_parts else ""
 
-        # ORDER BY the resolved time column
-        time_col_expr = self._resolve_sql(sql=None, name=time_col, model_name=model)
+        # ORDER BY the resolved time column (qualified as "table.column")
+        time_col_expr = self._resolve_sql(sql=time_col, name=time_col, model_name=model)
         order_sql = time_col_expr.sql(dialect=self.dialect)
 
         rn_expr = f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} DESC) AS _last_rn"

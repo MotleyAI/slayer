@@ -26,17 +26,19 @@ Each of these concepts is very **simple and natural at the semantic level**, but
 
 Here is a complete example query for “monthly revenue for the last year by region, compared to previous year, for regions whose MoM number of website visits is down”:
 
-```
+```json
 {
-  "model": "my_model",
-  "fields": [{"formula": "revenue_sum"},
-					   {"formula": "time_shift(revenue_sum, -1, year)"}],
-	"dimensions": [{"name": "region"}],
+  "source_model": "my_model",
+  "fields": [
+    {"formula": "revenue_sum"},
+    {"formula": "time_shift(revenue_sum, -1, 'year')"}
+  ],
+  "dimensions": [{"name": "region"}],
   "time_dimensions": [{
     "dimension": {"name": "created_at"},
     "granularity": "month",
     "date_range": ["2025-01-01", "2025-12-31"]
-  }]
+  }],
   "filters": ["last(change(website_visits_sum)) < 0"]
 }
 ```
