@@ -42,3 +42,7 @@ Here is a complete example query for “monthly revenue for the last year by reg
 ```
 
 What would it take to define this in the semantic layer you’re currently using?
+
+---
+
+See the [companion notebook](time.ipynb) for runnable code demonstrating all time-related transforms.
