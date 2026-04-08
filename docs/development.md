@@ -17,6 +17,9 @@ poetry run pytest
 # Postgres integration tests (auto-spawns temporary Postgres via pytest-postgresql)
 poetry run pytest tests/test_integration_postgres.py -m integration
 
+# DuckDB integration tests (no Docker, runs in-process)
+poetry run pytest tests/test_integration_duckdb.py -m integration
+
 # SQLite integration tests
 poetry run pytest tests/test_integration.py
 
@@ -63,6 +66,7 @@ tests/
   test_mcp_server.py      # MCP server tool tests
   test_integration.py     # SQLite integration tests
   test_integration_postgres.py  # Postgres integration + rollup tests
+  test_integration_duckdb.py    # DuckDB integration tests
   conftest.py             # Shared fixtures
 ```
 

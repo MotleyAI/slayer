@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "motley-slayer"
-version = "0.1.0"
+version = "0.2.0rc1"
 description = "A lightweight, agent-first semantic layer for AI agents"
 authors = ["MotleyAI"]
 license = "MIT"
@@ -39,6 +39,8 @@ mkdocs-material = {version = ">=9.0", optional = true}
 psycopg2-binary = {version = ">=2.9", optional = true}
 pymysql = {version = ">=1.0", optional = true}
 clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
+duckdb = {version = ">=0.9", optional = true}
+duckdb-engine = {version = ">=0.13", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -46,8 +48,9 @@ mcp = ["mcp"]
 postgres = ["psycopg2-binary"]
 mysql = ["pymysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
+duckdb = ["duckdb", "duckdb-engine"]
 docs = ["mkdocs-material"]
-all = ["httpx", "pandas", "mcp", "psycopg2-binary", "pymysql", "clickhouse-sqlalchemy"]
+all = ["httpx", "pandas", "mcp", "psycopg2-binary", "pymysql", "clickhouse-sqlalchemy", "duckdb", "duckdb-engine"]
 
 [tool.poetry.scripts]
 slayer = "slayer.cli:main"
@@ -59,13 +62,15 @@ ruff = ">=0.4"
 pytest-postgresql = "^8.0.0"
 psycopg2-binary = "^2.9.11"
 pytest-benchmark = "^5.2.3"
+duckdb = ">=0.9"
+duckdb-engine = ">=0.13"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/perf --cov=slayer --cov-report=term-missing --cov-report=html"
 markers = [
     "integration: marks tests as integration tests (require a real database)",
 ]
-addopts = "--cov=slayer --cov-report=term-missing --cov-report=html"
 
 [tool.ruff]
 target-version = "py311"

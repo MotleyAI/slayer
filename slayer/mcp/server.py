@@ -141,7 +141,7 @@ def create_mcp_server(storage: StorageBackend):
 
     @mcp.tool()
     def query(
-        model: str,
+        source_model: str,
         fields: Optional[List[Dict[str, str]]] = None,
         dimensions: Optional[List[str]] = None,
         filters: Optional[List[str]] = None,
@@ -157,7 +157,7 @@ def create_mcp_server(storage: StorageBackend):
         """Query data from a semantic model. Call inspect_model first to see available fields and dimensions.
 
         Args:
-            model: Name of the model to query (from datasource_summary).
+            source_model: Name of the model to query (from datasource_summary).
             fields: Data columns to return. Each is a formula: {"formula": "count"} (measure),
                 {"formula": "revenue / count", "name": "aov"} (arithmetic),
                 {"formula": "cumsum(revenue)"} (cumulative sum), {"formula": "change(revenue)"} (diff from previous row),
@@ -181,9 +181,9 @@ def create_mcp_server(storage: StorageBackend):
             dry_run: When true, generate and return the SQL without executing it.
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
 
-        Example: query(model="orders", fields=[{"formula": "count"}], dimensions=["status"], filters=["status == 'completed'"])
+        Example: query(source_model="orders", fields=[{"formula": "count"}], dimensions=["status"], filters=["status == 'completed'"])
         """
-        data: Dict[str, Any] = {"model": model}
+        data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
             data["dimensions"] = [_parse_column_ref(d) for d in dimensions]
         if filters:
@@ -289,7 +289,7 @@ def create_mcp_server(storage: StorageBackend):
         # Include sample data
         try:
             sample_query = SlayerQuery(
-                model=model_name,
+                source_model=model_name,
                 fields=[{"formula": m.name} for m in model.measures if not m.hidden][:3],
                 dimensions=[
                     {"name": d.name}
@@ -343,6 +343,35 @@ def create_mcp_server(storage: StorageBackend):
         storage.save_model(model)
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
+
+    @mcp.tool()
+    def create_model_from_query(
+        name: str,
+        query: Dict,
+        description: Optional[str] = None,
+    ) -> str:
+        """Create a model from a query — saves the query's SQL as a reusable model.
+
+        This lets you build complex queries (with transforms, filters, time dimensions)
+        and save the result as a permanent model that can be queried like any other.
+
+        Args:
+            name: Name for the new model (lowercase, underscores).
+            query: A SLayer query dict, e.g. {"source_model": "orders", "fields": [{"formula": "count"}],
+                "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]}.
+            description: What this derived model represents.
+        """
+        from slayer.core.query import SlayerQuery as SQ
+        parsed_query = SQ.model_validate(query)
+        model = engine.create_model_from_query(
+            query=parsed_query, name=name, description=description,
+        )
+        dims = [d.name for d in model.dimensions]
+        measures = [m.name for m in model.measures]
+        return (
+            f"Model '{name}' created from query. "
+            f"Dimensions: {dims}. Measures: {measures}."
+        )
 
     @mcp.tool()
     def edit_model(

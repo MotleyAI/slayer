@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Set
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import DatasourceConfig, Dimension, Measure, ModelJoin, SlayerModel
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,27 @@ _SA_TYPE_MAP = {
 
 _NUMERIC_TYPES = {DataType.NUMBER}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
+
+# Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback)
+_INFO_SCHEMA_TYPE_MAP = {
+    "INTEGER": DataType.NUMBER,
+    "BIGINT": DataType.NUMBER,
+    "SMALLINT": DataType.NUMBER,
+    "TINYINT": DataType.NUMBER,
+    "HUGEINT": DataType.NUMBER,
+    "FLOAT": DataType.NUMBER,
+    "DOUBLE": DataType.NUMBER,
+    "REAL": DataType.NUMBER,
+    "VARCHAR": DataType.STRING,
+    "CHAR": DataType.STRING,
+    "TEXT": DataType.STRING,
+    "BOOLEAN": DataType.BOOLEAN,
+    "TIMESTAMP": DataType.TIMESTAMP,
+    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
+    "DATETIME": DataType.TIMESTAMP,
+    "DATE": DataType.DATE,
+    "TIME": DataType.TIMESTAMP,
+}
 
 
 def _is_id_column(name: str) -> bool:
@@ -159,110 +180,170 @@ def _compute_transitive_closure(graph: Dict[str, Set[str]], source: str) -> Set[
 
 
 # ---------------------------------------------------------------------------
-# Rollup SQL generation
+# Join generation from FK relationships
 # ---------------------------------------------------------------------------
 
-def _generate_rollup_sql(
+def _generate_joins(
     inspector: sa.engine.Inspector,
     source_table: str,
     referenced_tables: Set[str],
     schema: Optional[str],
     table_set: Set[str],
-) -> str:
-    """Generate SELECT ... FROM source LEFT JOIN ref1 ON ... LEFT JOIN ref2 ON ... SQL."""
-    sql_table = f"{schema}.{source_table}" if schema else source_table
+) -> List[ModelJoin]:
+    """Generate ModelJoin objects from FK relationships via BFS traversal.
 
-    # Collect source columns
-    source_cols = inspector.get_columns(source_table, schema=schema)
-    select_parts = [f"{sql_table}.{col['name']} AS {col['name']}" for col in source_cols]
-
-    # Build reverse FK mapping
-    reverse_refs: Dict[str, List[tuple]] = defaultdict(list)
-    all_tables = {source_table} | referenced_tables
-    for table in all_tables:
-        for src_col, ref_table, tgt_col in _get_fk_relationships(
-            inspector=inspector, table_name=table, schema=schema, table_set=table_set,
-        ):
-            if ref_table in all_tables:
-                reverse_refs[ref_table].append((table, src_col, tgt_col))
-
-    # Collect FK columns per referenced table (to exclude from rollup)
-    fk_columns_by_table: Dict[str, Set[str]] = defaultdict(set)
-    for table in referenced_tables:
-        fks = inspector.get_foreign_keys(table, schema=schema)
-        for fk in fks:
-            for col in fk["constrained_columns"]:
-                fk_columns_by_table[table].add(col)
-
-    # BFS from source to process joins in dependency order
-    join_clauses = []
-    processed = {source_table}
+    Supports diamond joins: the same table can be reached via multiple paths
+    (e.g., orders → customers → regions AND orders → warehouses → regions).
+    Each path produces a separate ModelJoin with path-qualified source columns.
+    """
+    joins = []
+    # Track (referencing_table, target_table) edges already processed
+    processed_edges: Set[tuple] = set()
+    # BFS queue entries: table name
     queue = deque([source_table])
+    visited_for_expansion = {source_table}
 
     while queue:
         current = queue.popleft()
         current_fk_rels = _get_fk_relationships(
             inspector=inspector, table_name=current, schema=schema, table_set=table_set,
         )
-        next_tables = {ref_table for _, ref_table, _ in current_fk_rels
-                       if ref_table in referenced_tables and ref_table not in processed}
 
-        for ref_table in next_tables:
-            ref_sql_table = f"{schema}.{ref_table}" if schema else ref_table
-            ref_cols = inspector.get_columns(ref_table, schema=schema)
-            ref_fk_cols = fk_columns_by_table[ref_table]
+        for src_col, ref_table, tgt_col in current_fk_rels:
+            if ref_table not in referenced_tables:
+                continue
+            edge = (current, ref_table)
+            if edge in processed_edges:
+                continue
+            processed_edges.add(edge)
 
-            for col in ref_cols:
-                if col["name"] not in ref_fk_cols:
-                    alias = f"{ref_table}__{col['name']}"
-                    select_parts.append(f"{ref_sql_table}.{col['name']} AS {alias}")
+            # Build join pair: qualify source column with table name for non-root
+            if current == source_table:
+                source_dim = src_col
+            else:
+                source_dim = f"{current}.{src_col}"
+            join_pairs = [[source_dim, tgt_col]]
 
-            join_condition = None
-            for referencing_table, fk_col, tgt_col in reverse_refs[ref_table]:
-                if referencing_table in processed:
-                    ref_full = f"{schema}.{referencing_table}" if schema else referencing_table
-                    join_condition = f"{ref_full}.{fk_col} = {ref_sql_table}.{tgt_col}"
-                    break
+            joins.append(ModelJoin(
+                target_model=ref_table,
+                join_pairs=join_pairs,
+            ))
 
-            if join_condition:
-                join_clauses.append(f"LEFT JOIN {ref_sql_table} ON {join_condition}")
-                processed.add(ref_table)
+            # Continue BFS from the referenced table (but only expand once)
+            if ref_table not in visited_for_expansion:
+                visited_for_expansion.add(ref_table)
                 queue.append(ref_table)
 
-    select_clause = "SELECT\n    " + ",\n    ".join(select_parts)
-    from_clause = f"FROM {sql_table}"
-    if join_clauses:
-        return f"{select_clause}\n{from_clause}\n" + "\n".join(join_clauses)
-    return f"{select_clause}\n{from_clause}"
+    return joins
 
 
 # ---------------------------------------------------------------------------
-# Query introspection — derive column types from a SQL query
+# INFORMATION_SCHEMA fallbacks (for databases like DuckDB where
+# the SQLAlchemy Inspector's pg_catalog queries may not be supported)
 # ---------------------------------------------------------------------------
 
-def _introspect_query_columns(
+def _get_columns_fallback(
     sa_engine: sa.Engine,
-    sql: str,
-) -> List[tuple]:
-    """Execute a query with LIMIT 0 and return (column_name, DataType) pairs."""
-    # Wrap in a subquery to avoid executing the full query
-    probe_sql = f"SELECT * FROM ({sql}) AS _probe LIMIT 0"
+    table_name: str,
+    schema: Optional[str],
+) -> List[Dict]:
+    """Get columns via INFORMATION_SCHEMA when Inspector.get_columns() fails."""
+    if schema:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name "
+            "AND table_schema = :schema "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name, "schema": schema}
+    else:
+        sql = (
+            "SELECT column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_name = :table_name "
+            "ORDER BY ordinal_position"
+        )
+        params = {"table_name": table_name}
     with sa_engine.connect() as conn:
-        result = conn.execute(sa.text(probe_sql))
-        columns = []
-        for col_name, col_type in zip(result.keys(), result.cursor.description):
-            # col_type[1] is the type_code from DB-API; use SQLAlchemy's type mapping
-            # For portability, re-inspect using column name from cursor description
-            sa_type_code = col_type[1]
-            # Try to map via the type name from cursor description
-            type_name = type(sa_type_code).__name__.upper() if sa_type_code else ""
-            if type_name in _SA_TYPE_MAP:
-                data_type = _SA_TYPE_MAP[type_name]
-            else:
-                # Fallback: use string representation
-                data_type = DataType.STRING
-            columns.append((col_name, data_type))
-        return columns
+        rows = conn.execute(sa.text(sql), params).fetchall()
+    result = []
+    for col_name, data_type_str in rows:
+        # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL")
+        base_type = data_type_str.split("(")[0].upper().strip()
+        sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
+        if sa_type is None and "INT" in base_type:
+            sa_type = DataType.NUMBER
+        elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
+            sa_type = DataType.STRING
+        elif sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type):
+            sa_type = DataType.NUMBER
+        result.append({"name": col_name, "type": sa_type or DataType.STRING})
+    return result
+
+
+def _get_pk_constraint_fallback(
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> Dict:
+    """Get PK constraint via INFORMATION_SCHEMA when Inspector.get_pk_constraint() fails."""
+    if schema:
+        sql = (
+            "SELECT kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name = kcu.constraint_name "
+            "  AND tc.table_schema = kcu.table_schema "
+            "WHERE tc.table_name = :table_name "
+            "  AND tc.constraint_type = 'PRIMARY KEY' "
+            "  AND tc.table_schema = :schema"
+        )
+        params = {"table_name": table_name, "schema": schema}
+    else:
+        sql = (
+            "SELECT kcu.column_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_name = kcu.constraint_name "
+            "  AND tc.table_schema = kcu.table_schema "
+            "WHERE tc.table_name = :table_name "
+            "  AND tc.constraint_type = 'PRIMARY KEY'"
+        )
+        params = {"table_name": table_name}
+    with sa_engine.connect() as conn:
+        rows = conn.execute(sa.text(sql), params).fetchall()
+    return {"constrained_columns": [row[0] for row in rows]}
+
+
+def _safe_get_columns(
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> List[Dict]:
+    """Get columns, falling back to INFORMATION_SCHEMA on failure."""
+    try:
+        return inspector.get_columns(table_name, schema=schema)
+    except Exception:
+        return _get_columns_fallback(sa_engine, table_name, schema)
+
+
+def _safe_get_pk_constraint(
+    inspector: sa.engine.Inspector,
+    sa_engine: sa.Engine,
+    table_name: str,
+    schema: Optional[str],
+) -> Dict:
+    """Get PK constraint, falling back to INFORMATION_SCHEMA on failure."""
+    try:
+        result = inspector.get_pk_constraint(table_name, schema=schema)
+        if result.get("constrained_columns"):
+            return result
+        # DuckDB's inspector returns empty PK — try INFORMATION_SCHEMA
+        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
+    except Exception:
+        return _get_pk_constraint_fallback(sa_engine, table_name, schema)
 
 
 def _introspect_query_columns_via_inspector(
@@ -273,6 +354,7 @@ def _introspect_query_columns_via_inspector(
     rollup_sql: Optional[str],
     referenced_tables: Set[str],
     fk_columns_by_table: Dict[str, Set[str]],
+    joins: Optional[List[ModelJoin]] = None,
 ) -> List[tuple]:
     """Introspect columns from a rollup query or plain table.
 
@@ -283,28 +365,46 @@ def _introspect_query_columns_via_inspector(
     results = []
 
     # Source table columns
-    columns = inspector.get_columns(table_name, schema=schema)
-    pk_constraint = inspector.get_pk_constraint(table_name, schema=schema)
+    columns = _safe_get_columns(inspector, sa_engine, table_name, schema)
+    pk_constraint = _safe_get_pk_constraint(inspector, sa_engine, table_name, schema)
     pk_columns = set(pk_constraint.get("constrained_columns", []))
 
     for col in columns:
         col_name = col["name"]
-        data_type = _sa_type_to_data_type(col["type"])
+        col_type = col["type"]
+        data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
         is_pk = col_name in pk_columns
         results.append((col_name, data_type, is_pk))
 
-    # Referenced table columns (rollup)
-    for ref_table in referenced_tables:
-        ref_cols = inspector.get_columns(ref_table, schema=schema)
-        ref_pk = inspector.get_pk_constraint(ref_table, schema=schema)
+    # Build list of (ref_table, dotted_path) from joins — supports diamond joins
+    # where the same table appears via multiple paths
+    table_path_pairs: List[tuple] = []
+    if joins:
+        for mj in joins:
+            if mj.join_pairs and "." in mj.join_pairs[0][0]:
+                prefix = mj.join_pairs[0][0].split(".")[0]
+                path = f"{prefix}.{mj.target_model}"
+            else:
+                path = mj.target_model
+            table_path_pairs.append((mj.target_model, path))
+    else:
+        # Fallback: one entry per referenced table
+        for ref_table in referenced_tables:
+            table_path_pairs.append((ref_table, ref_table))
+
+    # Referenced table columns — emit once per join path
+    for ref_table, path in table_path_pairs:
+        ref_cols = _safe_get_columns(inspector, sa_engine, ref_table, schema)
+        ref_pk = _safe_get_pk_constraint(inspector, sa_engine, ref_table, schema)
         ref_pk_cols = set(ref_pk.get("constrained_columns", []))
         ref_fk_cols = fk_columns_by_table.get(ref_table, set())
 
         for col in ref_cols:
             if col["name"] in ref_fk_cols:
                 continue
-            alias = f"{ref_table}__{col['name']}"
-            data_type = _sa_type_to_data_type(col["type"])
+            alias = f"{path}.{col['name']}"
+            col_type = col["type"]
+            data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
             is_pk = col["name"] in ref_pk_cols
             results.append((alias, data_type, is_pk))
 
@@ -320,45 +420,90 @@ def _columns_to_model(
     columns: List[tuple],
     data_source: str,
     sql_table: Optional[str] = None,
-    sql: Optional[str] = None,
     source_table_pk_columns: Optional[Set[str]] = None,
+    joins: Optional[List[ModelJoin]] = None,
 ) -> SlayerModel:
     """Generate a SlayerModel from introspected (column_name, DataType, is_pk) tuples."""
     dimensions = []
     measures = []
     numeric_columns = []
 
+    non_numeric_columns = []
+
     for col_name, data_type, is_pk in columns:
-        # For rollup columns (table__col), primary_key is only for the source table
+        # For joined columns (path.col), sql uses path-based alias:
+        # "customers.name" → sql="customers.name" (table alias = path with __ )
+        # "customers.regions.name" → sql="customers__regions.name"
+        is_joined = "." in col_name
+        if is_joined:
+            parts = col_name.split(".")
+            raw_col = parts[-1]
+            path = parts[:-1]  # e.g., ["customers", "regions"]
+            table_alias = "__".join(path)  # e.g., "customers__regions"
+            sql_expr = f"{table_alias}.{raw_col}"
+        else:
+            raw_col = col_name
+            sql_expr = col_name
+            path = None
+
         dimensions.append(Dimension(
             name=col_name,
-            sql=col_name,
+            sql=sql_expr,
             type=data_type,
-            primary_key=is_pk and "__" not in col_name,  # Rollup PKs aren't model PKs
-            description=f"From {col_name.split('__')[0]}" if "__" in col_name else None,
+            primary_key=is_pk and not is_joined,
+            description=f"From {'.'.join(path)}" if path else None,
         ))
 
-        if data_type in _NUMERIC_TYPES and not is_pk and not _is_id_column(col_name):
+        if is_pk or _is_id_column(raw_col):
+            continue
+        if data_type in _NUMERIC_TYPES:
             numeric_columns.append(col_name)
+        else:
+            non_numeric_columns.append(col_name)
 
     # Add COUNT measure
     measures.append(Measure(name="count", type=DataType.COUNT))
 
-    # Add SUM and AVG for numeric non-ID columns
+    # Add SUM, AVG, MIN, MAX, COUNT_DISTINCT for numeric non-ID columns
     for col_name in numeric_columns:
-        measures.append(Measure(name=f"{col_name}_sum", sql=col_name, type=DataType.SUM))
-        measures.append(Measure(name=f"{col_name}_avg", sql=col_name, type=DataType.AVERAGE))
+        is_joined = "." in col_name
+        if is_joined:
+            parts = col_name.split(".")
+            table_alias = "__".join(parts[:-1])
+            sql_expr = f"{table_alias}.{parts[-1]}"
+        else:
+            sql_expr = col_name
+        measures.append(Measure(name=f"{col_name}_sum", sql=sql_expr, type=DataType.SUM))
+        measures.append(Measure(name=f"{col_name}_avg", sql=sql_expr, type=DataType.AVERAGE))
+        measures.append(Measure(name=f"{col_name}_min", sql=sql_expr, type=DataType.MIN))
+        measures.append(Measure(name=f"{col_name}_max", sql=sql_expr, type=DataType.MAX))
+        measures.append(Measure(name=f"{col_name}_distinct", sql=sql_expr, type=DataType.COUNT_DISTINCT))
 
-    # Add count_distinct for rollup table PKs
+    # Add COUNT_DISTINCT and COUNT (non-null) for non-numeric non-ID columns
+    for col_name in non_numeric_columns:
+        is_joined = "." in col_name
+        if is_joined:
+            parts = col_name.split(".")
+            table_alias = "__".join(parts[:-1])
+            sql_expr = f"{table_alias}.{parts[-1]}"
+        else:
+            sql_expr = col_name
+        measures.append(Measure(name=f"{col_name}_distinct", sql=sql_expr, type=DataType.COUNT_DISTINCT))
+        measures.append(Measure(name=f"{col_name}_count", sql=sql_expr, type=DataType.COUNT))
+
+    # Add count_distinct for joined table PKs
     seen_tables = set()
     for col_name, data_type, is_pk in columns:
-        if "__" in col_name and is_pk:
-            ref_table = col_name.split("__")[0]
+        if "." in col_name and is_pk:
+            ref_table = col_name.rsplit(".", 1)[0]
             if ref_table not in seen_tables:
                 seen_tables.add(ref_table)
+                parts = col_name.split(".")
+                table_alias = "__".join(parts[:-1])
+                raw_col = parts[-1]
                 measures.append(Measure(
-                    name=f"{ref_table}__count",
-                    sql=col_name,
+                    name=f"{ref_table}.count",
+                    sql=raw_col,
                     type=DataType.COUNT_DISTINCT,
                     description=f"Distinct count of {ref_table}",
                 ))
@@ -366,10 +511,10 @@ def _columns_to_model(
     return SlayerModel(
         name=name,
         sql_table=sql_table,
-        sql=sql,
         data_source=data_source,
         dimensions=dimensions,
         measures=measures,
+        joins=joins or [],
     )
 
 
@@ -417,20 +562,22 @@ def ingest_datasource(
         sql_table = f"{schema}.{table_name}" if schema else table_name
 
         if referenced:
-            # Build rollup SQL, introspect columns from the joined query
-            rollup_sql = _generate_rollup_sql(
+            # Build explicit joins and introspect columns
+            model_joins = _generate_joins(
                 inspector=inspector, source_table=table_name,
                 referenced_tables=referenced, schema=schema, table_set=table_set,
             )
             columns = _introspect_query_columns_via_inspector(
                 sa_engine=sa_engine, inspector=inspector,
                 table_name=table_name, schema=schema,
-                rollup_sql=rollup_sql, referenced_tables=referenced,
+                rollup_sql=None, referenced_tables=referenced,
                 fk_columns_by_table=fk_columns_by_table,
+                joins=model_joins,
             )
             model = _columns_to_model(
                 name=table_name, columns=columns,
-                data_source=datasource.name, sql=rollup_sql,
+                data_source=datasource.name, sql_table=sql_table,
+                joins=model_joins,
             )
         else:
             # Simple table — introspect directly

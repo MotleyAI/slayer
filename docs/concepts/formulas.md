@@ -31,7 +31,9 @@ The `name` is optional — if omitted, it's auto-generated from the formula. The
 
 Parentheses work as expected: `"(revenue - cost) / count"`.
 
-All measure names referenced in the formula must exist in the model.
+All measure names referenced in the formula must exist in the model. For measures from joined models, use dotted syntax: `"customers.avg_score"` or multi-hop: `"customers.regions.population_sum"`. Joins are auto-resolved by walking the join graph. See [Cross-Model Measures](queries.md#cross-model-measures).
+
+Transforms work on cross-model measures: `"cumsum(customers.avg_score)"`, `"last(customers.avg_score)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
 ### Transform Functions
 
@@ -86,7 +88,7 @@ The ranking granularity depends on the query's dimensions and time dimensions. E
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "dimensions": [{"name": "customer_name"}],
   "fields": [
     {"formula": "revenue_sum"},
@@ -115,7 +117,7 @@ Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at ra
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [
     {"formula": "revenue_sum"},
     {"formula": "last(revenue_sum)", "name": "latest_revenue"}

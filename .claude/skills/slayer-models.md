@@ -42,7 +42,27 @@ measures:
 
 **Measure aggregation types**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `last` (most recent time bucket's value — for snapshot metrics like balances)
 
-## SQL Placeholders
+## Joins
+
+Models can declare LEFT JOIN relationships to other models:
+
+```yaml
+joins:
+  - target_model: customers
+    join_pairs: [["customer_id", "id"]]
+```
+
+Enables cross-model measures (`customers.avg_score`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.avg_score)`). Auto-generated from FKs during ingestion. Joins are auto-resolved transitively by walking the join graph. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias (e.g., `customers__regions` vs `warehouses__regions`).
+
+## Model Filters
+
+Models can have always-applied WHERE filters: `filters: ["deleted_at is None"]`. Only WHERE conditions on underlying table columns.
+
+## Creating Models from Queries
+
+`create_model_from_query(query, name)` saves a query's SQL as a permanent model with auto-introspected dimensions and measures.
+
+## SQL Expressions
 
 - Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
 - For complex expressions, use the model name as table prefix (e.g., `"orders.amount * orders.quantity"`)
@@ -71,11 +91,11 @@ models = ingest_datasource(datasource=ds, schema="public")
 
 Generates:
 - Dimensions for all columns
-- `count` measure, `{col}_sum` and `{col}_avg` for numeric non-ID columns
-- **Rollup joins**: detects FK relationships, computes transitive closure, creates denormalized models with LEFT JOINs baked into the SQL
-- Rolled-up dimensions use `{table}__{column}` naming (e.g., `customers__name`)
-- FK columns are excluded from rollup; ID-like columns (`*_id`, `*_key`) skip sum/avg measures
-- Count-distinct measures added for each referenced table's PK (e.g., `customers__count`)
+- `count` measure; numeric non-ID cols get `_sum`, `_avg`, `_min`, `_max`, `_distinct`; non-numeric non-ID cols get `_distinct`, `_count`
+- **Dynamic joins**: detects FK relationships, creates models with explicit join metadata (LEFT JOINs built at query time)
+- Joined dimensions use full-path dotted naming (`customers.name`, `customers.regions.name`)
+- FK columns are excluded; ID-like columns (`*_id`, `*_key`) skip sum/avg measures
+- Count-distinct measures for each referenced table's PK (`customers.count`)
 
 ## MCP Incremental Editing
 

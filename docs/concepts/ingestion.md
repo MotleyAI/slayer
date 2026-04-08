@@ -18,36 +18,29 @@ The graph is validated to be acyclic (a `RollupGraphError` is raised if cycles a
 
 ### Step 2: Build Rollup SQL
 
-For tables with FK references, SLayer generates a denormalized SQL query with LEFT JOINs:
+For tables with FK references, SLayer creates explicit join metadata and dotted dimensions. For example, `orders → customers → regions` produces:
 
-```sql
-SELECT
-    public.orders.id AS id,
-    public.orders.amount AS amount,
-    public.orders.customer_id AS customer_id,
-    public.customers.id AS customers__id,
-    public.customers.name AS customers__name,
-    public.regions.id AS regions__id,
-    public.regions.name AS regions__name
-FROM public.orders
-LEFT JOIN public.customers ON public.orders.customer_id = public.customers.id
-LEFT JOIN public.regions ON public.customers.region_id = public.regions.id
-```
+- **Joins**: `orders → customers` (on `customer_id = id`), `customers → regions` (on `customers.region_id = id`)
+- **Dotted dimensions**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id`
+- **Path-based SQL**: Dimension SQL uses `__`-delimited table aliases (e.g., `customers__regions.name`) to disambiguate joined tables
 
-Tables with no FK references use their plain table name instead.
+At query time, LEFT JOINs are constructed dynamically from this metadata — no SQL is baked into the model. Each joined table gets a path-based alias (e.g., `LEFT JOIN regions AS customers__regions`).
+
+Tables with no FK references use their plain table name with no joins.
 
 ### Step 3: Introspect & Generate Model
 
-SLayer introspects the column types from the rollup query (or plain table) and generates a model:
+SLayer introspects the column types and generates a model:
 
-- **Dimensions** for every column (type inferred from SQL type)
+- **Dimensions** for every column (full-path dotted names for joined columns, e.g., `customers.name`, `customers.regions.name`)
 - **`count` measure** (always)
-- **`{col}_sum` and `{col}_avg` measures** for numeric columns that aren't IDs
-- **Count-distinct measures**: `customers__count`, `regions__count` for each referenced table's PK
+- **Numeric non-ID columns**: `{col}_sum`, `{col}_avg`, `{col}_min`, `{col}_max`, `{col}_distinct`
+- **Non-numeric non-ID columns**: `{col}_distinct` (COUNT DISTINCT), `{col}_count` (COUNT non-null)
+- **Count-distinct measures**: `customers.count`, `customers.regions.count` for each referenced table's PK
 
-ID-like columns (`id`, `*_id`, `*_key`, `*_pk`, `*_fk`) are excluded from sum/avg generation since aggregating IDs is rarely meaningful. FK columns from referenced tables are excluded from rollup dimensions to avoid redundancy.
+ID-like columns (`id`, `*_id`, `*_key`, `*_pk`, `*_fk`) are excluded from sum/avg generation. FK columns from referenced tables are excluded from dimensions to avoid redundancy.
 
-The same `_columns_to_model()` function handles both rollup and non-rollup tables — the only difference is whether the model uses `sql` (rollup query) or `sql_table` (plain table).
+All models use `sql_table` (the source table) plus `joins` (structured metadata). JOINs are built dynamically at query time.
 
 ## Usage
 
@@ -91,19 +84,39 @@ After ingestion, you can query rolled-up dimensions directly:
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}, {"formula": "amount_sum"}],
-  "dimensions": [{"name": "customers__name"}]
+  "dimensions": [{"name": "customers.name"}]
 }
 ```
 
-Or transitively rolled-up dimensions:
+Or transitively joined dimensions (using full path):
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}],
-  "dimensions": [{"name": "regions__name"}]
+  "dimensions": [{"name": "customers.regions.name"}]
+}
+```
+
+## Diamond Joins
+
+When the same table is reachable via multiple FK paths (e.g., `orders → customers → regions` AND `orders → warehouses → regions`), ingestion creates separate joins for each path. Each path gets a unique alias:
+
+- `customers.regions.name` → SQL alias `customers__regions`
+- `warehouses.regions.name` → SQL alias `warehouses__regions`
+
+This avoids table alias collisions and allows querying both paths simultaneously:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": [
+    {"name": "customers.regions.name"},
+    {"name": "warehouses.regions.name"}
+  ],
+  "fields": [{"formula": "count"}]
 }
 ```
 

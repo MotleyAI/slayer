@@ -4,7 +4,7 @@ import os
 import re
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.enums import DataType
 
@@ -26,13 +26,34 @@ class Measure(BaseModel):
     hidden: bool = False
 
 
+class ModelJoin(BaseModel):
+    """A LEFT JOIN relationship to another model."""
+    target_model: str                               # Name of the joined model
+    join_pairs: List[List[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
+
+    @field_validator("join_pairs")
+    @classmethod
+    def _validate_join_pairs(cls, v: List[List[str]]) -> List[List[str]]:
+        if not v:
+            raise ValueError("join_pairs must be non-empty")
+        for i, pair in enumerate(v):
+            if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
+                raise ValueError(
+                    f"join_pairs[{i}] must be [source_dim, target_dim] with non-empty strings, got {pair}"
+                )
+        return v
+
+
 class SlayerModel(BaseModel):
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
-    data_source: str
+    source_queries: Optional[List] = None  # List of SlayerQuery dicts — saved query structure
+    data_source: str = ""
     dimensions: List[Dimension] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
+    joins: List[ModelJoin] = Field(default_factory=list)
+    filters: List[str] = Field(default_factory=list)  # Model-level filters (always applied)
     default_time_dimension: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
@@ -72,8 +93,8 @@ class DatasourceConfig(BaseModel):
     def get_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
-        if self.type in ("sqlite",):
-            return f"sqlite:///{self.database}"
+        if self.type in ("sqlite", "duckdb"):
+            return f"{self.type}:///{self.database}"
         driver_map = {
             "postgres": "postgresql",
             "postgresql": "postgresql",

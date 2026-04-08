@@ -17,6 +17,7 @@ pip install motley-slayer[mcp]          # MCP server
 pip install motley-slayer[postgres]     # PostgreSQL (psycopg2)
 pip install motley-slayer[mysql]        # MySQL / MariaDB (pymysql)
 pip install motley-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
+pip install motley-slayer[duckdb]      # DuckDB (duckdb-engine)
 ```
 
 Extras can be combined: `pip install motley-slayer[mcp,postgres]`
@@ -108,7 +109,7 @@ from slayer.core.query import SlayerQuery, ColumnRef
 engine = SlayerQueryEngine(storage=storage)
 
 query = SlayerQuery(
-    model="orders",
+    source_model="orders",
     fields=[{"formula": "count"}],
     dimensions=[ColumnRef(name="status")],
     limit=10,

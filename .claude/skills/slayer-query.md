@@ -10,7 +10,7 @@ description: How to construct and execute SLayer queries. Use when building quer
 from slayer.core.query import SlayerQuery, ColumnRef, TimeDimension, OrderItem
 
 query = SlayerQuery(
-    model="orders",                                    # Target model name
+    source_model="orders",                               # Source model name
     fields=[{"formula": "count"}, {"formula": "revenue"}],
     dimensions=[ColumnRef(name="status")],
     time_dimensions=[
@@ -79,7 +79,7 @@ The `fields` parameter specifies what data columns to return. Each field has a `
 
 ```python
 query = SlayerQuery(
-    model="orders",
+    source_model="orders",
     time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
     fields=[
         {"formula": "count"},
@@ -100,6 +100,46 @@ Available formula functions: `cumsum`, `time_shift`, `change`, `change_pct`, `ra
 
 Time dimension resolution: single `time_dimensions` entry is used automatically. With 2+, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims). With none, falls back to model default.
 
+## Cross-Model Measures
+
+Reference measures from joined models with dotted syntax (auto-resolved via join graph):
+
+```python
+fields=[
+    {"formula": "count"},
+    {"formula": "customers.avg_score"},                  # single hop
+    {"formula": "cumsum(customers.avg_score)"},          # transforms work too
+    {"formula": "customers.regions.population_sum"},     # multi-hop
+]
+```
+
+## ModelExtension
+
+Extend a model inline with extra dimensions, measures, or joins:
+
+```python
+query = SlayerQuery(
+    source_model=ModelExtension(
+        source_name="orders",
+        dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+    ),
+    dimensions=[ColumnRef(name="tier")],
+    fields=[...],
+)
+```
+
+## Query Lists
+
+Pass a list of queries — earlier queries are named sub-queries, last is the main:
+
+```python
+inner = SlayerQuery(name="monthly", source_model="orders", fields=[...], time_dimensions=[...])
+outer = SlayerQuery(source_model="monthly", fields=[{"formula": "count"}])
+engine.execute(query=[inner, outer])
+```
+
+Or save a query as a permanent model with `create_model_from_query`.
+
 ## Result Format
 
-Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.status"`.
+Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.status"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Response includes `meta` dict mapping column aliases to `FieldMetadata` objects (currently has `label` field).

@@ -87,6 +87,10 @@ def _parse_node(node: ast.AST, original: str) -> FieldSpec:
     if isinstance(node, ast.Name):
         return MeasureRef(name=node.id)
 
+    # Dotted name → cross-model measure reference (e.g., customers.avg_score)
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return MeasureRef(name=f"{node.value.id}.{node.attr}")
+
     # Function call → transform
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):
@@ -306,6 +310,18 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
         inner = _filter_node_to_sql(node.operand, original, columns)
         return f"NOT ({inner})"
 
+    # Dotted name → joined column reference (e.g., customers.name, customers.regions.name)
+    if isinstance(node, ast.Attribute):
+        def _resolve_dotted(n: ast.expr) -> str:
+            if isinstance(n, ast.Name):
+                return n.id
+            if isinstance(n, ast.Attribute):
+                return f"{_resolve_dotted(n.value)}.{n.attr}"
+            raise ValueError(f"Unsupported node in dotted reference: {ast.dump(n)}")
+        dotted = f"{_resolve_dotted(node.value)}.{node.attr}"
+        columns.append(dotted)
+        return dotted
+
     # Name → column reference
     if isinstance(node, ast.Name):
         if node.id != "None":
@@ -397,9 +413,16 @@ def _get_string_arg(node: ast.AST, original: str) -> str:
 
 
 def _collect_names(node: ast.AST) -> List[str]:
-    """Collect all Name references from an AST subtree (measure names in arithmetic)."""
+    """Collect all Name and dotted Attribute references from an AST subtree."""
     names = []
+    # Collect dotted names (model.measure) first to avoid also collecting the bare Name part
+    dotted = set()
     for child in ast.walk(node):
-        if isinstance(child, ast.Name):
+        if isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name):
+            dotted_name = f"{child.value.id}.{child.attr}"
+            names.append(dotted_name)
+            dotted.add(id(child.value))  # Mark the Name node as consumed
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and id(child) not in dotted:
             names.append(child.id)
     return names

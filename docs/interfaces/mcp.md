@@ -73,6 +73,7 @@ claude mcp list
 | `datasource_summary` | List all datasources and their models with schemas (dimensions, measures). Returns JSON. |
 | `inspect_model` | Detailed model info with sample data. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false). |
 | `create_model` | Create a new model from table/SQL definition. |
+| `create_model_from_query` | Create a model from a query — saves the query's SQL as a reusable model with auto-introspected dimensions and measures. Params: `name`, `query` (SLayer query dict), `description` (optional). |
 | `edit_model` | Edit an existing model in one call. Params: `model_name` (required), `description`, `data_source`, `default_time_dimension` (optional metadata), `add_measures` (list), `add_dimensions` (list), `remove` (list of names). |
 | `delete_model` | Delete a model entirely. |
 
@@ -86,7 +87,7 @@ claude mcp list
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `model` | string | Model name (required) |
+| `source_model` | string | Model name (required) |
 | `fields` | list[dict] | Data columns: measures, arithmetic, transforms. E.g. `[{"formula": "count"}, {"formula": "revenue / count", "name": "aov", "label": "Average Order Value"}, {"formula": "cumsum(revenue)"}]`. Each field has an optional `label` for human-readable display. Supports nesting: `{"formula": "change(cumsum(revenue))"}` |
 | `dimensions` | list[str] | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `ColumnRef(name="status", label="Order Status")`. |
 | `filters` | list[str] | Filter formula strings, e.g. `["status == 'active'", "amount > 100"]`. Supports operators (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `is None`, `is not None`, `like`, `not like`), boolean logic (`and`, `or`, `not`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
@@ -129,7 +130,7 @@ To explore first without auto-ingesting:
 ```
 1. datasource_summary()                            # discover models
 2. inspect_model(model_name="orders")          # see schema + sample data
-3. query(model="orders", fields=[{"formula": "count"}], dimensions=["status"], limit=10)
+3. query(source_model="orders", fields=[{"formula": "count"}], dimensions=["status"], limit=10)
 ```
 
 ### Customize a model

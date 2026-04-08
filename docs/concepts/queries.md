@@ -6,9 +6,10 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `model` | string | Yes | Target model name |
-| `fields` | list[Field] | No | Data columns — measures, arithmetic, transforms. Each field has a `formula` (required), optional `name`, and optional `label` (human-readable display name). See [Field Formulas](formulas.md#field-formulas). |
-| `dimensions` | list[ColumnRef] | No | Dimensions to group by |
+| `name` | string | No | Name for this query — used to reference it from other queries in a list |
+| `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds dimensions/measures/joins) |
+| `fields` | list[Field] | No | Data columns — measures, arithmetic, transforms. See [Field Formulas](formulas.md#field-formulas). |
+| `dimensions` | list[ColumnRef] | No | Dimensions to group by. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
 | `filters` | list[str] | No | Conditions as formula strings. See [Filters](#filters). |
@@ -17,16 +18,27 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `offset` | int | No | Number of rows to skip |
 | `whole_periods_only` | bool | No | Snap date filters to time bucket boundaries, exclude the current incomplete time bucket |
 
+You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
+
 ## ColumnRef
 
-A reference to a dimension. Supports an optional `label` for human-readable output.
+A reference to a model dimension. Supports dotted names for joined models.
 
 ```json
 {"name": "status"}
 {"name": "status", "label": "Order Status"}
+{"name": "customers.name"}
+{"name": "customers.regions.name"}
 ```
 
-Via MCP, dimensions are passed as simple strings: `dimensions=["status"]`
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Dimension name. Supports dotted paths for joined models (auto-resolved via join graph). |
+| `label` | string | Optional human-readable display name |
+
+For computed dimensions (SQL expressions like CASE), use [ModelExtension](#modelextension) on the query's `model` field. For derived metrics, use [Field formulas](formulas.md#field-formulas) in `fields`.
+
+Via MCP, simple dimensions are passed as strings: `dimensions=["status"]`
 
 ## TimeDimension
 
@@ -58,10 +70,10 @@ Query results are returned as a `SlayerResponse`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `data` | list[dict] | Rows as dictionaries |
-| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders.count"`) |
+| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders.count"`, `"orders.customers.regions.name"` for multi-hop) |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
-| `labels` | dict | Column alias → human-readable label (from `label` on fields/dimensions) |
+| `meta` | dict[str, FieldMetadata] | Column alias → field metadata (currently contains `label`; more fields coming soon) |
 
 ```json
 {
@@ -152,7 +164,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}],
   "dimensions": [{"name": "status"}]
 }
@@ -162,7 +174,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "revenue_sum"}],
   "time_dimensions": [{
     "dimension": {"name": "created_at"},
@@ -176,7 +188,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "revenue_sum"}],
   "dimensions": [{"name": "customer_name"}],
   "order": [{"column": {"name": "revenue_sum"}, "direction": "desc"}],
@@ -188,7 +200,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [{"formula": "count"}],
   "filters": ["status == 'completed' or status == 'pending'"]
 }
@@ -198,7 +210,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "fields": [
     {"formula": "count"},
     {"formula": "revenue_sum"},
@@ -209,4 +221,96 @@ Post-filters can be combined with regular filters — base filters (on dimension
   "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
 }
 ```
+
+### Cross-model measures
+
+When models have [joins](models.md#joins), you can reference measures from joined models using dotted syntax `model_name.measure_name`:
+
+```json
+{
+  "source_model": "orders",
+  "fields": [
+    {"formula": "count"},
+    {"formula": "customers.avg_score"}
+  ],
+  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+}
+```
+
+This generates a sub-query for the joined measure, scoped to shared dimensions, and LEFT JOINs it to the main query — avoiding aggregation errors from row multiplication.
+
+### Query lists
+
+Pass a list of queries to `execute()`. Earlier queries are named sub-queries, the last is the main query. Named queries can be referenced by `source_model` name or joined via `joins`:
+
+```json
+[
+  {
+    "name": "monthly",
+    "source_model": "orders",
+    "fields": [{"formula": "count"}, {"formula": "total_amount"}],
+    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  },
+  {
+    "source_model": "monthly",
+    "fields": [{"formula": "count"}]
+  }
+]
+```
+
+This counts how many months exist in the monthly summary. The main query references `"monthly"` by name — if a named query and a stored model share a name, the query takes precedence.
+
+You can also join named queries to models:
+
+```json
+[
+  {
+    "name": "customer_scores",
+    "source_model": "customers",
+    "dimensions": [{"name": "id"}],
+    "fields": [{"formula": "avg_score"}]
+  },
+  {
+    "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
+    "fields": [{"formula": "count"}, {"formula": "customer_scores.avg_score_avg"}],
+    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  }
+]
+```
+
+The main query uses a `ModelExtension` to add a join to the named sub-query. Queries can also be saved as permanent models — see [Creating Models from Queries](models.md#creating-models-from-queries).
+
+### ModelExtension
+
+Extend a model inline with extra dimensions, measures, or joins — without modifying the stored model:
+
+```json
+{
+  "source_model": {
+    "source_name": "orders",
+    "dimensions": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+    "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
+  },
+  "dimensions": [{"name": "tier"}],
+  "fields": [{"formula": "count"}]
+}
+```
+
+`ModelExtension` fields: `source_name` (required — model to extend), `dimensions`, `measures`, `joins` (all optional — merged with the source model's).
+
+### Multi-hop dimensions
+
+Dimensions from transitively joined models can be referenced with dotted paths. SLayer auto-resolves the join chain:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": [{"name": "customers.regions.name"}],
+  "fields": [{"formula": "count"}]
+}
+```
+
+This walks `orders → customers → regions` via the join graph and resolves `name` from the `regions` model. Works with both ingested rollup models and explicit joins.
+
+SQL dimensions can be mixed with regular dimensions. The expression goes directly into SELECT and GROUP BY.
 
