@@ -866,8 +866,6 @@ class SlayerQueryEngine:
         """
         import re as _re
 
-        measure_names = {m.name for m in model.measures}
-
         for f in parsed_filters:
             resolved_sql = f.sql
             resolved_columns = []
