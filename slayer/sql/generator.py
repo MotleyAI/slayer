@@ -787,7 +787,7 @@ class SQLGenerator:
 
         # Add pre-computed time dimension expressions (DATE_TRUNC)
         for td in enriched.time_dimensions:
-            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=model)
+            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
             if time_offset is not None:
                 offset_val, offset_gran = time_offset
                 col_expr = self._build_time_offset_expr(
@@ -800,10 +800,10 @@ class SQLGenerator:
         # Must use full expressions (not aliases) since aliases aren't visible in OVER()
         partition_parts = []
         for dim in enriched.dimensions:
-            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=model)
+            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
             partition_parts.append(col_expr.sql(dialect=self.dialect))
         for td in enriched.time_dimensions:
-            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=model)
+            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
             if time_offset is not None:
                 offset_val, offset_gran = time_offset
                 col_expr = self._build_time_offset_expr(

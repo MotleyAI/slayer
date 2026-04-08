@@ -665,10 +665,11 @@ class SlayerQueryEngine:
         # from ModelExtension that reference joined tables in their SQL).
         # Use regex since SQL expressions can be arbitrary (CASE, etc.).
         _TABLE_COL_RE = re.compile(r'\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b')
-        for d in dimensions:
-            if d.sql and "." in d.sql:
-                for match in _TABLE_COL_RE.finditer(d.sql):
-                    needed_tables.add(match.group(1))
+        sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions]
+        for sql_expr in sql_refs:
+            if sql_expr and "." in sql_expr:
+                for match in _TABLE_COL_RE.finditer(sql_expr):
+                    needed_tables.update(match.group(1).split("__"))
         # Scan processed filters for dotted column references (joined table columns)
         for f_str in processed_filters:
             parsed_f = parse_filter(f_str)

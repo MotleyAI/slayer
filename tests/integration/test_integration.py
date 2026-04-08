@@ -829,6 +829,144 @@ def test_having_with_non_groupby_dimension_raises(integration_env):
 
 
 # ---------------------------------------------------------------------------
+# type=last with joined time dimensions
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def joined_time_env(tmp_path):
+    """Schema: order_items → orders (with created_at) → stores (with opened_at).
+
+    Tests that type=last resolves through join paths correctly.
+    """
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE stores (id INTEGER PRIMARY KEY, name TEXT, opened_at TEXT)")
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, store_id INTEGER, amount REAL, created_at TEXT)")
+    conn.execute("CREATE TABLE order_items (id INTEGER PRIMARY KEY, order_id INTEGER, qty INTEGER)")
+    conn.executemany("INSERT INTO stores VALUES (?, ?, ?)", [
+        (1, "Downtown", "2020-01-01"), (2, "Uptown", "2021-06-15"),
+    ])
+    conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", [
+        (1, 1, 100.0, "2025-01-15"), (2, 1, 200.0, "2025-01-20"),
+        (3, 2, 50.0, "2025-02-10"), (4, 2, 75.0, "2025-02-15"),
+        (5, 1, 300.0, "2025-03-05"), (6, 2, 25.0, "2025-03-20"),
+    ])
+    conn.executemany("INSERT INTO order_items VALUES (?, ?, ?)", [
+        (1, 1, 2), (2, 2, 3), (3, 3, 1),
+        (4, 4, 5), (5, 5, 4), (6, 6, 1),
+    ])
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+
+    storage.save_model(SlayerModel(
+        name="stores", sql_table="stores", data_source="db",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="name", sql="name", type=DataType.STRING),
+            Dimension(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
+        ],
+        measures=[Measure(name="count", type=DataType.COUNT)],
+    ))
+    storage.save_model(SlayerModel(
+        name="orders", sql_table="orders", data_source="db",
+        default_time_dimension="created_at",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="store_id", sql="store_id", type=DataType.NUMBER),
+            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Dimension(name="amount", sql="amount", type=DataType.NUMBER),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="total_amount", sql="amount", type=DataType.SUM),
+            Measure(name="latest_amount", sql="amount", type=DataType.LAST),
+        ],
+        joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
+    ))
+    storage.save_model(SlayerModel(
+        name="order_items", sql_table="order_items", data_source="db",
+        dimensions=[
+            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="order_id", sql="order_id", type=DataType.NUMBER),
+            Dimension(name="qty", sql="qty", type=DataType.NUMBER),
+        ],
+        measures=[
+            Measure(name="count", type=DataType.COUNT),
+            Measure(name="qty_sum", sql="qty", type=DataType.SUM),
+            Measure(name="latest_qty", sql="qty", type=DataType.LAST),
+        ],
+        joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])],
+    ))
+
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+def test_last_with_joined_time_dimension(joined_time_env):
+    """type=last resolves correctly when the time dimension is from a joined model (single hop)."""
+    engine = joined_time_env
+
+    # Query orders with stores.opened_at as time dimension and latest_amount (type=last).
+    # The ORDER BY for ROW_NUMBER must reference stores.opened_at, not orders.opened_at.
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="stores.opened_at"),
+            granularity=TimeGranularity.YEAR,
+        )],
+        fields=[
+            Field(formula="total_amount"),
+            Field(formula="latest_amount"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="stores.opened_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 2  # 2020 and 2021
+    # Verify the SQL references stores.opened_at (not orders.opened_at)
+    assert "stores" in response.sql
+    # latest_amount should reflect the most recent order per store-year group
+    assert response.data[0]["orders.latest_amount"] is not None
+    assert response.data[1]["orders.latest_amount"] is not None
+
+
+@pytest.mark.integration
+def test_last_with_multihop_joined_time_dimension(joined_time_env):
+    """type=last resolves correctly through multi-hop joins (order_items → orders.created_at)."""
+    engine = joined_time_env
+
+    # Query order_items with orders.created_at as time dimension and latest_qty (type=last).
+    # The ORDER BY for ROW_NUMBER must reference orders.created_at.
+    query = SlayerQuery(
+        source_model="order_items",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="orders.created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="qty_sum"),
+            Field(formula="latest_qty"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="orders.created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3  # Jan, Feb, Mar
+    # Verify the SQL references orders.created_at
+    assert "orders.created_at" in response.sql or "orders" in response.sql
+    # latest_qty per month: Jan has items for orders on 15th and 20th,
+    # most recent is 20th (order 2, qty=3)
+    assert response.data[0]["order_items.latest_qty"] == 3  # Jan: order 2 (20th)
+    assert response.data[1]["order_items.latest_qty"] == 5  # Feb: order 4 (15th)
+    assert response.data[2]["order_items.latest_qty"] == 1  # Mar: order 6 (20th)
+
+
+# ---------------------------------------------------------------------------
 # Cross-model measures
 # ---------------------------------------------------------------------------
 
