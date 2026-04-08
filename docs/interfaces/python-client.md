@@ -83,6 +83,10 @@ result = engine.execute(query=query)
 # result.data      — list of row dicts
 # result.columns   — list of column names
 # result.meta      — dict mapping column names to FieldMetadata (label, and more coming soon)
+#
+# client.query() returns SlayerResponse with all fields above
+# client.sql(query) returns just the generated SQL string
+# client.explain(query) returns SlayerResponse with EXPLAIN ANALYZE output
 # result.row_count — number of rows
 # result.sql       — generated SQL string
 ```

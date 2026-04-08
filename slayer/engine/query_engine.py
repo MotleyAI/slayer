@@ -4,6 +4,7 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 """
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from slayer.core.enums import DataType
@@ -25,22 +26,58 @@ from slayer.storage.base import StorageBackend
 logger = logging.getLogger(__name__)
 
 
+_EXPLAIN_PREFIX = {
+    "postgres": "EXPLAIN ANALYZE",
+    "redshift": "EXPLAIN",
+    "mysql": "EXPLAIN FORMAT=JSON",
+    "sqlite": "EXPLAIN QUERY PLAN",
+    "duckdb": "EXPLAIN ANALYZE",
+    "clickhouse": "EXPLAIN",
+    "snowflake": "EXPLAIN USING JSON",
+    "bigquery": None,  # BigQuery doesn't support EXPLAIN via SQL
+    "trino": "EXPLAIN ANALYZE",
+    "presto": "EXPLAIN ANALYZE",
+    "databricks": "EXPLAIN EXTENDED",
+    "spark": "EXPLAIN EXTENDED",
+    "tsql": "SET SHOWPLAN_ALL ON;",  # SQL Server: batch prefix, needs suffix too
+    "oracle": "EXPLAIN PLAN FOR",
+}
+
+
+_EXPLAIN_POSTFIX = {
+    "tsql": "; SET SHOWPLAN_ALL OFF",
+}
+
+
+def _build_explain_sql(dialect: str, sql: str) -> str:
+    """Build a dialect-appropriate EXPLAIN statement."""
+    prefix = _EXPLAIN_PREFIX.get(dialect)
+    if prefix is None:
+        raise ValueError(
+            f"EXPLAIN is not supported for dialect '{dialect}'. "
+            f"Use dry_run=True to inspect the generated SQL instead."
+        )
+    suffix = _EXPLAIN_POSTFIX.get(dialect, "")
+    return f"{prefix} {sql}{suffix}"
+
+
+@dataclass
 class FieldMetadata:
     """Metadata for a single field in the query response."""
-
-    def __init__(self, label: Optional[str] = None):
-        self.label = label
+    label: Optional[str] = None
 
 
+@dataclass
 class SlayerResponse:
     """Response from a SLayer query."""
+    data: List[Dict[str, Any]]
+    columns: List[str] = field(default_factory=list)
+    sql: Optional[str] = None
+    meta: Dict[str, FieldMetadata] = field(default_factory=dict)
 
-    def __init__(self, data: List[Dict[str, Any]], columns: Optional[List[str]] = None,
-                 sql: Optional[str] = None, meta: Optional[Dict[str, "FieldMetadata"]] = None):
-        self.data = data
-        self.columns = columns or (list(data[0].keys()) if data else [])
-        self.sql = sql
-        self.meta = meta or {}  # column alias → FieldMetadata
+    def __post_init__(self):
+        if not self.columns and self.data:
+            self.columns = list(self.data[0].keys())
 
     @property
     def row_count(self) -> int:
@@ -94,10 +131,6 @@ class SlayerQueryEngine:
         sql = generator.generate(enriched=enriched)
         logger.debug("Generated SQL:\n%s", sql)
 
-        # Execute
-        client = SlayerSQLClient(datasource=datasource)
-        rows = client.execute(sql=sql)
-
         # Collect field metadata from enriched query
         meta: Dict[str, FieldMetadata] = {}
         for d in enriched.dimensions:
@@ -116,7 +149,33 @@ class SlayerQueryEngine:
             if t.label:
                 meta[t.alias] = FieldMetadata(label=t.label)
 
-        return SlayerResponse(data=rows, sql=sql, meta=meta)
+        # Derive expected column names from the enriched query, excluding internal aliases
+        # (_inner_* from nested transforms, _ft* from filter transform extraction)
+        expected_columns = (
+            [d.alias for d in enriched.dimensions]
+            + [td.alias for td in enriched.time_dimensions]
+            + [m.alias for m in enriched.measures if not m.name.startswith(("_inner_", "_ft"))]
+            + [e.alias for e in enriched.expressions]
+            + [t.alias for t in enriched.transforms if not t.name.startswith(("_inner_", "_ft"))]
+            + [cm.alias for cm in enriched.cross_model_measures]
+        )
+
+        # dry_run: return SQL without executing
+        if query.dry_run:
+            return SlayerResponse(data=[], columns=expected_columns, sql=sql, meta=meta)
+
+        # Execute
+        client = SlayerSQLClient(datasource=datasource)
+
+        # explain: run dialect-appropriate EXPLAIN on the query
+        if query.explain:
+            explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
+            rows = client.execute(sql=explain_sql)
+            return SlayerResponse(data=rows, sql=sql, meta=meta)
+
+        rows = client.execute(sql=sql)
+        columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
+        return SlayerResponse(data=rows, columns=columns, sql=sql, meta=meta)
 
     def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
@@ -523,9 +582,9 @@ class SlayerQueryEngine:
             raise ValueError(f"Unsupported field spec: {spec!r}")
 
         # Process each field
-        for field in (query.fields or []):
-            spec = parse_formula(field.formula)
-            field_name = field.name or field.formula.replace(" ", "_").replace("/", "_div_")
+        for qfield in (query.fields or []):
+            spec = parse_formula(qfield.formula)
+            field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_")
 
             if isinstance(spec, MeasureRef):
                 # Check for cross-model measure reference (e.g., "customers.avg_score")
@@ -535,7 +594,7 @@ class SlayerQueryEngine:
                         spec_name=spec.name, field_name=field_name,
                         model=model, query=query,
                         dimensions=dimensions, time_dimensions=time_dimensions,
-                        label=field.label, named_queries=named_queries,
+                        label=qfield.label, named_queries=named_queries,
                     )
                     cross_model_measures.append(cm)
                     continue
@@ -549,21 +608,21 @@ class SlayerQueryEngine:
                         f"Add a time dimension, set main_time_dimension, or set default_time_dimension on the model."
                     )
                 # Apply label to the measure if provided
-                if field.label:
+                if qfield.label:
                     for m in measures:
                         if m.name == spec.name:
-                            m.label = field.label
+                            m.label = qfield.label
             else:
                 _flatten_spec(spec, field_name)
                 # Apply label to the last enriched expression or transform
-                if field.label:
+                if qfield.label:
                     alias = f"{model_name_str}.{field_name}"
                     for e in enriched_expressions:
                         if e.alias == alias:
-                            e.label = field.label
+                            e.label = qfield.label
                     for t in enriched_transforms:
                         if t.alias == alias:
-                            t.label = field.label
+                            t.label = qfield.label
 
         measure_names_set = {m.name for m in measures}
 

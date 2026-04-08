@@ -69,6 +69,7 @@ duckdb-engine = ">=0.13"
 nbclient = ">=0.10"
 nbformat = ">=5.10"
 ipykernel = ">=6.0"
+pre-commit = "^4.5.1"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

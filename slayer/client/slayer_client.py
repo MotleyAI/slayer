@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from slayer.core.query import SlayerQuery
+from slayer.engine.query_engine import FieldMetadata, SlayerResponse
 
 logger = logging.getLogger(__name__)
 
@@ -42,20 +43,38 @@ class SlayerClient:
             resp.raise_for_status()
             return resp.json()
 
-    def query(self, query: SlayerQuery) -> List[Dict[str, Any]]:
+    def query(self, query: SlayerQuery) -> SlayerResponse:
+        """Execute a query and return a SlayerResponse."""
         if self._engine is not None:
-            result = self._engine.execute(query=query)
-            return result.data
+            return self._engine.execute(query=query)
         result = self._request("POST", "/query", json=query.model_dump(exclude_none=True))
-        return result["data"]
+        meta = {}
+        for k, v in (result.get("meta") or {}).items():
+            meta[k] = FieldMetadata(label=v.get("label"))
+        return SlayerResponse(
+            data=result["data"],
+            columns=result.get("columns") or [],
+            sql=result.get("sql"),
+            meta=meta,
+        )
+
+    def sql(self, query: SlayerQuery) -> str:
+        """Generate SQL for a query without executing it."""
+        dry_query = query.model_copy(update={"dry_run": True})
+        return self.query(query=dry_query).sql
+
+    def explain(self, query: SlayerQuery) -> SlayerResponse:
+        """Run EXPLAIN ANALYZE on a query and return the result."""
+        explain_query = query.model_copy(update={"explain": True})
+        return self.query(query=explain_query)
 
     def query_df(self, query: SlayerQuery):
         try:
             import pandas as pd
         except ImportError:
             raise ImportError("DataFrame support requires pandas: pip install motley-slayer[client]")
-        data = self.query(query=query)
-        return pd.DataFrame(data)
+        result = self.query(query=query)
+        return pd.DataFrame(result.data)
 
     def list_models(self) -> List[str]:
         return self._request("GET", "/models")

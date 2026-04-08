@@ -151,6 +151,9 @@ def create_mcp_server(storage: StorageBackend):
         offset: Optional[int] = None,
         whole_periods_only: bool = False,
         show_sql: bool = False,
+        dry_run: bool = False,
+        explain: bool = False,
+        format: str = "markdown",
     ) -> str:
         """Query data from a semantic model. Call inspect_model first to see available fields and dimensions.
 
@@ -176,6 +179,9 @@ def create_mcp_server(storage: StorageBackend):
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
             show_sql: When true, include the generated SQL in the response for debugging.
+            dry_run: When true, generate and return the SQL without executing it.
+            explain: When true, run EXPLAIN ANALYZE and return the query plan.
+            format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
 
         Example: query(source_model="orders", fields=[{"formula": "count"}], dimensions=["status"], filters=["status == 'completed'"])
         """
@@ -194,14 +200,29 @@ def create_mcp_server(storage: StorageBackend):
             data["offset"] = offset
         if whole_periods_only:
             data["whole_periods_only"] = True
+        if dry_run:
+            data["dry_run"] = True
+        if explain:
+            data["explain"] = True
         if fields:
             data["fields"] = fields
         try:
+            fmt = format.lower().strip()
+            if fmt not in ("json", "csv", "markdown"):
+                raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
             slayer_query = SlayerQuery.model_validate(data)
             result = engine.execute(query=slayer_query)
-            output = _format_table(data=result.data, columns=result.columns)
+            if dry_run:
+                return f"SQL:\n{result.sql}"
+            if explain:
+                output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
+                output += _format_output(data=result.data, columns=result.columns, fmt=fmt)
+                return output
+            output = _format_output(data=result.data, columns=result.columns, fmt=fmt)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
+            if result.meta:
+                output += "\n\n" + _format_meta(meta=result.meta)
             return output
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -724,6 +745,7 @@ def _build_dict(**kwargs: Any) -> Dict[str, Any]:
 
 
 def _format_table(data: List[Dict[str, Any]], columns: List[str], max_rows: int = 50) -> str:
+    """Format data as a pipe-separated table (used for sample data display)."""
     if not data:
         return "No results."
 
@@ -740,3 +762,60 @@ def _format_table(data: List[Dict[str, Any]], columns: List[str], max_rows: int 
     if truncated:
         result += f"\n... ({len(data)} total rows, showing first {max_rows})"
     return result
+
+
+def _format_json(data: List[Dict[str, Any]], columns: List[str]) -> str:
+    """Format data as JSON array."""
+    import json
+    return json.dumps(data, default=str)
+
+
+def _format_csv(data: List[Dict[str, Any]], columns: List[str]) -> str:
+    """Format data as CSV."""
+    if not data:
+        return ""
+    lines = [",".join(columns)]
+    for row in data:
+        values = []
+        for c in columns:
+            v = str(row.get(c, ""))
+            if "," in v or '"' in v or "\n" in v:
+                v = '"' + v.replace('"', '""') + '"'
+            values.append(v)
+        lines.append(",".join(values))
+    return "\n".join(lines)
+
+
+def _format_markdown(data: List[Dict[str, Any]], columns: List[str]) -> str:
+    """Format data as a Markdown table."""
+    if not data:
+        return "No results."
+    header = "| " + " | ".join(columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    body_lines = []
+    for row in data:
+        body_lines.append("| " + " | ".join(str(row.get(c, "")) for c in columns) + " |")
+    return "\n".join([header, separator] + body_lines)
+
+
+def _format_output(data: List[Dict[str, Any]], columns: List[str], fmt: str) -> str:
+    """Format query output in the requested format."""
+    if fmt == "csv":
+        return _format_csv(data=data, columns=columns)
+    if fmt == "markdown":
+        return _format_markdown(data=data, columns=columns)
+    return _format_json(data=data, columns=columns)
+
+
+def _format_meta(meta: Dict[str, Any]) -> str:
+    """Format field metadata as a compact section."""
+    lines = ["Column metadata:"]
+    for col, fm in meta.items():
+        parts = []
+        if fm.label:
+            parts.append(f"label={fm.label}")
+        if parts:
+            lines.append(f"  {col}: {', '.join(parts)}")
+    if len(lines) == 1:
+        return ""  # No metadata to show
+    return "\n".join(lines)

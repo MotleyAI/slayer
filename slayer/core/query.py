@@ -135,6 +135,8 @@ class SlayerQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     whole_periods_only: bool = False
+    dry_run: bool = False  # Generate SQL without executing
+    explain: bool = False  # Run EXPLAIN ANALYZE on the generated SQL
 
     def snap_to_whole_periods(self) -> "SlayerQuery":
         """Adjust date filters to align with period boundaries when whole_periods_only=True.
