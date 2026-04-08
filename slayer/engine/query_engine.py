@@ -112,9 +112,19 @@ class SlayerQueryEngine:
             if t.label:
                 meta[t.alias] = FieldMetadata(label=t.label)
 
+        # Derive expected column names from the enriched query
+        expected_columns = (
+            [d.alias for d in enriched.dimensions]
+            + [td.alias for td in enriched.time_dimensions]
+            + [m.alias for m in enriched.measures]
+            + [e.alias for e in enriched.expressions]
+            + [t.alias for t in enriched.transforms]
+            + [cm.alias for cm in enriched.cross_model_measures]
+        )
+
         # dry_run: return SQL without executing
         if query.dry_run:
-            return SlayerResponse(data=[], sql=sql, meta=meta)
+            return SlayerResponse(data=[], columns=expected_columns, sql=sql, meta=meta)
 
         # Execute
         client = SlayerSQLClient(datasource=datasource)

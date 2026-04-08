@@ -221,6 +221,8 @@ def create_mcp_server(storage: StorageBackend):
             output = _format_output(data=result.data, columns=result.columns, fmt=fmt)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
+            if result.meta:
+                output += "\n\n" + _format_meta(meta=result.meta)
             return output
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -803,3 +805,17 @@ def _format_output(data: List[Dict[str, Any]], columns: List[str], fmt: str) -> 
     if fmt == "markdown":
         return _format_markdown(data=data, columns=columns)
     return _format_json(data=data, columns=columns)
+
+
+def _format_meta(meta: Dict[str, Any]) -> str:
+    """Format field metadata as a compact section."""
+    lines = ["Column metadata:"]
+    for col, fm in meta.items():
+        parts = []
+        if fm.label:
+            parts.append(f"label={fm.label}")
+        if parts:
+            lines.append(f"  {col}: {', '.join(parts)}")
+    if len(lines) == 1:
+        return ""  # No metadata to show
+    return "\n".join(lines)
