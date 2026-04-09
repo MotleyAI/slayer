@@ -33,7 +33,7 @@ For multi-hop joins, the source column is **path-qualified** to indicate which a
 
 The path-qualified source column `orders.customer_id` means "the `customer_id` column in the already-joined `orders` table."
 
-Diamond joins — where the same table is reachable via multiple FK paths — are handled automatically. Each path produces a separate `ModelJoin` with a unique path-based alias, so `customers.regions.name` and `warehouses.regions.name` refer to independent copies of the `regions` table. See the [joins post](../05_joins/index.md) for details on diamond joins and how to recombine them.
+Diamond joins — where the same table is reachable via multiple FK paths — are handled automatically. Each path produces a separate `ModelJoin` with a unique path-based alias, so `customers.regions.name` and `warehouses.regions.name` refer to independent copies of the `regions` table. See the [joins post](../05_joins/joins.md) for details on diamond joins and how to recombine them.
 
 ## Dimension and measure generation
 

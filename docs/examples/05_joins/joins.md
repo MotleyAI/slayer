@@ -16,7 +16,7 @@ That may seem verbose, but avoids ambiguity when there are multiple ways of reac
 
 ## Referencing joined models in sql snippets
 
-As described in the discussion of [SQL vs expressions](../02_sql_vs_dsl/index.md), you will use SQL snippets when defining measures, dimensions, and filters at model level. 
+As described in the discussion of [SQL vs expressions](../02_sql_vs_dsl/sql_vs_dsl.md), you will use SQL snippets when defining measures, dimensions, and filters at model level. 
 
 As the multidot syntax described above would not be valid SQL, the syntax for referring to columns of the SQL expressions underlying the joined models is the same as above with double underscores substituted for dots, that is if model_a has a join to model_b, and model_b has a join to model_c, then the measures, dimensions and filters in model_a can refer to a column from the underlying query of model_c as `model_b__model_c.column_name`. These will be substituted for correct aliases for the corresponding subquery at resolution time.
 
