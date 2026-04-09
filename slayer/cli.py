@@ -4,59 +4,177 @@ import argparse
 import os
 import sys
 
+_MODELS_DIR_DEFAULT = os.environ.get("SLAYER_MODELS_DIR", "./slayer_data")
+_MODELS_DIR_HELP = "Path to models/datasources directory (default: $SLAYER_MODELS_DIR or ./slayer_data)"
+
+
+def _add_models_dir(parser):
+    parser.add_argument("--models-dir", default=_MODELS_DIR_DEFAULT, help=_MODELS_DIR_HELP)
+
 
 def main():
-    parser = argparse.ArgumentParser(prog="slayer", description="SLayer — semantic layer for AI agents")
+    parser = argparse.ArgumentParser(
+        prog="slayer",
+        description="SLayer — a lightweight semantic layer for AI agents",
+        epilog="""\
+common workflows:
+  # 1. Create a datasource config, ingest models, start the server
+  slayer ingest --datasource my_postgres --models-dir ./slayer_data
+  slayer serve --models-dir ./slayer_data
+
+  # 2. Query from the command line
+  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+
+  # 3. Start the MCP server for AI agents
+  slayer mcp --models-dir ./slayer_data
+
+docs: https://motley-slayer.readthedocs.io/
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command")
 
-    # serve command
-    serve_parser = subparsers.add_parser("serve", help="Start the REST API server")
-    serve_parser.add_argument("--host", default="0.0.0.0")
-    serve_parser.add_argument("--port", type=int, default=5143)
-    serve_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── serve ─────────────────────────────────────────────────────────
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start the REST API server",
+        epilog="""\
+examples:
+  slayer serve
+  slayer serve --port 8080 --models-dir ./my_data
+  slayer serve --host 127.0.0.1 --port 5143
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    serve_parser.add_argument("--port", type=int, default=5143, help="Port number (default: 5143)")
+    _add_models_dir(serve_parser)
 
-    # mcp command
-    mcp_parser = subparsers.add_parser("mcp", help="Start the MCP server")
-    mcp_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── mcp ───────────────────────────────────────────────────────────
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Start the MCP server (stdio transport for AI agents)",
+        epilog="""\
+examples:
+  slayer mcp --models-dir ./slayer_data
 
-    # query command
-    query_parser = subparsers.add_parser("query", help="Execute a SLayer query from JSON")
-    query_parser.add_argument("query_json", help="JSON query string or @file.json")
-    query_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
-    query_parser.add_argument("--format", choices=["json", "table"], default="table")
+  # Add to Claude Code:
+  claude mcp add slayer -- slayer mcp --models-dir ./slayer_data
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_models_dir(mcp_parser)
+
+    # ── query ─────────────────────────────────────────────────────────
+    query_parser = subparsers.add_parser(
+        "query",
+        help="Execute a query from JSON",
+        epilog="""\
+examples:
+  # Inline JSON
+  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+
+  # From a file
+  slayer query @query.json
+
+  # Preview SQL without executing
+  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}' --dry-run
+
+  # Show execution plan
+  slayer query @query.json --explain
+
+  # Output as JSON
+  slayer query @query.json --format json
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    query_parser.add_argument(
+        "query_json",
+        help="JSON query string, or @file.json to read from a file",
+    )
+    _add_models_dir(query_parser)
+    query_parser.add_argument(
+        "--format",
+        choices=["json", "table"],
+        default="table",
+        help="Output format (default: table)",
+    )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
     query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
 
-    # ingest command
-    ingest_parser = subparsers.add_parser("ingest", help="Auto-ingest models from a datasource")
-    ingest_parser.add_argument("--datasource", required=True)
-    ingest_parser.add_argument("--schema", default=None)
-    ingest_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── ingest ────────────────────────────────────────────────────────
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Auto-ingest models from a datasource",
+        epilog="""\
+examples:
+  slayer ingest --datasource my_postgres
+  slayer ingest --datasource my_postgres --schema public
+  slayer ingest --datasource my_postgres --include orders,customers
+  slayer ingest --datasource my_postgres --exclude migrations,django_session
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ingest_parser.add_argument("--datasource", required=True, help="Name of the datasource to ingest from")
+    ingest_parser.add_argument("--schema", default=None, help="Database schema to introspect (e.g., public)")
+    ingest_parser.add_argument(
+        "--include",
+        default=None,
+        help="Comma-separated list of tables to include (default: all)",
+    )
+    ingest_parser.add_argument(
+        "--exclude",
+        default=None,
+        help="Comma-separated list of tables to exclude",
+    )
+    _add_models_dir(ingest_parser)
 
-    # models command
-    models_parser = subparsers.add_parser("models", help="Manage models")
-    models_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── models ────────────────────────────────────────────────────────
+    models_parser = subparsers.add_parser(
+        "models",
+        help="Manage models",
+        epilog="""\
+examples:
+  slayer models list
+  slayer models show orders
+  slayer models create model.yaml
+  slayer models delete old_model
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_models_dir(models_parser)
     models_subparsers = models_parser.add_subparsers(dest="models_command")
 
     models_subparsers.add_parser("list", help="List all models")
 
-    models_show_parser = models_subparsers.add_parser("show", help="Show a model definition")
+    models_show_parser = models_subparsers.add_parser("show", help="Show a model definition (YAML)")
     models_show_parser.add_argument("name", help="Model name")
 
     models_create_parser = models_subparsers.add_parser("create", help="Create a model from a YAML file")
-    models_create_parser.add_argument("file", help="Path to YAML file")
+    models_create_parser.add_argument("file", help="Path to YAML model definition")
 
     models_delete_parser = models_subparsers.add_parser("delete", help="Delete a model")
     models_delete_parser.add_argument("name", help="Model name")
 
-    # datasources command
-    datasources_parser = subparsers.add_parser("datasources", help="Manage datasources")
-    datasources_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── datasources ───────────────────────────────────────────────────
+    datasources_parser = subparsers.add_parser(
+        "datasources",
+        help="Manage datasources",
+        epilog="""\
+examples:
+  slayer datasources list
+  slayer datasources show my_postgres
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_models_dir(datasources_parser)
     datasources_subparsers = datasources_parser.add_subparsers(dest="datasources_command")
 
     datasources_subparsers.add_parser("list", help="List all datasources")
 
-    datasources_show_parser = datasources_subparsers.add_parser("show", help="Show a datasource definition")
+    datasources_show_parser = datasources_subparsers.add_parser(
+        "show", help="Show datasource config (passwords masked)"
+    )
     datasources_show_parser.add_argument("name", help="Datasource name")
 
     args = parser.parse_args()
@@ -131,6 +249,7 @@ def _run_serve(args):
     app = create_app(storage=storage)
 
     import uvicorn
+
     uvicorn.run(app, host=args.host, port=args.port)
 
 
@@ -153,7 +272,15 @@ def _run_ingest(args):
         print(f"Datasource '{args.datasource}' not found in {args.models_dir}")
         sys.exit(1)
 
-    models = ingest_datasource(datasource=ds, schema=args.schema)
+    include = [t.strip() for t in args.include.split(",")] if args.include else None
+    exclude = [t.strip() for t in args.exclude.split(",")] if args.exclude else None
+
+    models = ingest_datasource(
+        datasource=ds,
+        schema=args.schema,
+        include_tables=include,
+        exclude_tables=exclude,
+    )
     for model in models:
         storage.save_model(model)
         print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
