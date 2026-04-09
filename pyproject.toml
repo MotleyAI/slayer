@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.2.0rc1"
+version = "0.2.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -60,9 +60,6 @@ all = ["httpx", "pandas", "mcp", "psycopg2-binary", "pymysql", "clickhouse-sqlal
 [project.scripts]
 slayer = "slayer.cli:main"
 
-[tool.poetry.scripts]
-slayer = "slayer.cli:main"
-
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
 pytest-cov = ">=5.0"
@@ -93,5 +90,5 @@ line-length = 120
 "tests/**" = ["E402"]
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"

@@ -47,10 +47,10 @@ When AI agents write raw SQL, things break in production — hallucinated column
 
 ```bash
 # Run instantly with uv (no install needed, SQLite works out of the box)
-uvx motley-slayer serve --models-dir ./my_models
+uvx --from motley-slayer slayer serve --models-dir ./my_models
 
 # Or install as a standalone tool
-uv tool install motley-slayer[postgres]
+uv tool install 'motley-slayer[postgres]'
 slayer serve --models-dir ./my_models
 
 # Or install with pip

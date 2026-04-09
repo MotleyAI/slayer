@@ -6,10 +6,10 @@
 
 ```bash
 # Run directly without installing (SQLite works out of the box)
-uvx motley-slayer serve --models-dir ./slayer_data
+uvx --from motley-slayer slayer serve --models-dir ./slayer_data
 
 # Run with database extras
-uvx motley-slayer[postgres] serve --models-dir ./slayer_data
+uvx --from 'motley-slayer[postgres]' slayer serve --models-dir ./slayer_data
 
 # Install as a standalone tool
 uv tool install motley-slayer
