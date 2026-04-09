@@ -2,6 +2,22 @@
 
 SLayer provides a command-line interface for server management, querying, and model operations.
 
+## Storage
+
+All commands accept a `--storage` flag to specify where models and datasources are stored:
+
+```bash
+# YAML files in a directory (default)
+slayer serve --storage ./slayer_data
+
+# SQLite database file (auto-detected by .db/.sqlite/.sqlite3 extension)
+slayer serve --storage slayer.db
+```
+
+The default is `./slayer_data` (YAML). Override with `$SLAYER_STORAGE` or `$SLAYER_MODELS_DIR` env vars.
+
+The legacy `--models-dir` flag still works but is deprecated in favor of `--storage`.
+
 ## Commands
 
 ### `slayer serve`
@@ -9,15 +25,16 @@ SLayer provides a command-line interface for server management, querying, and mo
 Start the HTTP server (REST API + MCP SSE endpoint at `/mcp/sse`).
 
 ```bash
-slayer serve --models-dir ./slayer_data
-slayer serve --host 0.0.0.0 --port 8080 --models-dir ./slayer_data
+slayer serve
+slayer serve --host 0.0.0.0 --port 8080
+slayer serve --storage slayer.db
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--host` | `0.0.0.0` | Bind address |
 | `--port` | `5143` | Port number |
-| `--models-dir` | `./slayer_data` | Storage directory |
+| `--storage` | `./slayer_data` | Storage path (directory for YAML, .db file for SQLite) |
 
 ### `slayer mcp`
 
@@ -25,17 +42,17 @@ Run SLayer as an MCP server using stdio transport. This command is **not meant t
 
 ```bash
 # Register with Claude Code (the agent will spawn the process)
-claude mcp add slayer -- slayer mcp --models-dir ./slayer_data
+claude mcp add slayer -- slayer mcp --storage ./slayer_data
 
 # If slayer is in a virtualenv, use the full executable path:
-#   claude mcp add slayer -- $(poetry env info -p)/bin/slayer mcp --models-dir /abs/path/to/slayer_data
+#   claude mcp add slayer -- $(poetry env info -p)/bin/slayer mcp --storage /abs/path/to/slayer_data
 ```
 
 For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/sse` alongside the REST API.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models-dir` | `./slayer_data` | Storage directory |
+| `--storage` | `./slayer_data` | Storage path |
 
 ### `slayer query`
 
@@ -50,33 +67,46 @@ slayer query @query.json
 
 # JSON output
 slayer query '{"source_model": "orders", "fields": ["count"]}' --format json
+
+# Preview SQL without executing
+slayer query '{"source_model": "orders", "fields": ["count"]}' --dry-run
+
+# Show execution plan
+slayer query @query.json --explain
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--models-dir` | `./slayer_data` | Storage directory |
+| `--storage` | `./slayer_data` | Storage path |
 | `--format` | `table` | Output format: `table` or `json` |
+| `--dry-run` | | Generate SQL without executing |
+| `--explain` | | Run EXPLAIN ANALYZE on the query |
 
 ### `slayer ingest`
 
 Auto-generate models from a datasource.
 
 ```bash
-slayer ingest --datasource my_postgres --schema public --models-dir ./slayer_data
+slayer ingest --datasource my_postgres
+slayer ingest --datasource my_postgres --schema public
+slayer ingest --datasource my_postgres --include orders,customers
+slayer ingest --datasource my_postgres --exclude migrations,django_session
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--datasource` | Yes | Datasource name |
 | `--schema` | No | Database schema to inspect |
-| `--models-dir` | No | Storage directory |
+| `--include` | No | Comma-separated tables to include |
+| `--exclude` | No | Comma-separated tables to exclude |
+| `--storage` | No | Storage path |
 
 ### `slayer models`
 
 Manage models.
 
 ```bash
-slayer models list --models-dir ./slayer_data
+slayer models list
 slayer models show orders
 slayer models create model.yaml
 slayer models delete orders
@@ -87,6 +117,6 @@ slayer models delete orders
 Manage datasources.
 
 ```bash
-slayer datasources list --models-dir ./slayer_data
+slayer datasources list
 slayer datasources show my_postgres   # credentials masked
 ```

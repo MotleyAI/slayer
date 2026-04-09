@@ -4,12 +4,29 @@ import argparse
 import os
 import sys
 
-_MODELS_DIR_DEFAULT = os.environ.get("SLAYER_MODELS_DIR", "./slayer_data")
-_MODELS_DIR_HELP = "Path to models/datasources directory (default: $SLAYER_MODELS_DIR or ./slayer_data)"
+_STORAGE_DEFAULT = os.environ.get("SLAYER_STORAGE", os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+_STORAGE_HELP = (
+    "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
+    "(default: $SLAYER_STORAGE or $SLAYER_MODELS_DIR or ./slayer_data)"
+)
 
 
-def _add_models_dir(parser):
-    parser.add_argument("--models-dir", default=_MODELS_DIR_DEFAULT, help=_MODELS_DIR_HELP)
+def _add_storage_arg(parser):
+    """Add --storage and legacy --models-dir flags to a parser."""
+    parser.add_argument("--storage", default=None, help=_STORAGE_HELP)
+    parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="(deprecated, use --storage) Path to YAML models directory",
+    )
+
+
+def _resolve_storage(args):
+    """Resolve storage backend from --storage or --models-dir flags."""
+    from slayer.storage.base import resolve_storage
+
+    path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    return resolve_storage(path)
 
 
 def main():
@@ -19,14 +36,18 @@ def main():
         epilog="""\
 common workflows:
   # 1. Create a datasource config, ingest models, start the server
-  slayer ingest --datasource my_postgres --models-dir ./slayer_data
-  slayer serve --models-dir ./slayer_data
+  slayer ingest --datasource my_postgres
+  slayer serve
 
   # 2. Query from the command line
   slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
 
   # 3. Start the MCP server for AI agents
-  slayer mcp --models-dir ./slayer_data
+  slayer mcp
+
+  # 4. Use SQLite storage instead of YAML files
+  slayer serve --storage slayer.db
+  slayer ingest --datasource my_pg --storage slayer.db
 
 docs: https://motley-slayer.readthedocs.io/
 """,
@@ -41,14 +62,14 @@ docs: https://motley-slayer.readthedocs.io/
         epilog="""\
 examples:
   slayer serve
-  slayer serve --port 8080 --models-dir ./my_data
-  slayer serve --host 127.0.0.1 --port 5143
+  slayer serve --port 8080 --storage ./my_data
+  slayer serve --storage slayer.db
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     serve_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     serve_parser.add_argument("--port", type=int, default=5143, help="Port number (default: 5143)")
-    _add_models_dir(serve_parser)
+    _add_storage_arg(serve_parser)
 
     # ── mcp ───────────────────────────────────────────────────────────
     mcp_parser = subparsers.add_parser(
@@ -56,14 +77,15 @@ examples:
         help="Start the MCP server (stdio transport for AI agents)",
         epilog="""\
 examples:
-  slayer mcp --models-dir ./slayer_data
+  slayer mcp
+  slayer mcp --storage slayer.db
 
   # Add to Claude Code:
-  claude mcp add slayer -- slayer mcp --models-dir ./slayer_data
+  claude mcp add slayer -- slayer mcp --storage ./slayer_data
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _add_models_dir(mcp_parser)
+    _add_storage_arg(mcp_parser)
 
     # ── query ─────────────────────────────────────────────────────────
     query_parser = subparsers.add_parser(
@@ -92,7 +114,7 @@ examples:
         "query_json",
         help="JSON query string, or @file.json to read from a file",
     )
-    _add_models_dir(query_parser)
+    _add_storage_arg(query_parser)
     query_parser.add_argument(
         "--format",
         choices=["json", "table"],
@@ -127,7 +149,7 @@ examples:
         default=None,
         help="Comma-separated list of tables to exclude",
     )
-    _add_models_dir(ingest_parser)
+    _add_storage_arg(ingest_parser)
 
     # ── models ────────────────────────────────────────────────────────
     models_parser = subparsers.add_parser(
@@ -142,7 +164,7 @@ examples:
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _add_models_dir(models_parser)
+    _add_storage_arg(models_parser)
     models_subparsers = models_parser.add_subparsers(dest="models_command")
 
     models_subparsers.add_parser("list", help="List all models")
@@ -167,7 +189,7 @@ examples:
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _add_models_dir(datasources_parser)
+    _add_storage_arg(datasources_parser)
     datasources_subparsers = datasources_parser.add_subparsers(dest="datasources_command")
 
     datasources_subparsers.add_parser("list", help="List all datasources")
@@ -201,7 +223,6 @@ def _run_query(args):
 
     from slayer.core.query import SlayerQuery
     from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.storage.yaml_storage import YAMLStorage
 
     query_input = args.query_json
     if query_input.startswith("@"):
@@ -214,7 +235,7 @@ def _run_query(args):
         data["explain"] = True
     slayer_query = SlayerQuery.model_validate(data)
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
     result = engine.execute(query=slayer_query)
 
@@ -243,9 +264,8 @@ def _run_query(args):
 
 def _run_serve(args):
     from slayer.api.server import create_app
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     app = create_app(storage=storage)
 
     import uvicorn
@@ -255,21 +275,20 @@ def _run_serve(args):
 
 def _run_mcp(args):
     from slayer.mcp.server import create_mcp_server
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     mcp = create_mcp_server(storage=storage)
     mcp.run()
 
 
 def _run_ingest(args):
     from slayer.engine.ingestion import ingest_datasource
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     ds = storage.get_datasource(args.datasource)
     if ds is None:
-        print(f"Datasource '{args.datasource}' not found in {args.models_dir}")
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        print(f"Datasource '{args.datasource}' not found in {storage_path}")
         sys.exit(1)
 
     include = [t.strip() for t in args.include.split(",")] if args.include else None
@@ -290,9 +309,8 @@ def _run_models(args):
     import yaml
 
     from slayer.core.models import SlayerModel
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
 
     if args.models_command == "list":
         names = storage.list_models()
@@ -337,9 +355,7 @@ def _run_models(args):
 def _run_datasources(args):
     import yaml
 
-    from slayer.storage.yaml_storage import YAMLStorage
-
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
 
     if args.datasources_command == "list":
         names = storage.list_datasources()
