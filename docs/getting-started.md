@@ -2,6 +2,23 @@
 
 ## Installation
 
+### With uv (recommended)
+
+```bash
+# Run directly without installing (SQLite works out of the box)
+uvx --from motley-slayer slayer serve --models-dir ./slayer_data
+
+# Run with database extras
+uvx --from 'motley-slayer[postgres]' slayer serve --models-dir ./slayer_data
+
+# Install as a standalone tool
+uv tool install motley-slayer
+uv tool install motley-slayer[postgres]  # with extras
+slayer serve --models-dir ./slayer_data
+```
+
+### With pip
+
 ```bash
 # Full install (all extras + all database drivers)
 pip install motley-slayer[all]

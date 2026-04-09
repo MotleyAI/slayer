@@ -1,10 +1,13 @@
-[tool.poetry]
+[project]
 name = "motley-slayer"
-version = "0.2.0rc1"
+version = "0.2.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
-authors = ["MotleyAI"]
+requires-python = ">=3.11"
 license = "MIT"
 readme = "README.md"
+authors = [{name = "MotleyAI"}]
+
+[tool.poetry]
 packages = [{include = "slayer"}]
 keywords = ["semantic-layer", "sql", "ai", "mcp", "data", "analytics", "bi"]
 classifiers = [
@@ -54,7 +57,7 @@ docs = ["mkdocs-material"]
 examples = ["jafgen", "duckdb", "duckdb-engine"]
 all = ["httpx", "pandas", "mcp", "psycopg2-binary", "pymysql", "clickhouse-sqlalchemy", "duckdb", "duckdb-engine", "jafgen"]
 
-[tool.poetry.scripts]
+[project.scripts]
 slayer = "slayer.cli:main"
 
 [tool.poetry.group.dev.dependencies]
@@ -87,5 +90,5 @@ line-length = 120
 "tests/**" = ["E402"]
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
