@@ -36,4 +36,4 @@ Finally, it’s worth reminding the reader that joins can be added to a model at
 
 ---
 
-See the [companion notebook](joins.ipynb) for runnable code demonstrating all join patterns.
+See the [companion notebook](joins_nb.ipynb) for runnable code demonstrating all join patterns.

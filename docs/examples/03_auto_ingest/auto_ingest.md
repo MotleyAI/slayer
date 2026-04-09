@@ -68,4 +68,4 @@ Result keys include the full path from the source model: `order_items.orders.cus
 
 ---
 
-See the [companion notebook](auto_ingest.ipynb) for runnable code demonstrating auto-ingestion end to end.
+See the [companion notebook](auto_ingest_nb.ipynb) for runnable code demonstrating auto-ingestion end to end.

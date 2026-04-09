@@ -35,4 +35,4 @@ This way we guarantee that the values of that joined measure are exactly the sam
 
 ---
 
-See the [companion notebook](joined_measures.ipynb) for runnable code demonstrating cross-model measures.
+See the [companion notebook](joined_measures_nb.ipynb) for runnable code demonstrating cross-model measures.
