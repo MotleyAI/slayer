@@ -4,7 +4,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import ColumnRef, Field, SlayerQuery, TimeDimension
+from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
 
 
 class TestColumnRef:
@@ -258,6 +258,97 @@ class TestTimeGranularity:
         import datetime
         end = TimeGranularity.MONTH.period_end(datetime.date(2024, 3, 15))
         assert end == datetime.date(2024, 3, 31)
+
+
+class TestStringCoercion:
+    """Plain strings are accepted in fields and dimensions lists."""
+
+    def test_fields_plain_strings(self) -> None:
+        query = SlayerQuery(source_model="orders", fields=["count", "revenue"])
+        assert len(query.fields) == 2
+        assert query.fields[0] == Field(formula="count")
+        assert query.fields[1] == Field(formula="revenue")
+
+    def test_dimensions_plain_strings(self) -> None:
+        query = SlayerQuery(source_model="orders", dimensions=["status", "customers.name"])
+        assert len(query.dimensions) == 2
+        assert query.dimensions[0].name == "status"
+        assert query.dimensions[0].model is None
+        assert query.dimensions[1].name == "name"
+        assert query.dimensions[1].model == "customers"
+
+    def test_fields_mixed_strings_and_dicts(self) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            fields=["count", {"formula": "revenue / count", "name": "aov"}],
+        )
+        assert len(query.fields) == 2
+        assert query.fields[0] == Field(formula="count")
+        assert query.fields[1] == Field(formula="revenue / count", name="aov")
+
+    def test_dimensions_mixed_strings_and_dicts(self) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=["status", {"name": "customers.name", "label": "Customer"}],
+        )
+        assert len(query.dimensions) == 2
+        assert query.dimensions[0].name == "status"
+        assert query.dimensions[1].name == "name"
+        assert query.dimensions[1].model == "customers"
+        assert query.dimensions[1].label == "Customer"
+
+    def test_dict_syntax_still_works(self) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "status"}],
+        )
+        assert query.fields[0] == Field(formula="count")
+        assert query.dimensions[0].name == "status"
+
+    def test_none_fields_and_dimensions(self) -> None:
+        query = SlayerQuery(source_model="orders")
+        assert query.fields is None
+        assert query.dimensions is None
+
+    def test_order_column_string(self) -> None:
+        item = OrderItem(column="revenue_sum", direction="desc")
+        assert item.column.name == "revenue_sum"
+        assert item.column.model is None
+
+    def test_order_column_dotted_string(self) -> None:
+        item = OrderItem(column="customers.count", direction="asc")
+        assert item.column.name == "count"
+        assert item.column.model == "customers"
+
+    def test_order_column_dict_still_works(self) -> None:
+        item = OrderItem(column={"name": "revenue_sum"}, direction="desc")
+        assert item.column.name == "revenue_sum"
+
+    def test_time_dimension_string(self) -> None:
+        td = TimeDimension(dimension="created_at", granularity="month")
+        assert td.dimension.name == "created_at"
+        assert td.dimension.model is None
+
+    def test_time_dimension_dotted_string(self) -> None:
+        td = TimeDimension(dimension="customers.ordered_at", granularity="month")
+        assert td.dimension.name == "ordered_at"
+        assert td.dimension.model == "customers"
+
+    def test_time_dimension_dict_still_works(self) -> None:
+        td = TimeDimension(dimension={"name": "created_at"}, granularity="month")
+        assert td.dimension.name == "created_at"
+
+    def test_query_with_simplified_order_and_time_dimensions(self) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            fields=["count"],
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            order=[{"column": "count", "direction": "desc"}],
+        )
+        assert query.time_dimensions[0].dimension.name == "created_at"
+        assert query.order[0].column.name == "count"
+        assert query.order[0].direction == "desc"
 
 
 class TestWholePeriodsOnly:

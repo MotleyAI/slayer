@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import datetime
 import re
-from typing import List, Optional
+from typing import Annotated, Any, List, Optional
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, field_validator, model_validator
 
 from slayer.core.enums import TimeGranularity
 
@@ -71,15 +71,22 @@ class ColumnRef(BaseModel):
         return cls(name=s)
 
 
+def _coerce_column_ref(v: Any) -> Any:
+    """Allow plain string where a ColumnRef is expected: "x" → {"name": "x"}."""
+    if isinstance(v, str):
+        return {"name": v}
+    return v
+
+
 class TimeDimension(BaseModel):
-    dimension: ColumnRef
+    dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
     date_range: Optional[List[str]] = None
     label: Optional[str] = None
 
 
 class OrderItem(BaseModel):
-    column: ColumnRef
+    column: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     direction: str = "asc"
 
 
@@ -111,6 +118,20 @@ class Field(BaseModel):
         return v
 
 
+def _coerce_fields(v: Any) -> Any:
+    """Allow plain strings in the fields list: "count" → {"formula": "count"}."""
+    if v is None:
+        return v
+    return [{"formula": item} if isinstance(item, str) else item for item in v]
+
+
+def _coerce_dimensions(v: Any) -> Any:
+    """Allow plain strings in the dimensions list: "status" → {"name": "status"}."""
+    if v is None:
+        return v
+    return [{"name": item} if isinstance(item, str) else item for item in v]
+
+
 class ModelExtension(BaseModel):
     """Extend an existing model with extra dimensions, measures, or joins.
 
@@ -136,7 +157,7 @@ class SlayerQuery(BaseModel):
 
     name: Optional[str] = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
-    fields: Optional[List[Field]] = None
+    fields: Annotated[Optional[List[Field]], BeforeValidator(_coerce_fields)] = None
 
     @field_validator("name")
     @classmethod
@@ -147,7 +168,7 @@ class SlayerQuery(BaseModel):
                 f"Double underscores are reserved for join path aliases in generated SQL."
             )
         return v
-    dimensions: Optional[List[ColumnRef]] = None
+    dimensions: Annotated[Optional[List[ColumnRef]], BeforeValidator(_coerce_dimensions)] = None
     time_dimensions: Optional[List[TimeDimension]] = None
     main_time_dimension: Optional[str] = None  # Explicit time dimension for transforms (overrides auto-detection)
     filters: Optional[List[str]] = None

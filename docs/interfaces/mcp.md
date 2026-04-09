@@ -88,8 +88,8 @@ claude mcp list
 | Param | Type | Description |
 |-------|------|-------------|
 | `source_model` | string | Model name (required) |
-| `fields` | list[dict] | Data columns: measures, arithmetic, transforms. E.g. `[{"formula": "count"}, {"formula": "revenue / count", "name": "aov", "label": "Average Order Value"}, {"formula": "cumsum(revenue)"}]`. Each field has an optional `label` for human-readable display. Supports nesting: `{"formula": "change(cumsum(revenue))"}` |
-| `dimensions` | list[str] | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `ColumnRef(name="status", label="Order Status")`. |
+| `fields` | list | Data columns: measures, arithmetic, transforms. E.g. `["count", {"formula": "revenue / count", "name": "aov", "label": "Average Order Value"}, "cumsum(revenue)"]`. Each field has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(revenue))"` |
+| `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
 | `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue) > 0"`). Filters on measures are automatically routed to HAVING. |
 | `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
 | `order` | list[dict] | Sorting, e.g. `[{"column": "count", "direction": "desc"}]` |
@@ -133,7 +133,7 @@ To explore first without auto-ingesting:
 ```
 1. datasource_summary()                            # discover models
 2. inspect_model(model_name="orders")          # see schema + sample data
-3. query(source_model="orders", fields=[{"formula": "count"}], dimensions=["status"], limit=10)
+3. query(source_model="orders", fields=["count"], dimensions=["status"], limit=10)
 ```
 
 ### Customize a model

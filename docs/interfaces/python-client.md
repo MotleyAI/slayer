@@ -14,14 +14,14 @@ pip install motley-slayer[client]   # httpx + pandas
 
 ```python
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.query import SlayerQuery, ColumnRef
+from slayer.core.query import SlayerQuery
 
 client = SlayerClient(url="http://localhost:5143")
 
 query = SlayerQuery(
     source_model="orders",
-    fields=[{"formula": "count"}, {"formula": "revenue_sum"}],
-    dimensions=[ColumnRef(name="status")],
+    fields=["count", "revenue_sum"],
+    dimensions=["status"],
     limit=10,
 )
 

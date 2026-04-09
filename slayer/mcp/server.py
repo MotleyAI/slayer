@@ -17,38 +17,6 @@ VALID_MEASURE_TYPES = {"count", "count_distinct", "sum", "avg", "min", "max", "l
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 
 
-def _parse_column_ref(value: Any) -> dict:
-    """Parse a string or dict into a ColumnRef-compatible dict.
-
-    Accepts: "name", "model.name", or {"name": "x", "model": "y"}.
-    Dotted names are passed as-is — ColumnRef's validator handles parsing.
-    """
-    if isinstance(value, dict):
-        return value
-    return {"name": str(value)}
-
-
-
-def _normalize_time_dimensions(tds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Normalize time dimension dicts: convert string 'dimension' to ColumnRef dict."""
-    result = []
-    for td in tds:
-        td = dict(td)
-        if "dimension" in td and isinstance(td["dimension"], str):
-            td["dimension"] = _parse_column_ref(td["dimension"])
-        result.append(td)
-    return result
-
-
-def _normalize_order(items: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-    """Normalize order dicts: convert string 'column' to ColumnRef dict."""
-    result = []
-    for item in items:
-        item = dict(item)
-        if "column" in item and isinstance(item["column"], str):
-            item["column"] = _parse_column_ref(item["column"])
-        result.append(item)
-    return result
 
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
@@ -184,13 +152,13 @@ def create_mcp_server(storage: StorageBackend):
         """
         data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
-            data["dimensions"] = [_parse_column_ref(d) for d in dimensions]
+            data["dimensions"] = list(dimensions)
         if filters:
             data["filters"] = filters
         if time_dimensions:
-            data["time_dimensions"] = _normalize_time_dimensions(time_dimensions)
+            data["time_dimensions"] = list(time_dimensions)
         if order:
-            data["order"] = _normalize_order(order)
+            data["order"] = list(order)
         if limit is not None:
             data["limit"] = limit
         if offset is not None:
