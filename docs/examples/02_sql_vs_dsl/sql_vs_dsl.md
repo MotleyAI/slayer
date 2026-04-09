@@ -33,4 +33,4 @@ That is also doable - all you need to do is to use the [“Query result as model
 
 ---
 
-See the [companion notebook](sql_vs_dsl.ipynb) for runnable code demonstrating the SQL/DSL boundary.
+See the [companion notebook](sql_vs_dsl_nb.ipynb) for runnable code demonstrating the SQL/DSL boundary.

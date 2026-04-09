@@ -47,4 +47,4 @@ What would it take to define this in the semantic layer you’re currently using
 
 ---
 
-See the [companion notebook](time.ipynb) for runnable code demonstrating all time-related transforms.
+See the [companion notebook](time_nb.ipynb) for runnable code demonstrating all time-related transforms.
