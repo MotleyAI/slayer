@@ -15,7 +15,15 @@ def _generate(
     model: SlayerModel,
 ) -> str:
     """Helper: enrich a query against a model, then generate SQL."""
-    enriched = SlayerQueryEngine._enrich(None, query=query, model=model)
+    from slayer.engine.enrichment import enrich_query
+
+    enriched = enrich_query(
+        query=query,
+        model=model,
+        resolve_dimension_via_joins=lambda **kw: None,
+        resolve_cross_model_measure=lambda **kw: None,
+        resolve_join_target=lambda **kw: None,
+    )
     return generator.generate(enriched=enriched)
 
 
@@ -38,8 +46,6 @@ def orders_model() -> SlayerModel:
             Measure(name="distinct_customers", sql="customer_id", type=DataType.COUNT_DISTINCT),
         ],
     )
-
-
 
 
 @pytest.fixture
@@ -124,6 +130,7 @@ class TestTimeDimensions:
         assert "BETWEEN" in sql
         assert "2024-01-01" in sql
         assert "2024-12-31" in sql
+
 
 class TestFilters:
     def test_equals_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -217,7 +224,9 @@ class TestFilters:
         # sqlglot may output either != or <> depending on dialect — both valid
         assert "<> 'cancelled'" in sql or "!= 'cancelled'" in sql
 
-    def test_equals_inside_string_literal_not_converted(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+    def test_equals_inside_string_literal_not_converted(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
         """= inside a string literal is not converted to ==."""
         query = SlayerQuery(
             source_model="orders",
@@ -227,7 +236,9 @@ class TestFilters:
         sql = _generate(generator, query, orders_model)
         assert "'x=y'" in sql
 
-    def test_not_equals_inside_string_literal_not_converted(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+    def test_not_equals_inside_string_literal_not_converted(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
         """<> inside a string literal is not converted to !=."""
         query = SlayerQuery(
             source_model="orders",
@@ -259,7 +270,9 @@ class TestFilters:
     def test_filter_resolves_dimension_sql(self, generator: SQLGenerator) -> None:
         """Filter column names resolve through dimension sql expressions."""
         model = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
+            name="orders",
+            sql_table="orders",
+            data_source="test",
             dimensions=[
                 Dimension(name="order_status", sql="status_col", type=DataType.STRING),
             ],
@@ -477,7 +490,7 @@ class TestFields:
         assert "LEFT JOIN" in sql
         assert "_rn" in sql
         # change = current - previous (self-join column expression)
-        assert ' - shifted_' in sql
+        assert " - shifted_" in sql
 
     def test_change_pct(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
@@ -547,10 +560,13 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
-                date_range=["2024-03-01", "2024-03-31"],
-            )],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=["2024-03-01", "2024-03-31"],
+                )
+            ],
             fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'month')", name="rev_prev")],
         )
         sql = _generate(generator, query, orders_model)
@@ -566,10 +582,13 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
-                date_range=["2024-03-01", "2024-03-31"],
-            )],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=["2024-03-01", "2024-03-31"],
+                )
+            ],
             fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'year')", name="rev_yoy")],
         )
         sql = _generate(generator, query, orders_model)
@@ -582,10 +601,13 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
-                date_range=["2024-03-01", "2024-03-31"],
-            )],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=["2024-03-01", "2024-03-31"],
+                )
+            ],
             fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
         )
         sql = _generate(generator, query, orders_model)
@@ -611,10 +633,13 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
-                date_range=["2024-03-01", "2024-03-31"],
-            )],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                    date_range=["2024-03-01", "2024-03-31"],
+                )
+            ],
             fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, 1, 'month')", name="rev_next")],
         )
         sql = _generate(generator, query, orders_model)
@@ -627,10 +652,13 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.QUARTER,
-                date_range=["2024-07-01", "2024-09-30"],
-            )],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.QUARTER,
+                    date_range=["2024-07-01", "2024-09-30"],
+                )
+            ],
             fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'quarter')", name="prev_q")],
         )
         sql = _generate(generator, query, orders_model)
@@ -787,29 +815,32 @@ class TestNestedFields:
 class TestDialectMapping:
     """Test _dialect_for_type resolves all supported datasource types."""
 
-    @pytest.mark.parametrize("ds_type,expected", [
-        ("postgres", "postgres"),
-        ("postgresql", "postgres"),
-        ("mysql", "mysql"),
-        ("mariadb", "mysql"),
-        ("clickhouse", "clickhouse"),
-        ("bigquery", "bigquery"),
-        ("snowflake", "snowflake"),
-        ("sqlite", "sqlite"),
-        ("duckdb", "duckdb"),
-        ("redshift", "redshift"),
-        ("trino", "trino"),
-        ("presto", "presto"),
-        ("athena", "presto"),
-        ("databricks", "databricks"),
-        ("spark", "spark"),
-        ("mssql", "tsql"),
-        ("sqlserver", "tsql"),
-        ("tsql", "tsql"),
-        ("oracle", "oracle"),
-        (None, "postgres"),
-        ("unknown", "postgres"),
-    ])
+    @pytest.mark.parametrize(
+        "ds_type,expected",
+        [
+            ("postgres", "postgres"),
+            ("postgresql", "postgres"),
+            ("mysql", "mysql"),
+            ("mariadb", "mysql"),
+            ("clickhouse", "clickhouse"),
+            ("bigquery", "bigquery"),
+            ("snowflake", "snowflake"),
+            ("sqlite", "sqlite"),
+            ("duckdb", "duckdb"),
+            ("redshift", "redshift"),
+            ("trino", "trino"),
+            ("presto", "presto"),
+            ("athena", "presto"),
+            ("databricks", "databricks"),
+            ("spark", "spark"),
+            ("mssql", "tsql"),
+            ("sqlserver", "tsql"),
+            ("tsql", "tsql"),
+            ("oracle", "oracle"),
+            (None, "postgres"),
+            ("unknown", "postgres"),
+        ],
+    )
     def test_dialect_for_type(self, ds_type: str, expected: str) -> None:
         assert SlayerQueryEngine._dialect_for_type(ds_type) == expected
 
@@ -836,9 +867,22 @@ class TestMultiDialectGeneration:
         )
         return model
 
-    ALL_DIALECTS = ["postgres", "mysql", "sqlite", "clickhouse", "bigquery",
-                    "snowflake", "duckdb", "redshift", "trino", "presto",
-                    "databricks", "spark", "tsql", "oracle"]
+    ALL_DIALECTS = [
+        "postgres",
+        "mysql",
+        "sqlite",
+        "clickhouse",
+        "bigquery",
+        "snowflake",
+        "duckdb",
+        "redshift",
+        "trino",
+        "presto",
+        "databricks",
+        "spark",
+        "tsql",
+        "oracle",
+    ]
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     def test_basic_query(self, dialect: str, orders_model: SlayerModel) -> None:
@@ -923,7 +967,9 @@ class TestPathAliasJoinInference:
     def engine(self) -> SlayerQueryEngine:
         return SlayerQueryEngine(storage=None)
 
-    def test_dimension_sql_with_path_alias_infers_joins(self, engine: SlayerQueryEngine, chained_model: SlayerModel) -> None:
+    def test_dimension_sql_with_path_alias_infers_joins(
+        self, engine: SlayerQueryEngine, chained_model: SlayerModel
+    ) -> None:
         """Inline dimension SQL like 'customers__regions.name' should infer joins for both tables."""
         query = SlayerQuery(
             source_model="orders",
@@ -961,10 +1007,12 @@ class TestPathAliasJoinInference:
         )
         query = SlayerQuery(
             source_model="events",
-            time_dimensions=[TimeDimension(
-                dimension=ColumnRef(name="user_signup_date"),
-                granularity=TimeGranularity.MONTH,
-            )],
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="user_signup_date"),
+                    granularity=TimeGranularity.MONTH,
+                )
+            ],
             fields=[Field(formula="count")],
         )
         enriched = engine._enrich(query=query, model=model)
@@ -972,7 +1020,9 @@ class TestPathAliasJoinInference:
         assert "users" in join_aliases
         assert "users__orgs" in join_aliases
 
-    def test_measure_sql_with_path_alias_infers_joins(self, engine: SlayerQueryEngine, chained_model: SlayerModel) -> None:
+    def test_measure_sql_with_path_alias_infers_joins(
+        self, engine: SlayerQueryEngine, chained_model: SlayerModel
+    ) -> None:
         """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
         # Add a measure referencing a path-aliased joined table
         chained_model.measures.append(

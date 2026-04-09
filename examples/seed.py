@@ -10,7 +10,7 @@ Usage:
 """
 
 import sys
-from datetime import date, datetime
+from datetime import datetime
 
 import sqlalchemy as sa
 
@@ -89,6 +89,7 @@ def _get_create_sql(connection_string: str) -> str:
     if "clickhouse" in connection_string.lower():
         return CREATE_SQL_CLICKHOUSE
     return CREATE_SQL_STANDARD
+
 
 REGIONS = [
     (1, "North America"),
