@@ -20,7 +20,7 @@ We then evaluate both queries (the results may have different cardinality becaus
 
 This way we guarantee that the values of that joined measure are exactly the same as in the original — as that is exactly how it's evaluated.
 
-[Transforms](../../concepts/formulas.md) like `cumsum()` and `change()` work on cross-model measures too — the transform is applied after the sub-query join:
+All [transforms](../../concepts/formulas.md) work on cross-model measures — window transforms (`cumsum`, `lag`, `lead`, `rank`, `last`) and self-join transforms (`change`, `change_pct`, `time_shift`) alike. Window transforms are applied as window functions over the sub-query result; self-join transforms generate their own CTE chain on top of the cross-model sub-query.
 
 ```json
 {
@@ -28,7 +28,8 @@ This way we guarantee that the values of that joined measure are exactly the sam
   "time_dimensions": [{"dimension": {"name": "ordered_at"}, "granularity": "month"}],
   "fields": [
     {"formula": "customers.count"},
-    {"formula": "cumsum(customers.count)", "name": "cumulative_customers"}
+    {"formula": "cumsum(customers.count)", "name": "cumulative_customers"},
+    {"formula": "change(customers.count)", "name": "count_change"}
   ]
 }
 ```

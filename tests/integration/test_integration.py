@@ -1083,6 +1083,184 @@ def test_transform_on_cross_model(cross_model_env):
     assert response.data[2]["orders.running"] == pytest.approx(235.0)
 
 
+@pytest.mark.integration
+def test_change_on_cross_model(cross_model_env):
+    """change() on cross-model measure uses self-join CTE chain."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="customers.avg_score"),
+            Field(formula="change(customers.avg_score)", name="score_change"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # Jan: 90, Feb: 60, Mar: 85
+    # change: None, 60-90=-30, 85-60=25
+    assert response.data[0]["orders.score_change"] is None
+    assert response.data[1]["orders.score_change"] == pytest.approx(-30.0)
+    assert response.data[2]["orders.score_change"] == pytest.approx(25.0)
+
+
+@pytest.mark.integration
+def test_change_pct_on_cross_model(cross_model_env):
+    """change_pct() on cross-model measure."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="change_pct(customers.avg_score)", name="score_change_pct"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # change_pct: None, (60-90)/90 = -0.333, (85-60)/60 = 0.4167
+    assert response.data[0]["orders.score_change_pct"] is None
+    assert response.data[1]["orders.score_change_pct"] == pytest.approx(-30.0 / 90.0)
+    assert response.data[2]["orders.score_change_pct"] == pytest.approx(25.0 / 60.0)
+
+
+@pytest.mark.integration
+def test_time_shift_on_cross_model(cross_model_env):
+    """time_shift() on cross-model measure."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="customers.avg_score"),
+            Field(formula="time_shift(customers.avg_score, -1)", name="prev_score"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # time_shift(-1) = previous row: None, 90, 60
+    assert response.data[0]["orders.prev_score"] is None
+    assert response.data[1]["orders.prev_score"] == pytest.approx(90.0)
+    assert response.data[2]["orders.prev_score"] == pytest.approx(60.0)
+
+
+@pytest.mark.integration
+def test_lag_on_cross_model(cross_model_env):
+    """lag() window transform on cross-model measure."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="lag(customers.avg_score)", name="prev_score"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # lag: None, 90, 60
+    assert response.data[0]["orders.prev_score"] is None
+    assert response.data[1]["orders.prev_score"] == pytest.approx(90.0)
+    assert response.data[2]["orders.prev_score"] == pytest.approx(60.0)
+
+
+@pytest.mark.integration
+def test_lead_on_cross_model(cross_model_env):
+    """lead() window transform on cross-model measure."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="lead(customers.avg_score)", name="next_score"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # lead: 60, 85, None
+    assert response.data[0]["orders.next_score"] == pytest.approx(60.0)
+    assert response.data[1]["orders.next_score"] == pytest.approx(85.0)
+    assert response.data[2]["orders.next_score"] is None
+
+
+@pytest.mark.integration
+def test_rank_on_cross_model(cross_model_env):
+    """rank() window transform on cross-model measure."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="customers.avg_score"),
+            Field(formula="rank(customers.avg_score)", name="score_rank"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # rank DESC: 90→1, 60→3, 85→2
+    assert response.data[0]["orders.score_rank"] == 1
+    assert response.data[1]["orders.score_rank"] == 3
+    assert response.data[2]["orders.score_rank"] == 2
+
+
+@pytest.mark.integration
+def test_mixed_window_and_selfjoin_on_cross_model(cross_model_env):
+    """Combining window and self-join transforms on the same cross-model measure."""
+    engine = cross_model_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+        )],
+        fields=[
+            Field(formula="customers.avg_score"),
+            Field(formula="cumsum(customers.avg_score)", name="running"),
+            Field(formula="change(customers.avg_score)", name="score_change"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = engine.execute(query)
+
+    assert response.row_count == 3
+    # cumsum: 90, 150, 235
+    assert response.data[0]["orders.running"] == pytest.approx(90.0)
+    assert response.data[1]["orders.running"] == pytest.approx(150.0)
+    assert response.data[2]["orders.running"] == pytest.approx(235.0)
+    # change: None, -30, 25
+    assert response.data[0]["orders.score_change"] is None
+    assert response.data[1]["orders.score_change"] == pytest.approx(-30.0)
+    assert response.data[2]["orders.score_change"] == pytest.approx(25.0)
+
+
 # ---------------------------------------------------------------------------
 # Query as model (multistage queries)
 # ---------------------------------------------------------------------------
