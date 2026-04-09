@@ -5,8 +5,13 @@ repo_url: https://github.com/motleyai/slayer
 repo_name: motleyai/slayer
 
 theme:
-  name: readthedocs
+  name: material
   logo: https://raw.githubusercontent.com/MotleyAI/slayer/refs/heads/main/docs/SLayer.png
+  features:
+    - navigation.indexes
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
 
 nav:
   - Home: index.md
@@ -25,22 +30,22 @@ nav:
   - Examples:
       - Dynamic Models: examples/01_dynamic/dynamic.md
       - SQL vs DSL:
-          - Overview: examples/02_sql_vs_dsl/sql_vs_dsl.md
+          - examples/02_sql_vs_dsl/sql_vs_dsl.md
           - Notebook: examples/02_sql_vs_dsl/sql_vs_dsl.ipynb
       - Auto-Ingestion:
-          - Overview: examples/03_auto_ingest/auto_ingest.md
+          - examples/03_auto_ingest/auto_ingest.md
           - Notebook: examples/03_auto_ingest/auto_ingest.ipynb
       - Time Dimensions:
-          - Overview: examples/04_time/time.md
+          - examples/04_time/time.md
           - Notebook: examples/04_time/time.ipynb
       - Joins:
-          - Overview: examples/05_joins/joins.md
+          - examples/05_joins/joins.md
           - Notebook: examples/05_joins/joins.ipynb
       - Joined Measures:
-          - Overview: examples/05_joined_measures/joined_measures.md
+          - examples/05_joined_measures/joined_measures.md
           - Notebook: examples/05_joined_measures/joined_measures.ipynb
       - Multistage Queries:
-          - Overview: examples/06_multistage_queries/multistage_queries.md
+          - examples/06_multistage_queries/multistage_queries.md
           - Notebook: examples/06_multistage_queries/multistage_queries.ipynb
   - Configuration:
       - Datasources: configuration/datasources.md
