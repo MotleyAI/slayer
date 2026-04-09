@@ -46,13 +46,18 @@ When AI agents write raw SQL, things break in production — hallucinated column
 ## Quick Start
 
 ```bash
-# Install with everything (all interfaces + all database drivers)
-pip install motley-slayer[all]
+# Run instantly with uv (no install needed, SQLite works out of the box)
+uvx motley-slayer serve --models-dir ./my_models
 
-# Or install with specific database drivers
-pip install motley-slayer[postgres]     # PostgreSQL (psycopg2)
-pip install motley-slayer[mysql]        # MySQL / MariaDB (pymysql)
-pip install motley-slayer[clickhouse]   # ClickHouse (clickhouse-sqlalchemy)
+# Or install as a standalone tool
+uv tool install motley-slayer[postgres]
+slayer serve --models-dir ./my_models
+
+# Or install with pip
+pip install motley-slayer[all]           # all interfaces + all database drivers
+pip install motley-slayer[postgres]      # PostgreSQL
+pip install motley-slayer[mysql]         # MySQL / MariaDB
+pip install motley-slayer[clickhouse]    # ClickHouse
 
 # Start the HTTP server
 slayer serve --models-dir ./my_models
