@@ -24,16 +24,33 @@ nav:
       - CLI: interfaces/cli.md
   - Examples:
       - Dynamic Models: examples/01_dynamic/dynamic.md
-      - SQL vs DSL: examples/02_sql_vs_dsl/sql_vs_dsl.md
-      - Auto-Ingestion: examples/03_auto_ingest/auto_ingest.md
-      - Time Dimensions: examples/04_time/time.md
-      - Joins: examples/05_joins/joins.md
-      - Joined Measures: examples/05_joined_measures/joined_measures.md
-      - Multistage Queries: examples/06_multistage_queries/multistage_queries.md
+      - SQL vs DSL:
+          - Overview: examples/02_sql_vs_dsl/sql_vs_dsl.md
+          - Notebook: examples/02_sql_vs_dsl/sql_vs_dsl.ipynb
+      - Auto-Ingestion:
+          - Overview: examples/03_auto_ingest/auto_ingest.md
+          - Notebook: examples/03_auto_ingest/auto_ingest.ipynb
+      - Time Dimensions:
+          - Overview: examples/04_time/time.md
+          - Notebook: examples/04_time/time.ipynb
+      - Joins:
+          - Overview: examples/05_joins/joins.md
+          - Notebook: examples/05_joins/joins.ipynb
+      - Joined Measures:
+          - Overview: examples/05_joined_measures/joined_measures.md
+          - Notebook: examples/05_joined_measures/joined_measures.ipynb
+      - Multistage Queries:
+          - Overview: examples/06_multistage_queries/multistage_queries.md
+          - Notebook: examples/06_multistage_queries/multistage_queries.ipynb
   - Configuration:
       - Datasources: configuration/datasources.md
       - Storage Backends: configuration/storage.md
   - Development: development.md
+
+plugins:
+  - search
+  - mkdocs-jupyter:
+      include_source: true
 
 markdown_extensions:
   - admonition
