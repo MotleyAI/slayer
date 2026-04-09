@@ -179,7 +179,7 @@ A query result is a self-contained table — it no longer has the joins that the
 
 This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
 
-See the [multistage queries example](../examples/06_multistage_queries/multistage_queries.md) for working examples.
+See the [multistage queries example](../examples/06_multistage_queries/index.md) for working examples.
 
 ## Model Fields Reference
 

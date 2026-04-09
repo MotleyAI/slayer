@@ -72,4 +72,4 @@ The inner query computes total orders per customer. The outer query joins this r
 
 ---
 
-See the [companion notebook](multistage_queries.ipynb) for runnable code demonstrating both examples.
+See the [companion notebook](multistage_queries_nb.ipynb) for runnable code demonstrating both examples.

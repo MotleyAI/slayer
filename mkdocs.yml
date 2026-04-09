@@ -28,25 +28,25 @@ nav:
       - Python Client: interfaces/python-client.md
       - CLI: interfaces/cli.md
   - Examples:
-      - Dynamic Models: examples/01_dynamic/dynamic.md
+      - Dynamic Models: examples/01_dynamic/index.md
       - SQL vs DSL:
-          - examples/02_sql_vs_dsl/sql_vs_dsl.md
-          - Notebook: examples/02_sql_vs_dsl/sql_vs_dsl.ipynb
+          - examples/02_sql_vs_dsl/index.md
+          - Notebook: examples/02_sql_vs_dsl/sql_vs_dsl_nb.ipynb
       - Auto-Ingestion:
-          - examples/03_auto_ingest/auto_ingest.md
-          - Notebook: examples/03_auto_ingest/auto_ingest.ipynb
+          - examples/03_auto_ingest/index.md
+          - Notebook: examples/03_auto_ingest/auto_ingest_nb.ipynb
       - Time Dimensions:
-          - examples/04_time/time.md
-          - Notebook: examples/04_time/time.ipynb
+          - examples/04_time/index.md
+          - Notebook: examples/04_time/time_nb.ipynb
       - Joins:
-          - examples/05_joins/joins.md
-          - Notebook: examples/05_joins/joins.ipynb
+          - examples/05_joins/index.md
+          - Notebook: examples/05_joins/joins_nb.ipynb
       - Joined Measures:
-          - examples/05_joined_measures/joined_measures.md
-          - Notebook: examples/05_joined_measures/joined_measures.ipynb
+          - examples/05_joined_measures/index.md
+          - Notebook: examples/05_joined_measures/joined_measures_nb.ipynb
       - Multistage Queries:
-          - examples/06_multistage_queries/multistage_queries.md
-          - Notebook: examples/06_multistage_queries/multistage_queries.ipynb
+          - examples/06_multistage_queries/index.md
+          - Notebook: examples/06_multistage_queries/multistage_queries_nb.ipynb
   - Configuration:
       - Datasources: configuration/datasources.md
       - Storage Backends: configuration/storage.md
