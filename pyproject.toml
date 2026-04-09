@@ -83,6 +83,9 @@ markers = [
 target-version = "py311"
 line-length = 120
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E402"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
