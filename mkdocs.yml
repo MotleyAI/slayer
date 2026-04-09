@@ -22,6 +22,14 @@ nav:
       - REST API: interfaces/rest-api.md
       - Python Client: interfaces/python-client.md
       - CLI: interfaces/cli.md
+  - Examples:
+      - Dynamic Models: examples/01_dynamic/dynamic.md
+      - SQL vs DSL: examples/02_sql_vs_dsl/sql_vs_dsl.md
+      - Auto-Ingestion: examples/03_auto_ingest/auto_ingest.md
+      - Time Dimensions: examples/04_time/time.md
+      - Joins: examples/05_joins/joins.md
+      - Joined Measures: examples/05_joined_measures/joined_measures.md
+      - Multistage Queries: examples/06_multistage_queries/multistage_queries.md
   - Configuration:
       - Datasources: configuration/datasources.md
       - Storage Backends: configuration/storage.md
