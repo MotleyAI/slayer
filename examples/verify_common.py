@@ -48,7 +48,7 @@ def check(name, condition):
 
 def summary():
     """Print summary and exit with appropriate code."""
-    print(f"\n{'='*40}")
+    print(f"\n{'=' * 40}")
     print(f"Results: {_passed} passed, {_failed} failed")
     if _failed > 0:
         sys.exit(1)
@@ -80,47 +80,74 @@ def run_common_checks():
     # --- Queries ---
     print("\nQueries:")
 
-    result = api("POST", "/query", {
-        "source_model": "orders",
-        "fields": [{"formula": "count"}],
-    })
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "fields": [{"formula": "count"}],
+        },
+    )
     check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders.count"] == TOTAL_ORDERS)
 
-    result = api("POST", "/query", {
-        "source_model": "orders",
-        "fields": [{"formula": "count"}],
-        "dimensions": [{"name": "status"}],
-    })
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "fields": [{"formula": "count"}],
+            "dimensions": [{"name": "status"}],
+        },
+    )
     by_status = {r["orders.status"]: r["orders.count"] for r in result["data"]}
     for status, expected in STATUS_COUNTS.items():
         check(f"{status} = {expected}", by_status.get(status) == expected)
 
-    result = api("POST", "/query", {
-        "source_model": "orders",
-        "fields": [{"formula": "count"}],
-        "filters": ["status == 'completed'"],
-    })
-    check(f"filter works (completed={STATUS_COUNTS['completed']})", result["data"][0]["orders.count"] == STATUS_COUNTS["completed"])
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "fields": [{"formula": "count"}],
+            "filters": ["status == 'completed'"],
+        },
+    )
+    check(
+        f"filter works (completed={STATUS_COUNTS['completed']})",
+        result["data"][0]["orders.count"] == STATUS_COUNTS["completed"],
+    )
 
-    result = api("POST", "/query", {
-        "source_model": "orders",
-        "fields": [{"formula": "count"}],
-        "dimensions": [{"name": "customer_id"}],
-        "order": [{"column": {"name": "count"}, "direction": "desc"}],
-        "limit": 3,
-    })
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "fields": [{"formula": "count"}],
+            "dimensions": [{"name": "customer_id"}],
+            "order": [{"column": {"name": "count"}, "direction": "desc"}],
+            "limit": 3,
+        },
+    )
     check("order + limit returns 3 rows", result["row_count"] == 3)
 
-    result = api("POST", "/query", {
-        "source_model": "products",
-        "fields": [{"formula": "count"}],
-    })
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "products",
+            "fields": [{"formula": "count"}],
+        },
+    )
     check("8 products total", result["data"][0]["products.count"] == 8)
 
-    result = api("POST", "/query", {
-        "source_model": "customers",
-        "fields": [{"formula": "count"}],
-    })
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "customers",
+            "fields": [{"formula": "count"}],
+        },
+    )
     check("10 customers total", result["data"][0]["customers.count"] == 10)
 
     # --- Datasources ---
@@ -133,31 +160,38 @@ def run_common_checks():
 
 
 def check_rollup(expect_rollup=True):
-    """Check joined dimensions on the orders model."""
-    print("\nRollup:")
+    """Check join-based cross-model queries on the orders model."""
+    print("\nJoins:")
     orders_model = api("GET", "/models/orders")
-    dim_names = [d["name"] for d in orders_model.get("dimensions", [])]
-    # Joined dimensions use dotted names (e.g., "products.category")
-    has_joins = any("." in d for d in dim_names)
+    join_targets = [j["target_model"] for j in orders_model.get("joins", [])]
+    has_joins = len(join_targets) > 0
 
     if expect_rollup:
-        check("rollup dimensions present", has_joins)
+        check("joins present", has_joins)
         if has_joins:
-            result = api("POST", "/query", {
-                "source_model": "orders",
-                "fields": [{"formula": "count"}],
-                "dimensions": [{"name": "products.category"}],
-            })
+            result = api(
+                "POST",
+                "/query",
+                {
+                    "source_model": "orders",
+                    "fields": [{"formula": "count"}],
+                    "dimensions": [{"name": "products.category"}],
+                },
+            )
             by_cat = {r["orders.products.category"]: r["orders.count"] for r in result["data"]}
-            check("rollup by product category works", len(by_cat) > 0)
+            check("query by product category works", len(by_cat) > 0)
             check(f"all categories sum to {TOTAL_ORDERS}", sum(by_cat.values()) == TOTAL_ORDERS)
 
-            result = api("POST", "/query", {
-                "source_model": "orders",
-                "fields": [{"formula": "count"}],
-                "dimensions": [{"name": "regions.name"}],
-            })
-            by_region = {r["orders.regions.name"]: r["orders.count"] for r in result["data"]}
-            check("transitive rollup by region works", len(by_region) > 0)
+            result = api(
+                "POST",
+                "/query",
+                {
+                    "source_model": "orders",
+                    "fields": [{"formula": "count"}],
+                    "dimensions": [{"name": "customers.regions.name"}],
+                },
+            )
+            by_region = {r["orders.customers.regions.name"]: r["orders.count"] for r in result["data"]}
+            check("transitive join by region works", len(by_region) > 0)
     else:
-        check("no rollup dimensions (expected)", not has_joins)
+        check("no joins (expected)", not has_joins)

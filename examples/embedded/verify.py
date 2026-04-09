@@ -82,56 +82,76 @@ def main():
     # --- Basic query checks ---
     print("\nBasic queries:")
 
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders", fields=[{"formula": "count"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "count"}],
+        )
+    )
     check(f"total orders = {TOTAL_ORDERS}", result.data[0]["orders.count"] == TOTAL_ORDERS)
 
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        fields=[{"formula": "count"}],
-        dimensions=[{"name": "status"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "status"}],
+        )
+    )
     by_status = {r["orders.status"]: r["orders.count"] for r in result.data}
     for status, expected in STATUS_COUNTS.items():
         check(f"{status} orders = {expected}", by_status.get(status) == expected)
 
     # Rollup: by product category
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        fields=[{"formula": "count"}],
-        dimensions=[{"name": "products.category"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "products.category"}],
+        )
+    )
     by_cat = {r["orders.products.category"]: r["orders.count"] for r in result.data}
     check("all categories sum to total", sum(by_cat.values()) == TOTAL_ORDERS)
 
     # Filter
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        fields=[{"formula": "count"}],
-        filters=["status == 'completed'"],
-    ))
-    check(f"filtered completed = {STATUS_COUNTS['completed']}", result.data[0]["orders.count"] == STATUS_COUNTS["completed"])
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "count"}],
+            filters=["status == 'completed'"],
+        )
+    )
+    check(
+        f"filtered completed = {STATUS_COUNTS['completed']}",
+        result.data[0]["orders.count"] == STATUS_COUNTS["completed"],
+    )
 
     # Order + limit
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        fields=[{"formula": "count"}],
-        dimensions=[{"name": "customers.name"}],
-        order=[{"column": {"name": "count"}, "direction": "desc"}],
-        limit=3,
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "count"}],
+            dimensions=[{"name": "customers.name"}],
+            order=[{"column": {"name": "count"}, "direction": "desc"}],
+            limit=3,
+        )
+    )
     check("top 3 customers returned", result.row_count == 3)
 
     # --- Fields checks ---
     print("\nFields (arithmetic):")
 
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[Field(formula="count"), Field(formula="quantity_sum"), Field(formula="quantity_sum / count", name="avg_qty")],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            fields=[
+                Field(formula="count"),
+                Field(formula="quantity_sum"),
+                Field(formula="quantity_sum / count", name="avg_qty"),
+            ],
+            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        )
+    )
     check("arithmetic field produces results", result.row_count == 12)
     check("avg_qty column exists", "orders.avg_qty" in result.columns)
     all_positive = all(row["orders.avg_qty"] > 0 for row in result.data)
@@ -140,12 +160,14 @@ def main():
     print("\nFields (transforms):")
 
     # Cumulative sum
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[Field(formula="count"), Field(formula="cumsum(count)", name="cumulative")],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            fields=[Field(formula="count"), Field(formula="cumsum(count)", name="cumulative")],
+            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        )
+    )
     check("cumsum produces results", result.row_count == 12)
     check("cumsum column exists", "orders.cumulative" in result.columns)
     check(f"cumsum final = {TOTAL_ORDERS}", result.data[-1]["orders.cumulative"] == TOTAL_ORDERS)
@@ -153,33 +175,41 @@ def main():
     check("cumsum non-decreasing", all(a <= b for a, b in zip(cumvals, cumvals[1:])))
 
     # time_shift (row-based, previous period)
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[Field(formula="count"), Field(formula="time_shift(count, -1)", name="prev")],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            fields=[Field(formula="count"), Field(formula="time_shift(count, -1)", name="prev")],
+            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        )
+    )
     check("time_shift first month is null", result.data[0]["orders.prev"] is None)
-    check("time_shift second month = first month count", result.data[1]["orders.prev"] == result.data[0]["orders.count"])
+    check(
+        "time_shift second month = first month count", result.data[1]["orders.prev"] == result.data[0]["orders.count"]
+    )
 
     # Change
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[Field(formula="count"), Field(formula="change(count)", name="chg")],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            fields=[Field(formula="count"), Field(formula="change(count)", name="chg")],
+            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        )
+    )
     check("change first month is null", result.data[0]["orders.chg"] is None)
     expected_change = result.data[1]["orders.count"] - result.data[0]["orders.count"]
     check(f"change second month = {expected_change}", result.data[1]["orders.chg"] == expected_change)
 
     # Rank
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        dimensions=[{"name": "customers.name"}],
-        fields=[Field(formula="count"), Field(formula="rank(count)", name="rnk")],
-        order=[{"column": {"name": "count"}, "direction": "desc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            dimensions=[{"name": "customers.name"}],
+            fields=[Field(formula="count"), Field(formula="rank(count)", name="rnk")],
+            order=[{"column": {"name": "count"}, "direction": "desc"}],
+        )
+    )
     check("rank column exists", "orders.rnk" in result.columns)
     check("rank #1 is first row", result.data[0]["orders.rnk"] == 1)
 
@@ -187,45 +217,51 @@ def main():
     print("\nUnified fields:")
 
     # Fields: measure + expression
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        dimensions=[{"name": "products.category"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="quantity_sum"),
-            Field(formula="quantity_sum / count", name="avg_qty"),
-        ],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            dimensions=[{"name": "products.category"}],
+            fields=[
+                Field(formula="count"),
+                Field(formula="quantity_sum"),
+                Field(formula="quantity_sum / count", name="avg_qty"),
+            ],
+        )
+    )
     check("fields produce results", result.row_count > 0)
     check("field expression column exists", "orders.avg_qty" in result.columns)
     check("field measure column exists", "orders.count" in result.columns)
 
     # Fields: transform as formula
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="cumsum(count)", name="running"),
-            Field(formula="change(count)", name="chg"),
-        ],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            fields=[
+                Field(formula="count"),
+                Field(formula="cumsum(count)", name="running"),
+                Field(formula="change(count)", name="chg"),
+            ],
+            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        )
+    )
     check("fields cumsum produces 12 months", result.row_count == 12)
     check("fields cumsum column exists", "orders.running" in result.columns)
     check("fields change column exists", "orders.chg" in result.columns)
     check(f"fields cumsum final = {TOTAL_ORDERS}", result.data[-1]["orders.running"] == TOTAL_ORDERS)
 
     # Fields: last()
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="last(count)", name="latest"),
-        ],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            fields=[
+                Field(formula="count"),
+                Field(formula="last(count)", name="latest"),
+            ],
+            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        )
+    )
     check("last column exists", "orders.latest" in result.columns)
     # last() should be the same value for every row (Dec count = 6)
     latest_vals = [r["orders.latest"] for r in result.data]
@@ -237,15 +273,17 @@ def main():
 
     # Mathematical identity: cumsum(change(x)) == x - x[0]
     # For monthly counts, cumsum of changes should equal count minus first month's count
-    result = engine.execute(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="cumsum(change(count))", name="cumsum_change"),
-        ],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
+    result = engine.execute(
+        query=SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            fields=[
+                Field(formula="count"),
+                Field(formula="cumsum(change(count))", name="cumsum_change"),
+            ],
+            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        )
+    )
     check("nested cumsum(change()) works", "orders.cumsum_change" in result.columns)
     # First row: cumsum of first change (NULL) = NULL
     # From row 2 onwards: cumsum(change(x)) = x - x[0]
@@ -253,13 +291,13 @@ def main():
     for row in result.data[1:]:
         expected = row["orders.count"] - first_count
         if row["orders.cumsum_change"] != expected:
-            check(f"cumsum(change(x)) == x - x[0] identity", False)
+            check("cumsum(change(x)) == x - x[0] identity", False)
             break
     else:
         check("cumsum(change(x)) == x - x[0] identity", True)
 
     # --- Summary ---
-    print(f"\n{'='*40}")
+    print(f"\n{'=' * 40}")
     print(f"Results: {passed} passed, {failed} failed")
     if failed > 0:
         sys.exit(1)
