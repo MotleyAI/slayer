@@ -186,6 +186,18 @@ examples:
 examples:
   slayer datasources list
   slayer datasources show my_postgres
+
+  # Create from YAML file
+  slayer datasources create datasource.yaml
+
+  # Create inline (quick setup)
+  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password pass
+
+  # Create SQLite/DuckDB (just needs a path)
+  slayer datasources create-inline my_sqlite --type sqlite --database /path/to/data.db
+
+  slayer datasources delete my_postgres
+  slayer datasources test my_postgres
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -198,6 +210,30 @@ examples:
         "show", help="Show datasource config (passwords masked)"
     )
     datasources_show_parser.add_argument("name", help="Datasource name")
+
+    datasources_create_parser = datasources_subparsers.add_parser("create", help="Create a datasource from a YAML file")
+    datasources_create_parser.add_argument("file", help="Path to YAML datasource config")
+
+    ds_inline_parser = datasources_subparsers.add_parser(
+        "create-inline", help="Create a datasource from command-line flags"
+    )
+    ds_inline_parser.add_argument("name", help="Datasource name")
+    ds_inline_parser.add_argument("--type", required=True, help="Database type (postgres, mysql, sqlite, duckdb, ...)")
+    ds_inline_parser.add_argument("--host", default=None, help="Database host")
+    ds_inline_parser.add_argument("--port", type=int, default=None, help="Database port")
+    ds_inline_parser.add_argument("--database", default=None, help="Database name or file path")
+    ds_inline_parser.add_argument("--username", default=None, help="Database username")
+    ds_inline_parser.add_argument("--password", default=None, help="Database password")
+    ds_inline_parser.add_argument(
+        "--connection-string", default=None, help="Full connection string (overrides other flags)"
+    )
+    ds_inline_parser.add_argument("--description", default=None, help="Human-readable description")
+
+    datasources_delete_parser = datasources_subparsers.add_parser("delete", help="Delete a datasource")
+    datasources_delete_parser.add_argument("name", help="Datasource name")
+
+    datasources_test_parser = datasources_subparsers.add_parser("test", help="Test datasource connectivity")
+    datasources_test_parser.add_argument("name", help="Datasource name")
 
     args = parser.parse_args()
 
@@ -355,6 +391,8 @@ def _run_models(args):
 def _run_datasources(args):
     import yaml
 
+    from slayer.core.models import DatasourceConfig
+
     storage = _resolve_storage(args)
 
     if args.datasources_command == "list":
@@ -379,8 +417,50 @@ def _run_datasources(args):
             data["connection_string"] = "********"
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
+    elif args.datasources_command == "create":
+        with open(args.file) as f:
+            data = yaml.safe_load(f)
+        ds = DatasourceConfig.model_validate(data)
+        storage.save_datasource(ds)
+        print(f"Created datasource '{ds.name}' ({ds.type}).")
+
+    elif args.datasources_command == "create-inline":
+        ds_data = {"name": args.name, "type": args.type}
+        for field in ("host", "port", "database", "username", "password", "connection_string", "description"):
+            val = getattr(args, field.replace("-", "_"), None)
+            if val is not None:
+                ds_data[field] = val
+        ds = DatasourceConfig.model_validate(ds_data)
+        storage.save_datasource(ds)
+        print(f"Created datasource '{ds.name}' ({ds.type}).")
+
+    elif args.datasources_command == "delete":
+        deleted = storage.delete_datasource(args.name)
+        if deleted:
+            print(f"Deleted datasource '{args.name}'.")
+        else:
+            print(f"Datasource '{args.name}' not found.")
+            sys.exit(1)
+
+    elif args.datasources_command == "test":
+        ds = storage.get_datasource(args.name)
+        if ds is None:
+            print(f"Datasource '{args.name}' not found.")
+            sys.exit(1)
+        import sqlalchemy as sa
+
+        try:
+            engine = sa.create_engine(ds.get_connection_string())
+            with engine.connect() as conn:
+                conn.execute(sa.text("SELECT 1"))
+            engine.dispose()
+            print(f"OK — connected to '{args.name}' ({ds.type}).")
+        except Exception as e:
+            print(f"FAILED — {e}")
+            sys.exit(1)
+
     else:
-        print("Usage: slayer datasources {list,show}")
+        print("Usage: slayer datasources {list,show,create,create-inline,delete,test}")
         sys.exit(1)
 
 
