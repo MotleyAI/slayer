@@ -190,8 +190,11 @@ examples:
   # Create from YAML file
   slayer datasources create datasource.yaml
 
-  # Create inline (quick setup)
-  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password pass
+  # Create inline (quick setup — use env vars for secrets)
+  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password '${DB_PASSWORD}'
+
+  # Or read password interactively
+  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password-stdin
 
   # Create SQLite/DuckDB (just needs a path)
   slayer datasources create-inline my_sqlite --type sqlite --database /path/to/data.db
@@ -223,7 +226,12 @@ examples:
     ds_inline_parser.add_argument("--port", type=int, default=None, help="Database port")
     ds_inline_parser.add_argument("--database", default=None, help="Database name or file path")
     ds_inline_parser.add_argument("--username", default=None, help="Database username")
-    ds_inline_parser.add_argument("--password", default=None, help="Database password")
+    ds_inline_parser.add_argument(
+        "--password", default=None, help="Database password (prefer --password-stdin or ${ENV_VAR} in YAML configs)"
+    )
+    ds_inline_parser.add_argument(
+        "--password-stdin", action="store_true", help="Read password from stdin (more secure than --password)"
+    )
     ds_inline_parser.add_argument(
         "--connection-string", default=None, help="Full connection string (overrides other flags)"
     )
@@ -327,8 +335,8 @@ def _run_ingest(args):
         print(f"Datasource '{args.datasource}' not found in {storage_path}")
         sys.exit(1)
 
-    include = [t.strip() for t in args.include.split(",")] if args.include else None
-    exclude = [t.strip() for t in args.exclude.split(",")] if args.exclude else None
+    include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
+    exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
     models = ingest_datasource(
         datasource=ds,
@@ -430,6 +438,12 @@ def _run_datasources(args):
             val = getattr(args, field.replace("-", "_"), None)
             if val is not None:
                 ds_data[field] = val
+        if args.password_stdin:
+            import getpass
+
+            ds_data["password"] = (
+                getpass.getpass("Password: ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
+            )
         ds = DatasourceConfig.model_validate(ds_data)
         storage.save_datasource(ds)
         print(f"Created datasource '{ds.name}' ({ds.type}).")
@@ -450,7 +464,7 @@ def _run_datasources(args):
         import sqlalchemy as sa
 
         try:
-            engine = sa.create_engine(ds.get_connection_string())
+            engine = sa.create_engine(ds.resolve_env_vars().get_connection_string())
             with engine.connect() as conn:
                 conn.execute(sa.text("SELECT 1"))
             engine.dispose()

@@ -45,7 +45,7 @@ def register_storage(scheme: str, factory: Callable[[str], StorageBackend]) -> N
     Example:
         register_storage("redis", lambda path: RedisStorage(url=path))
     """
-    _STORAGE_REGISTRY[scheme] = factory
+    _STORAGE_REGISTRY[scheme.lower().strip()] = factory
 
 
 def resolve_storage(path: str) -> StorageBackend:
@@ -72,8 +72,9 @@ def resolve_storage(path: str) -> StorageBackend:
         if scheme == "sqlite":
             from slayer.storage.sqlite_storage import SQLiteStorage
 
-            # sqlite:///path or sqlite://path
-            db_path = remainder.lstrip("/") if remainder.startswith("/") else remainder
+            # sqlite:///abs/path → remainder="/abs/path" (keep absolute)
+            # sqlite://rel/path → remainder="rel/path" (keep relative)
+            db_path = remainder if remainder.startswith("/") else remainder.lstrip("/")
             return SQLiteStorage(db_path=db_path)
         raise ValueError(
             f"Unknown storage scheme '{scheme}'. "

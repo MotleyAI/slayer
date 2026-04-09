@@ -78,7 +78,8 @@ class MyCustomStorage(StorageBackend):
 Register it for URI-based resolution:
 
 ```python
-from slayer.storage.base import register_storage
+from slayer.storage.base import register_storage, resolve_storage
+from my_package import RedisStorage
 
 register_storage("redis", lambda path: RedisStorage(url=f"redis://{path}"))
 
