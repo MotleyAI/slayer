@@ -40,7 +40,18 @@ When AI agents write raw SQL, things break in production — hallucinated column
 
 ---
 
+### What's new since 0.1
 
+- **Cross-model measures** — Query measures from joined models with dot syntax (`"customers.count"`, multi-hop: `"customers.regions.name"`). Sub-query isolation prevents JOIN row multiplication. Transforms compose on cross-model measures (`"cumsum(customers.avg_score)"`).
+- **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model with `create_model_from_query`. `ModelExtension` extends models inline with extra dimensions, measures, or joins at query time.
+- **Dynamic joins with diamond support** — Joins are auto-resolved at query time by walking the join graph. Path-based aliases (`customers__regions` vs `warehouses__regions`) disambiguate when the same table is reachable via multiple FK paths.
+- **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at IS NULL"`).
+- **DuckDB support** — New Tier 1 database, fully integration-tested, no Docker required.
+- **Query introspection** — `dry_run` previews generated SQL without executing; `explain` shows execution plans.
+- **Simpler query syntax** — Dimensions, measures, time dimensions, and order accept plain strings (`"status"` instead of `{"name": "status"}`).
+- **SQL-style filters** — Operators `=`, `<>`, `IN`, `IS NULL`; multi-hop filters (`"customers.regions.name = 'US'"`); computed-column filters (`"change(revenue) > 0"`).
+
+---
 
 
 ## Quick Start
@@ -71,7 +82,7 @@ SLayer compiles these queries into the correct SQL for your database, handling j
 **Key features:**
 
 * **Four interfaces, one query language** — MCP (stdio + SSE), REST API, CLI and Python SDK all expose the same capabilities. Agents, apps, and humans use the same models.
-* **13 database dialects** — CI-tested against Postgres, MySQL, ClickHouse, and SQLite; additional support for Snowflake, BigQuery, Redshift, DuckDB, Trino/Presto, Databricks/Spark, MS SQL Server, and Oracle via sqlglot.
+* **14 database dialects** — CI-tested against Postgres, MySQL, ClickHouse, DuckDB, and SQLite; additional support for Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, and Oracle via sqlglot.
 * **Composable `fields` API** — Derived metrics as formula strings (`"revenue / count"`, `"cumsum(revenue)"`, `"time_shift(revenue, -1, 'year')"`). Arbitrary nesting works — `change(cumsum(revenue))` just compiles.
 * **Zero-config onboarding** — Point SLayer at a database and it introspects the schema, detects foreign keys, and generates models with explicit joins. LEFT JOINs are built dynamically at query time.
 * **Instant model editing** — Add or remove measures and dimensions on a running system via API, CLI, or MCP tool. No rebuild, no restart — changes are queryable immediately.
@@ -369,6 +380,20 @@ The `examples/` directory contains runnable examples that also serve as integrat
 Each example includes a `verify.py` script that runs assertions against the seeded data.
 
 All examples use a shared seed dataset (`examples/seed.py`) with a small e-commerce schema: regions, customers, products, and orders (68 orders across 12 months). The embedded example includes derived column demo queries using `fields`.
+
+
+## Tutorials
+
+The `docs/examples/` directory contains Jupyter notebooks that walk through SLayer's features step by step. All notebooks use a shared Jaffle Shop dataset (DuckDB, ~200K orders) and are self-contained.
+
+| Notebook | Topic |
+|----------|-------|
+| [SQL vs DSL](docs/examples/02_sql_vs_dsl/) | How model SQL and query DSL stay cleanly separated |
+| [Auto-Ingestion](docs/examples/03_auto_ingest/) | Schema introspection, FK graph discovery, automatic model generation |
+| [Time Operations](docs/examples/04_time/) | `change`, `change_pct`, `time_shift`, `lag`, `lead`, `last` — composable time transforms |
+| [Joins](docs/examples/05_joins/) | Dot syntax, multi-hop joins, diamond join disambiguation |
+| [Joined Measures](docs/examples/05_joined_measures/) | Cross-model measures with sub-query isolation |
+| [Multistage Queries](docs/examples/06_multistage_queries/) | Query chaining, queries-as-models, `ModelExtension` |
 
 
 ## Claude Code Skills
