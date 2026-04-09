@@ -12,19 +12,38 @@ from typing import Optional
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import (
+    BUILTIN_AGGREGATION_FORMULAS,
+    BUILTIN_AGGREGATION_REQUIRED_PARAMS,
+    DataType,
+    TimeGranularity,
+)
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 
 logger = logging.getLogger(__name__)
 
-_AGG_FUNCTION_MAP = {
-    DataType.COUNT: "COUNT",
-    DataType.COUNT_DISTINCT: "COUNT_DISTINCT",
-    DataType.SUM: "SUM",
-    DataType.AVERAGE: "AVG",
-    DataType.MIN: "MIN",
-    DataType.MAX: "MAX",
-    # DataType.LAST is not here — it uses a special ROW_NUMBER + conditional aggregate
+# Maps aggregation name (string) → SQL function name.
+_AGG_FUNCTION_MAP: dict[str, str] = {
+    "count": "COUNT",
+    "count_distinct": "COUNT_DISTINCT",
+    "sum": "SUM",
+    "avg": "AVG",
+    "min": "MIN",
+    "max": "MAX",
+    "median": "MEDIAN",
+    # "first", "last" use special ROW_NUMBER + conditional aggregate
+    # "weighted_avg" and custom aggregations use formula substitution
+}
+
+# Legacy map for backward compat (DataType → aggregation name string)
+_LEGACY_AGG_MAP: dict[DataType, str] = {
+    DataType.COUNT: "count",
+    DataType.COUNT_DISTINCT: "count_distinct",
+    DataType.SUM: "sum",
+    DataType.AVERAGE: "avg",
+    DataType.MIN: "min",
+    DataType.MAX: "max",
+    DataType.LAST: "last",
 }
 
 # Transforms that use self-join CTEs instead of window functions.
@@ -191,10 +210,10 @@ class SQLGenerator:
         """
         from_clause = self._build_from_clause(enriched=enriched)
 
-        # If any measure has type=last, prepend a ROW_NUMBER CTE to mark the
-        # latest row per group. The FROM is replaced with this ranked subquery.
-        has_last_measures = any(m.type == DataType.LAST for m in enriched.measures)
-        if has_last_measures and enriched.last_agg_time_column:
+        # If any measure has first/last aggregation, prepend a ROW_NUMBER CTE
+        # to mark the latest (or earliest) row per group.
+        has_first_or_last = any(m.aggregation in ("first", "last") for m in enriched.measures)
+        if has_first_or_last and enriched.last_agg_time_column:
             from_clause = self._build_last_ranked_from(
                 enriched=enriched, base_from=from_clause, time_offset=time_offset,
             )
@@ -204,7 +223,7 @@ class SQLGenerator:
 
         for dim in enriched.dimensions:
             col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
-            if has_last_measures:
+            if has_first_or_last:
                 # In ranked subquery, dimensions are already columns — reference directly
                 col_expr = exp.Column(this=exp.to_identifier(dim.name))
             select_columns.append(col_expr.as_(dim.alias))
@@ -212,7 +231,7 @@ class SQLGenerator:
 
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-            if has_last_measures:
+            if has_first_or_last:
                 # Time dimension is already truncated in the ranked subquery
                 col_expr = exp.Column(this=exp.to_identifier(f"_td_{td.name}"))
             else:
@@ -242,7 +261,7 @@ class SQLGenerator:
         select = select.from_(from_clause)
 
         # When using ranked subquery for type=last, WHERE is already inside the subquery
-        if where_clause is not None and not has_last_measures:
+        if where_clause is not None and not has_first_or_last:
             select = select.where(where_clause)
 
         # Group by when there are aggregations, or when cross-model measures
@@ -818,8 +837,12 @@ class SQLGenerator:
         time_col_expr = self._resolve_sql(sql=time_col, name=time_col, model_name=model)
         order_sql = time_col_expr.sql(dialect=self.dialect)
 
-        rn_expr = f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} DESC) AS _last_rn"
-        parts.append(rn_expr)
+        has_last = any(m.aggregation == "last" for m in enriched.measures)
+        has_first = any(m.aggregation == "first" for m in enriched.measures)
+        if has_last:
+            parts.append(f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} DESC) AS _last_rn")
+        if has_first:
+            parts.append(f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} ASC) AS _first_rn")
 
         select_sql = ", ".join(parts)
         from_sql = base_from.sql(dialect=self.dialect)
@@ -848,15 +871,11 @@ class SQLGenerator:
 
     def _build_agg(self, measure: EnrichedMeasure) -> tuple[exp.Expression, bool]:
         """Build an aggregation expression from an enriched measure."""
-        # type=last: MAX(CASE WHEN _last_rn = 1 THEN col END)
-        # The _last_rn column comes from _build_last_ranked_from
-        if measure.type == DataType.LAST:
-            col = measure.sql or measure.name
-            case_sql = f"MAX(CASE WHEN _last_rn = 1 THEN {measure.model_name}.{col} END)"
-            return sqlglot.parse_one(case_sql, dialect=self.dialect), True
-
-        agg_func = _AGG_FUNCTION_MAP.get(measure.type)
-        if agg_func is None:
+        # Resolve aggregation name: prefer new field, fall back to legacy type
+        agg_name = measure.aggregation
+        if not agg_name and measure.type is not None:
+            agg_name = _LEGACY_AGG_MAP.get(measure.type)
+        if not agg_name:
             # Not an aggregation — raw expression
             if measure.sql:
                 return self._resolve_sql(sql=measure.sql, name=measure.name, model_name=measure.model_name), False
@@ -865,8 +884,19 @@ class SQLGenerator:
                 table=exp.to_identifier(measure.model_name),
             ), False
 
-        # COUNT(*) special case
-        if measure.type == DataType.COUNT and measure.sql is None:
+        # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
+        if agg_name in ("first", "last"):
+            col = measure.sql or measure.name
+            rn_col = "_first_rn" if agg_name == "first" else "_last_rn"
+            case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {measure.model_name}.{col} END)"
+            return sqlglot.parse_one(case_sql, dialect=self.dialect), True
+
+        # --- Custom or parameterized aggregation (formula-based) ---
+        if agg_name not in _AGG_FUNCTION_MAP:
+            return self._build_formula_agg(measure, agg_name), True
+
+        # --- Resolve inner expression ---
+        if agg_name == "count" and measure.sql is None:
             inner = exp.Star()
         elif measure.sql:
             inner = self._resolve_sql(sql=measure.sql, name=measure.name, model_name=measure.model_name)
@@ -876,9 +906,15 @@ class SQLGenerator:
                 table=exp.to_identifier(measure.model_name),
             )
 
-        if measure.type == DataType.COUNT_DISTINCT:
+        # --- count_distinct ---
+        if agg_name == "count_distinct":
             return exp.Count(this=exp.Distinct(expressions=[inner])), True
 
+        # --- median (dialect-dependent) ---
+        if agg_name == "median":
+            return self._build_median(inner), True
+
+        # --- Standard aggregations (sum, avg, min, max, count) ---
         agg_class_map = {
             "COUNT": exp.Count,
             "SUM": exp.Sum,
@@ -886,8 +922,59 @@ class SQLGenerator:
             "MIN": exp.Min,
             "MAX": exp.Max,
         }
+        agg_func = _AGG_FUNCTION_MAP[agg_name]
         agg_class = agg_class_map[agg_func]
         return agg_class(this=inner), True
+
+    def _build_formula_agg(self, measure: EnrichedMeasure, agg_name: str) -> exp.Expression:
+        """Build SQL for formula-based aggregations (weighted_avg, custom)."""
+        # Get formula: from aggregation_def or built-in
+        formula = None
+        if measure.aggregation_def and measure.aggregation_def.formula:
+            formula = measure.aggregation_def.formula
+        elif agg_name in BUILTIN_AGGREGATION_FORMULAS:
+            formula = BUILTIN_AGGREGATION_FORMULAS[agg_name]
+
+        if formula is None:
+            raise ValueError(
+                f"Aggregation '{agg_name}' has no formula. "
+                f"Custom aggregations must define a formula."
+            )
+
+        # Collect param values: query-time overrides > aggregation_def defaults
+        param_defaults = {}
+        if measure.aggregation_def:
+            param_defaults = {p.name: p.sql for p in measure.aggregation_def.params}
+        params = {**param_defaults, **measure.agg_kwargs}
+
+        # Validate required params
+        required = BUILTIN_AGGREGATION_REQUIRED_PARAMS.get(agg_name, [])
+        for req in required:
+            if req not in params:
+                raise ValueError(
+                    f"Aggregation '{agg_name}' requires parameter '{req}'. "
+                    f"Set it in the model's aggregation definition or at query time "
+                    f"(e.g., 'measure:{agg_name}({req}=column)')."
+                )
+
+        # Resolve {value} and {param_name} in formula
+        col_expr = measure.sql or measure.name
+        substituted = formula.replace("{value}", col_expr)
+        for param_name, param_val in params.items():
+            substituted = substituted.replace(f"{{{param_name}}}", param_val)
+
+        return sqlglot.parse_one(substituted, dialect=self.dialect)
+
+    def _build_median(self, inner: exp.Expression) -> exp.Expression:
+        """Build a median aggregation expression (dialect-dependent)."""
+        if self.dialect in ("clickhouse",):
+            return sqlglot.parse_one(f"median({inner.sql(dialect=self.dialect)})", dialect=self.dialect)
+        # Postgres, DuckDB, and most others: PERCENTILE_CONT
+        inner_sql = inner.sql(dialect=self.dialect)
+        return sqlglot.parse_one(
+            f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})",
+            dialect=self.dialect,
+        )
 
     # ------------------------------------------------------------------
     # WHERE / HAVING (filters still use ColumnRef for member resolution)

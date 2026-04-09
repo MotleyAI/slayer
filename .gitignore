@@ -210,3 +210,8 @@ __marimo__/
 
 examples/postgres/slayer_data/
 benchmarks/
+
+# Auto-generated example data (created from scratch by setup_jaffle.py)
+docs/examples/jaffle_data/jaffle-data/
+docs/examples/jaffle_data/jaffle_shop.duckdb
+docs/examples/jaffle_data/slayer_models/

@@ -410,7 +410,7 @@ class TestCrossModelAndMultistage:
             )],
             fields=[Field(formula="count"), Field(formula="total")],
         )
-        outer = SlayerQuery(source_model="monthly", fields=[Field(formula="count")])
+        outer = SlayerQuery(source_model="monthly", fields=[Field(formula="*:count")])
         result = pg_cross_model_env.execute(query=[inner, outer])
         assert result.data[0]["monthly.count"] == 3
 
@@ -426,7 +426,7 @@ class TestCrossModelAndMultistage:
         saved = pg_cross_model_env.create_model_from_query(query=source, name="pg_monthly")
         assert saved.source_queries is not None
         result = pg_cross_model_env.execute(
-            query=SlayerQuery(source_model="pg_monthly", fields=[Field(formula="count")])
+            query=SlayerQuery(source_model="pg_monthly", fields=[Field(formula="*:count")])
         )
         assert result.data[0]["pg_monthly.count"] == 3
 
@@ -536,8 +536,10 @@ class TestRollupIngestion:
         orders = next(m for m in models if m.name == "orders")
 
         measure_names = [m.name for m in orders.measures]
-        assert "count" in measure_names
-        assert "amount_sum" in measure_names
+        # One measure per non-ID column; no auto-created 'count'
+        assert "amount" in measure_names
+        assert "count" not in measure_names
+        assert "amount_sum" not in measure_names
         # No dotted measure names from joined models
         assert not any("." in name for name in measure_names)
 
@@ -577,7 +579,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}, {"formula": "amount_sum"}],
+            fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = engine.execute(query=query)

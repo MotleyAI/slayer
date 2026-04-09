@@ -386,8 +386,10 @@ class TestDuckDBIngestion:
         orders = next(m for m in models if m.name == "orders")
 
         measure_names = [m.name for m in orders.measures]
-        assert "count" in measure_names
-        assert "amount_sum" in measure_names
+        # One measure per non-ID column; no auto-created 'count'
+        assert "amount" in measure_names
+        assert "count" not in measure_names
+        assert "amount_sum" not in measure_names
         # No dotted measure names from joined models
         assert not any("." in name for name in measure_names)
 
@@ -427,7 +429,7 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}, {"formula": "amount_sum"}],
+            fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = engine.execute(query=query)

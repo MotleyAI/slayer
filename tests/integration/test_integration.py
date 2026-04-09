@@ -1102,7 +1102,7 @@ def test_query_as_model_count(integration_env):
     )
 
     # Outer: count how many months exist (references "monthly" by name)
-    outer = SlayerQuery(source_model="monthly", fields=[Field(formula="count")])
+    outer = SlayerQuery(source_model="monthly", fields=[Field(formula="*:count")])
     response = engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
@@ -1122,7 +1122,7 @@ def test_query_as_model_aggregate(integration_env):
         fields=[Field(formula="total_amount")],
     )
 
-    outer = SlayerQuery(source_model="monthly", fields=[Field(formula="total_amount_sum")])
+    outer = SlayerQuery(source_model="monthly", fields=[Field(formula="total_amount:sum")])
     response = engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
@@ -1154,13 +1154,13 @@ def test_create_model_from_query(integration_env):
 
     # Query the saved model by name
     result = engine.execute(query=SlayerQuery(
-        source_model="monthly_summary", fields=[Field(formula="count")],
+        source_model="monthly_summary", fields=[Field(formula="*:count")],
     ))
     assert result.data[0]["monthly_summary.count"] == 3
 
     # Re-aggregate over saved model
     result2 = engine.execute(query=SlayerQuery(
-        source_model="monthly_summary", fields=[Field(formula="total_amount_sum")],
+        source_model="monthly_summary", fields=[Field(formula="total_amount:sum")],
     ))
     assert result2.data[0]["monthly_summary.total_amount_sum"] == pytest.approx(750.0)
 
@@ -1191,7 +1191,7 @@ def test_query_list_with_joins(cross_model_env):
         )],
         fields=[
             Field(formula="count"),
-            Field(formula="customer_scores.avg_score_avg"),
+            Field(formula="customer_scores.avg_score:avg"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -1270,7 +1270,7 @@ def test_formula_dimension_via_query_list(integration_env):
                          "sql": "CASE WHEN total_amount > 200 THEN 'high' ELSE 'low' END"}],
         ),
         dimensions=[ColumnRef(name="amount_tier")],
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     )
 
     response = engine.execute(query=[inner, outer])

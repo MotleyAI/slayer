@@ -106,3 +106,28 @@ class TimeGranularity(StrEnum):
 class OrderDirection(StrEnum):
     ASC = "asc"
     DESC = "desc"
+
+
+# ---------------------------------------------------------------------------
+# Aggregation constants
+# ---------------------------------------------------------------------------
+
+# Built-in aggregation names (always available without model-level definition).
+BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
+    "sum", "avg", "min", "max",
+    "count", "count_distinct",
+    "first", "last",
+    "weighted_avg",
+    "median",
+})
+
+# Built-in aggregation SQL formulas (for aggregations that use a template).
+# {value} = measure's SQL expression; {param_name} = parameter values.
+BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
+    "weighted_avg": "SUM({value} * {weight}) / SUM({weight})",
+}
+
+# Built-in aggregations that require specific parameters.
+BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
+    "weighted_avg": ["weight"],
+}
