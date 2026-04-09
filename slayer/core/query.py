@@ -122,6 +122,8 @@ def _coerce_fields(v: Any) -> Any:
     """Allow plain strings in the fields list: "count" → {"formula": "count"}."""
     if v is None:
         return v
+    if not isinstance(v, (list, tuple)):
+        raise TypeError(f"'fields' must be a list, got {type(v).__name__}")
     return [{"formula": item} if isinstance(item, str) else item for item in v]
 
 
@@ -129,6 +131,8 @@ def _coerce_dimensions(v: Any) -> Any:
     """Allow plain strings in the dimensions list: "status" → {"name": "status"}."""
     if v is None:
         return v
+    if not isinstance(v, (list, tuple)):
+        raise TypeError(f"'dimensions' must be a list, got {type(v).__name__}")
     return [{"name": item} if isinstance(item, str) else item for item in v]
 
 

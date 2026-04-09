@@ -379,3 +379,38 @@ class TestWholePeriodsOnly:
         import datetime
         start = TimeGranularity.QUARTER.period_start(datetime.date(2024, 5, 15))
         assert start == datetime.date(2024, 4, 1)
+
+
+class TestCoerceFieldsAndDimensions:
+    """Tests for _coerce_fields and _coerce_dimensions input validation."""
+
+    def test_fields_scalar_string_raises(self) -> None:
+        with pytest.raises(Exception, match="must be a list"):
+            SlayerQuery(source_model="orders", fields="count")
+
+    def test_dimensions_scalar_string_raises(self) -> None:
+        with pytest.raises(Exception, match="must be a list"):
+            SlayerQuery(source_model="orders", dimensions="status")
+
+    def test_fields_list_of_strings_coerced(self) -> None:
+        q = SlayerQuery(source_model="orders", fields=["count", "sum"])
+        assert q.fields[0].formula == "count"
+        assert q.fields[1].formula == "sum"
+
+    def test_fields_list_of_dicts_accepted(self) -> None:
+        q = SlayerQuery(source_model="orders", fields=[{"formula": "count", "name": "cnt"}])
+        assert q.fields[0].formula == "count"
+        assert q.fields[0].name == "cnt"
+
+    def test_dimensions_list_of_strings_coerced(self) -> None:
+        q = SlayerQuery(source_model="orders", dimensions=["status", "region"])
+        assert q.dimensions[0].name == "status"
+        assert q.dimensions[1].name == "region"
+
+    def test_fields_none_accepted(self) -> None:
+        q = SlayerQuery(source_model="orders", fields=None)
+        assert q.fields is None
+
+    def test_dimensions_none_accepted(self) -> None:
+        q = SlayerQuery(source_model="orders", dimensions=None)
+        assert q.dimensions is None
