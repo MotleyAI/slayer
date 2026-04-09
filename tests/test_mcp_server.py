@@ -12,8 +12,6 @@ from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
 from slayer.mcp.server import (
     _format_table,
     _friendly_db_error,
-    _normalize_order,
-    _normalize_time_dimensions,
     create_mcp_server,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -301,28 +299,6 @@ class TestDeleteTools:
         result = _call(mcp_server, "delete_datasource", {"name": "nope"})
         assert "not found" in result
 
-
-class TestNormalization:
-    def test_normalize_time_dimensions_string(self) -> None:
-        result = _normalize_time_dimensions([{"dimension": "created_at", "granularity": "month"}])
-        assert result[0]["dimension"] == {"name": "created_at"}
-
-    def test_normalize_time_dimensions_dict_passthrough(self) -> None:
-        result = _normalize_time_dimensions([{"dimension": {"name": "created_at"}, "granularity": "month"}])
-        assert result[0]["dimension"] == {"name": "created_at"}
-
-    def test_normalize_order_string(self) -> None:
-        result = _normalize_order([{"column": "count", "direction": "desc"}])
-        assert result[0]["column"] == {"name": "count"}
-
-    def test_normalize_order_cross_model(self) -> None:
-        result = _normalize_order([{"column": "orders.total", "direction": "asc"}])
-        # Dotted names are passed as-is; ColumnRef's validator parses them later
-        assert result[0]["column"] == {"name": "orders.total"}
-
-    def test_normalize_order_dict_passthrough(self) -> None:
-        result = _normalize_order([{"column": {"name": "count"}, "direction": "desc"}])
-        assert result[0]["column"] == {"name": "count"}
 
 
 class TestIngestionIdSkipping:

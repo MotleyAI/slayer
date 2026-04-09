@@ -10,9 +10,9 @@ Field formulas define what data columns a query returns. They go in the `fields`
 
 ```json
 "fields": [
-  {"formula": "count"},
+  "count",
   {"formula": "revenue / count", "name": "aov", "label": "Average Order Value"},
-  {"formula": "cumsum(revenue)"},
+  "cumsum(revenue)",
   ...
 ]
 ```
@@ -69,7 +69,7 @@ Field formulas support arbitrary nesting — functions can wrap other functions 
 ```json
 "fields": [
   {"formula": "change(cumsum(revenue))", "name": "cumsum_delta"},
-  {"formula": "last(change(cumsum(revenue)))"},
+  "last(change(cumsum(revenue)))",
   {"formula": "cumsum(revenue / count)", "name": "running_aov"},
   {"formula": "cumsum(revenue) / count", "name": "cumsum_div_count"},
   ...
@@ -89,12 +89,12 @@ The ranking granularity depends on the query's dimensions and time dimensions. E
 ```json
 {
   "source_model": "orders",
-  "dimensions": [{"name": "customer_name"}],
+  "dimensions": ["customer_name"],
   "fields": [
-    {"formula": "revenue_sum"},
+    "revenue_sum",
     {"formula": "rank(revenue_sum)", "name": "rnk"}
   ],
-  "order": [{"column": {"name": "revenue_sum"}, "direction": "desc"}]
+  "order": [{"column": "revenue_sum", "direction": "desc"}]
 }
 ```
 
@@ -119,10 +119,10 @@ Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at ra
 {
   "source_model": "orders",
   "fields": [
-    {"formula": "revenue_sum"},
+    "revenue_sum",
     {"formula": "last(revenue_sum)", "name": "latest_revenue"}
   ],
-  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
 ```
 

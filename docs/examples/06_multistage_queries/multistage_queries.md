@@ -30,14 +30,14 @@ For the first example above, all you need to do is use the (revenue by store and
   {
     "name": "monthly_store_revenue",
     "source_model": "orders",
-    "fields": [{"formula": "order_total_sum"}],
-    "dimensions": [{"name": "stores.name"}],
-    "time_dimensions": [{"dimension": {"name": "ordered_at"}, "granularity": "month"}]
+    "fields": ["order_total_sum"],
+    "dimensions": ["stores.name"],
+    "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly_store_revenue",
-    "fields": [{"formula": "order_total_sum_avg"}],
-    "dimensions": [{"name": "stores__name"}]
+    "fields": ["order_total_sum_avg"],
+    "dimensions": ["stores__name"]
   }
 ]
 ```
@@ -53,8 +53,8 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
   {
     "name": "customer_activity",
     "source_model": "orders",
-    "fields": [{"formula": "count"}],
-    "dimensions": [{"name": "customer_id"}]
+    "fields": ["count"],
+    "dimensions": ["customer_id"]
   },
   {
     "source_model": {
@@ -62,8 +62,8 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
       "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}],
       "dimensions": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity.count >= 500 THEN 'High' WHEN customer_activity.count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "string"}]
     },
-    "fields": [{"formula": "count"}, {"formula": "order_total_sum"}],
-    "dimensions": [{"name": "activity_bucket"}]
+    "fields": ["count", "order_total_sum"],
+    "dimensions": ["activity_bucket"]
   }
 ]
 ```

@@ -104,14 +104,14 @@ for model in models:
 ## Run Your First Query
 
 ```python
-from slayer.core.query import SlayerQuery, ColumnRef
+from slayer.core.query import SlayerQuery
 
 engine = SlayerQueryEngine(storage=storage)
 
 query = SlayerQuery(
     source_model="orders",
-    fields=[{"formula": "count"}],
-    dimensions=[ColumnRef(name="status")],
+    fields=["count"],
+    dimensions=["status"],
     limit=10,
 )
 result = engine.execute(query=query)

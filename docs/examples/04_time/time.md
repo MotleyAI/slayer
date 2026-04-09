@@ -30,12 +30,12 @@ Here is a complete example query for “monthly revenue for the last year by reg
 {
   "source_model": "my_model",
   "fields": [
-    {"formula": "revenue_sum"},
-    {"formula": "time_shift(revenue_sum, -1, 'year')"}
+    "revenue_sum",
+    "time_shift(revenue_sum, -1, 'year')"
   ],
-  "dimensions": [{"name": "region"}],
+  "dimensions": ["region"],
   "time_dimensions": [{
-    "dimension": {"name": "created_at"},
+    "dimension": "created_at",
     "granularity": "month",
     "date_range": ["2025-01-01", "2025-12-31"]
   }],

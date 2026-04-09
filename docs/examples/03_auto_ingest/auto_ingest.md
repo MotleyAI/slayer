@@ -57,9 +57,9 @@ Once ingested, models are queried like any other. Joined dimensions use dot synt
 ```json
 {
   "source_model": "order_items",
-  "fields": [{"formula": "count"}, {"formula": "quantity_sum"}],
-  "dimensions": [{"name": "orders.customers.name"}],
-  "order": [{"column": {"name": "quantity_sum"}, "direction": "desc"}],
+  "fields": ["count", "quantity_sum"],
+  "dimensions": ["orders.customers.name"],
+  "order": [{"column": "quantity_sum", "direction": "desc"}],
   "limit": 5
 }
 ```

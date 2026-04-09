@@ -156,7 +156,7 @@ engine.create_model_from_query(
     query=SlayerQuery(
         source_model="orders",
         time_dimensions=[...],
-        fields=[{"formula": "count"}, {"formula": "total_amount"}],
+        fields=["count", "total_amount"],
     ),
     name="monthly_summary",
 )

@@ -33,8 +33,8 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": [{"formula": "count"}],
-    "dimensions": [{"name": "status"}],
+    "fields": ["count"],
+    "dimensions": ["status"],
     "limit": 10
   }'
 ```

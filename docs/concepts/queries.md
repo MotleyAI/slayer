@@ -46,7 +46,7 @@ A time dimension with a required granularity and an optional date range. Support
 
 ```json
 {
-  "dimension": {"name": "created_at"},
+  "dimension": "created_at",
   "granularity": "month",
   "date_range": ["2024-01-01", "2024-12-31"],
   "label": "Order Month"
@@ -58,7 +58,7 @@ A time dimension with a required granularity and an optional date range. Support
 ## OrderItem
 
 ```json
-{"column": {"name": "count"}, "direction": "desc"}
+{"column": "count", "direction": "desc"}
 ```
 
 Via MCP: `{"column": "count", "direction": "desc"}`
@@ -133,7 +133,7 @@ Filters can reference names of computed fields — transforms and arithmetic exp
 ```json
 {
   "fields": [
-    {"formula": "revenue"},
+    "revenue",
     {"formula": "change(revenue)", "name": "rev_change"}
   ],
   "filters": ["rev_change < 0"]
@@ -165,8 +165,8 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": [{"formula": "count"}],
-  "dimensions": [{"name": "status"}]
+  "fields": ["count"],
+  "dimensions": ["status"]
 }
 ```
 
@@ -175,9 +175,9 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": [{"formula": "revenue_sum"}],
+  "fields": ["revenue_sum"],
   "time_dimensions": [{
-    "dimension": {"name": "created_at"},
+    "dimension": "created_at",
     "granularity": "month",
     "date_range": ["2024-01-01", "2024-12-31"]
   }]
@@ -189,9 +189,9 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": [{"formula": "revenue_sum"}],
-  "dimensions": [{"name": "customer_name"}],
-  "order": [{"column": {"name": "revenue_sum"}, "direction": "desc"}],
+  "fields": ["revenue_sum"],
+  "dimensions": ["customer_name"],
+  "order": [{"column": "revenue_sum", "direction": "desc"}],
   "limit": 5
 }
 ```
@@ -201,7 +201,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": [{"formula": "count"}],
+  "fields": ["count"],
   "filters": ["status = 'completed' or status = 'pending'"]
 }
 ```
@@ -212,13 +212,13 @@ Post-filters can be combined with regular filters — base filters (on dimension
 {
   "source_model": "orders",
   "fields": [
-    {"formula": "count"},
-    {"formula": "revenue_sum"},
+    "count",
+    "revenue_sum",
     {"formula": "revenue_sum / count", "name": "aov", "label": "Average Order Value"},
     {"formula": "cumsum(revenue_sum)", "name": "running"},
     {"formula": "change(revenue_sum)", "name": "mom_change"}
   ],
-  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
 ```
 
@@ -230,10 +230,10 @@ When models have [joins](models.md#joins), you can reference measures from joine
 {
   "source_model": "orders",
   "fields": [
-    {"formula": "count"},
-    {"formula": "customers.avg_score"}
+    "count",
+    "customers.avg_score"
   ],
-  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
 ```
 
@@ -248,12 +248,12 @@ Pass a list of queries to `execute()`. Earlier queries are named sub-queries, th
   {
     "name": "monthly",
     "source_model": "orders",
-    "fields": [{"formula": "count"}, {"formula": "total_amount"}],
-    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+    "fields": ["count", "total_amount"],
+    "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly",
-    "fields": [{"formula": "count"}]
+    "fields": ["count"]
   }
 ]
 ```
@@ -267,13 +267,13 @@ You can also join named queries to models:
   {
     "name": "customer_scores",
     "source_model": "customers",
-    "dimensions": [{"name": "id"}],
-    "fields": [{"formula": "avg_score"}]
+    "dimensions": ["id"],
+    "fields": ["avg_score"]
   },
   {
     "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
-    "fields": [{"formula": "count"}, {"formula": "customer_scores.avg_score_avg"}],
-    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]
+    "fields": ["count", "customer_scores.avg_score_avg"],
+    "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   }
 ]
 ```
@@ -291,8 +291,8 @@ Extend a model inline with extra dimensions, measures, or joins — without modi
     "dimensions": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
     "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
   },
-  "dimensions": [{"name": "tier"}],
-  "fields": [{"formula": "count"}]
+  "dimensions": ["tier"],
+  "fields": ["count"]
 }
 ```
 
@@ -305,8 +305,8 @@ Dimensions from transitively joined models can be referenced with dotted paths. 
 ```json
 {
   "source_model": "orders",
-  "dimensions": [{"name": "customers.regions.name"}],
-  "fields": [{"formula": "count"}]
+  "dimensions": ["customers.regions.name"],
+  "fields": ["count"]
 }
 ```
 
