@@ -70,6 +70,7 @@ nbclient = ">=0.10"
 nbformat = ">=5.10"
 ipykernel = ">=6.0"
 pre-commit = "^4.5.1"
+notebook = "^7.5.5"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

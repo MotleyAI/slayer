@@ -787,7 +787,7 @@ class SQLGenerator:
 
         # Add pre-computed time dimension expressions (DATE_TRUNC)
         for td in enriched.time_dimensions:
-            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=model)
+            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
             if time_offset is not None:
                 offset_val, offset_gran = time_offset
                 col_expr = self._build_time_offset_expr(
@@ -800,10 +800,10 @@ class SQLGenerator:
         # Must use full expressions (not aliases) since aliases aren't visible in OVER()
         partition_parts = []
         for dim in enriched.dimensions:
-            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=model)
+            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
             partition_parts.append(col_expr.sql(dialect=self.dialect))
         for td in enriched.time_dimensions:
-            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=model)
+            col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
             if time_offset is not None:
                 offset_val, offset_gran = time_offset
                 col_expr = self._build_time_offset_expr(
@@ -814,8 +814,8 @@ class SQLGenerator:
 
         partition_clause = f"PARTITION BY {', '.join(partition_parts)}" if partition_parts else ""
 
-        # ORDER BY the resolved time column
-        time_col_expr = self._resolve_sql(sql=None, name=time_col, model_name=model)
+        # ORDER BY the resolved time column (qualified as "table.column")
+        time_col_expr = self._resolve_sql(sql=time_col, name=time_col, model_name=model)
         order_sql = time_col_expr.sql(dialect=self.dialect)
 
         rn_expr = f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} DESC) AS _last_rn"

@@ -500,27 +500,18 @@ def pg_ingest_env(postgresql):
 
 @pytest.mark.integration
 class TestRollupIngestion:
-    def test_orders_has_rollup_dimensions(self, pg_ingest_env) -> None:
+    def test_orders_has_own_dimensions_only(self, pg_ingest_env) -> None:
+        """After ingestion, models only have their own columns as dimensions."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
         dim_names = [d.name for d in orders.dimensions]
-        # Should have own columns + joined from customers and regions (transitive)
+        # Should have own columns only (no flattened joined dims)
         assert "id" in dim_names
         assert "amount" in dim_names
-        assert "customers.name" in dim_names
-        assert "customers.id" in dim_names
-        # Transitive: orders -> customers -> regions
-        assert "customers.regions.name" in dim_names
-        assert "customers.regions.id" in dim_names
-
-    def test_orders_excludes_fk_from_rollup(self, pg_ingest_env) -> None:
-        models, _, _ = pg_ingest_env
-        orders = next(m for m in models if m.name == "orders")
-
-        dim_names = [d.name for d in orders.dimensions]
-        # FK columns should not be rolled up
-        assert "customers.region_id" not in dim_names
+        assert "customer_id" in dim_names
+        # Joined dimensions are resolved via join graph, not pre-flattened
+        assert not any("." in name for name in dim_names)
 
     def test_orders_uses_sql_table_with_joins(self, pg_ingest_env) -> None:
         models, _, _ = pg_ingest_env
@@ -539,13 +530,16 @@ class TestRollupIngestion:
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    def test_orders_has_count_distinct_measure(self, pg_ingest_env) -> None:
+    def test_orders_has_own_measures_only(self, pg_ingest_env) -> None:
+        """After ingestion, models only have measures for their own columns."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
         measure_names = [m.name for m in orders.measures]
-        assert "customers.count" in measure_names
-        assert "customers.regions.count" in measure_names
+        assert "count" in measure_names
+        assert "amount_sum" in measure_names
+        # No dotted measure names from joined models
+        assert not any("." in name for name in measure_names)
 
     def test_rollup_query_group_by_customer(self, pg_ingest_env) -> None:
         """Query orders grouped by rolled-up customer name."""

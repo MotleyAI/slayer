@@ -13,7 +13,7 @@ import nbclient
 import nbformat
 
 
-NOTEBOOK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "examples", "auto_ingest", "auto_ingest.ipynb")
+NOTEBOOK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "examples", "03_auto_ingest", "auto_ingest.ipynb")
 
 
 @pytest.mark.integration

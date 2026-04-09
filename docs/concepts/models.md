@@ -166,6 +166,21 @@ The saved model can then be queried by name like any other model — useful for 
 
 Via MCP, use the `create_model_from_query` tool. Via API, `POST /models/from_query`.
 
+### Column naming in query-derived models
+
+A query result is a self-contained table — it no longer has the joins that the source model may have had. Dimensions and measures that came from joined models use `__` to encode the original join path in their name:
+
+| Inner query dimension | Virtual model column name |
+|----------------------|--------------------------|
+| `stores.name` | `stores__name` |
+| `customers.regions.name` | `customers__regions__name` |
+| `customer_id` | `customer_id` |
+| `count` (measure) | `count` |
+
+This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
+
+See the [multistage queries example](../examples/06_multistage_queries/multistage_queries.md) for working examples.
+
 ## Model Fields Reference
 
 | Field | Type | Required | Default | Description |

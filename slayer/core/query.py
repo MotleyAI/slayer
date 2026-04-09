@@ -10,7 +10,7 @@ import datetime
 import re
 from typing import List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from slayer.core.enums import TimeGranularity
 
@@ -20,22 +20,44 @@ _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 class ColumnRef(BaseModel):
     """Reference to a dimension by name.
 
-    Supports dotted names for joined models: "status", "customers.name",
-    "customers.regions.name" (multi-hop). Computed dimensions (SQL expressions)
-    should be defined via ModelExtension on the query's model.
+    Supports dotted paths for joined models: "status", "customers.name",
+    "customers.regions.name" (multi-hop). Dots are parsed at validation time:
+    everything before the last dot goes into ``model``, the leaf stays in ``name``.
+
+    Computed dimensions (SQL expressions) should be defined via ModelExtension
+    on the query's model.
     """
     name: str
     model: Optional[str] = None
     label: Optional[str] = None
 
-    @field_validator("name")
-    @classmethod
-    def _validate_name(cls, v: str) -> str:
-        # Allow dotted names for multi-hop joined dimensions (e.g., "customers.regions.name")
-        for part in v.split("."):
-            if not _NAME_PATTERN.match(part):
-                raise ValueError(f"Invalid name '{v}': each part must contain only letters, digits, and underscores")
-        return v
+    @model_validator(mode="after")
+    def _parse_dotted_name(self) -> "ColumnRef":
+        """Parse dotted paths into model + leaf name.
+
+        "customers.regions.name" → model="customers.regions", name="name"
+        "customers.name"         → model="customers",         name="name"
+        "status"                 → model=None,                 name="status"
+        """
+        if self.model is None and "." in self.name:
+            prefix, leaf = self.name.rsplit(".", 1)
+            self.model = prefix
+            self.name = leaf
+        # Validate leaf name (must be a simple identifier, no dots)
+        if not _NAME_PATTERN.match(self.name):
+            raise ValueError(
+                f"Invalid name '{self.name}': must contain only letters, "
+                f"digits, and underscores, and start with a letter or underscore"
+            )
+        # Validate each part of the model path
+        if self.model:
+            for part in self.model.split("."):
+                if not _NAME_PATTERN.match(part):
+                    raise ValueError(
+                        f"Invalid model path '{self.model}': each part must contain "
+                        f"only letters, digits, and underscores"
+                    )
+        return self
 
     @property
     def full_name(self) -> str:
@@ -45,9 +67,7 @@ class ColumnRef(BaseModel):
 
     @classmethod
     def from_string(cls, s: str) -> ColumnRef:
-        if "." in s:
-            model, name = s.split(".", 1)
-            return cls(name=name, model=model)
+        """Create a ColumnRef from a string. Dots are parsed by the validator."""
         return cls(name=s)
 
 
