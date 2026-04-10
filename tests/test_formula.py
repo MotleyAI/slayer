@@ -8,6 +8,7 @@ from slayer.core.formula import (
     TransformField,
     parse_formula,
 )
+from slayer.engine.enrichment import extract_filter_transforms
 
 
 class TestFormulaParser:
@@ -127,3 +128,35 @@ class TestFormulaParser:
         assert result.inner.transform == "change"
         assert isinstance(result.inner.inner, TransformField)
         assert result.inner.inner.transform == "cumsum"
+
+
+class TestExtractFilterTransforms:
+    """Tests for extract_filter_transforms reverse mapping."""
+
+    def test_no_args_aggregation(self) -> None:
+        """revenue:sum → preserved as-is in reconstructed filter."""
+        rewritten, transforms = extract_filter_transforms("change(revenue:sum) > 0")
+        assert len(transforms) == 1
+        assert "revenue:sum" in transforms[0][1]
+
+    def test_positional_args_aggregation(self) -> None:
+        """revenue:last(ordered_at) → positional arg preserved."""
+        rewritten, transforms = extract_filter_transforms("change(revenue:last(ordered_at)) > 0")
+        assert len(transforms) == 1
+        assert "revenue:last(ordered_at)" in transforms[0][1]
+
+    def test_kwargs_only_aggregation(self) -> None:
+        """price:weighted_avg(weight=quantity) → kwarg preserved."""
+        rewritten, transforms = extract_filter_transforms(
+            "change(price:weighted_avg(weight=quantity)) > 0"
+        )
+        assert len(transforms) == 1
+        assert "price:weighted_avg(weight=quantity)" in transforms[0][1]
+
+    def test_mixed_args_and_kwargs(self) -> None:
+        """Aggregation with both positional and keyword args preserved."""
+        rewritten, transforms = extract_filter_transforms(
+            "change(price:weighted_avg(col1, weight=quantity)) > 0"
+        )
+        assert len(transforms) == 1
+        assert "price:weighted_avg(col1, weight=quantity)" in transforms[0][1]

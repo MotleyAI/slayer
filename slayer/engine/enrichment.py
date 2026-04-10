@@ -714,7 +714,7 @@ def extract_filter_transforms(
         ph: (
             f"{ref.measure_name}:{ref.aggregation_name}"
             if not ref.agg_args and not ref.agg_kwargs
-            else f"{ref.measure_name}:{ref.aggregation_name}({', '.join(ref.agg_args)})"
+            else f"{ref.measure_name}:{ref.aggregation_name}({', '.join(ref.agg_args + [f'{k}={v}' for k, v in ref.agg_kwargs.items()])})"
         )
         for ph, ref in agg_refs.items()
     }
