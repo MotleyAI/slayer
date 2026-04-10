@@ -27,8 +27,8 @@ nav:
       - REST API: reference/rest-api.md
       - Python Client: reference/python-client.md
       - CLI: reference/cli.md
-  - Examples:
-      - Dynamic Models: examples/01_dynamic/dynamic.md
+  - Tutorials:
+      - Make it dynamic: examples/01_dynamic/dynamic.md
       - SQL vs DSL:
           - examples/02_sql_vs_dsl/sql_vs_dsl.md
           - Notebook: examples/02_sql_vs_dsl/sql_vs_dsl_nb.ipynb
@@ -47,6 +47,9 @@ nav:
       - Multistage Queries:
           - examples/06_multistage_queries/multistage_queries.md
           - Notebook: examples/06_multistage_queries/multistage_queries_nb.ipynb
+      - Aggregations:
+          - examples/07_aggregations/aggregations.md
+          - Notebook: examples/07_aggregations/aggregations_nb.ipynb
   - Configuration:
       - Datasources: configuration/datasources.md
       - Storage Backends: configuration/storage.md
