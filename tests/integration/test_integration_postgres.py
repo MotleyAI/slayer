@@ -397,9 +397,9 @@ class TestCrossModelAndMultistage:
         result = pg_cross_model_env.execute(query=query)
         assert result.row_count == 3
         # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
-        assert float(result.data[0]["orders.customers__avg_score"]) == pytest.approx(90.0)
-        assert float(result.data[1]["orders.customers__avg_score"]) == pytest.approx(60.0)
-        assert float(result.data[2]["orders.customers__avg_score"]) == pytest.approx(85.0)
+        assert float(result.data[0]["orders.customers.avg_score"]) == pytest.approx(90.0)
+        assert float(result.data[1]["orders.customers.avg_score"]) == pytest.approx(60.0)
+        assert float(result.data[2]["orders.customers.avg_score"]) == pytest.approx(85.0)
 
     def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """Query list: named sub-query referenced by main query."""
@@ -412,7 +412,7 @@ class TestCrossModelAndMultistage:
         )
         outer = SlayerQuery(source_model="monthly", fields=[Field(formula="*:count")])
         result = pg_cross_model_env.execute(query=[inner, outer])
-        assert result.data[0]["monthly.count"] == 3
+        assert result.data[0]["monthly._count"] == 3
 
     def test_create_model_from_query(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """Save a query as a permanent model, then query it."""
@@ -428,7 +428,7 @@ class TestCrossModelAndMultistage:
         result = pg_cross_model_env.execute(
             query=SlayerQuery(source_model="pg_monthly", fields=[Field(formula="*:count")])
         )
-        assert result.data[0]["pg_monthly.count"] == 3
+        assert result.data[0]["pg_monthly._count"] == 3
 
     def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """SQL expression dimension via ModelExtension with Postgres."""
@@ -585,8 +585,8 @@ class TestRollupIngestion:
         result = engine.execute(query=query)
 
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
-        assert by_region["US"]["orders.count"] == 3  # Acme(2) + Initech(1)
-        assert by_region["EU"]["orders.count"] == 1  # Globex(1)
+        assert by_region["US"]["orders._count"] == 3  # Acme(2) + Initech(1)
+        assert by_region["EU"]["orders._count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0
 

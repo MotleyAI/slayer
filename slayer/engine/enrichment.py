@@ -145,7 +145,7 @@ def enrich_query(
         if override_canonical_name:
             canonical_name = override_canonical_name
         elif measure_name == "*":
-            canonical_name = aggregation_name  # *:count → "count"
+            canonical_name = f"_{aggregation_name}"  # *:count → "_count"
         else:
             canonical_name = f"{measure_name}_{aggregation_name}"
 
@@ -330,7 +330,7 @@ def enrich_query(
                 return cm.alias
 
             canonical_name = (
-                spec.aggregation_name
+                f"_{spec.aggregation_name}"
                 if spec.measure_name == "*"
                 else f"{spec.measure_name}_{spec.aggregation_name}"
             )
@@ -444,7 +444,7 @@ def enrich_query(
         if isinstance(spec, AggregatedMeasureRef):
             # New colon syntax: "revenue:sum", "*:count", etc.
             canonical_name = (
-                spec.aggregation_name
+                f"_{spec.aggregation_name}"
                 if spec.measure_name == "*"
                 else f"{spec.measure_name}_{spec.aggregation_name}"
             )

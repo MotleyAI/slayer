@@ -532,7 +532,7 @@ class SlayerQueryEngine:
         # Resolve aggregation: explicit (new syntax) or from deprecated type
         if aggregation_name:
             agg = aggregation_name
-            canonical = aggregation_name if measure_name == "*" else f"{measure_name}_{aggregation_name}"
+            canonical = f"_{aggregation_name}" if measure_name == "*" else f"{measure_name}_{aggregation_name}"
         elif measure_def.type is not None and measure_def.type.is_aggregation:
             from slayer.engine.enrichment import _DEPRECATED_TYPE_TO_AGG
             agg = _DEPRECATED_TYPE_TO_AGG.get(measure_def.type, str(measure_def.type))
@@ -543,7 +543,7 @@ class SlayerQueryEngine:
                 f"(e.g., '{spec_name}:sum')."
             )
 
-        alias = f"{query_model_name}.{target_model_name}__{canonical}"
+        alias = f"{query_model_name}.{target_model_name}.{canonical}"
         aggregation_def = target_model.get_aggregation(agg)
 
         return CrossModelMeasure(

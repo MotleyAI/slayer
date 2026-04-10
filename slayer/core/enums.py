@@ -118,16 +118,18 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "count", "count_distinct",
     "first", "last",
     "weighted_avg",
-    "median",
+    "median", "percentile",
 })
 
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.
 BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
     "weighted_avg": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+    "percentile": "PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {value})",
 }
 
 # Built-in aggregations that require specific parameters.
 BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "weighted_avg": ["weight"],
+    "percentile": ["p"],
 }

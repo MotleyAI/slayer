@@ -435,7 +435,7 @@ class TestDuckDBIngestion:
         result = engine.execute(query=query)
 
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
-        assert by_region["US"]["orders.count"] == 3  # Acme(2) + Initech(1)
-        assert by_region["EU"]["orders.count"] == 1  # Globex(1)
+        assert by_region["US"]["orders._count"] == 3  # Acme(2) + Initech(1)
+        assert by_region["EU"]["orders._count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0

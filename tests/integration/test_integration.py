@@ -1042,9 +1042,9 @@ def test_cross_model_measure_monthly(cross_model_env):
 
     assert response.row_count == 3
     # Jan: Alice (90), Feb: Bob (60), Mar: Charlie(80) + Alice(90) = avg 85
-    assert response.data[0]["orders.customers__avg_score"] == pytest.approx(90.0)
-    assert response.data[1]["orders.customers__avg_score"] == pytest.approx(60.0)
-    assert response.data[2]["orders.customers__avg_score"] == pytest.approx(85.0)
+    assert response.data[0]["orders.customers.avg_score"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customers.avg_score"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customers.avg_score"] == pytest.approx(85.0)
 
 
 def test_cross_model_measure_no_join_raises(cross_model_env):
@@ -1106,7 +1106,7 @@ def test_query_as_model_count(integration_env):
     response = engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
-    assert response.data[0]["monthly.count"] == 3
+    assert response.data[0]["monthly._count"] == 3
 
 
 def test_query_as_model_aggregate(integration_env):
@@ -1156,7 +1156,7 @@ def test_create_model_from_query(integration_env):
     result = engine.execute(query=SlayerQuery(
         source_model="monthly_summary", fields=[Field(formula="*:count")],
     ))
-    assert result.data[0]["monthly_summary.count"] == 3
+    assert result.data[0]["monthly_summary._count"] == 3
 
     # Re-aggregate over saved model
     result2 = engine.execute(query=SlayerQuery(
@@ -1200,9 +1200,9 @@ def test_query_list_with_joins(cross_model_env):
 
     assert response.row_count == 3
     # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
-    assert response.data[0]["orders.customer_scores__avg_score_avg"] == pytest.approx(90.0)
-    assert response.data[1]["orders.customer_scores__avg_score_avg"] == pytest.approx(60.0)
-    assert response.data[2]["orders.customer_scores__avg_score_avg"] == pytest.approx(85.0)
+    assert response.data[0]["orders.customer_scores.avg_score_avg"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customer_scores.avg_score_avg"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customer_scores.avg_score_avg"] == pytest.approx(85.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1276,7 +1276,7 @@ def test_formula_dimension_via_query_list(integration_env):
     response = engine.execute(query=[inner, outer])
 
     # Jan(300)=high, Feb(125)=low, Mar(325)=high
-    by_tier = {r["monthly.amount_tier"]: r["monthly.count"] for r in response.data}
+    by_tier = {r["monthly.amount_tier"]: r["monthly._count"] for r in response.data}
     assert by_tier["high"] == 2
     assert by_tier["low"] == 1
 
