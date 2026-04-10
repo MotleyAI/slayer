@@ -120,6 +120,19 @@ class TestCreateModel:
         assert "created" in result
         assert storage.get_model("orders") is not None
 
+    def test_create_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
+        result = _call(mcp_server, "create_model", {
+            "name": "orders",
+            "sql_table": "public.orders",
+            "data_source": "test_ds",
+            "measures": [
+                {"name": "revenue", "sql": "amount", "allowed_aggregations": ["sum", "avg"]},
+            ],
+        })
+        assert "created" in result
+        model = storage.get_model("orders")
+        assert model.measures[0].allowed_aggregations == ["sum", "avg"]
+
     def test_create_reports_replaced(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
         result = _call(mcp_server, "create_model", {"name": "orders", "sql_table": "t2", "data_source": "test"})
@@ -140,6 +153,21 @@ class TestEditModel:
         assert parsed["success"] is True
         model = storage.get_model("orders")
         assert len(model.measures) == 2
+
+    def test_add_measure_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
+        storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            measures=[Measure(name="revenue", sql="amount")],
+        ))
+        result = _call(mcp_server, "edit_model", {
+            "model_name": "orders",
+            "add_measures": [{"name": "total", "sql": "amount", "allowed_aggregations": ["sum", "avg"]}],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        model = storage.get_model("orders")
+        total = [m for m in model.measures if m.name == "total"][0]
+        assert total.allowed_aggregations == ["sum", "avg"]
 
     def test_add_dimension(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
