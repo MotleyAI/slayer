@@ -24,6 +24,7 @@ When AI agents write raw SQL, things break in production — hallucinated column
 
 - **Auto-ingestion with FK awareness** — Connect a database, and SLayer introspects the schema, detects foreign keys, and generates usable models with denormalized joins instantly. No manual modeling required to get started.
 - **Dynamic model manipulation** — Agents create and edit models at runtime. Changes take effect immediately — no rebuild, no deploy, no restart.
+- **Aggregation at query time** — Define a measure once (`revenue` = the `amount` column), pick the aggregation when you query: `"revenue:sum"`, `"revenue:avg"`, `"revenue:median"`. No `revenue_sum` / `revenue_avg` / `revenue_min` proliferation. Custom aggregations (weighted averages, percentiles, your own SQL templates) are first-class and parametrized.
 - **Query-time expressions** — Compose derived metrics on the fly with the `fields` API (`"revenue:sum / *:count"`, `"cumsum(revenue:sum)"`, `"change_pct(revenue:sum)"`). Aggregation is specified at query time via colon syntax — no need to pre-define every metric.
 - **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"last(change(revenue:sum))"`).
 - **Cross-model measures** — Query measures from joined models with dotted syntax and colon aggregation (`"customers.score:avg"`, multi-hop: `"customers.regions.name"`). Joins auto-resolved via graph walk. Transforms work on cross-model measures (`"cumsum(customers.score:avg)"`).
@@ -36,12 +37,12 @@ When AI agents write raw SQL, things break in production — hallucinated column
 - Auto-propagating filters
 - Asof joins
 - Chart generation (eCharts)
-- Claude Code plugin with query skills
 
 ---
 
 ### What's new since 0.1
 
+- **Aggregation separated from measures** — Measures are row-level expressions; aggregation (`sum`, `avg`, `median`, `weighted_avg`, `percentile`, ...) is chosen at query time with colon syntax (`"revenue:sum"`). Custom aggregations with SQL templates and parameters can be defined at the model level. Per-measure `allowed_aggregations` whitelists.
 - **Cross-model measures** — Query measures from joined models with dot syntax and colon aggregation (`"customers.*:count"`, `"customers.score:avg"`, multi-hop: `"customers.regions.name"`). Sub-query isolation prevents JOIN row multiplication. Transforms compose on cross-model measures (`"cumsum(customers.score:avg)"`).
 - **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model with `create_model_from_query`. `ModelExtension` extends models inline with extra dimensions, measures, or joins at query time.
 - **Dynamic joins with diamond support** — Joins are auto-resolved at query time by walking the join graph. Path-based aliases (`customers__regions` vs `warehouses__regions`) disambiguate when the same table is reachable via multiple FK paths.
