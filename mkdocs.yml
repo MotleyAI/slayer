@@ -10,18 +10,23 @@ theme:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
+  - Getting Started:
+      - getting-started/index.md
+      - MCP (AI Agents): getting-started/mcp.md
+      - CLI (Terminal): getting-started/cli.md
+      - REST API (Any Language): getting-started/rest-api.md
+      - Python SDK: getting-started/python.md
   - Concepts:
       - Terminology: concepts/terminology.md
       - Models: concepts/models.md
       - Queries: concepts/queries.md
       - Formulas: concepts/formulas.md
       - Auto-Ingestion: concepts/ingestion.md
-  - Interfaces:
-      - MCP Server: interfaces/mcp.md
-      - REST API: interfaces/rest-api.md
-      - Python Client: interfaces/python-client.md
-      - CLI: interfaces/cli.md
+  - Reference:
+      - MCP Server: reference/mcp.md
+      - REST API: reference/rest-api.md
+      - Python Client: reference/python-client.md
+      - CLI: reference/cli.md
   - Examples:
       - Dynamic Models: examples/01_dynamic/dynamic.md
       - SQL vs DSL:

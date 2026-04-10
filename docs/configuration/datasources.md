@@ -42,30 +42,36 @@ password: ${DB_PASSWORD}
 
 SLayer uses [sqlglot](https://github.com/tobymao/sqlglot) for dialect-aware SQL generation. Databases are supported at two tiers:
 
-### First-class support
+### Database Drivers
+
+#### First-class support
 
 These databases are verified by integration tests and runnable Docker examples. Regressions are caught in CI.
 
-| Type | Install Extra | Connection Driver | Example |
-|------|---------------|-------------------|---------|
-| `postgres` / `postgresql` | `pip install motley-slayer[postgres]` | `postgresql://` | `postgresql://user:pass@localhost:5432/db` |
-| `mysql` / `mariadb` | `pip install motley-slayer[mysql]` | `mysql+pymysql://` | `mysql+pymysql://user:pass@localhost:3306/db` |
-| `clickhouse` | `pip install motley-slayer[clickhouse]` | `clickhouse+http://` | `clickhouse+http://user:pass@localhost:8123/db` |
-| `sqlite` | (built-in) | `sqlite:///` | `sqlite:///path/to/db.sqlite` |
-| `duckdb` | `pip install motley-slayer[duckdb]` | `duckdb:///` | `duckdb:///path/to/db.duckdb` |
+| Type | Install Extra | Connection String |
+|------|---------------|-------------------|
+| `sqlite` | (built-in, no extra needed) | `sqlite:///path/to/db.sqlite` |
+| `postgres` / `postgresql` | `motley-slayer[postgres]` | `postgresql://user:pass@localhost:5432/db` |
+| `mysql` / `mariadb` | `motley-slayer[mysql]` | `mysql+pymysql://user:pass@localhost:3306/db` |
+| `clickhouse` | `motley-slayer[clickhouse]` | `clickhouse+http://user:pass@localhost:8123/db` |
+| `duckdb` | `motley-slayer[duckdb]` | `duckdb:///path/to/db.duckdb` |
 
-### Additional support
+#### Additional support
 
-These databases have SQL generation covered by unit tests, but are not verified against live instances yet.
+SQL generation is covered by unit tests, but not verified against live instances. Install the appropriate SQLAlchemy driver manually.
 
-| Type | Notes |
-|------|-------|
-| `snowflake` | Analytical/cloud warehouse; no foreign keys (like ClickHouse), so auto-ingestion won't discover joins |
-| `bigquery` | Analytical/cloud warehouse; no foreign keys, same caveat as Snowflake |
-| `redshift` | Postgres-based cloud warehouse; FKs are informational only (not enforced) |
-| `trino` / `presto` / `athena` | Federated query engines; no FKs, schema depends on the underlying connector |
-| `databricks` / `spark` | Spark SQL-based; no FKs |
-| `oracle` / `mssql` / `sqlserver` / `tsql` | Broadly compatible with Postgres feature set |
+| Type | SQLAlchemy Driver | Install |
+|------|-------------------|---------|
+| `snowflake` | `snowflake-sqlalchemy` | `pip install snowflake-sqlalchemy` |
+| `bigquery` | `sqlalchemy-bigquery` | `pip install sqlalchemy-bigquery` |
+| `redshift` | `sqlalchemy-redshift` + `redshift_connector` | `pip install sqlalchemy-redshift redshift-connector` |
+| `trino` / `presto` / `athena` | `trino` or `PyAthena` | `pip install trino` or `pip install PyAthena` |
+| `databricks` / `spark` | `databricks-sql-connector` | `pip install databricks-sql-connector` |
+| `oracle` | `oracledb` | `pip install oracledb` |
+| `mssql` / `sqlserver` / `tsql` | `pyodbc` or `pymssql` | `pip install pyodbc` or `pip install pymssql` |
+
+!!! note
+    Snowflake, BigQuery, ClickHouse, and similar analytical warehouses typically don't have foreign keys, so auto-ingestion won't discover joins. Define joins manually in your model YAML.
 
 !!! tip
     If your database isn't listed but is supported by sqlglot, it may already work — SLayer falls back to Postgres-style SQL by default. Try it and [open an issue](https://github.com/MotleyAI/slayer/issues) if you hit a problem.
