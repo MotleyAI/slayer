@@ -20,7 +20,7 @@ Here we see the power of dynamic formulas - compare that e.g. to the Cube.js syn
 
 The final time-related transform currently available in SLayer is **last()**. This is different from the previous transforms because taking the last value (for every combination of other dimensions in the query) is guaranteed to change the cardinality by **collapsing the time dimension**, so again needs a subquery that can be joined to the rest of the query by the values of the remaining dimensions. 
 
-Again, **this needs no additional arguments because we already know the time dimension and granularity from the query**. So if you want to only show e.g. revenue by customer only for the customers whose MoM spending has decreased in the last month, you can just group by customer_name and filter by last(change(revenue_sum)) < 0.
+Again, **this needs no additional arguments because we already know the time dimension and granularity from the query**. So if you want to only show e.g. revenue by customer only for the customers whose MoM spending has decreased in the last month, you can just group by customer_name and filter by last(change(revenue:sum)) < 0.
 
 Each of these concepts is very **simple and natural at the semantic level**, but requires **nontrivial SQL semantics** (typically via a subquery) to implement. **SLayer offloads the effort of creating these from the agent, saving tokens, reducing error risk, and freeing the agent’s cognitive capacity and context for tasks you care about.**
 
@@ -30,8 +30,8 @@ Here is a complete example query for “monthly revenue for the last year by reg
 {
   "source_model": "my_model",
   "fields": [
-    "revenue_sum",
-    "time_shift(revenue_sum, -1, 'year')"
+    "revenue:sum",
+    "time_shift(revenue:sum, -1, 'year')"
   ],
   "dimensions": ["region"],
   "time_dimensions": [{
@@ -39,7 +39,7 @@ Here is a complete example query for “monthly revenue for the last year by reg
     "granularity": "month",
     "date_range": ["2025-01-01", "2025-12-31"]
   }],
-  "filters": ["last(change(website_visits_sum)) < 0"]
+  "filters": ["last(change(website_visits:sum)) < 0"]
 }
 ```
 

@@ -58,10 +58,10 @@ A time dimension with a required granularity and an optional date range. Support
 ## OrderItem
 
 ```json
-{"column": "count", "direction": "desc"}
+{"column": "*:count", "direction": "desc"}
 ```
 
-Via MCP: `{"column": "count", "direction": "desc"}`
+Via MCP: `{"column": "*:count", "direction": "desc"}`
 
 ## Response
 
@@ -128,13 +128,13 @@ Multiple entries in the `filters` list are combined with AND.
 
 ### Filtering on Computed Columns
 
-Filters can reference names of computed fields — transforms and arithmetic expressions defined in `fields`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
+Filters can reference names of computed fields — transforms and arithmetic expressions defined in `fields`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "*:count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
 
 ```json
 {
   "fields": [
-    "revenue",
-    {"formula": "change(revenue)", "name": "rev_change"}
+    "revenue:sum",
+    {"formula": "change(revenue:sum)", "name": "rev_change"}
   ],
   "filters": ["rev_change < 0"]
 }
@@ -144,7 +144,7 @@ Transform expressions can also be used **directly in filters** without defining 
 
 ```json
 {
-  "filters": ["last(change(revenue)) < 0"]
+  "filters": ["last(change(revenue:sum)) < 0"]
 }
 ```
 
@@ -152,7 +152,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ```json
 {
-  "filters": ["status = 'completed'", "change(revenue) > 0"]
+  "filters": ["status = 'completed'", "change(revenue:sum) > 0"]
 }
 ```
 
@@ -165,7 +165,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": ["count"],
+  "fields": ["*:count"],
   "dimensions": ["status"]
 }
 ```
@@ -175,7 +175,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue_sum"],
+  "fields": ["revenue:sum"],
   "time_dimensions": [{
     "dimension": "created_at",
     "granularity": "month",
@@ -189,9 +189,9 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue_sum"],
+  "fields": ["revenue:sum"],
   "dimensions": ["customer_name"],
-  "order": [{"column": "revenue_sum", "direction": "desc"}],
+  "order": [{"column": "revenue:sum", "direction": "desc"}],
   "limit": 5
 }
 ```
@@ -201,7 +201,7 @@ Post-filters can be combined with regular filters — base filters (on dimension
 ```json
 {
   "source_model": "orders",
-  "fields": ["count"],
+  "fields": ["*:count"],
   "filters": ["status = 'completed' or status = 'pending'"]
 }
 ```
@@ -212,11 +212,11 @@ Post-filters can be combined with regular filters — base filters (on dimension
 {
   "source_model": "orders",
   "fields": [
-    "count",
-    "revenue_sum",
-    {"formula": "revenue_sum / count", "name": "aov", "label": "Average Order Value"},
-    {"formula": "cumsum(revenue_sum)", "name": "running"},
-    {"formula": "change(revenue_sum)", "name": "mom_change"}
+    "*:count",
+    "revenue:sum",
+    {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
+    {"formula": "cumsum(revenue:sum)", "name": "running"},
+    {"formula": "change(revenue:sum)", "name": "mom_change"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -224,14 +224,14 @@ Post-filters can be combined with regular filters — base filters (on dimension
 
 ### Cross-model measures
 
-When models have [joins](models.md#joins), you can reference measures from joined models using dotted syntax `model_name.measure_name`:
+When models have [joins](models.md#joins), you can reference measures from joined models using dotted syntax with colon aggregation — `model_name.measure_name:aggregation`:
 
 ```json
 {
   "source_model": "orders",
   "fields": [
-    "count",
-    "customers.avg_score"
+    "*:count",
+    "customers.score:avg"
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -248,12 +248,12 @@ Pass a list of queries to `execute()`. Earlier queries are named sub-queries, th
   {
     "name": "monthly",
     "source_model": "orders",
-    "fields": ["count", "total_amount"],
+    "fields": ["*:count", "amount:sum"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly",
-    "fields": ["count"]
+    "fields": ["*:count"]
   }
 ]
 ```
@@ -268,11 +268,11 @@ You can also join named queries to models:
     "name": "customer_scores",
     "source_model": "customers",
     "dimensions": ["id"],
-    "fields": ["avg_score"]
+    "fields": ["score:avg"]
   },
   {
     "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
-    "fields": ["count", "customer_scores.avg_score_avg"],
+    "fields": ["*:count", "customer_scores.score_avg:avg"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   }
 ]
@@ -292,7 +292,7 @@ Extend a model inline with extra dimensions, measures, or joins — without modi
     "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
   },
   "dimensions": ["tier"],
-  "fields": ["count"]
+  "fields": ["*:count"]
 }
 ```
 
@@ -306,7 +306,7 @@ Dimensions from transitively joined models can be referenced with dotted paths. 
 {
   "source_model": "orders",
   "dimensions": ["customers.regions.name"],
-  "fields": ["count"]
+  "fields": ["*:count"]
 }
 ```
 

@@ -127,7 +127,7 @@ engine = SlayerQueryEngine(storage=storage)
 
 query = SlayerQuery(
     source_model="orders",
-    fields=["count"],
+    fields=["*:count"],
     dimensions=["status"],
     limit=10,
 )
@@ -135,8 +135,8 @@ result = engine.execute(query=query)
 
 for row in result.data:
     print(row)
-# {"orders.status": "completed", "orders.count": 42}
-# {"orders.status": "pending", "orders.count": 15}
+# {"orders.status": "completed", "orders._count": 42}
+# {"orders.status": "pending", "orders._count": 15}
 ```
 
 ## Runnable Examples

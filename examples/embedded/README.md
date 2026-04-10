@@ -25,7 +25,7 @@ Runs assertions against the seeded data to validate SLayer is working correctly.
 ## What It Demonstrates
 
 - **Auto-ingestion** from a SQLite database
-- **Rollup joins**: querying `orders` grouped by `products__category` or `customers__name`
+- **Rollup joins**: querying `orders` grouped by `products.category` or `customers.name`
 - **Transitive rollup**: `orders → customers → regions`
 - **Filters**: completed orders only
 - **Ordering + limit**: top 3 customers

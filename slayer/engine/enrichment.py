@@ -260,7 +260,9 @@ def enrich_query(
     def _resolve_sql(sql: str) -> str:
         resolved = sql
         for name, alias in sorted(known_aliases.items(), key=lambda x: -len(x[0])):
-            resolved = re.sub(rf"\b{re.escape(name)}\b", f'"{alias}"', resolved)
+            # Negative lookbehind for . and " prevents matching inside
+            # already-quoted identifiers (e.g., _count inside "orders._count")
+            resolved = re.sub(rf'(?<![."])\b{re.escape(name)}\b', f'"{alias}"', resolved)
         return resolved
 
     def _add_transform(name: str, transform: str, measure_alias: str, offset: int = 1, granularity: str = None):

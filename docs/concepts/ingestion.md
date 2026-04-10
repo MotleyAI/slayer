@@ -33,10 +33,9 @@ Tables with no FK references use their plain table name with no joins.
 SLayer introspects the column types and generates a model:
 
 - **Dimensions** for every column (full-path dotted names for joined columns, e.g., `customers.name`, `customers.regions.name`)
-- **`count` measure** (always)
-- **Numeric non-ID columns**: `{col}_sum`, `{col}_avg`, `{col}_min`, `{col}_max`, `{col}_distinct`
-- **Non-numeric non-ID columns**: `{col}_distinct` (COUNT DISTINCT), `{col}_count` (COUNT non-null)
-- **Count-distinct measures**: `customers.count`, `customers.regions.count` for each referenced table's PK
+- **One measure per non-ID column** (e.g., `{name: "amount", sql: "amount"}`) — aggregation is specified at query time via colon syntax (`amount:sum`, `amount:avg`, etc.)
+- **`*:count`** is always available — no explicit count measure is needed
+- **Count-distinct measures**: `customers.*:count_distinct`, `customers.regions.*:count_distinct` for each referenced table's PK
 
 ID-like columns (`id`, `*_id`, `*_key`, `*_pk`, `*_fk`) are excluded from sum/avg generation. FK columns from referenced tables are excluded from dimensions to avoid redundancy.
 
@@ -85,7 +84,7 @@ After ingestion, you can query rolled-up dimensions directly:
 ```json
 {
   "source_model": "orders",
-  "fields": ["count", "amount_sum"],
+  "fields": ["*:count", "amount:sum"],
   "dimensions": ["customers.name"]
 }
 ```
@@ -95,7 +94,7 @@ Or transitively joined dimensions (using full path):
 ```json
 {
   "source_model": "orders",
-  "fields": ["count"],
+  "fields": ["*:count"],
   "dimensions": ["customers.regions.name"]
 }
 ```
@@ -116,7 +115,7 @@ This avoids table alias collisions and allows querying both paths simultaneously
     "customers.regions.name",
     "warehouses.regions.name"
   ],
-  "fields": ["count"]
+  "fields": ["*:count"]
 }
 ```
 

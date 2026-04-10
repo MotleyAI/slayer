@@ -33,7 +33,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": ["count"],
+    "fields": ["*:count"],
     "dimensions": ["status"],
     "limit": 10
   }'
@@ -44,11 +44,11 @@ Response:
 ```json
 {
   "data": [
-    {"orders.status": "completed", "orders.count": 42},
-    {"orders.status": "pending", "orders.count": 15}
+    {"orders.status": "completed", "orders._count": 42},
+    {"orders.status": "pending", "orders._count": 15}
   ],
   "row_count": 2,
-  "columns": ["orders.status", "orders.count"]
+  "columns": ["orders.status", "orders._count"]
 }
 ```
 

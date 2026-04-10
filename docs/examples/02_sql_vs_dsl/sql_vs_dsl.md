@@ -20,7 +20,7 @@ What if you want to add to a query a filter that directly references the underly
     “source_name”: “orders”,
     “filters”: [“subtotal > tax_paid * 5”]
   },
-  “fields”: [{“formula”: “count”}, {“formula”: “order_total_sum”}],
+  “fields”: [{“formula”: “*:count”}, {“formula”: “order_total:sum”}],
   “dimensions”: [{“name”: “stores.name”}]
 }
 ```

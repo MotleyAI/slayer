@@ -24,9 +24,9 @@ When AI agents write raw SQL, things break in production — hallucinated column
 
 - **Auto-ingestion with FK awareness** — Connect a database, and SLayer introspects the schema, detects foreign keys, and generates usable models with denormalized joins instantly. No manual modeling required to get started.
 - **Dynamic model manipulation** — Agents create and edit models at runtime. Changes take effect immediately — no rebuild, no deploy, no restart.
-- **Query-time expressions** — Compose derived metrics on the fly with the `fields` API (`"revenue / count"`, `"cumsum(revenue)"`, `"change_pct(revenue)"`). No need to pre-define every metric.
-- **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"last(change(revenue))"`).
-- **Cross-model measures** — Query measures from joined models with dotted syntax (`"customers.avg_score"`, multi-hop: `"customers.regions.name"`). Joins auto-resolved via graph walk. Transforms work on cross-model measures (`"cumsum(customers.avg_score)"`).
+- **Query-time expressions** — Compose derived metrics on the fly with the `fields` API (`"revenue:sum / *:count"`, `"cumsum(revenue:sum)"`, `"change_pct(revenue:sum)"`). Aggregation is specified at query time via colon syntax — no need to pre-define every metric.
+- **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"last(change(revenue:sum))"`).
+- **Cross-model measures** — Query measures from joined models with dotted syntax and colon aggregation (`"customers.score:avg"`, multi-hop: `"customers.regions.name"`). Joins auto-resolved via graph walk. Transforms work on cross-model measures (`"cumsum(customers.score:avg)"`).
 - **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model for reuse. `ModelExtension` extends models inline with extra dimensions/joins.
 - **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at IS NULL"`).
 
@@ -42,14 +42,14 @@ When AI agents write raw SQL, things break in production — hallucinated column
 
 ### What's new since 0.1
 
-- **Cross-model measures** — Query measures from joined models with dot syntax (`"customers.count"`, multi-hop: `"customers.regions.name"`). Sub-query isolation prevents JOIN row multiplication. Transforms compose on cross-model measures (`"cumsum(customers.avg_score)"`).
+- **Cross-model measures** — Query measures from joined models with dot syntax and colon aggregation (`"customers.*:count"`, `"customers.score:avg"`, multi-hop: `"customers.regions.name"`). Sub-query isolation prevents JOIN row multiplication. Transforms compose on cross-model measures (`"cumsum(customers.score:avg)"`).
 - **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model with `create_model_from_query`. `ModelExtension` extends models inline with extra dimensions, measures, or joins at query time.
 - **Dynamic joins with diamond support** — Joins are auto-resolved at query time by walking the join graph. Path-based aliases (`customers__regions` vs `warehouses__regions`) disambiguate when the same table is reachable via multiple FK paths.
 - **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at IS NULL"`).
 - **DuckDB support** — New Tier 1 database, fully integration-tested, no Docker required.
 - **Query introspection** — `dry_run` previews generated SQL without executing; `explain` shows execution plans.
 - **Simpler query syntax** — Dimensions, measures, time dimensions, and order accept plain strings (`"status"` instead of `{"name": "status"}`).
-- **SQL-style filters** — Operators `=`, `<>`, `IN`, `IS NULL`; multi-hop filters (`"customers.regions.name = 'US'"`); computed-column filters (`"change(revenue) > 0"`).
+- **SQL-style filters** — Operators `=`, `<>`, `IN`, `IS NULL`; multi-hop filters (`"customers.regions.name = 'US'"`); computed-column filters (`"change(revenue:sum) > 0"`).
 
 ---
 
@@ -88,7 +88,7 @@ SLayer compiles these queries into the correct SQL for your database, handling j
 
 * **Four interfaces, one query language** — MCP (stdio + SSE), REST API, CLI and Python SDK all expose the same capabilities. Agents, apps, and humans use the same models.
 * **14 database dialects** — CI-tested against Postgres, MySQL, ClickHouse, DuckDB, and SQLite; additional support for Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, and Oracle via sqlglot.
-* **Composable `fields` API** — Derived metrics as formula strings (`"revenue / count"`, `"cumsum(revenue)"`, `"time_shift(revenue, -1, 'year')"`). Arbitrary nesting works — `change(cumsum(revenue))` just compiles.
+* **Composable `fields` API** — Derived metrics as formula strings (`"revenue:sum / *:count"`, `"cumsum(revenue:sum)"`, `"time_shift(revenue:sum, -1, 'year')"`). Aggregation specified at query time via colon syntax. Arbitrary nesting works — `change(cumsum(revenue:sum))` just compiles.
 * **Zero-config onboarding** — Point SLayer at a database and it introspects the schema, detects foreign keys, and generates models with explicit joins. LEFT JOINs are built dynamically at query time.
 * **Instant model editing** — Add or remove measures and dimensions on a running system via API, CLI, or MCP tool. No rebuild, no restart — changes are queryable immediately.
 * **Embeddable** — Use it as a standalone service or import it as a Python module with no network layer.
@@ -102,7 +102,7 @@ SLayer compiles these queries into the correct SQL for your database, handling j
 # Query
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "status"}]}'
+  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "status"}]}'
 
 # List models (returns name + description)
 curl http://localhost:5143/models
@@ -182,7 +182,7 @@ client = SlayerClient(storage=YAMLStorage(base_dir="./my_models"))
 # Query data
 query = SlayerQuery(
     model="orders",
-    fields=[{"formula": "count"}, {"formula": "revenue_sum"}],
+    fields=[{"formula": "*:count"}, {"formula": "revenue:sum"}],
     dimensions=[ColumnRef(name="status")],
     limit=10,
 )
@@ -194,7 +194,7 @@ print(df)
 
 ```bash
 # Run a query directly from the terminal
-slayer query '{"model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "status"}]}'
+slayer query '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "status"}]}'
 
 # Or from a file
 slayer query @query.json --format json
@@ -224,14 +224,10 @@ dimensions:
     type: time
 
 measures:
-  - name: count
-    type: count
-  - name: revenue_sum
+  - name: revenue
     sql: amount
-    type: sum
-  - name: revenue_avg
-    sql: amount
-    type: avg
+  - name: quantity
+    sql: qty
 ```
 
 
@@ -245,22 +241,22 @@ The `fields` parameter specifies what data columns to return. Each field has a `
   "dimensions": [{"name": "status"}],
   "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}],
   "fields": [
-    {"formula": "count"},
-    {"formula": "revenue_sum"},
-    {"formula": "revenue_sum / count", "name": "aov", "label": "Average Order Value"},
-    {"formula": "cumsum(revenue_sum)"},
-    {"formula": "change_pct(revenue_sum)"},
-    {"formula": "last(revenue_sum)", "name": "latest_rev"},
-    {"formula": "time_shift(revenue_sum, -1, 'year')", "name": "rev_last_year"},
-    {"formula": "time_shift(revenue_sum, -2)", "name": "rev_2_periods_ago"},
-    {"formula": "lag(revenue_sum, 1)", "name": "rev_prev_row"},
-    {"formula": "rank(revenue_sum)"},
-    {"formula": "change(cumsum(revenue_sum))", "name": "cumsum_delta"}
+    {"formula": "*:count"},
+    {"formula": "revenue:sum"},
+    {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
+    {"formula": "cumsum(revenue:sum)"},
+    {"formula": "change_pct(revenue:sum)"},
+    {"formula": "last(revenue:sum)", "name": "latest_rev"},
+    {"formula": "time_shift(revenue:sum, -1, 'year')", "name": "rev_last_year"},
+    {"formula": "time_shift(revenue:sum, -2)", "name": "rev_2_periods_ago"},
+    {"formula": "lag(revenue:sum, 1)", "name": "rev_prev_row"},
+    {"formula": "rank(revenue:sum)"},
+    {"formula": "change(cumsum(revenue:sum))", "name": "cumsum_delta"}
   ]
 }
 ```
 
-Formulas are parsed using Python's `ast` module (see `slayer/core/formula.py`). Available functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last`, `lag`, `lead`. `time_shift` always uses a self-join CTE — it can reach outside the current result set (no edge NULLs) and handles data gaps correctly. `lag`/`lead` use SQL window functions directly (more efficient, but produce NULLs at edges). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue))` or `cumsum(revenue) / count`.
+Formulas are parsed using Python's `ast` module (see `slayer/core/formula.py`). Available functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last`, `lag`, `lead`. `time_shift` always uses a self-join CTE — it can reach outside the current result set (no edge NULLs) and handles data gaps correctly. `lag`/`lead` use SQL window functions directly (more efficient, but produce NULLs at edges). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue:sum))` or `cumsum(revenue:sum) / *:count`.
 
 Functions that need ordering over time resolve the time dimension via: query `main_time_dimension` -> query `time_dimensions` (if exactly one) -> model `default_time_dimension` -> error.
 
@@ -272,7 +268,7 @@ Filters use simple formula strings — no verbose JSON objects:
 ```json
 {
   "model": "orders",
-  "fields": [{"formula": "count"}, {"formula": "revenue_sum"}],
+  "fields": [{"formula": "*:count"}, {"formula": "revenue:sum"}],
   "filters": [
     "status == 'completed'",
     "amount > 100"
@@ -291,7 +287,7 @@ Filters use simple formula strings — no verbose JSON objects:
 
 **Computed column filters**: filters can reference field names or contain inline transform expressions. These are applied as post-filters after all transforms are computed:
 ```json
-"filters": ["change(revenue_sum) > 0", "last(change(revenue_sum)) < 0"]
+"filters": ["change(revenue:sum) > 0", "last(change(revenue:sum)) < 0"]
 ```
 
 
@@ -301,7 +297,7 @@ Connect to a database and generate models automatically. SLayer introspects the 
 
 For example, given tables `orders → customers → regions` (via FKs), the `orders` model will automatically include:
 - Joined dimensions: `customers.name`, `regions.name`, etc. (dotted syntax)
-- Count-distinct measures: `customers.count`, `regions.count`
+- Count-distinct measures: `customers.*:count_distinct`, `regions.*:count_distinct`
 - Explicit joins — LEFT JOINs are constructed dynamically at query time
 
 ```bash
