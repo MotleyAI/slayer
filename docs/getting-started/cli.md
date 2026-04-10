@@ -73,7 +73,7 @@ slayer ingest --datasource my_pg --exclude migrations,django_session
 
 ```bash
 # Count orders by status
-slayer query '{"source_model": "orders", "fields": [{"formula": "count"}], "dimensions": ["status"]}'
+slayer query '{"source_model": "orders", "fields": ["*:count"], "dimensions": ["status"]}'
 
 # From a file
 slayer query @query.json
@@ -101,7 +101,7 @@ slayer datasources list
 After install + ingest, this should return data:
 
 ```bash
-slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+slayer query '{"source_model": "orders", "fields": ["*:count"]}'
 ```
 
 Expected output:

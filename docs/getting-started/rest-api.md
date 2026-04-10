@@ -60,8 +60,8 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": [{"formula": "count"}],
-    "dimensions": [{"name": "status"}]
+    "fields": ["*:count"],
+    "dimensions": ["status"]
   }'
 ```
 
@@ -86,8 +86,8 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": [{"formula": "revenue_sum"}],
-    "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month", "date_range": ["2024-01-01", "2024-12-31"]}]
+    "fields": ["revenue:sum"],
+    "time_dimensions": [{"dimension": "created_at", "granularity": "month", "date_range": ["2024-01-01", "2024-12-31"]}]
   }'
 
 # Top 5 customers
@@ -95,9 +95,9 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": [{"formula": "revenue_sum"}],
-    "dimensions": [{"name": "customers.name"}],
-    "order": [{"column": {"name": "revenue_sum"}, "direction": "desc"}],
+    "fields": ["revenue:sum"],
+    "dimensions": ["customers.name"],
+    "order": [{"column": "revenue:sum", "direction": "desc"}],
     "limit": 5
   }'
 
@@ -132,8 +132,8 @@ const res = await fetch("http://localhost:5143/query", {
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({
     source_model: "orders",
-    fields: [{formula: "count"}],
-    dimensions: [{name: "status"}],
+    fields: ["*:count"],
+    dimensions: ["status"],
   }),
 });
 const {data} = await res.json();
@@ -141,7 +141,7 @@ const {data} = await res.json();
 
 **Go:**
 ```go
-body := `{"source_model": "orders", "fields": [{"formula": "count"}]}`
+body := `{"source_model": "orders", "fields": ["*:count"]}`
 resp, _ := http.Post("http://localhost:5143/query", "application/json", strings.NewReader(body))
 ```
 

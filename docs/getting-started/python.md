@@ -56,8 +56,8 @@ engine = SlayerQueryEngine(storage=storage)
 
 result = engine.execute(query=SlayerQuery(
     source_model="orders",
-    fields=[{"formula": "count"}, {"formula": "revenue_sum"}],
-    dimensions=[{"name": "status"}],
+    fields=["*:count", "revenue:sum"],
+    dimensions=["status"],
 ))
 
 for row in result.data:
@@ -89,8 +89,8 @@ client = SlayerClient(url="http://localhost:5143")
 # Query — returns SlayerResponse (same as embedded mode)
 result = client.query(SlayerQuery(
     source_model="orders",
-    fields=[{"formula": "count"}],
-    dimensions=[{"name": "status"}],
+    fields=["*:count"],
+    dimensions=["status"],
 ))
 print(result.data)
 ```
@@ -101,8 +101,8 @@ print(result.data)
 # With pandas (requires motley-slayer[client] extra)
 df = client.query_df(SlayerQuery(
     source_model="orders",
-    fields=[{"formula": "count"}, {"formula": "revenue_sum"}],
-    dimensions=[{"name": "status"}],
+    fields=["*:count", "revenue:sum"],
+    dimensions=["status"],
 ))
 print(df)
 ```
@@ -140,7 +140,7 @@ engine = SlayerQueryEngine(storage=storage)
 print(storage.list_models())
 
 # Should return data
-result = engine.execute(query={"source_model": "orders", "fields": [{"formula": "count"}]})
+result = engine.execute(query={"source_model": "orders", "fields": ["*:count"]})
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 
