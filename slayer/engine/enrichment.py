@@ -140,6 +140,11 @@ def enrich_query(
 
         # Resolve measure SQL
         if measure_name == "*":
+            if aggregation_name != "count":
+                raise ValueError(
+                    f"Aggregation '{aggregation_name}' not allowed with measure '*' "
+                    f"— use '*:count' for COUNT(*)"
+                )
             sql = None
         else:
             measure_def = model.get_measure(measure_name)

@@ -44,6 +44,8 @@ COUNT(\*) doesn't aggregate a specific column — it counts rows. In SLayer, `*`
 
 `*:count` produces `COUNT(*)`. Result column: `orders._count` (the underscore prefix distinguishes it from any dimension that might happen to be called `count`).
 
+> **Note:** `*` can only be used with `count`. Combinations like `*:sum` or `*:avg` are invalid — use a named measure instead.
+
 You can also count non-null values of a specific column: `email:count` produces `COUNT(email)`. And `customer_id:count_distinct` gives you `COUNT(DISTINCT customer_id)`.
 
 ## Built-in aggregations
