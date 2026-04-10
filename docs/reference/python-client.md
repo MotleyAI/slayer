@@ -14,16 +14,15 @@ pip install motley-slayer[client]   # httpx + pandas
 
 ```python
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.query import SlayerQuery
 
 client = SlayerClient(url="http://localhost:5143")
 
-query = SlayerQuery(
-    source_model="orders",
-    fields=["count", "revenue_sum"],
-    dimensions=["status"],
-    limit=10,
-)
+query = {
+    "source_model": "orders",
+    "fields": ["*:count", "revenue:sum"],
+    "dimensions": ["status"],
+    "limit": 10,
+}
 
 # Get raw data
 data = client.query(query)
