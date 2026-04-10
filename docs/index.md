@@ -42,7 +42,9 @@ Agent ─→ MCP / REST API / Python SDK
 
 ## Next Steps
 
-- [Getting Started](getting-started.md) — install, connect a database, run your first query
-- [MCP Server](interfaces/mcp.md) — set up SLayer as an MCP tool server for AI agents
+- [Getting Started](getting-started/index.md) — pick your interface and get running in minutes
+- [MCP Setup](getting-started/mcp.md) — connect AI agents to your database
+- [CLI Setup](getting-started/cli.md) — query from the terminal
+- [REST API Setup](getting-started/rest-api.md) — build apps in any language
 - [Models](concepts/models.md) — understand dimensions and measures
 - [Queries](concepts/queries.md) — query format reference with examples

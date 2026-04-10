@@ -35,6 +35,26 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 storage = SQLiteStorage(db_path="./slayer.db")
 ```
 
+## Storage Resolution
+
+The `resolve_storage()` factory creates a backend from a path or URI:
+
+```python
+from slayer.storage.base import resolve_storage
+
+storage = resolve_storage("./slayer_data")      # YAMLStorage (directory)
+storage = resolve_storage("slayer.db")           # SQLiteStorage (.db extension)
+storage = resolve_storage("sqlite:///slayer.db") # SQLiteStorage (explicit scheme)
+storage = resolve_storage("yaml://./data")       # YAMLStorage (explicit scheme)
+```
+
+The CLI uses this via the `--storage` flag:
+
+```bash
+slayer serve --storage ./slayer_data    # YAML
+slayer serve --storage slayer.db        # SQLite
+```
+
 ## Custom Backends
 
 Both backends implement the `StorageBackend` protocol. You can write your own:
@@ -53,6 +73,19 @@ class MyCustomStorage(StorageBackend):
     def get_datasource(self, name: str) -> DatasourceConfig | None: ...
     def list_datasources(self) -> list[str]: ...
     def delete_datasource(self, name: str) -> bool: ...
+```
+
+Register it for URI-based resolution:
+
+```python
+from slayer.storage.base import register_storage, resolve_storage
+from my_package import RedisStorage
+
+register_storage("redis", lambda path: RedisStorage(url=f"redis://{path}"))
+
+# Now works everywhere:
+storage = resolve_storage("redis://localhost:6379/0")
+# slayer serve --storage redis://localhost:6379/0
 ```
 
 Pass any backend to the server, MCP, or client:

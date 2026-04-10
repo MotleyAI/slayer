@@ -4,60 +4,244 @@ import argparse
 import os
 import sys
 
+_STORAGE_DEFAULT = os.environ.get("SLAYER_STORAGE", os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+_STORAGE_HELP = (
+    "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
+    "(default: $SLAYER_STORAGE or $SLAYER_MODELS_DIR or ./slayer_data)"
+)
+
+
+def _add_storage_arg(parser):
+    """Add --storage and legacy --models-dir flags to a parser."""
+    parser.add_argument("--storage", default=None, help=_STORAGE_HELP)
+    parser.add_argument(
+        "--models-dir",
+        default=None,
+        help="(deprecated, use --storage) Path to YAML models directory",
+    )
+
+
+def _resolve_storage(args):
+    """Resolve storage backend from --storage or --models-dir flags."""
+    from slayer.storage.base import resolve_storage
+
+    path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    return resolve_storage(path)
+
 
 def main():
-    parser = argparse.ArgumentParser(prog="slayer", description="SLayer — semantic layer for AI agents")
+    parser = argparse.ArgumentParser(
+        prog="slayer",
+        description="SLayer — a lightweight semantic layer for AI agents",
+        epilog="""\
+common workflows:
+  # 1. Create a datasource config, ingest models, start the server
+  slayer ingest --datasource my_postgres
+  slayer serve
+
+  # 2. Query from the command line
+  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+
+  # 3. Start the MCP server for AI agents
+  slayer mcp
+
+  # 4. Use SQLite storage instead of YAML files
+  slayer serve --storage slayer.db
+  slayer ingest --datasource my_pg --storage slayer.db
+
+docs: https://motley-slayer.readthedocs.io/
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command")
 
-    # serve command
-    serve_parser = subparsers.add_parser("serve", help="Start the REST API server")
-    serve_parser.add_argument("--host", default="0.0.0.0")
-    serve_parser.add_argument("--port", type=int, default=5143)
-    serve_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── serve ─────────────────────────────────────────────────────────
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start the REST API server",
+        epilog="""\
+examples:
+  slayer serve
+  slayer serve --port 8080 --storage ./my_data
+  slayer serve --storage slayer.db
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    serve_parser.add_argument("--port", type=int, default=5143, help="Port number (default: 5143)")
+    _add_storage_arg(serve_parser)
 
-    # mcp command
-    mcp_parser = subparsers.add_parser("mcp", help="Start the MCP server")
-    mcp_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── mcp ───────────────────────────────────────────────────────────
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Start the MCP server (stdio transport for AI agents)",
+        epilog="""\
+examples:
+  slayer mcp
+  slayer mcp --storage slayer.db
 
-    # query command
-    query_parser = subparsers.add_parser("query", help="Execute a SLayer query from JSON")
-    query_parser.add_argument("query_json", help="JSON query string or @file.json")
-    query_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
-    query_parser.add_argument("--format", choices=["json", "table"], default="table")
+  # Add to Claude Code:
+  claude mcp add slayer -- slayer mcp --storage ./slayer_data
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(mcp_parser)
+
+    # ── query ─────────────────────────────────────────────────────────
+    query_parser = subparsers.add_parser(
+        "query",
+        help="Execute a query from JSON",
+        epilog="""\
+examples:
+  # Inline JSON
+  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+
+  # From a file
+  slayer query @query.json
+
+  # Preview SQL without executing
+  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}' --dry-run
+
+  # Show execution plan
+  slayer query @query.json --explain
+
+  # Output as JSON
+  slayer query @query.json --format json
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    query_parser.add_argument(
+        "query_json",
+        help="JSON query string, or @file.json to read from a file",
+    )
+    _add_storage_arg(query_parser)
+    query_parser.add_argument(
+        "--format",
+        choices=["json", "table"],
+        default="table",
+        help="Output format (default: table)",
+    )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
     query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
 
-    # ingest command
-    ingest_parser = subparsers.add_parser("ingest", help="Auto-ingest models from a datasource")
-    ingest_parser.add_argument("--datasource", required=True)
-    ingest_parser.add_argument("--schema", default=None)
-    ingest_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── ingest ────────────────────────────────────────────────────────
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Auto-ingest models from a datasource",
+        epilog="""\
+examples:
+  slayer ingest --datasource my_postgres
+  slayer ingest --datasource my_postgres --schema public
+  slayer ingest --datasource my_postgres --include orders,customers
+  slayer ingest --datasource my_postgres --exclude migrations,django_session
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ingest_parser.add_argument("--datasource", required=True, help="Name of the datasource to ingest from")
+    ingest_parser.add_argument("--schema", default=None, help="Database schema to introspect (e.g., public)")
+    ingest_parser.add_argument(
+        "--include",
+        default=None,
+        help="Comma-separated list of tables to include (default: all)",
+    )
+    ingest_parser.add_argument(
+        "--exclude",
+        default=None,
+        help="Comma-separated list of tables to exclude",
+    )
+    _add_storage_arg(ingest_parser)
 
-    # models command
-    models_parser = subparsers.add_parser("models", help="Manage models")
-    models_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── models ────────────────────────────────────────────────────────
+    models_parser = subparsers.add_parser(
+        "models",
+        help="Manage models",
+        epilog="""\
+examples:
+  slayer models list
+  slayer models show orders
+  slayer models create model.yaml
+  slayer models delete old_model
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(models_parser)
     models_subparsers = models_parser.add_subparsers(dest="models_command")
 
     models_subparsers.add_parser("list", help="List all models")
 
-    models_show_parser = models_subparsers.add_parser("show", help="Show a model definition")
+    models_show_parser = models_subparsers.add_parser("show", help="Show a model definition (YAML)")
     models_show_parser.add_argument("name", help="Model name")
 
     models_create_parser = models_subparsers.add_parser("create", help="Create a model from a YAML file")
-    models_create_parser.add_argument("file", help="Path to YAML file")
+    models_create_parser.add_argument("file", help="Path to YAML model definition")
 
     models_delete_parser = models_subparsers.add_parser("delete", help="Delete a model")
     models_delete_parser.add_argument("name", help="Model name")
 
-    # datasources command
-    datasources_parser = subparsers.add_parser("datasources", help="Manage datasources")
-    datasources_parser.add_argument("--models-dir", default=os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+    # ── datasources ───────────────────────────────────────────────────
+    datasources_parser = subparsers.add_parser(
+        "datasources",
+        help="Manage datasources",
+        epilog="""\
+examples:
+  slayer datasources list
+  slayer datasources show my_postgres
+
+  # Create from YAML file
+  slayer datasources create datasource.yaml
+
+  # Create inline (quick setup — use env vars for secrets)
+  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password '${DB_PASSWORD}'
+
+  # Or read password interactively
+  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password-stdin
+
+  # Create SQLite/DuckDB (just needs a path)
+  slayer datasources create-inline my_sqlite --type sqlite --database /path/to/data.db
+
+  slayer datasources delete my_postgres
+  slayer datasources test my_postgres
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(datasources_parser)
     datasources_subparsers = datasources_parser.add_subparsers(dest="datasources_command")
 
     datasources_subparsers.add_parser("list", help="List all datasources")
 
-    datasources_show_parser = datasources_subparsers.add_parser("show", help="Show a datasource definition")
+    datasources_show_parser = datasources_subparsers.add_parser(
+        "show", help="Show datasource config (passwords masked)"
+    )
     datasources_show_parser.add_argument("name", help="Datasource name")
+
+    datasources_create_parser = datasources_subparsers.add_parser("create", help="Create a datasource from a YAML file")
+    datasources_create_parser.add_argument("file", help="Path to YAML datasource config")
+
+    ds_inline_parser = datasources_subparsers.add_parser(
+        "create-inline", help="Create a datasource from command-line flags"
+    )
+    ds_inline_parser.add_argument("name", help="Datasource name")
+    ds_inline_parser.add_argument("--type", required=True, help="Database type (postgres, mysql, sqlite, duckdb, ...)")
+    ds_inline_parser.add_argument("--host", default=None, help="Database host")
+    ds_inline_parser.add_argument("--port", type=int, default=None, help="Database port")
+    ds_inline_parser.add_argument("--database", default=None, help="Database name or file path")
+    ds_inline_parser.add_argument("--username", default=None, help="Database username")
+    ds_inline_parser.add_argument(
+        "--password", default=None, help="Database password (prefer --password-stdin or ${ENV_VAR} in YAML configs)"
+    )
+    ds_inline_parser.add_argument(
+        "--password-stdin", action="store_true", help="Read password from stdin (more secure than --password)"
+    )
+    ds_inline_parser.add_argument(
+        "--connection-string", default=None, help="Full connection string (overrides other flags)"
+    )
+    ds_inline_parser.add_argument("--description", default=None, help="Human-readable description")
+
+    datasources_delete_parser = datasources_subparsers.add_parser("delete", help="Delete a datasource")
+    datasources_delete_parser.add_argument("name", help="Datasource name")
+
+    datasources_test_parser = datasources_subparsers.add_parser("test", help="Test datasource connectivity")
+    datasources_test_parser.add_argument("name", help="Datasource name")
 
     args = parser.parse_args()
 
@@ -83,7 +267,6 @@ def _run_query(args):
 
     from slayer.core.query import SlayerQuery
     from slayer.engine.query_engine import SlayerQueryEngine
-    from slayer.storage.yaml_storage import YAMLStorage
 
     query_input = args.query_json
     if query_input.startswith("@"):
@@ -96,7 +279,7 @@ def _run_query(args):
         data["explain"] = True
     slayer_query = SlayerQuery.model_validate(data)
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
     result = engine.execute(query=slayer_query)
 
@@ -125,35 +308,42 @@ def _run_query(args):
 
 def _run_serve(args):
     from slayer.api.server import create_app
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     app = create_app(storage=storage)
 
     import uvicorn
+
     uvicorn.run(app, host=args.host, port=args.port)
 
 
 def _run_mcp(args):
     from slayer.mcp.server import create_mcp_server
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     mcp = create_mcp_server(storage=storage)
     mcp.run()
 
 
 def _run_ingest(args):
     from slayer.engine.ingestion import ingest_datasource
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
     ds = storage.get_datasource(args.datasource)
     if ds is None:
-        print(f"Datasource '{args.datasource}' not found in {args.models_dir}")
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        print(f"Datasource '{args.datasource}' not found in {storage_path}")
         sys.exit(1)
 
-    models = ingest_datasource(datasource=ds, schema=args.schema)
+    include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
+    exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
+
+    models = ingest_datasource(
+        datasource=ds,
+        schema=args.schema,
+        include_tables=include,
+        exclude_tables=exclude,
+    )
     for model in models:
         storage.save_model(model)
         print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
@@ -163,9 +353,8 @@ def _run_models(args):
     import yaml
 
     from slayer.core.models import SlayerModel
-    from slayer.storage.yaml_storage import YAMLStorage
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
 
     if args.models_command == "list":
         names = storage.list_models()
@@ -210,9 +399,9 @@ def _run_models(args):
 def _run_datasources(args):
     import yaml
 
-    from slayer.storage.yaml_storage import YAMLStorage
+    from slayer.core.models import DatasourceConfig
 
-    storage = YAMLStorage(base_dir=args.models_dir)
+    storage = _resolve_storage(args)
 
     if args.datasources_command == "list":
         names = storage.list_datasources()
@@ -236,8 +425,56 @@ def _run_datasources(args):
             data["connection_string"] = "********"
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
+    elif args.datasources_command == "create":
+        with open(args.file) as f:
+            data = yaml.safe_load(f)
+        ds = DatasourceConfig.model_validate(data)
+        storage.save_datasource(ds)
+        print(f"Created datasource '{ds.name}' ({ds.type}).")
+
+    elif args.datasources_command == "create-inline":
+        ds_data = {"name": args.name, "type": args.type}
+        for field in ("host", "port", "database", "username", "password", "connection_string", "description"):
+            val = getattr(args, field.replace("-", "_"), None)
+            if val is not None:
+                ds_data[field] = val
+        if args.password_stdin:
+            import getpass
+
+            ds_data["password"] = (
+                getpass.getpass("Password: ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
+            )
+        ds = DatasourceConfig.model_validate(ds_data)
+        storage.save_datasource(ds)
+        print(f"Created datasource '{ds.name}' ({ds.type}).")
+
+    elif args.datasources_command == "delete":
+        deleted = storage.delete_datasource(args.name)
+        if deleted:
+            print(f"Deleted datasource '{args.name}'.")
+        else:
+            print(f"Datasource '{args.name}' not found.")
+            sys.exit(1)
+
+    elif args.datasources_command == "test":
+        ds = storage.get_datasource(args.name)
+        if ds is None:
+            print(f"Datasource '{args.name}' not found.")
+            sys.exit(1)
+        import sqlalchemy as sa
+
+        try:
+            engine = sa.create_engine(ds.resolve_env_vars().get_connection_string())
+            with engine.connect() as conn:
+                conn.execute(sa.text("SELECT 1"))
+            engine.dispose()
+            print(f"OK — connected to '{args.name}' ({ds.type}).")
+        except Exception as e:
+            print(f"FAILED — {e}")
+            sys.exit(1)
+
     else:
-        print("Usage: slayer datasources {list,show}")
+        print("Usage: slayer datasources {list,show,create,create-inline,delete,test}")
         sys.exit(1)
 
 
