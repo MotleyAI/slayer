@@ -128,10 +128,6 @@ class Aggregation(BaseModel):
 class Measure(BaseModel):
     name: str
     sql: Optional[str] = None
-    # DEPRECATED: use aggregation at query time (e.g., "revenue:sum").
-    # Kept for backward compat — if set, used as default aggregation for
-    # bare measure names in formulas.
-    type: Optional[DataType] = None
     description: Optional[str] = None
     hidden: bool = False
     allowed_aggregations: Optional[List[str]] = None

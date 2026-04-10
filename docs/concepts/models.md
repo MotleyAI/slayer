@@ -119,10 +119,6 @@ aggregations:
 
 Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`.
 
-### Backward Compatibility
-
-The old `type` field on measures (e.g., `type: sum`) is still accepted but deprecated. Bare measure names in formulas (e.g., `"revenue"` without colon syntax) work when the measure has a deprecated `type` — this emits a `DeprecationWarning`. New models should omit `type` and use colon syntax at query time.
-
 ## SQL Expressions
 
 ### In Dimensions and Measures

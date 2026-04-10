@@ -10,7 +10,6 @@ transformation step in the query pipeline.
 
 import logging
 import re
-import warnings
 from typing import Dict, List, Optional, Set
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
@@ -18,7 +17,6 @@ from slayer.core.formula import (
     ALL_TRANSFORMS,
     AggregatedMeasureRef,
     ArithmeticField,
-    MeasureRef,
     MixedArithmeticField,
     TIME_TRANSFORMS,
     TransformField,
@@ -39,17 +37,6 @@ from slayer.engine.enriched import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Maps deprecated DataType aggregation values to new aggregation names.
-_DEPRECATED_TYPE_TO_AGG = {
-    DataType.COUNT: "count",
-    DataType.COUNT_DISTINCT: "count_distinct",
-    DataType.SUM: "sum",
-    DataType.AVERAGE: "avg",
-    DataType.MIN: "min",
-    DataType.MAX: "max",
-    DataType.LAST: "last",
-}
 
 _SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
@@ -126,7 +113,6 @@ def enrich_query(
         aggregation_name: str,
         agg_args: Optional[list] = None,
         agg_kwargs: Optional[dict] = None,
-        override_canonical_name: Optional[str] = None,
     ):
         """Create an EnrichedMeasure for an aggregated measure ref.
 
@@ -136,15 +122,12 @@ def enrich_query(
             aggregation_name: Aggregation name ("sum", "weighted_avg", etc.).
             agg_args: Positional args from colon syntax (e.g., time col for last/first).
             agg_kwargs: Keyword args from colon syntax (e.g., weight override).
-            override_canonical_name: Override for result column name (backward compat).
         """
         agg_args = agg_args or []
         agg_kwargs = agg_kwargs or {}
 
         # Canonical name for the result column (colon → underscore)
-        if override_canonical_name:
-            canonical_name = override_canonical_name
-        elif measure_name == "*":
+        if measure_name == "*":
             canonical_name = f"_{aggregation_name}"  # *:count → "_count"
         else:
             canonical_name = f"{measure_name}_{aggregation_name}"
@@ -199,64 +182,6 @@ def enrich_query(
         )
         known_aliases[alias_key] = alias
 
-    def _ensure_measure(mname: str):
-        """Backward compat: ensure a bare measure name (deprecated MeasureRef).
-
-        If the measure has a deprecated ``type`` field, uses it as the default
-        aggregation and emits a deprecation warning. Otherwise raises an error.
-        """
-        measure_def = model.get_measure(mname)
-        if measure_def is None:
-            # Special case: old-style "count" measure → *:count
-            if mname == "count":
-                warnings.warn(
-                    "Bare 'count' in formula is deprecated. Use '*:count' instead.",
-                    DeprecationWarning,
-                    stacklevel=4,
-                )
-                _ensure_aggregated_measure(
-                    alias_key=mname,
-                    measure_name="*",
-                    aggregation_name="count",
-                    override_canonical_name=mname,
-                )
-                return
-            raise ValueError(f"Measure '{mname}' not found in model '{model.name}'")
-
-        if measure_def.type is not None and measure_def.type.is_aggregation:
-            agg_name = _DEPRECATED_TYPE_TO_AGG.get(measure_def.type)
-            if agg_name is None:
-                raise ValueError(f"Unknown deprecated type '{measure_def.type}' on measure '{mname}'")
-
-            warnings.warn(
-                f"Bare measure name '{mname}' in formula is deprecated. "
-                f"Use '{mname}:{agg_name}' instead.",
-                DeprecationWarning,
-                stacklevel=4,
-            )
-
-            # For old count measures with no sql, treat as *:count
-            if measure_def.type == DataType.COUNT and measure_def.sql is None:
-                _ensure_aggregated_measure(
-                    alias_key=mname,
-                    measure_name="*",
-                    aggregation_name="count",
-                    override_canonical_name=mname,
-                )
-            else:
-                _ensure_aggregated_measure(
-                    alias_key=mname,
-                    measure_name=mname,
-                    aggregation_name=agg_name,
-                    override_canonical_name=mname,
-                )
-        else:
-            raise ValueError(
-                f"Measure '{mname}' must be used with an aggregation "
-                f"(e.g., '{mname}:sum'). Bare measure names are only "
-                f"supported for backward compat with deprecated 'type' field."
-            )
-
     def _resolve_sql(sql: str) -> str:
         resolved = sql
         for name, alias in sorted(known_aliases.items(), key=lambda x: -len(x[0])):
@@ -292,7 +217,7 @@ def enrich_query(
         known_aliases[name] = alias
 
     def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
-        """Ensure a measure is resolved — handles both agg refs and bare names."""
+        """Ensure a measure is resolved — handles agg refs only."""
         agg_refs = agg_refs or {}
         if mname in agg_refs:
             ref = agg_refs[mname]
@@ -310,7 +235,10 @@ def enrich_query(
                 agg_kwargs=ref.agg_kwargs,
             )
         else:
-            _ensure_measure(mname)
+            raise ValueError(
+                f"Bare measure name '{mname}' in expression is not valid. "
+                f"Use colon syntax."
+            )
 
     def _flatten_spec(spec, field_name: str) -> str:
         if isinstance(spec, AggregatedMeasureRef):
@@ -344,24 +272,6 @@ def enrich_query(
                 agg_kwargs=spec.agg_kwargs,
             )
             return f"{model_name_str}.{canonical_name}"
-
-        elif isinstance(spec, MeasureRef):
-            if "." in spec.name:
-                cm = resolve_cross_model_measure(
-                    spec_name=spec.name,
-                    field_name=field_name,
-                    model=model,
-                    query=query,
-                    dimensions=dimensions,
-                    time_dimensions=time_dimensions,
-                    named_queries=named_queries,
-                )
-                cross_model_measures.append(cm)
-                known_aliases[field_name] = cm.alias
-                return cm.alias
-            _ensure_measure(spec.name)
-            # For backward compat, look up the alias that _ensure_measure stored
-            return known_aliases.get(spec.name, f"{model_name_str}.{spec.name}")
 
         elif isinstance(spec, ArithmeticField):
             for mname in spec.measure_names:
@@ -405,16 +315,13 @@ def enrich_query(
                     f"(e.g., cumsum, lag)."
                 )
             inner_name = f"_inner_{field_name}"
-            if isinstance(spec.inner, (MeasureRef, AggregatedMeasureRef)):
-                if isinstance(spec.inner, AggregatedMeasureRef):
-                    canonical = (
-                        spec.inner.aggregation_name
-                        if spec.inner.measure_name == "*"
-                        else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
-                    )
-                    inner_alias = _flatten_spec(spec.inner, canonical)
-                else:
-                    inner_alias = _flatten_spec(spec.inner, spec.inner.name)
+            if isinstance(spec.inner, AggregatedMeasureRef):
+                canonical = (
+                    spec.inner.aggregation_name
+                    if spec.inner.measure_name == "*"
+                    else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
+                )
+                inner_alias = _flatten_spec(spec.inner, canonical)
             else:
                 inner_alias = _flatten_spec(spec.inner, inner_name)
 
@@ -490,33 +397,6 @@ def enrich_query(
                     if m.name == canonical_name:
                         m.label = qfield.label
 
-        elif isinstance(spec, MeasureRef):
-            # Backward compat: bare measure name
-            if "." in spec.name and model.get_measure(spec.name) is None:
-                cm = resolve_cross_model_measure(
-                    spec_name=spec.name,
-                    field_name=field_name,
-                    model=model,
-                    query=query,
-                    dimensions=dimensions,
-                    time_dimensions=time_dimensions,
-                    label=qfield.label,
-                    named_queries=named_queries,
-                )
-                cross_model_measures.append(cm)
-                continue
-
-            _ensure_measure(spec.name)
-            measure_def = model.get_measure(spec.name)
-            if measure_def and measure_def.type == DataType.LAST and last_agg_time_column is None:
-                raise ValueError(
-                    f"Measure '{spec.name}' has type=last but no time column could be resolved. "
-                    f"Add a time dimension, set main_time_dimension, or set default_time_dimension on the model."
-                )
-            if qfield.label:
-                for m in measures:
-                    if m.name == spec.name:
-                        m.label = qfield.label
         else:
             _flatten_spec(spec, field_name)
             if qfield.label:

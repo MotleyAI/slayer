@@ -529,14 +529,10 @@ class SlayerQueryEngine:
 
         query_model_name = query.source_model if isinstance(query.source_model, str) else model.name
 
-        # Resolve aggregation: explicit (new syntax) or from deprecated type
+        # Resolve aggregation: explicit colon syntax required
         if aggregation_name:
             agg = aggregation_name
             canonical = f"_{aggregation_name}" if measure_name == "*" else f"{measure_name}_{aggregation_name}"
-        elif measure_def.type is not None and measure_def.type.is_aggregation:
-            from slayer.engine.enrichment import _DEPRECATED_TYPE_TO_AGG
-            agg = _DEPRECATED_TYPE_TO_AGG.get(measure_def.type, str(measure_def.type))
-            canonical = measure_name
         else:
             raise ValueError(
                 f"Cross-model measure '{spec_name}' must include an aggregation "
@@ -560,7 +556,6 @@ class SlayerQueryEngine:
                 model_name=target_model_name,
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs or {},
-                type=measure_def.type,
             ),
             join_pairs=join.join_pairs,
             shared_dimensions=shared_dims,

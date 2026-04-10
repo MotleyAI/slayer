@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
-from slayer.core.enums import DataType
 from slayer.core.models import Measure, SlayerModel
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -42,7 +41,7 @@ class TestModels:
             "sql_table": "public.orders",
             "data_source": "test",
             "dimensions": [{"name": "id", "sql": "id", "type": "number"}],
-            "measures": [{"name": "count", "type": "count"}],
+            "measures": [{"name": "revenue", "sql": "amount"}],
         }
         resp = client.post("/models", json=model)
         assert resp.status_code == 200
@@ -106,8 +105,8 @@ class TestModels:
                 {"name": "internal_flag", "sql": "flag", "type": "string", "hidden": True},
             ],
             "measures": [
-                {"name": "count", "type": "count"},
-                {"name": "secret_sum", "sql": "x", "type": "sum", "hidden": True},
+                {"name": "revenue", "sql": "amount"},
+                {"name": "secret_sum", "sql": "x", "hidden": True},
             ],
         }
         client.post("/models", json=model)
@@ -117,7 +116,7 @@ class TestModels:
         measure_names = [m["name"] for m in data["measures"]]
         assert "id" in dim_names
         assert "internal_flag" not in dim_names
-        assert "count" in measure_names
+        assert "revenue" in measure_names
         assert "secret_sum" not in measure_names
 
 
@@ -164,7 +163,7 @@ class TestDatasources:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"source_model": "nonexistent", "fields": [{"formula": "count"}]})
+        resp = client.post("/query", json={"source_model": "nonexistent", "fields": [{"formula": "*:count"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -172,7 +171,7 @@ class TestQuery:
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         ))
-        resp = client.post("/query", json={"source_model": "orders", "fields": [{"formula": "count"}]})
+        resp = client.post("/query", json={"source_model": "orders", "fields": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400

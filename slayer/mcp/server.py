@@ -13,7 +13,6 @@ from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-VALID_MEASURE_TYPES = {"count", "count_distinct", "sum", "avg", "min", "max", "last"}
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 
 
@@ -81,7 +80,7 @@ def _model_to_summary(model: SlayerModel) -> dict:
             for d in model.dimensions if not d.hidden
         ],
         "measures": [
-            {"name": m.name, "type": str(m.type), "description": m.description}
+            {"name": m.name, "description": m.description}
             for m in model.measures if not m.hidden
         ],
     }
@@ -406,11 +405,8 @@ def create_mcp_server(storage: StorageBackend):
             name = spec.get("name", "")
             if name in existing_measure_names:
                 return f"Measure '{name}' already exists on model '{model_name}'."
-            measure_type = spec.get("type", "")
-            if measure_type not in VALID_MEASURE_TYPES:
-                return f"Invalid measure type '{measure_type}'. Must be one of: {', '.join(sorted(VALID_MEASURE_TYPES))}"
             model.measures.append(Measure(
-                name=name, sql=spec.get("sql"), type=measure_type, description=spec.get("description"),
+                name=name, sql=spec.get("sql"), description=spec.get("description"),
             ))
             existing_measure_names.add(name)
             changes.append(f"added measure '{name}'")

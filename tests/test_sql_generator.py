@@ -40,10 +40,9 @@ def orders_model() -> SlayerModel:
             Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="revenue", sql="amount", type=DataType.SUM),
-            Measure(name="avg_revenue", sql="amount", type=DataType.AVERAGE),
-            Measure(name="distinct_customers", sql="customer_id", type=DataType.COUNT_DISTINCT),
+            Measure(name="revenue", sql="amount"),
+            Measure(name="avg_revenue", sql="amount"),
+            Measure(name="distinct_customers", sql="customer_id"),
         ],
     )
 
@@ -55,7 +54,7 @@ def generator() -> SQLGenerator:
 
 class TestBasicQueries:
     def test_simple_count(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="count")])
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="*:count")])
         sql = _generate(generator, query, orders_model)
         assert "COUNT(*)" in sql
         assert "public.orders" in sql
@@ -69,7 +68,7 @@ class TestBasicQueries:
     def test_dimension_with_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count"), Field(formula="revenue")],
+            fields=[Field(formula="*:count"), Field(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = _generate(generator, query, orders_model)
@@ -81,7 +80,7 @@ class TestBasicQueries:
     def test_limit_and_offset(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             limit=10,
             offset=20,
         )
@@ -92,7 +91,7 @@ class TestBasicQueries:
     def test_order_by(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column=ColumnRef(name="count", model="orders"), direction="desc")],
         )
@@ -105,7 +104,7 @@ class TestTimeDimensions:
     def test_time_dimension_with_granularity(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
@@ -117,7 +116,7 @@ class TestTimeDimensions:
     def test_time_dimension_with_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             time_dimensions=[
                 TimeDimension(
                     dimension=ColumnRef(name="created_at"),
@@ -136,7 +135,7 @@ class TestFilters:
     def test_equals_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status == 'active'"],
         )
         sql = _generate(generator, query, orders_model)
@@ -146,7 +145,7 @@ class TestFilters:
     def test_in_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status in ('active', 'pending')"],
         )
         sql = _generate(generator, query, orders_model)
@@ -157,7 +156,7 @@ class TestFilters:
     def test_gt_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["customer_id > 100"],
         )
         sql = _generate(generator, query, orders_model)
@@ -167,7 +166,7 @@ class TestFilters:
     def test_contains_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status like '%act%'"],
         )
         sql = _generate(generator, query, orders_model)
@@ -177,7 +176,7 @@ class TestFilters:
     def test_is_null_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status IS NULL"],
         )
         sql = _generate(generator, query, orders_model)
@@ -186,7 +185,7 @@ class TestFilters:
     def test_is_not_null_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status IS NOT NULL"],
         )
         sql = _generate(generator, query, orders_model)
@@ -197,7 +196,7 @@ class TestFilters:
         """Python-style 'is None' still works for backward compatibility."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status is None"],
         )
         sql = _generate(generator, query, orders_model)
@@ -207,7 +206,7 @@ class TestFilters:
         """SQL single = works as equality."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status = 'active'"],
         )
         sql = _generate(generator, query, orders_model)
@@ -217,7 +216,7 @@ class TestFilters:
         """SQL <> works as not-equals."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status <> 'cancelled'"],
         )
         sql = _generate(generator, query, orders_model)
@@ -230,7 +229,7 @@ class TestFilters:
         """= inside a string literal is not converted to ==."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status = 'x=y'"],
         )
         sql = _generate(generator, query, orders_model)
@@ -242,7 +241,7 @@ class TestFilters:
         """<> inside a string literal is not converted to !=."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status = 'foo<>bar'"],
         )
         sql = _generate(generator, query, orders_model)
@@ -251,7 +250,7 @@ class TestFilters:
     def test_composite_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["status == 'active' or customer_id > 10"],
         )
         sql = _generate(generator, query, orders_model)
@@ -260,9 +259,9 @@ class TestFilters:
     def test_measure_filter_goes_to_having(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue")],
+            fields=[Field(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
-            filters=["revenue > 1000"],
+            filters=["revenue_sum > 1000"],
         )
         sql = _generate(generator, query, orders_model)
         assert "HAVING" in sql
@@ -276,11 +275,11 @@ class TestFilters:
             dimensions=[
                 Dimension(name="order_status", sql="status_col", type=DataType.STRING),
             ],
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["order_status == 'active'"],
         )
         sql = _generate(generator, query, model)
@@ -290,7 +289,7 @@ class TestFilters:
     def test_date_range_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             filters=["created_at >= '2024-01-01' and created_at <= '2024-06-30'"],
         )
         sql = _generate(generator, query, orders_model)
@@ -300,17 +299,17 @@ class TestFilters:
 
 class TestMeasureTypes:
     def test_count_distinct(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="distinct_customers")])
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="distinct_customers:count_distinct")])
         sql = _generate(generator, query, orders_model)
         assert "COUNT(DISTINCT" in sql
 
     def test_average(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="avg_revenue")])
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="avg_revenue:avg")])
         sql = _generate(generator, query, orders_model)
         assert "AVG(" in sql
 
     def test_sum(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="revenue")])
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="revenue:sum")])
         sql = _generate(generator, query, orders_model)
         assert "SUM(" in sql
 
@@ -322,11 +321,11 @@ class TestSubquery:
             sql="SELECT * FROM public.orders WHERE created_at > '2024-01-01'",
             data_source="test",
             dimensions=[Dimension(name="status", sql="status", type=DataType.STRING)],
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         )
         query = SlayerQuery(
             source_model="recent_orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = _generate(generator, query, model)
@@ -345,13 +344,13 @@ class TestBareColumnNames:
                 Dimension(name="status", sql="status", type=DataType.STRING),
             ],
             measures=[
-                Measure(name="count", type=DataType.COUNT),
+                Measure(name="revenue", sql="amount"),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = _generate(gen, query, model)
@@ -367,13 +366,13 @@ class TestBareColumnNames:
             sql_table="public.orders",
             data_source="test",
             measures=[
-                Measure(name="total", sql="amount", type=DataType.SUM),
+                Measure(name="total", sql="amount"),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="total")],
+            fields=[Field(formula="total:sum")],
         )
         sql = _generate(gen, query, model)
         assert "SUM" in sql
@@ -385,7 +384,7 @@ class TestDialects:
         gen = SQLGenerator(dialect="mysql")
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
@@ -400,7 +399,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            fields=[Field(formula="count"), Field(formula="revenue"), Field(formula="revenue / count", name="aov")],
+            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
         )
         sql = _generate(generator, query, orders_model)
         assert "base" in sql.lower()
@@ -412,7 +411,7 @@ class TestFields:
         """Without fields, no CTE is generated."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
         )
         sql = _generate(generator, query, orders_model)
         assert "WITH" not in sql
@@ -421,7 +420,7 @@ class TestFields:
         """LIMIT applies to the outer query, not the CTE."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count"), Field(formula="revenue"), Field(formula="revenue / count", name="aov")],
+            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
             limit=5,
         )
         sql = _generate(generator, query, orders_model)
@@ -435,7 +434,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="cumsum(revenue)", name="rev_running")],
+            fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="rev_running")],
         )
         sql = _generate(generator, query, orders_model)
         assert "SUM(" in sql
@@ -448,7 +447,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1)", name="rev_prev")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1)", name="rev_prev")],
         )
         sql = _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -461,7 +460,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="lag(revenue, 1)", name="rev_prev")],
+            fields=[Field(formula="revenue:sum"), Field(formula="lag(revenue:sum, 1)", name="rev_prev")],
         )
         sql = _generate(generator, query, orders_model)
         assert "LAG(" in sql
@@ -472,7 +471,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="lead(revenue, 1)", name="rev_next")],
+            fields=[Field(formula="revenue:sum"), Field(formula="lead(revenue:sum, 1)", name="rev_next")],
         )
         sql = _generate(generator, query, orders_model)
         assert "LEAD(" in sql
@@ -483,7 +482,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
+            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -497,7 +496,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="change_pct(revenue)", name="rev_pct")],
+            fields=[Field(formula="revenue:sum"), Field(formula="change_pct(revenue:sum)", name="rev_pct")],
         )
         sql = _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -508,7 +507,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            fields=[Field(formula="revenue"), Field(formula="rank(revenue)", name="rev_rank")],
+            fields=[Field(formula="revenue:sum"), Field(formula="rank(revenue:sum)", name="rev_rank")],
         )
         sql = _generate(generator, query, orders_model)
         assert "RANK()" in sql
@@ -519,20 +518,20 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="last(revenue)", name="latest_rev")],
+            fields=[Field(formula="revenue:sum"), Field(formula="last(revenue:sum)", name="latest_rev")],
         )
         sql = _generate(generator, query, orders_model)
         assert "FIRST_VALUE(" in sql
         assert "DESC" in sql
 
     def test_last_measure_type(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """A measure with type=last should use ROW_NUMBER + conditional aggregate."""
+        """A measure with last aggregation should use ROW_NUMBER + conditional aggregate."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="balance", type=DataType.LAST))
+        orders_model.measures.append(Measure(name="balance", sql="balance"))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="balance")],
+            fields=[Field(formula="balance:last")],
         )
         sql = _generate(generator, query, orders_model)
         # ROW_NUMBER ranked subquery for latest row per group
@@ -548,7 +547,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'year')", name="rev_prev_year")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -567,7 +566,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'month')", name="rev_prev")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
         )
         sql = _generate(generator, query, orders_model)
         # Base CTE should have original date range
@@ -589,7 +588,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'year')", name="rev_yoy")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_yoy")],
         )
         sql = _generate(generator, query, orders_model)
         # Shifted CTE should query March 2023
@@ -608,7 +607,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
+            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = _generate(generator, query, orders_model)
         # change looks back 1 period — shifted CTE should query February
@@ -621,7 +620,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'month')", name="rev_prev")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
         )
         sql = _generate(generator, query, orders_model)
         # Both base and shifted CTEs should query the source table without date filters
@@ -640,7 +639,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, 1, 'month')", name="rev_next")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, 1, 'month')", name="rev_next")],
         )
         sql = _generate(generator, query, orders_model)
         # Shifted CTE should query April (1 month forward)
@@ -659,7 +658,7 @@ class TestFields:
                     date_range=["2024-07-01", "2024-09-30"],
                 )
             ],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'quarter')", name="prev_q")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'quarter')", name="prev_q")],
         )
         sql = _generate(generator, query, orders_model)
         # Q3 2024 shifted back 1 quarter = Q2 2024
@@ -672,7 +671,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="change(time_shift(revenue, -1, 'year'))", name="x")],
+            fields=[Field(formula="revenue:sum"), Field(formula="change(time_shift(revenue:sum, -1, 'year'))", name="x")],
         )
         with pytest.raises(ValueError, match="Nesting.*not supported"):
             _generate(generator, query, orders_model)
@@ -683,7 +682,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
+            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
             filters=["rev_change < 0"],
         )
         sql = _generate(generator, query, orders_model)
@@ -697,8 +696,8 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue")],
-            filters=["last(change(revenue)) < 0"],
+            fields=[Field(formula="revenue:sum")],
+            filters=["last(change(revenue:sum)) < 0"],
         )
         sql = _generate(generator, query, orders_model)
         # Should have the hidden transform columns
@@ -714,7 +713,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="change(revenue)", name="rev_change")],
+            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
             filters=["status == 'completed'", "rev_change > 0"],
         )
         sql = _generate(generator, query, orders_model)
@@ -728,7 +727,7 @@ class TestFields:
         """Transforms requiring time should fail if no time dimension available."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue"), Field(formula="cumsum(revenue)", name="x")],
+            fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
         with pytest.raises(ValueError, match="requires a time dimension"):
             _generate(generator, query, orders_model)
@@ -738,7 +737,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue"), Field(formula="cumsum(revenue)", name="x")],
+            fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
         sql = _generate(generator, query, orders_model)
         assert "OVER" in sql
@@ -746,7 +745,7 @@ class TestFields:
     def test_field_plain_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
         )
         sql = _generate(generator, query, orders_model)
         assert "COUNT(*)" in sql
@@ -755,7 +754,7 @@ class TestFields:
         """Fields referencing measures auto-add them to the base query."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count"), Field(formula="revenue"), Field(formula="revenue / count", name="aov")],
+            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = _generate(generator, query, orders_model)
@@ -766,7 +765,7 @@ class TestFields:
         """Fields can be used alongside explicit measures."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count"), Field(formula="revenue"), Field(formula="revenue / count", name="aov")],
+            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = _generate(generator, query, orders_model)
@@ -783,8 +782,8 @@ class TestNestedFields:
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             fields=[
-                Field(formula="revenue"),
-                Field(formula="change(cumsum(revenue))", name="delta"),
+                Field(formula="revenue:sum"),
+                Field(formula="change(cumsum(revenue:sum))", name="delta"),
             ],
         )
         sql = _generate(generator, query, orders_model)
@@ -802,9 +801,9 @@ class TestNestedFields:
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             fields=[
-                Field(formula="count"),
-                Field(formula="revenue"),
-                Field(formula="cumsum(revenue) / count", name="avg_cumsum"),
+                Field(formula="*:count"),
+                Field(formula="revenue:sum"),
+                Field(formula="cumsum(revenue:sum) / *:count", name="avg_cumsum"),
             ],
         )
         sql = _generate(generator, query, orders_model)
@@ -861,8 +860,7 @@ class TestMultiDialectGeneration:
                 Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
             ],
             measures=[
-                Measure(name="count", type=DataType.COUNT),
-                Measure(name="revenue", sql="amount", type=DataType.SUM),
+                Measure(name="revenue", sql="amount"),
             ],
         )
         return model
@@ -890,7 +888,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count"), Field(formula="revenue")],
+            fields=[Field(formula="*:count"), Field(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = _generate(gen, query, orders_model)
@@ -903,7 +901,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
         )
         sql = _generate(gen, query, orders_model)
@@ -919,7 +917,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue"), Field(formula="time_shift(revenue, -1, 'year')", name="rev_prev_year")],
+            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = _generate(gen, query, orders_model)
         assert "shifted_" in sql
@@ -954,9 +952,7 @@ class TestPathAliasJoinInference:
                     type=DataType.NUMBER,
                 ),
             ],
-            measures=[
-                Measure(name="count", type=DataType.COUNT),
-            ],
+            measures=[],
             joins=[
                 ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
                 ModelJoin(target_model="regions", join_pairs=[["customers.region_id", "id"]]),
@@ -973,7 +969,7 @@ class TestPathAliasJoinInference:
         """Inline dimension SQL like 'customers__regions.name' should infer joins for both tables."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             dimensions=[ColumnRef(name="is_us")],
         )
         enriched = engine._enrich(query=query, model=chained_model)
@@ -997,9 +993,7 @@ class TestPathAliasJoinInference:
                     type=DataType.TIMESTAMP,
                 ),
             ],
-            measures=[
-                Measure(name="count", type=DataType.COUNT),
-            ],
+            measures=[],
             joins=[
                 ModelJoin(target_model="users", join_pairs=[["user_id", "id"]]),
                 ModelJoin(target_model="orgs", join_pairs=[["users.org_id", "id"]]),
@@ -1013,7 +1007,7 @@ class TestPathAliasJoinInference:
                     granularity=TimeGranularity.MONTH,
                 )
             ],
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
         )
         enriched = engine._enrich(query=query, model=model)
         join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
@@ -1026,11 +1020,11 @@ class TestPathAliasJoinInference:
         """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
         # Add a measure referencing a path-aliased joined table
         chained_model.measures.append(
-            Measure(name="region_pop_sum", sql="customers__regions.population", type=DataType.SUM)
+            Measure(name="region_pop_sum", sql="customers__regions.population")
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="region_pop_sum")],
+            fields=[Field(formula="region_pop_sum:sum")],
         )
         enriched = engine._enrich(query=query, model=chained_model)
         join_aliases = {alias for _, alias, _ in enriched.resolved_joins}

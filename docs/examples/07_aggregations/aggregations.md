@@ -182,19 +182,6 @@ The colon becomes an underscore in result keys:
 
 When a query is saved as a model (`create_model_from_query`), these canonical names become the new model's column names.
 
-## Backward compatibility
-
-Old-style measures with a `type` field still work:
-
-```yaml
-measures:
-  - name: revenue
-    sql: amount
-    type: sum    # deprecated — still accepted
-```
-
-Queries using bare measure names (`"revenue"` instead of `"revenue:sum"`) also still work when the measure has a deprecated `type` — you'll get a `DeprecationWarning` suggesting the new syntax.
-
 ---
 
 See the [companion notebook](aggregations_nb.ipynb) for runnable code demonstrating all of the above.

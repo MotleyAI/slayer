@@ -454,7 +454,8 @@ def _columns_to_model(
     # using colon syntax (e.g., "revenue:sum", "customer_id:count_distinct").
     # *:count is always available for COUNT(*) without any measure definition.
     for col_name in numeric_columns + non_numeric_columns:
-        measures.append(Measure(name=col_name, sql=col_name))
+        measure_name = "count_col" if col_name == "_count" else col_name
+        measures.append(Measure(name=measure_name, sql=col_name))
 
     return SlayerModel(
         name=name,

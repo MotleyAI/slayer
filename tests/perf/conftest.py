@@ -41,12 +41,11 @@ def _build_orders_model(ds_name: str) -> SlayerModel:
             Dimension(name="cancelled_at", sql="cancelled_at", type=DataType.TIMESTAMP),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="total_cost", sql="cost", type=DataType.SUM),
-            Measure(name="avg_cost", sql="cost", type=DataType.AVERAGE),
-            Measure(name="min_cost", sql="cost", type=DataType.MIN),
-            Measure(name="max_cost", sql="cost", type=DataType.MAX),
-            Measure(name="latest_cost", sql="cost", type=DataType.LAST),
+            Measure(name="total_cost", sql="cost"),
+            Measure(name="avg_cost", sql="cost"),
+            Measure(name="min_cost", sql="cost"),
+            Measure(name="max_cost", sql="cost"),
+            Measure(name="latest_cost", sql="cost"),
         ],
     )
 
@@ -61,9 +60,7 @@ def _build_shops_model(ds_name: str) -> SlayerModel:
             Dimension(name="name", sql="name", type=DataType.STRING),
             Dimension(name="region_id", sql="region_id", type=DataType.NUMBER),
         ],
-        measures=[
-            Measure(name="count", type=DataType.COUNT),
-        ],
+        measures=[],
     )
 
 
@@ -78,9 +75,7 @@ def _build_customers_model(ds_name: str) -> SlayerModel:
             Dimension(name="segment", sql="segment", type=DataType.STRING),
             Dimension(name="primary_shop_id", sql="primary_shop_id", type=DataType.NUMBER),
         ],
-        measures=[
-            Measure(name="count", type=DataType.COUNT),
-        ],
+        measures=[],
     )
 
 
@@ -153,7 +148,7 @@ def _create_env(order_count: int) -> BenchEnv:
 
     # Warmup: run a simple query to prime DB caches and connection pool
     slayer_engine.execute(query=SlayerQuery(
-        source_model="orders", fields=[{"formula": "count"}],
+        source_model="orders", fields=[{"formula": "*:count"}],
     ))
 
     return slayer_engine, dataset

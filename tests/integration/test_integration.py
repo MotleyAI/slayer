@@ -107,9 +107,8 @@ def integration_env(tmp_path):
             Dimension(name="amount", sql="amount", type=DataType.NUMBER),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="total_amount", sql="amount", type=DataType.SUM),
-            Measure(name="latest_amount", sql="amount", type=DataType.LAST),
+            Measure(name="total_amount", sql="amount"),
+            Measure(name="latest_amount", sql="amount"),
         ],
     )
     storage.save_model(orders_model)
@@ -124,9 +123,7 @@ def integration_env(tmp_path):
             Dimension(name="name", sql="name", type=DataType.STRING),
             Dimension(name="region", sql="region", type=DataType.STRING),
         ],
-        measures=[
-            Measure(name="count", type=DataType.COUNT),
-        ],
+        measures=[],
     )
     storage.save_model(customers_model)
 
@@ -140,13 +137,13 @@ def test_count_query(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     )
     response = engine.execute(query)
 
     assert isinstance(response, SlayerResponse)
     assert response.row_count == 1
-    assert response.data[0]["orders.count"] == 6
+    assert response.data[0]["orders._count"] == 6
 
 
 def test_sum_measure(integration_env):
@@ -155,12 +152,12 @@ def test_sum_measure(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="total_amount")],
+        fields=[Field(formula="total_amount:sum")],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
-    assert response.data[0]["orders.total_amount"] == pytest.approx(750.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
 def test_dimensions_groupby(integration_env):
@@ -169,13 +166,13 @@ def test_dimensions_groupby(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
         dimensions=[ColumnRef(name="status")],
     )
     response = engine.execute(query)
 
     assert response.row_count == 3
-    rows_by_status = {row["orders.status"]: row["orders.count"] for row in response.data}
+    rows_by_status = {row["orders.status"]: row["orders._count"] for row in response.data}
     assert rows_by_status["completed"] == 3
     assert rows_by_status["pending"] == 2
     assert rows_by_status["cancelled"] == 1
@@ -187,13 +184,13 @@ def test_filter_equals(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
         filters=["status == 'completed'"],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
-    assert response.data[0]["orders.count"] == 3
+    assert response.data[0]["orders._count"] == 3
 
 
 def test_filter_gt(integration_env):
@@ -202,14 +199,14 @@ def test_filter_gt(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
         filters=["amount > 50"],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
     # Orders with amount > 50: 100, 200, 75, 300 = 4
-    assert response.data[0]["orders.count"] == 4
+    assert response.data[0]["orders._count"] == 4
 
 
 def test_order_by(integration_env):
@@ -218,7 +215,7 @@ def test_order_by(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
         dimensions=[ColumnRef(name="status")],
         order=[
             OrderItem(column=ColumnRef(name="count"), direction="desc"),
@@ -227,7 +224,7 @@ def test_order_by(integration_env):
     response = engine.execute(query)
 
     assert response.row_count == 3
-    counts = [row["orders.count"] for row in response.data]
+    counts = [row["orders._count"] for row in response.data]
     assert counts == sorted(counts, reverse=True)
     # completed=3 is the highest count
     assert response.data[0]["orders.status"] == "completed"
@@ -239,7 +236,7 @@ def test_limit(integration_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
         dimensions=[ColumnRef(name="status")],
         order=[
             OrderItem(column=ColumnRef(name="count"), direction="desc"),
@@ -258,15 +255,15 @@ def test_multiple_measures(integration_env):
     query = SlayerQuery(
         source_model="orders",
         fields=[
-            Field(formula="count"),
-            Field(formula="total_amount"),
+            Field(formula="*:count"),
+            Field(formula="total_amount:sum"),
         ],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
-    assert response.data[0]["orders.count"] == 6
-    assert response.data[0]["orders.total_amount"] == pytest.approx(750.0)
+    assert response.data[0]["orders._count"] == 6
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
 
@@ -281,8 +278,8 @@ def test_cumsum_change_identity(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="count"),
-            Field(formula="cumsum(change(count))", name="cumsum_change"),
+            Field(formula="*:count"),
+            Field(formula="cumsum(change(*:count))", name="cumsum_change"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -296,9 +293,9 @@ def test_cumsum_change_identity(integration_env):
     assert response.data[0]["orders.cumsum_change"] is None
 
     # Remaining rows: cumsum(change(x)) == x - x[0]
-    first_count = response.data[0]["orders.count"]
+    first_count = response.data[0]["orders._count"]
     for row in response.data[1:]:
-        assert row["orders.cumsum_change"] == row["orders.count"] - first_count
+        assert row["orders.cumsum_change"] == row["orders._count"] - first_count
 
 
 def test_nested_cumsum_of_cumsum(integration_env):
@@ -312,9 +309,9 @@ def test_nested_cumsum_of_cumsum(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="count"),
-            Field(formula="cumsum(count)", name="cs"),
-            Field(formula="cumsum(cumsum(count))", name="cs_cs"),
+            Field(formula="*:count"),
+            Field(formula="cumsum(*:count)", name="cs"),
+            Field(formula="cumsum(cumsum(*:count))", name="cs_cs"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -335,15 +332,15 @@ def test_arithmetic_expression(integration_env):
     query = SlayerQuery(
         source_model="orders",
         fields=[
-            Field(formula="count"),
-            Field(formula="total_amount"),
-            Field(formula="total_amount / count", name="avg_amount"),
+            Field(formula="*:count"),
+            Field(formula="total_amount:sum"),
+            Field(formula="total_amount:sum / *:count", name="avg_amount"),
         ],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
-    assert response.data[0]["orders.count"] == 6
+    assert response.data[0]["orders._count"] == 6
     assert response.data[0]["orders.avg_amount"] == pytest.approx(125.0)
 
 
@@ -358,9 +355,9 @@ def test_time_shift_row_based(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="time_shift(total_amount, -1)", name="prev"),
-            Field(formula="time_shift(total_amount, 1)", name="next"),
+            Field(formula="total_amount:sum"),
+            Field(formula="time_shift(total_amount:sum, -1)", name="prev"),
+            Field(formula="time_shift(total_amount:sum, 1)", name="next"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -391,8 +388,8 @@ def test_time_shift_calendar_based(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="time_shift(total_amount, -1, 'month')", name="prev_month"),
+            Field(formula="total_amount:sum"),
+            Field(formula="time_shift(total_amount:sum, -1, 'month')", name="prev_month"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -422,8 +419,8 @@ def test_time_shift_with_date_range(integration_env):
             date_range=["2025-03-01", "2025-03-31"],
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="time_shift(total_amount, -1, 'month')", name="prev_month"),
+            Field(formula="total_amount:sum"),
+            Field(formula="time_shift(total_amount:sum, -1, 'month')", name="prev_month"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -431,7 +428,7 @@ def test_time_shift_with_date_range(integration_env):
 
     # Only March in the result (date filter)
     assert response.row_count == 1
-    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(325.0)
     # Previous month (February) should be fetched from the DB, not NULL
     assert response.data[0]["orders.prev_month"] == pytest.approx(125.0)
 
@@ -449,8 +446,8 @@ def test_change_with_date_range(integration_env):
             date_range=["2025-03-01", "2025-03-31"],
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="change(total_amount)", name="amount_change"),
+            Field(formula="total_amount:sum"),
+            Field(formula="change(total_amount:sum)", name="amount_change"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -473,8 +470,8 @@ def test_change_pct_with_date_range(integration_env):
             date_range=["2025-03-01", "2025-03-31"],
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="change_pct(total_amount)", name="pct"),
+            Field(formula="total_amount:sum"),
+            Field(formula="change_pct(total_amount:sum)", name="pct"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -498,16 +495,16 @@ def test_multiple_date_range_shifts(integration_env):
             date_range=["2025-02-01", "2025-02-28"],
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="time_shift(total_amount, -1, 'month')", name="prev"),
-            Field(formula="time_shift(total_amount, 1, 'month')", name="next"),
+            Field(formula="total_amount:sum"),
+            Field(formula="time_shift(total_amount:sum, -1, 'month')", name="prev"),
+            Field(formula="time_shift(total_amount:sum, 1, 'month')", name="next"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
-    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
     # Jan = 300
     assert response.data[0]["orders.prev"] == pytest.approx(300.0)
     # Mar = 325
@@ -527,15 +524,15 @@ def test_forward_row_shift_with_date_range(integration_env):
             date_range=["2025-02-01", "2025-02-28"],
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="time_shift(total_amount, 1)", name="next_period"),
+            Field(formula="total_amount:sum"),
+            Field(formula="time_shift(total_amount:sum, 1)", name="next_period"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
-    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
     # Next period (March) should be fetched from DB = 325
     assert response.data[0]["orders.next_period"] == pytest.approx(325.0)
 
@@ -554,8 +551,8 @@ def test_post_filter_on_change(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="change(total_amount)", name="amount_change"),
+            Field(formula="total_amount:sum"),
+            Field(formula="change(total_amount:sum)", name="amount_change"),
         ],
         filters=["amount_change < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -565,7 +562,7 @@ def test_post_filter_on_change(integration_env):
     # Only February should remain (change = -175)
     assert response.row_count == 1
     assert response.data[0]["orders.amount_change"] == pytest.approx(-175.0)
-    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
 
 
 def test_post_filter_with_base_filter(integration_env):
@@ -586,8 +583,8 @@ def test_post_filter_with_base_filter(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="change(total_amount)", name="amount_change"),
+            Field(formula="total_amount:sum"),
+            Field(formula="change(total_amount:sum)", name="amount_change"),
         ],
         filters=["status != 'cancelled'", "amount_change > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
@@ -612,14 +609,14 @@ def test_inline_transform_filter(integration_env):
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="total_amount")],
-        filters=["change(total_amount) < 0"],
+        fields=[Field(formula="total_amount:sum")],
+        filters=["change(total_amount:sum) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
-    assert response.data[0]["orders.total_amount"] == pytest.approx(125.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
 
 
 def test_inline_last_change_filter(integration_env):
@@ -636,8 +633,8 @@ def test_inline_last_change_filter(integration_env):
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="total_amount")],
-        filters=["last(change(total_amount)) > 0"],
+        fields=[Field(formula="total_amount:sum")],
+        filters=["last(change(total_amount:sum)) > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = engine.execute(query)
@@ -652,8 +649,8 @@ def test_inline_last_change_filter(integration_env):
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="total_amount")],
-        filters=["last(change(total_amount)) < 0"],
+        fields=[Field(formula="total_amount:sum")],
+        filters=["last(change(total_amount:sum)) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response2 = engine.execute(query2)
@@ -674,15 +671,15 @@ def test_arithmetic_transform_filter(integration_env):
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="total_amount")],
-        filters=["change(total_amount) / total_amount > 0"],
+        fields=[Field(formula="total_amount:sum")],
+        filters=["change(total_amount:sum) / total_amount:sum > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = engine.execute(query)
 
     # Only March passes (positive change ratio)
     assert response.row_count == 1
-    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(325.0)
 
 
 def test_transform_on_filter_rhs(integration_env):
@@ -699,15 +696,15 @@ def test_transform_on_filter_rhs(integration_env):
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="total_amount")],
-        filters=["total_amount > time_shift(total_amount, -1)"],
+        fields=[Field(formula="total_amount:sum")],
+        filters=["total_amount:sum > time_shift(total_amount:sum, -1)"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
     response = engine.execute(query)
 
     # Only March (325 > 125)
     assert response.row_count == 1
-    assert response.data[0]["orders.total_amount"] == pytest.approx(325.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(325.0)
 
 
 def test_last_measure_type(integration_env):
@@ -724,8 +721,8 @@ def test_last_measure_type(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="latest_amount"),
+            Field(formula="total_amount:sum"),
+            Field(formula="latest_amount:last"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -736,9 +733,9 @@ def test_last_measure_type(integration_env):
     # Jan: orders on 15th(100) and 20th(200) → latest = 200
     # Feb: orders on 10th(50) and 15th(75) → latest = 75
     # Mar: orders on 5th(300) and 20th(25) → latest = 25
-    assert response.data[0]["orders.latest_amount"] == pytest.approx(200.0)
-    assert response.data[1]["orders.latest_amount"] == pytest.approx(75.0)
-    assert response.data[2]["orders.latest_amount"] == pytest.approx(25.0)
+    assert response.data[0]["orders.latest_amount_last"] == pytest.approx(200.0)
+    assert response.data[1]["orders.latest_amount_last"] == pytest.approx(75.0)
+    assert response.data[2]["orders.latest_amount_last"] == pytest.approx(25.0)
 
 
 def test_last_function(integration_env):
@@ -754,8 +751,8 @@ def test_last_function(integration_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="last(total_amount)", name="latest"),
+            Field(formula="total_amount:sum"),
+            Field(formula="last(total_amount:sum)", name="latest"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -773,21 +770,21 @@ def test_having_filter(integration_env):
     engine = integration_env
 
     # Group by status: completed(3 orders), pending(2), cancelled(1)
-    # Filter: count > 1 → only completed and pending
+    # Filter: _count > 1 → only completed and pending
     query = SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        fields=[Field(formula="count")],
-        filters=["count > 1"],
-        order=[OrderItem(column=ColumnRef(name="count"), direction="desc")],
+        fields=[Field(formula="*:count")],
+        filters=["_count > 1"],
+        order=[OrderItem(column=ColumnRef(name="_count"), direction="desc")],
     )
     response = engine.execute(query)
 
     assert response.row_count == 2
     assert response.data[0]["orders.status"] == "completed"
-    assert response.data[0]["orders.count"] == 3
+    assert response.data[0]["orders._count"] == 3
     assert response.data[1]["orders.status"] == "pending"
-    assert response.data[1]["orders.count"] == 2
+    assert response.data[1]["orders._count"] == 2
 
 
 def test_having_filter_with_sum(integration_env):
@@ -795,19 +792,19 @@ def test_having_filter_with_sum(integration_env):
     engine = integration_env
 
     # Group by status: completed(100+200+300=600), pending(50+25=75), cancelled(75)
-    # Filter: total_amount > 100 → only completed
+    # Filter: total_amount_sum > 100 → only completed
     query = SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="status")],
-        fields=[Field(formula="total_amount")],
-        filters=["total_amount > 100"],
-        order=[OrderItem(column=ColumnRef(name="total_amount"), direction="desc")],
+        fields=[Field(formula="total_amount:sum")],
+        filters=["total_amount_sum > 100"],
+        order=[OrderItem(column=ColumnRef(name="total_amount_sum"), direction="desc")],
     )
     response = engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.status"] == "completed"
-    assert response.data[0]["orders.total_amount"] == pytest.approx(600.0)
+    assert response.data[0]["orders.total_amount_sum"] == pytest.approx(600.0)
 
 
 def test_having_with_non_groupby_dimension_raises(integration_env):
@@ -821,8 +818,8 @@ def test_having_with_non_groupby_dimension_raises(integration_env):
             dimension=ColumnRef(name="created_at"),
             granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="count")],
-        filters=["count > 1 and status == 'completed'"],
+        fields=[Field(formula="*:count")],
+        filters=["_count > 1 and status == 'completed'"],
     )
     with pytest.raises(ValueError, match="not in the query's dimensions"):
         engine.execute(query)
@@ -870,7 +867,7 @@ def joined_time_env(tmp_path):
             Dimension(name="name", sql="name", type=DataType.STRING),
             Dimension(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
         ],
-        measures=[Measure(name="count", type=DataType.COUNT)],
+        measures=[],
     ))
     storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
@@ -882,9 +879,8 @@ def joined_time_env(tmp_path):
             Dimension(name="amount", sql="amount", type=DataType.NUMBER),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="total_amount", sql="amount", type=DataType.SUM),
-            Measure(name="latest_amount", sql="amount", type=DataType.LAST),
+            Measure(name="total_amount", sql="amount"),
+            Measure(name="latest_amount", sql="amount"),
         ],
         joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
     ))
@@ -896,9 +892,8 @@ def joined_time_env(tmp_path):
             Dimension(name="qty", sql="qty", type=DataType.NUMBER),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="qty_sum", sql="qty", type=DataType.SUM),
-            Measure(name="latest_qty", sql="qty", type=DataType.LAST),
+            Measure(name="qty_sum", sql="qty"),
+            Measure(name="latest_qty", sql="qty"),
         ],
         joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])],
     ))
@@ -920,8 +915,8 @@ def test_last_with_joined_time_dimension(joined_time_env):
             granularity=TimeGranularity.YEAR,
         )],
         fields=[
-            Field(formula="total_amount"),
-            Field(formula="latest_amount"),
+            Field(formula="total_amount:sum"),
+            Field(formula="latest_amount:last"),
         ],
         order=[OrderItem(column=ColumnRef(name="stores.opened_at"), direction="asc")],
     )
@@ -931,8 +926,8 @@ def test_last_with_joined_time_dimension(joined_time_env):
     # Verify the SQL references stores.opened_at (not orders.opened_at)
     assert "stores" in response.sql
     # latest_amount should reflect the most recent order per store-year group
-    assert response.data[0]["orders.latest_amount"] is not None
-    assert response.data[1]["orders.latest_amount"] is not None
+    assert response.data[0]["orders.latest_amount_last"] is not None
+    assert response.data[1]["orders.latest_amount_last"] is not None
 
 
 @pytest.mark.integration
@@ -949,8 +944,8 @@ def test_last_with_multihop_joined_time_dimension(joined_time_env):
             granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="qty_sum"),
-            Field(formula="latest_qty"),
+            Field(formula="qty_sum:sum"),
+            Field(formula="latest_qty:last"),
         ],
         order=[OrderItem(column=ColumnRef(name="orders.created_at"), direction="asc")],
     )
@@ -961,9 +956,9 @@ def test_last_with_multihop_joined_time_dimension(joined_time_env):
     assert "orders.created_at" in response.sql or "orders" in response.sql
     # latest_qty per month: Jan has items for orders on 15th and 20th,
     # most recent is 20th (order 2, qty=3)
-    assert response.data[0]["order_items.latest_qty"] == 3  # Jan: order 2 (20th)
-    assert response.data[1]["order_items.latest_qty"] == 5  # Feb: order 4 (15th)
-    assert response.data[2]["order_items.latest_qty"] == 1  # Mar: order 6 (20th)
+    assert response.data[0]["order_items.latest_qty_last"] == 3  # Jan: order 2 (20th)
+    assert response.data[1]["order_items.latest_qty_last"] == 5  # Feb: order 4 (15th)
+    assert response.data[2]["order_items.latest_qty_last"] == 1  # Mar: order 6 (20th)
 
 
 # ---------------------------------------------------------------------------
@@ -1002,8 +997,7 @@ def cross_model_env(tmp_path):
             Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="total_amount", sql="amount", type=DataType.SUM),
+            Measure(name="total_amount", sql="amount"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
@@ -1014,9 +1008,8 @@ def cross_model_env(tmp_path):
             Dimension(name="name", sql="name", type=DataType.STRING),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="avg_score", sql="score", type=DataType.AVERAGE),
-            Measure(name="max_score", sql="score", type=DataType.MAX),
+            Measure(name="avg_score", sql="score"),
+            Measure(name="max_score", sql="score"),
         ],
     ))
 
@@ -1033,8 +1026,8 @@ def test_cross_model_measure_monthly(cross_model_env):
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="count"),
-            Field(formula="customers.avg_score"),
+            Field(formula="*:count"),
+            Field(formula="customers.avg_score:avg"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -1042,9 +1035,9 @@ def test_cross_model_measure_monthly(cross_model_env):
 
     assert response.row_count == 3
     # Jan: Alice (90), Feb: Bob (60), Mar: Charlie(80) + Alice(90) = avg 85
-    assert response.data[0]["orders.customers.avg_score"] == pytest.approx(90.0)
-    assert response.data[1]["orders.customers.avg_score"] == pytest.approx(60.0)
-    assert response.data[2]["orders.customers.avg_score"] == pytest.approx(85.0)
+    assert response.data[0]["orders.customers.avg_score_avg"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customers.avg_score_avg"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customers.avg_score_avg"] == pytest.approx(85.0)
 
 
 def test_cross_model_measure_no_join_raises(cross_model_env):
@@ -1053,7 +1046,7 @@ def test_cross_model_measure_no_join_raises(cross_model_env):
 
     query = SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="count"), Field(formula="nonexistent.some_measure")],
+        fields=[Field(formula="*:count"), Field(formula="nonexistent.some_measure:sum")],
     )
     with pytest.raises(ValueError, match="has no join to"):
         engine.execute(query)
@@ -1070,8 +1063,8 @@ def test_transform_on_cross_model(cross_model_env):
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="customers.avg_score"),
-            Field(formula="cumsum(customers.avg_score)", name="running"),
+            Field(formula="customers.avg_score:avg"),
+            Field(formula="cumsum(customers.avg_score:avg)", name="running"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -1098,7 +1091,7 @@ def test_query_as_model_count(integration_env):
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="count"), Field(formula="total_amount")],
+        fields=[Field(formula="*:count"), Field(formula="total_amount:sum")],
     )
 
     # Outer: count how many months exist (references "monthly" by name)
@@ -1119,14 +1112,14 @@ def test_query_as_model_aggregate(integration_env):
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="total_amount")],
+        fields=[Field(formula="total_amount:sum")],
     )
 
-    outer = SlayerQuery(source_model="monthly", fields=[Field(formula="total_amount:sum")])
+    outer = SlayerQuery(source_model="monthly", fields=[Field(formula="total_amount_sum:sum")])
     response = engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
-    assert response.data[0]["monthly.total_amount_sum"] == pytest.approx(750.0)
+    assert response.data[0]["monthly.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
 def test_create_model_from_query(integration_env):
@@ -1139,7 +1132,7 @@ def test_create_model_from_query(integration_env):
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="count"), Field(formula="total_amount")],
+        fields=[Field(formula="*:count"), Field(formula="total_amount:sum")],
     )
     saved = engine.create_model_from_query(
         query=source_query, name="monthly_summary",
@@ -1148,8 +1141,8 @@ def test_create_model_from_query(integration_env):
     # Verify model structure
     dim_names = [d.name for d in saved.dimensions]
     assert "created_at" in dim_names
-    assert "count" in dim_names
-    assert "total_amount" in dim_names
+    assert "_count" in dim_names
+    assert "total_amount_sum" in dim_names
     assert saved.source_queries is not None
 
     # Query the saved model by name
@@ -1160,9 +1153,9 @@ def test_create_model_from_query(integration_env):
 
     # Re-aggregate over saved model
     result2 = engine.execute(query=SlayerQuery(
-        source_model="monthly_summary", fields=[Field(formula="total_amount:sum")],
+        source_model="monthly_summary", fields=[Field(formula="total_amount_sum:sum")],
     ))
-    assert result2.data[0]["monthly_summary.total_amount_sum"] == pytest.approx(750.0)
+    assert result2.data[0]["monthly_summary.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
 def test_query_list_with_joins(cross_model_env):
@@ -1174,7 +1167,7 @@ def test_query_list_with_joins(cross_model_env):
         name="customer_scores",
         source_model="customers",
         dimensions=[ColumnRef(name="id")],
-        fields=[Field(formula="avg_score")],
+        fields=[Field(formula="avg_score:avg")],
     )
 
     # Main query: monthly orders joined to customer_scores
@@ -1190,8 +1183,8 @@ def test_query_list_with_joins(cross_model_env):
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
         fields=[
-            Field(formula="count"),
-            Field(formula="customer_scores.avg_score:avg"),
+            Field(formula="*:count"),
+            Field(formula="customer_scores.avg_score_avg:avg"),
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
@@ -1200,9 +1193,9 @@ def test_query_list_with_joins(cross_model_env):
 
     assert response.row_count == 3
     # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
-    assert response.data[0]["orders.customer_scores.avg_score_avg"] == pytest.approx(90.0)
-    assert response.data[1]["orders.customer_scores.avg_score_avg"] == pytest.approx(60.0)
-    assert response.data[2]["orders.customer_scores.avg_score_avg"] == pytest.approx(85.0)
+    assert response.data[0]["orders.customer_scores.avg_score_avg_avg"] == pytest.approx(90.0)
+    assert response.data[1]["orders.customer_scores.avg_score_avg_avg"] == pytest.approx(60.0)
+    assert response.data[2]["orders.customer_scores.avg_score_avg_avg"] == pytest.approx(85.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1219,11 +1212,11 @@ def test_sql_dimension_via_model_extension(integration_env):
             dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
         ),
         dimensions=[ColumnRef(name="tier")],
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     )
     response = engine.execute(query)
 
-    by_tier = {r["orders.tier"]: r["orders.count"] for r in response.data}
+    by_tier = {r["orders.tier"]: r["orders._count"] for r in response.data}
     assert by_tier["high"] == 2
     assert by_tier["low"] == 4
 
@@ -1238,12 +1231,12 @@ def test_sql_dimension_with_regular(integration_env):
             dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
         ),
         dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     )
     response = engine.execute(query)
 
     # completed has 3 orders: 100(low), 200(high), 300(high)
-    data = {(r["orders.status"], r["orders.tier"]): r["orders.count"] for r in response.data}
+    data = {(r["orders.status"], r["orders.tier"]): r["orders._count"] for r in response.data}
     assert data[("completed", "high")] == 2
     assert data[("completed", "low")] == 1
 
@@ -1259,7 +1252,7 @@ def test_formula_dimension_via_query_list(integration_env):
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
         )],
-        fields=[Field(formula="total_amount")],
+        fields=[Field(formula="total_amount:sum")],
     )
 
     # Outer: group by amount tier via ModelExtension on the inner query's result
@@ -1267,7 +1260,7 @@ def test_formula_dimension_via_query_list(integration_env):
         source_model=ModelExtension(
             source_name="monthly",
             dimensions=[{"name": "amount_tier",
-                         "sql": "CASE WHEN total_amount > 200 THEN 'high' ELSE 'low' END"}],
+                         "sql": "CASE WHEN total_amount_sum > 200 THEN 'high' ELSE 'low' END"}],
         ),
         dimensions=[ColumnRef(name="amount_tier")],
         fields=[Field(formula="*:count")],
@@ -1285,9 +1278,9 @@ def test_circular_query_reference_raises(integration_env):
     """Circular references between named queries should error clearly."""
     engine = integration_env
 
-    q1 = SlayerQuery(name="a", source_model="b", fields=[Field(formula="count")])
-    q2 = SlayerQuery(name="b", source_model="a", fields=[Field(formula="count")])
-    main = SlayerQuery(source_model="a", fields=[Field(formula="count")])
+    q1 = SlayerQuery(name="a", source_model="b", fields=[Field(formula="*:count")])
+    q2 = SlayerQuery(name="b", source_model="a", fields=[Field(formula="*:count")])
+    main = SlayerQuery(source_model="a", fields=[Field(formula="*:count")])
     with pytest.raises(ValueError, match="Circular reference"):
         engine.execute(query=[q1, q2, main])
 
@@ -1313,7 +1306,7 @@ def test_circular_join_graph_raises(tmp_path):
         name="a", sql_table="a", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="b_id", sql="b_id", type=DataType.NUMBER)],
-        measures=[Measure(name="count", type=DataType.COUNT)],
+        measures=[],
         joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
     ))
     storage.save_model(SlayerModel(
@@ -1321,7 +1314,7 @@ def test_circular_join_graph_raises(tmp_path):
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="a_id", sql="a_id", type=DataType.NUMBER),
                     Dimension(name="unique_b_field", sql="id", type=DataType.NUMBER)],
-        measures=[Measure(name="count", type=DataType.COUNT)],
+        measures=[],
         joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
     ))
 
@@ -1332,7 +1325,7 @@ def test_circular_join_graph_raises(tmp_path):
     query = SlayerQuery(
         source_model="a",
         dimensions=[ColumnRef(name="b.a.unique_b_field")],
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     )
     with pytest.raises(ValueError, match="Circular join"):
         engine.execute(query)
@@ -1364,8 +1357,7 @@ def test_model_filter_on_joined_column(tmp_path):
         dimensions=[
             Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
         ],
-        measures=[Measure(name="count", type=DataType.COUNT),
-                  Measure(name="total", sql="amount", type=DataType.SUM)],
+        measures=[Measure(name="total", sql="amount")],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         filters=["customers.region == 'US'"],
     ))
@@ -1374,7 +1366,7 @@ def test_model_filter_on_joined_column(tmp_path):
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="name", sql="name", type=DataType.STRING),
                     Dimension(name="region", sql="region", type=DataType.STRING)],
-        measures=[Measure(name="count", type=DataType.COUNT)],
+        measures=[],
     ))
 
     engine = SlayerQueryEngine(storage=storage)
@@ -1383,7 +1375,7 @@ def test_model_filter_on_joined_column(tmp_path):
     result = engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="customers.name")],
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     ))
 
     names = {r["orders.customers.name"] for r in result.data}
@@ -1469,12 +1461,12 @@ def test_diamond_joins_both_paths(diamond_env):
             ColumnRef(name="customers.regions.name"),
             ColumnRef(name="warehouses.regions.name"),
         ],
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     ))
 
     # Should have 4 rows: (US, US), (US, Asia), (EU, US), (EU, Asia)
     rows = {
-        (r["shipments.customers.regions.name"], r["shipments.warehouses.regions.name"]): r["shipments.count"]
+        (r["shipments.customers.regions.name"], r["shipments.warehouses.regions.name"]): r["shipments._count"]
         for r in result.data
     }
     assert len(rows) == 4
@@ -1494,11 +1486,11 @@ def test_query_filter_on_joined_dimension(diamond_env):
 
     result = engine.execute(query=SlayerQuery(
         source_model="shipments",
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
         filters=["customers.regions.name == 'US'"],
     ))
 
-    assert result.data[0]["shipments.count"] == 2  # Alice's 2 shipments
+    assert result.data[0]["shipments._count"] == 2  # Alice's 2 shipments
     # Filter must use the path-based alias in SQL
     assert "customers__regions" in result.sql
 
@@ -1510,9 +1502,9 @@ def test_diamond_joins_single_path(diamond_env):
     result = engine.execute(query=SlayerQuery(
         source_model="shipments",
         dimensions=[ColumnRef(name="customers.regions.name")],
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     ))
 
-    by_region = {r["shipments.customers.regions.name"]: r["shipments.count"] for r in result.data}
+    by_region = {r["shipments.customers.regions.name"]: r["shipments._count"] for r in result.data}
     assert by_region["US"] == 2  # Alice: 2 shipments
     assert by_region["EU"] == 2  # Bob: 2 shipments

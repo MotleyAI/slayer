@@ -51,8 +51,6 @@ class EnrichedMeasure:
     aggregation_def: Optional[Aggregation] = None  # Full definition (formula, params)
     agg_kwargs: Dict[str, str] = field(default_factory=dict)  # Query-time overrides
     label: Optional[str] = None  # Human-readable label
-    # DEPRECATED: kept for backward compat during transition
-    type: Optional[DataType] = None
 
 
 @dataclass

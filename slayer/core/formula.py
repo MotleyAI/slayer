@@ -10,8 +10,6 @@ A formula can be:
 - A transform: "cumsum(revenue:sum)" → TransformField wrapping AggregatedMeasureRef
 - Nested transforms: "change(cumsum(revenue:sum))" → TransformField wrapping TransformField
 - Arithmetic on transforms: "cumsum(revenue:sum) / *:count" → MixedArithmeticField
-
-Backward compat: bare measure names ("revenue", "count") are still accepted as MeasureRef.
 """
 
 import ast
@@ -48,16 +46,6 @@ class AggregatedMeasureRef:
 
 
 @dataclass
-class MeasureRef:
-    """A bare measure reference by name (backward compat, deprecated).
-
-    In new code, use AggregatedMeasureRef with explicit aggregation.
-    Bare names are only valid when the measure has a deprecated ``type`` field.
-    """
-    name: str
-
-
-@dataclass
 class ArithmeticField:
     """An arithmetic expression over measures only (no transform calls inside)."""
     sql: str  # Preprocessed formula (placeholders for aggregated refs)
@@ -87,7 +75,7 @@ class MixedArithmeticField:
 
 
 # The parsed result of a single field
-FieldSpec = Union[AggregatedMeasureRef, MeasureRef, ArithmeticField, TransformField, MixedArithmeticField]
+FieldSpec = Union[AggregatedMeasureRef, ArithmeticField, TransformField, MixedArithmeticField]
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +145,7 @@ def parse_formula(formula: str) -> FieldSpec:
         "price:weighted_avg(weight=qty)"     → AggregatedMeasureRef(..., agg_kwargs={"weight": "qty"})
         "revenue:last(ordered_at)"           → AggregatedMeasureRef(..., agg_args=["ordered_at"])
 
-    Backward compat (deprecated):
-        "count"                              → MeasureRef("count")
-        "revenue / count"                    → ArithmeticField(...)
-        "cumsum(revenue)"                    → TransformField("cumsum", MeasureRef("revenue"))
+    Bare measure names (e.g., "revenue") are not valid — use colon syntax.
     """
     # Preprocess colon syntax into ast-parseable placeholders
     processed, agg_refs = _preprocess_agg_refs(formula)
@@ -182,15 +167,24 @@ def _parse_node(
     if agg_refs is None:
         agg_refs = {}
 
-    # Simple name → aggregation placeholder or bare measure reference
+    # Simple name → aggregation placeholder or error for bare names
     if isinstance(node, ast.Name):
         if node.id in agg_refs:
             return agg_refs[node.id]
-        return MeasureRef(name=node.id)
+        name = node.id
+        raise ValueError(
+            f"Bare measure name '{name}' is not valid. "
+            f"Use colon syntax (e.g., '{name}:sum', '{name}:avg'). "
+            f"For COUNT(*), use '*:count'."
+        )
 
-    # Dotted name → cross-model measure reference (e.g., customers.avg_score)
+    # Dotted name → cross-model measure must include aggregation
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-        return MeasureRef(name=f"{node.value.id}.{node.attr}")
+        name = f"{node.value.id}.{node.attr}"
+        raise ValueError(
+            f"Cross-model measure '{name}' must include an aggregation "
+            f"(e.g., '{name}:sum')."
+        )
 
     # Function call → transform
     if isinstance(node, ast.Call):
@@ -222,6 +216,19 @@ def _parse_node(
         if _contains_call(node):
             return _parse_mixed_arithmetic(node, original, agg_refs)
         measure_names = _collect_names(node)
+        # Reject bare measure names (not from colon syntax preprocessing)
+        for mname in measure_names:
+            if mname not in agg_refs:
+                if "." in mname:
+                    raise ValueError(
+                        f"Cross-model measure '{mname}' must include an aggregation "
+                        f"(e.g., '{mname}:sum')."
+                    )
+                raise ValueError(
+                    f"Bare measure name '{mname}' is not valid. "
+                    f"Use colon syntax (e.g., '{mname}:sum', '{mname}:avg'). "
+                    f"For COUNT(*), use '*:count'."
+                )
         field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}
         return ArithmeticField(
             sql=ast.unparse(node),
@@ -408,11 +415,28 @@ def parse_filter(formula: str) -> ParsedFilter:
         "status IS NOT NULL"             → WHERE status IS NOT NULL
         "name like '%acme%'"             → WHERE name LIKE '%acme%'
         "name not like '%test%'"         → WHERE name NOT LIKE '%test%'
+
+    Also handles colon syntax for aggregated measure refs in filters
+    (e.g., "total_amount:sum > 100"). These are converted to canonical
+    names (total_amount_sum) for the parsed output.
     """
     # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing
     processed = _preprocess_sql_operators(formula)
     # Pre-process `like` / `not like` operators into internal function calls
     processed = _preprocess_like(processed)
+    # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names
+    processed, agg_refs = _preprocess_agg_refs(processed)
+    # Build reverse map: placeholder → canonical name (measure_aggregation)
+    agg_canonical = {}
+    for ph, ref in agg_refs.items():
+        if ref.measure_name == "*":
+            canonical = f"_{ref.aggregation_name}"
+        else:
+            canonical = f"{ref.measure_name}_{ref.aggregation_name}"
+        agg_canonical[ph] = canonical
+    # Replace placeholders with canonical names in the formula
+    for ph, canonical in agg_canonical.items():
+        processed = processed.replace(ph, canonical)
     try:
         tree = ast.parse(processed, mode="eval")
     except SyntaxError as e:

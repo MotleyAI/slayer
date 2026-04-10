@@ -37,7 +37,7 @@ class TestLocalMode:
             sql_table="public.orders",
             data_source="test_ds",
             dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         ))
         storage.save_datasource(DatasourceConfig(
             name="test_ds",
@@ -46,6 +46,6 @@ class TestLocalMode:
         ))
         # This will fail at SQL execution (no actual table), but proves local dispatch works
         from slayer.core.query import SlayerQuery
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "count"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "revenue:sum"}])
         with pytest.raises(Exception):
             client.query(query)

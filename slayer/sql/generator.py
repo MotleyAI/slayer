@@ -15,7 +15,6 @@ from sqlglot import exp
 from slayer.core.enums import (
     BUILTIN_AGGREGATION_FORMULAS,
     BUILTIN_AGGREGATION_REQUIRED_PARAMS,
-    DataType,
     TimeGranularity,
 )
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
@@ -33,17 +32,6 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
     "median": "MEDIAN",
     # "first", "last" use special ROW_NUMBER + conditional aggregate
     # "weighted_avg" and custom aggregations use formula substitution
-}
-
-# Legacy map for backward compat (DataType → aggregation name string)
-_LEGACY_AGG_MAP: dict[DataType, str] = {
-    DataType.COUNT: "count",
-    DataType.COUNT_DISTINCT: "count_distinct",
-    DataType.SUM: "sum",
-    DataType.AVERAGE: "avg",
-    DataType.MIN: "min",
-    DataType.MAX: "max",
-    DataType.LAST: "last",
 }
 
 # Transforms that use self-join CTEs instead of window functions.
@@ -762,7 +750,7 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = f"{col.model or enriched.model_name}.{col.name}"
+                col_name = self._resolve_order_column(col=col, enriched=enriched)
                 order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
                 ascending = order_item.direction == "asc"
                 select = select.order_by(exp.Ordered(this=order_col, desc=not ascending))
@@ -774,6 +762,51 @@ class SQLGenerator:
             select = select.offset(enriched.offset)
 
         return select
+
+    @staticmethod
+    def _resolve_order_column(col, enriched: EnrichedQuery) -> str:
+        """Resolve an order column reference to the correct enriched alias.
+
+        Users refer to columns by their short name (e.g., ``count``,
+        ``revenue_sum``).  The enriched query stores fully qualified aliases
+        (e.g., ``orders._count``, ``orders.revenue_sum``).  This method
+        matches the user-provided name against all enriched columns and
+        returns the matching alias.  If no match is found, the name is
+        qualified with the model name as a fallback.
+
+        For ``*:count`` results, the internal name is ``_count`` but users
+        refer to it as ``count``.  A fallback check for ``_name`` handles
+        this case.
+        """
+        user_name = col.name
+        model_prefix = col.model or enriched.model_name
+
+        # Build a lookup: short name → alias for all enriched columns
+        alias_lookup: dict[str, str] = {}
+        for d in enriched.dimensions:
+            alias_lookup[d.name] = d.alias
+        for td in enriched.time_dimensions:
+            alias_lookup[td.name] = td.alias
+        for m in enriched.measures:
+            alias_lookup[m.name] = m.alias
+        for e in enriched.expressions:
+            alias_lookup[e.name] = e.alias
+        for t in enriched.transforms:
+            alias_lookup[t.name] = t.alias
+        for cm in enriched.cross_model_measures:
+            alias_lookup[cm.name] = cm.alias
+
+        # Direct match on the user-provided name
+        if user_name in alias_lookup:
+            return alias_lookup[user_name]
+
+        # Fallback for *:count → _count: user says "count", internal is "_count"
+        prefixed = f"_{user_name}"
+        if prefixed in alias_lookup:
+            return alias_lookup[prefixed]
+
+        # Fallback: qualify with model prefix
+        return f"{model_prefix}.{user_name}"
 
     # ------------------------------------------------------------------
     # FROM / JOIN building
@@ -871,10 +904,7 @@ class SQLGenerator:
 
     def _build_agg(self, measure: EnrichedMeasure) -> tuple[exp.Expression, bool]:
         """Build an aggregation expression from an enriched measure."""
-        # Resolve aggregation name: prefer new field, fall back to legacy type
         agg_name = measure.aggregation
-        if not agg_name and measure.type is not None:
-            agg_name = _LEGACY_AGG_MAP.get(measure.type)
         if not agg_name:
             # Not an aggregation — raw expression
             if measure.sql:

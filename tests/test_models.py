@@ -75,9 +75,9 @@ class TestSlayerModel:
             name="test",
             sql_table="t",
             data_source="test",
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         )
-        assert model.get_measure("count") is not None
+        assert model.get_measure("revenue") is not None
         assert model.get_measure("missing") is None
 
     def test_filter_bare_column_allowed(self) -> None:
@@ -140,12 +140,12 @@ class TestSlayerModel:
 
     def test_measure_sql_multidot_auto_converted(self) -> None:
         """Multi-dot references in measure sql are auto-converted."""
-        meas = Measure(name="region_count", sql="customers.regions.id", type=DataType.COUNT_DISTINCT)
+        meas = Measure(name="region_count", sql="customers.regions.id")
         assert meas.sql == "customers__regions.id"
 
     def test_measure_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in measure sql are left as-is."""
-        meas = Measure(name="total", sql="orders.amount", type=DataType.SUM)
+        meas = Measure(name="total", sql="orders.amount")
         assert meas.sql == "orders.amount"
 
     def test_filter_multidot_three_levels_auto_converted(self) -> None:
@@ -167,7 +167,7 @@ class TestSlayerModel:
 
     def test_measure_name_allows_double_underscore(self) -> None:
         """__ is allowed in measure names — used for flattened join paths in virtual models."""
-        meas = Measure(name="stores__tax_rate_sum", type=DataType.SUM)
+        meas = Measure(name="stores__tax_rate_sum", sql="tax_rate")
         assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_rejects_double_underscore(self) -> None:
@@ -190,14 +190,14 @@ class TestSlayerModel:
     def test_measure_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in measure names."""
         with pytest.raises(ValueError, match="must not contain '.'"):
-            Measure(name="customers.name_sum", type=DataType.SUM)
+            Measure(name="customers.name_sum", sql="name")
 
     def test_dimension_name_without_dot_allowed(self) -> None:
         dim = Dimension(name="region_name")
         assert dim.name == "region_name"
 
     def test_measure_name_without_dot_allowed(self) -> None:
-        meas = Measure(name="order_total_sum", type=DataType.SUM)
+        meas = Measure(name="order_total_sum", sql="total")
         assert meas.name == "order_total_sum"
 
 
@@ -235,12 +235,6 @@ class TestDatasourceConfig:
 
 
 class TestDataType:
-    def test_is_aggregation(self) -> None:
-        assert DataType.COUNT.is_aggregation is True
-        assert DataType.SUM.is_aggregation is True
-        assert DataType.STRING.is_aggregation is False
-        assert DataType.NUMBER.is_aggregation is False
-
     def test_python_type(self) -> None:
         assert DataType.STRING.python_type is str
         assert DataType.COUNT.python_type is int
@@ -264,10 +258,10 @@ class TestStringCoercion:
     """Plain strings are accepted in fields and dimensions lists."""
 
     def test_fields_plain_strings(self) -> None:
-        query = SlayerQuery(source_model="orders", fields=["count", "revenue"])
+        query = SlayerQuery(source_model="orders", fields=["*:count", "revenue:sum"])
         assert len(query.fields) == 2
-        assert query.fields[0] == Field(formula="count")
-        assert query.fields[1] == Field(formula="revenue")
+        assert query.fields[0] == Field(formula="*:count")
+        assert query.fields[1] == Field(formula="revenue:sum")
 
     def test_dimensions_plain_strings(self) -> None:
         query = SlayerQuery(source_model="orders", dimensions=["status", "customers.name"])
@@ -280,11 +274,11 @@ class TestStringCoercion:
     def test_fields_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=["count", {"formula": "revenue / count", "name": "aov"}],
+            fields=["*:count", {"formula": "revenue:sum / *:count", "name": "aov"}],
         )
         assert len(query.fields) == 2
-        assert query.fields[0] == Field(formula="count")
-        assert query.fields[1] == Field(formula="revenue / count", name="aov")
+        assert query.fields[0] == Field(formula="*:count")
+        assert query.fields[1] == Field(formula="revenue:sum / *:count", name="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery(
@@ -300,10 +294,10 @@ class TestStringCoercion:
     def test_dict_syntax_still_works(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
-        assert query.fields[0] == Field(formula="count")
+        assert query.fields[0] == Field(formula="*:count")
         assert query.dimensions[0].name == "status"
 
     def test_none_fields_and_dimensions(self) -> None:
@@ -317,8 +311,8 @@ class TestStringCoercion:
         assert item.column.model is None
 
     def test_order_column_dotted_string(self) -> None:
-        item = OrderItem(column="customers.count", direction="asc")
-        assert item.column.name == "count"
+        item = OrderItem(column="customers._count", direction="asc")
+        assert item.column.name == "_count"
         assert item.column.model == "customers"
 
     def test_order_column_dict_still_works(self) -> None:
@@ -342,12 +336,12 @@ class TestStringCoercion:
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=["count"],
+            fields=["*:count"],
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            order=[{"column": "count", "direction": "desc"}],
+            order=[{"column": "_count", "direction": "desc"}],
         )
         assert query.time_dimensions[0].dimension.name == "created_at"
-        assert query.order[0].column.name == "count"
+        assert query.order[0].column.name == "_count"
         assert query.order[0].direction == "desc"
 
 
@@ -355,7 +349,7 @@ class TestWholePeriodsOnly:
     def test_adds_lte_filter_when_none(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"),
                 granularity=TimeGranularity.MONTH,
@@ -369,7 +363,7 @@ class TestWholePeriodsOnly:
     def test_noop_when_false(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
             whole_periods_only=False,
         )
         snapped = query.snap_to_whole_periods()
@@ -393,13 +387,13 @@ class TestCoerceFieldsAndDimensions:
             SlayerQuery(source_model="orders", dimensions="status")
 
     def test_fields_list_of_strings_coerced(self) -> None:
-        q = SlayerQuery(source_model="orders", fields=["count", "sum"])
-        assert q.fields[0].formula == "count"
-        assert q.fields[1].formula == "sum"
+        q = SlayerQuery(source_model="orders", fields=["*:count", "revenue:sum"])
+        assert q.fields[0].formula == "*:count"
+        assert q.fields[1].formula == "revenue:sum"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
-        q = SlayerQuery(source_model="orders", fields=[{"formula": "count", "name": "cnt"}])
-        assert q.fields[0].formula == "count"
+        q = SlayerQuery(source_model="orders", fields=[{"formula": "*:count", "name": "cnt"}])
+        assert q.fields[0].formula == "*:count"
         assert q.fields[0].name == "cnt"
 
     def test_dimensions_list_of_strings_coerced(self) -> None:
