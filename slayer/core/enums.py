@@ -124,7 +124,7 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.
 BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
-    "weighted_avg": "SUM({value} * {weight}) / SUM({weight})",
+    "weighted_avg": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
 }
 
 # Built-in aggregations that require specific parameters.
