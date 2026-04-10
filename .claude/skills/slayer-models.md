@@ -23,24 +23,20 @@ dimensions:
     sql: "created_at"
     type: time
 
-default_time_dimension: created_at  # Optional: used by time-dependent formulas when no time_dimensions in query
+default_time_dimension: created_at  # Optional: used by time-dependent formulas
 
 measures:
-  - name: count
-    type: count                  # COUNT(*), no sql needed
-  - name: revenue_sum
-    sql: "amount"
-    type: sum
-  - name: revenue_avg
-    sql: "amount"
-    type: avg
+  - name: revenue
+    sql: "amount"          # Row-level expression — aggregation chosen at query time
+  - name: quantity
+    sql: "quantity"
 ```
+
+Measures are **row-level expressions** — no aggregation type in the definition. Aggregation is specified at query time with colon syntax: `"revenue:sum"`, `"revenue:avg"`, `"*:count"`.
 
 ## Data Types
 
 **Dimension types**: `string`, `number`, `boolean`, `time` (timestamp), `date`
-
-**Measure aggregation types**: `count`, `count_distinct`, `sum`, `avg`, `min`, `max`, `last` (most recent time bucket's value — for snapshot metrics like balances)
 
 ## Joins
 
@@ -52,7 +48,7 @@ joins:
     join_pairs: [["customer_id", "id"]]
 ```
 
-Enables cross-model measures (`customers.avg_score`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.avg_score)`). Auto-generated from FKs during ingestion. Joins are auto-resolved transitively by walking the join graph. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias (e.g., `customers__regions` vs `warehouses__regions`).
+Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.score:avg)`). Auto-generated from FKs during ingestion. Joins are auto-resolved transitively by walking the join graph. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias (e.g., `customers__regions` vs `warehouses__regions`).
 
 ## Model Filters
 
@@ -66,6 +62,7 @@ Models can have always-applied WHERE filters: `filters: ["deleted_at IS NULL"]`.
 
 - Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
 - For complex expressions, use the model name as table prefix (e.g., `"orders.amount * orders.quantity"`)
+
 ## Datasource Config
 
 ```yaml
@@ -80,9 +77,9 @@ password: ${DB_PASSWORD}
 
 `${VAR}` references are resolved from environment variables at read time.
 
-## Auto-Ingestion with Rollup Joins
+## Auto-Ingestion
 
-Connect to a DB and generate denormalized models automatically:
+Connect to a DB and generate models automatically:
 
 ```python
 from slayer.engine.ingestion import ingest_datasource
@@ -91,22 +88,22 @@ models = ingest_datasource(datasource=ds, schema="public")
 
 Generates:
 - Dimensions for all columns
-- `count` measure; numeric non-ID cols get `_sum`, `_avg`, `_min`, `_max`, `_distinct`; non-numeric non-ID cols get `_distinct`, `_count`
+- One measure per non-ID column (e.g., `{name: "amount", sql: "amount"}`) — aggregation chosen at query time
+- `*:count` is always available without a measure definition
 - **Dynamic joins**: detects FK relationships, creates models with explicit join metadata (LEFT JOINs built at query time)
-- Joined dimensions use full-path dotted naming (`customers.name`, `customers.regions.name`)
-- FK columns are excluded; ID-like columns (`*_id`, `*_key`) skip sum/avg measures
-- Count-distinct measures for each referenced table's PK (`customers.count`)
+- FK columns are excluded; ID-like columns (`*_id`, `*_key`) are dimensions only
 
 ## MCP Incremental Editing
 
 Via MCP, agents can edit models incrementally:
-- `update_model(model_name="orders", description="Core orders table")` — update metadata without replacing the full definition
-- `add_measures(model_name="orders", measures=[{"name": "total", "sql": "amount", "type": "sum"}])`
+- `update_model(model_name="orders", description="Core orders table")`
+- `add_measures(model_name="orders", measures=[{"name": "margin", "sql": "amount - cost"}])`
 - `add_dimensions(model_name="orders", dimensions=[{"name": "region", "sql": "region", "type": "string"}])`
-- `delete_measures_dimensions(model_name="orders", names=["total"])`
+- `delete_measures_dimensions(model_name="orders", names=["margin"])`
 
 ## Storage Backends
 
 - `YAMLStorage(base_dir="./data")` — models as YAML files in `data/models/`, datasources in `data/datasources/`
 - `SQLiteStorage(db_path="./slayer.db")` — everything in a single SQLite file
 - Both implement `StorageBackend` protocol: `save_model()`, `get_model()`, `list_models()`, `delete_model()`, same for datasources
+- Use `resolve_storage("path")` factory for auto-detection (directory → YAML, .db → SQLite, URI schemes for custom backends)

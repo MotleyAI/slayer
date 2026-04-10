@@ -51,7 +51,7 @@ Once the agent is connected, it handles everything conversationally. A typical e
 >
 > **You:** How many orders per status?
 >
-> **Agent:** *calls `query(source_model="orders", fields=[{"formula": "count"}], dimensions=["status"])`*
+> **Agent:** *calls `query(source_model="orders", fields=["*:count"], dimensions=["status"])`*
 
 The agent uses these MCP tools in order:
 
