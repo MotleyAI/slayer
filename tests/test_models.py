@@ -3,7 +3,7 @@
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import Aggregation, DatasourceConfig, Dimension, Measure, SlayerModel
 from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
 
 
@@ -408,3 +408,25 @@ class TestCoerceFieldsAndDimensions:
     def test_dimensions_none_accepted(self) -> None:
         q = SlayerQuery(source_model="orders", dimensions=None)
         assert q.dimensions is None
+
+
+class TestAggregationValidation:
+    """Aggregation must require formula for non-built-in names."""
+
+    def test_builtin_without_formula_succeeds(self) -> None:
+        agg = Aggregation(name="sum")
+        assert agg.name == "sum"
+        assert agg.formula is None
+
+    def test_builtin_with_formula_succeeds(self) -> None:
+        agg = Aggregation(name="sum", formula="SUM({value})")
+        assert agg.formula == "SUM({value})"
+
+    def test_custom_with_formula_succeeds(self) -> None:
+        agg = Aggregation(name="my_agg", formula="CUSTOM({value})")
+        assert agg.name == "my_agg"
+        assert agg.formula == "CUSTOM({value})"
+
+    def test_custom_without_formula_raises(self) -> None:
+        with pytest.raises(ValueError, match="not a built-in aggregation"):
+            Aggregation(name="my_agg")
