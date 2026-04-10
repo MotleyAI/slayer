@@ -22,14 +22,17 @@ dimensions:
     hidden: false               # Optional
 
 measures:
-  - name: count                 # Required
-    description: "Row count"    # Optional — explains what this measure computes
-    type: count                 # Required: count, count_distinct, sum, avg, min, max, last
-    # sql: not needed for count
+  - name: revenue               # Required
+    description: "Order amount" # Optional — explains what this measure computes
+    sql: "amount"               # SQL expression (bare column name or expression)
 
-  - name: revenue_sum
-    sql: "amount"               # Required for non-count types
-    type: sum
+  - name: quantity
+    sql: "qty"
+    allowed_aggregations: [sum, avg, min, max]  # Optional whitelist
+
+aggregations:                   # Optional: custom aggregation definitions
+  - name: weighted_avg
+    formula: "sum({expr} * {weight}) / sum({weight})"
 ```
 
 ## Dimensions
@@ -57,44 +60,64 @@ Dimensions are the columns you group by and filter on.
 
 ## Measures
 
-Measures are aggregated values — counts, sums, averages.
+Measures are named row-level SQL expressions. They define *what* to compute, not *how* to aggregate — aggregation is specified at query time using colon syntax.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Unique measure name |
 | `description` | string | No | — | Explains what this measure computes, shown in datasource_summary and inspect_model |
-| `sql` | string | No* | — | SQL expression to aggregate |
-| `type` | string | No | `count` | Aggregation type |
+| `sql` | string | Yes | — | SQL expression (bare column name or expression) |
+| `allowed_aggregations` | list[str] | No | — | Whitelist of allowed aggregation types (validated at model creation and query time) |
 | `hidden` | bool | No | `false` | Hide from listings |
 
-*Not required for `count` type (uses `COUNT(*)`).
+### Built-in Aggregations
 
-### Aggregation Types
+Aggregation is applied at query time via colon syntax: `measure_name:aggregation`. For example, `revenue:sum` means "SUM the `revenue` measure."
 
-| Type | SQL Function | Notes |
-|------|-------------|-------|
-| `count` | `COUNT(*)` | No `sql` needed |
-| `count_distinct` | `COUNT(DISTINCT expr)` | Unique count |
-| `sum` | `SUM(expr)` | Sum aggregation |
-| `avg` | `AVG(expr)` | Average |
-| `min` | `MIN(expr)` | Minimum |
-| `max` | `MAX(expr)` | Maximum |
-| `last` | Latest record's value | See below |
+| Aggregation | Colon syntax | SQL Generated |
+|-------------|-------------|---------------|
+| `count` | `*:count` | `COUNT(*)` — counts all rows |
+| `count` | `col:count` | `COUNT(col)` — counts non-null values |
+| `count_distinct` | `col:count_distinct` | `COUNT(DISTINCT col)` |
+| `sum` | `revenue:sum` | `SUM(revenue)` |
+| `avg` | `revenue:avg` | `AVG(revenue)` |
+| `min` | `revenue:min` | `MIN(revenue)` |
+| `max` | `revenue:max` | `MAX(revenue)` |
+| `first` | `col:first(time_col)` | Earliest record's value (ordered by `time_col`) |
+| `last` | `col:last(time_col)` | Latest record's value (ordered by `time_col`) |
+| `weighted_avg` | `price:weighted_avg(weight=quantity)` | `SUM(price * quantity) / SUM(quantity)` |
+| `median` | `revenue:median` | Median value |
+| `percentile` | `revenue:percentile(p=0.95)` | 95th percentile |
 
-### The `last` Aggregation Type
+`*:count` is always available — no measure definition needed. `*` means "all rows" and can **only** be used with `count` (i.e., `*:count` for `COUNT(*)`). Other aggregations like `*:sum` or `*:avg` are not valid.
 
-`type: last` returns the value from the **most recent record** within each grouped bucket — like `min`/`max`, but ordered by time instead of value. Useful for snapshot metrics like balances, inventory counts, or status fields where you want the latest state.
+### The `first` and `last` Aggregations
+
+`first` and `last` return the value from the **earliest or most recent record** within each grouped bucket — like `min`/`max`, but ordered by time instead of value. Useful for snapshot metrics like balances, inventory counts, or status fields where you want the latest state.
 
 ```yaml
 measures:
   - name: balance
     sql: balance
-    type: last
 ```
 
-When grouped by month, each month returns the `balance` value from the latest record in that month. The time column for ordering is resolved via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
+At query time, use `balance:last(updated_at)` to get the most recent balance per group, or `balance:first(updated_at)` for the earliest. When grouped by month, each month returns the `balance` value from the latest (or earliest) record in that month. If no time column is specified, the time column for ordering is resolved via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
 
 Not to be confused with the [`last()` formula function](formulas.md#last-function), which is a window-function transform that broadcasts a single value across all rows.
+
+### Custom Aggregations
+
+Models can define custom aggregations in the `aggregations` list. Each custom aggregation has a name and a formula template using `{expr}` for the measure expression and named placeholders for kwargs:
+
+```yaml
+aggregations:
+  - name: weighted_avg
+    formula: "sum({expr} * {weight}) / sum({weight})"
+  - name: trimmed_mean
+    formula: "avg(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)"
+```
+
+Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`.
 
 ## SQL Expressions
 
@@ -156,7 +179,7 @@ engine.create_model_from_query(
     query=SlayerQuery(
         source_model="orders",
         time_dimensions=[...],
-        fields=["count", "total_amount"],
+        fields=["*:count", "amount:sum"],
     ),
     name="monthly_summary",
 )
@@ -170,12 +193,13 @@ Via MCP, use the `create_model_from_query` tool. Via API, `POST /models/from_que
 
 A query result is a self-contained table — it no longer has the joins that the source model may have had. Dimensions and measures that came from joined models use `__` to encode the original join path in their name:
 
-| Inner query dimension | Virtual model column name |
+| Inner query field | Virtual model column name |
 |----------------------|--------------------------|
 | `stores.name` | `stores__name` |
 | `customers.regions.name` | `customers__regions__name` |
 | `customer_id` | `customer_id` |
-| `count` (measure) | `count` |
+| `*:count` (measure) | `count` |
+| `revenue:sum` (measure) | `revenue_sum` |
 
 This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
 
@@ -199,9 +223,9 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 ## Result Column Format
 
-Query results use `model_name.column_name` format for column keys. For multi-hop joined dimensions, the full path is included:
+Query results use `model_name.column_name` format for column keys. Colon syntax in field names is converted: `revenue:sum` becomes `orders.revenue_sum`, and `*:count` becomes `orders.count`. For multi-hop joined dimensions, the full path is included:
 
 ```json
-{"orders.status": "completed", "orders.count": 42}
+{"orders.status": "completed", "orders.count": 42, "orders.revenue_sum": 1500}
 {"orders.customers.regions.name": "US", "orders.count": 3}
 ```

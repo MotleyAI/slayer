@@ -30,7 +30,7 @@ curl http://localhost:5143/models
 # Query: orders by status
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "status"}]}'
+  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "status"}]}'
 ```
 
 ## Notes

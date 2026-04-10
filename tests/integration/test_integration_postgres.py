@@ -84,9 +84,8 @@ def pg_env(postgresql):
             Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="total", sql="amount", type=DataType.SUM),
-            Measure(name="avg_amount", sql="amount", type=DataType.AVERAGE),
+            Measure(name="total", sql="amount"),
+            Measure(name="avg_amount", sql="amount"),
         ],
     )
     customers_model = SlayerModel(
@@ -98,9 +97,7 @@ def pg_env(postgresql):
             Dimension(name="name", sql="name", type=DataType.STRING),
             Dimension(name="region", sql="region", type=DataType.STRING),
         ],
-        measures=[
-            Measure(name="count", type=DataType.COUNT),
-        ],
+        measures=[],
     )
     storage.save_model(orders_model)
     storage.save_model(customers_model)
@@ -111,30 +108,30 @@ def pg_env(postgresql):
 @pytest.mark.integration
 class TestPostgresQueries:
     def test_count_all(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "count"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "*:count"}])
         result = pg_env.execute(query=query)
         assert result.row_count == 1
-        assert result.data[0]["orders.count"] == 6
+        assert result.data[0]["orders._count"] == 6
 
     def test_sum_measure(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "total"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "total:sum"}])
         result = pg_env.execute(query=query)
-        assert float(result.data[0]["orders.total"]) == 875.0
+        assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     def test_avg_measure(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount:avg"}])
         result = pg_env.execute(query=query)
-        avg = float(result.data[0]["orders.avg_amount"])
+        avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
 
     def test_group_by_status(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
         result = pg_env.execute(query=query)
-        by_status = {r["orders.status"]: r["orders.count"] for r in result.data}
+        by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
         assert by_status["completed"] == 3
         assert by_status["pending"] == 2
         assert by_status["cancelled"] == 1
@@ -142,25 +139,25 @@ class TestPostgresQueries:
     def test_filter_equals(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             filters=["status == 'completed'"],
         )
         result = pg_env.execute(query=query)
-        assert result.data[0]["orders.count"] == 3
+        assert result.data[0]["orders._count"] == 3
 
     def test_filter_gt(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             filters=["amount > 100"],
         )
         result = pg_env.execute(query=query)
-        assert result.data[0]["orders.count"] == 3  # 200, 150, 300
+        assert result.data[0]["orders._count"] == 3  # 200, 150, 300
 
     def test_order_by_desc(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             order=[{"column": {"name": "count"}, "direction": "desc"}],
         )
@@ -170,7 +167,7 @@ class TestPostgresQueries:
     def test_limit(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             limit=2,
         )
@@ -180,19 +177,19 @@ class TestPostgresQueries:
     def test_multiple_measures(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}, {"formula": "total"}],
+            fields=[{"formula": "*:count"}, {"formula": "total:sum"}],
             dimensions=[{"name": "status"}],
         )
         result = pg_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
-        assert completed["orders.count"] == 3
-        assert float(completed["orders.total"]) == 450.0
+        assert completed["orders._count"] == 3
+        assert float(completed["orders.total_sum"]) == 450.0
 
     def test_time_dimension_month_granularity(self, pg_env: SlayerQueryEngine) -> None:
         """Postgres supports DATE_TRUNC — this should work unlike SQLite."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         )
         result = pg_env.execute(query=query)
@@ -201,7 +198,7 @@ class TestPostgresQueries:
     def test_time_dimension_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             time_dimensions=[{
                 "dimension": {"name": "created_at"},
                 "granularity": "month",
@@ -210,17 +207,17 @@ class TestPostgresQueries:
         )
         result = pg_env.execute(query=query)
         # Only Jan and Feb orders (4 orders)
-        total = sum(r["orders.count"] for r in result.data)
+        total = sum(r["orders._count"] for r in result.data)
         assert total == 4
 
     def test_composite_filter(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             filters=["status == 'completed' or status == 'pending'"],
         )
         result = pg_env.execute(query=query)
-        assert result.data[0]["orders.count"] == 5  # 3 completed + 2 pending
+        assert result.data[0]["orders._count"] == 5  # 3 completed + 2 pending
 
     def test_time_shift_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         """time_shift with date_range should fetch shifted data from outside the filtered range."""
@@ -233,14 +230,14 @@ class TestPostgresQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="time_shift(total, -1, 'month')", name="prev_month"),
+                Field(formula="total:sum"),
+                Field(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = pg_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.total"]) == pytest.approx(375.0)
+        assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
         # Previous month (Feb) fetched from DB, not NULL
         assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
 
@@ -253,8 +250,8 @@ class TestPostgresQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="change(total)", name="amount_change"),
+                Field(formula="total:sum"),
+                Field(formula="change(total:sum)", name="amount_change"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -272,8 +269,8 @@ class TestPostgresQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="change_pct(total)", name="pct"),
+                Field(formula="total:sum"),
+                Field(formula="change_pct(total:sum)", name="pct"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -292,15 +289,15 @@ class TestPostgresQueries:
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="time_shift(total, -1, 'month')", name="prev"),
-                Field(formula="time_shift(total, 1, 'month')", name="next"),
+                Field(formula="total:sum"),
+                Field(formula="time_shift(total:sum, -1, 'month')", name="prev"),
+                Field(formula="time_shift(total:sum, 1, 'month')", name="next"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = pg_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.total"]) == pytest.approx(200.0)
+        assert float(result.data[0]["orders.total_sum"]) == pytest.approx(200.0)
         assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)  # Jan
         assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)  # Mar
 
@@ -363,8 +360,7 @@ def pg_cross_model_env(postgresql):
             Dimension(name="amount", sql="amount", type=DataType.NUMBER),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="total", sql="amount", type=DataType.SUM),
+            Measure(name="total", sql="amount"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
@@ -375,8 +371,7 @@ def pg_cross_model_env(postgresql):
             Dimension(name="name", sql="name", type=DataType.STRING),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="avg_score", sql="score", type=DataType.AVERAGE),
+            Measure(name="avg_score", sql="score"),
         ],
     ))
     return SlayerQueryEngine(storage=storage)
@@ -391,15 +386,15 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
             )],
-            fields=[Field(formula="count"), Field(formula="customers.avg_score")],
+            fields=[Field(formula="*:count"), Field(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = pg_cross_model_env.execute(query=query)
         assert result.row_count == 3
         # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
-        assert float(result.data[0]["orders.customers__avg_score"]) == pytest.approx(90.0)
-        assert float(result.data[1]["orders.customers__avg_score"]) == pytest.approx(60.0)
-        assert float(result.data[2]["orders.customers__avg_score"]) == pytest.approx(85.0)
+        assert float(result.data[0]["orders.customers.avg_score_avg"]) == pytest.approx(90.0)
+        assert float(result.data[1]["orders.customers.avg_score_avg"]) == pytest.approx(60.0)
+        assert float(result.data[2]["orders.customers.avg_score_avg"]) == pytest.approx(85.0)
 
     def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """Query list: named sub-query referenced by main query."""
@@ -408,11 +403,11 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
             )],
-            fields=[Field(formula="count"), Field(formula="total")],
+            fields=[Field(formula="*:count"), Field(formula="total:sum")],
         )
-        outer = SlayerQuery(source_model="monthly", fields=[Field(formula="count")])
+        outer = SlayerQuery(source_model="monthly", fields=[Field(formula="*:count")])
         result = pg_cross_model_env.execute(query=[inner, outer])
-        assert result.data[0]["monthly.count"] == 3
+        assert result.data[0]["monthly._count"] == 3
 
     def test_create_model_from_query(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """Save a query as a permanent model, then query it."""
@@ -421,14 +416,14 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
             )],
-            fields=[Field(formula="count"), Field(formula="total")],
+            fields=[Field(formula="*:count"), Field(formula="total:sum")],
         )
         saved = pg_cross_model_env.create_model_from_query(query=source, name="pg_monthly")
         assert saved.source_queries is not None
         result = pg_cross_model_env.execute(
-            query=SlayerQuery(source_model="pg_monthly", fields=[Field(formula="count")])
+            query=SlayerQuery(source_model="pg_monthly", fields=[Field(formula="*:count")])
         )
-        assert result.data[0]["pg_monthly.count"] == 3
+        assert result.data[0]["pg_monthly._count"] == 3
 
     def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """SQL expression dimension via ModelExtension with Postgres."""
@@ -439,10 +434,10 @@ class TestCrossModelAndMultistage:
                 dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
             ),
             dimensions=[ColumnRef(name="tier")],
-            fields=[Field(formula="count")],
+            fields=[Field(formula="*:count")],
         )
         result = pg_cross_model_env.execute(query=query)
-        by_tier = {r["orders.tier"]: r["orders.count"] for r in result.data}
+        by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
         # high: 200, 150, 300 = 3; low: 100, 50, 25 = 3
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
@@ -536,8 +531,10 @@ class TestRollupIngestion:
         orders = next(m for m in models if m.name == "orders")
 
         measure_names = [m.name for m in orders.measures]
-        assert "count" in measure_names
-        assert "amount_sum" in measure_names
+        # One measure per non-ID column; no auto-created 'count'
+        assert "amount" in measure_names
+        assert "count" not in measure_names
+        assert "amount_sum" not in measure_names
         # No dotted measure names from joined models
         assert not any("." in name for name in measure_names)
 
@@ -554,12 +551,12 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = engine.execute(query=query)
 
-        by_name = {r["orders.customers.name"]: r["orders.count"] for r in result.data}
+        by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
@@ -577,14 +574,14 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}, {"formula": "amount_sum"}],
+            fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = engine.execute(query=query)
 
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
-        assert by_region["US"]["orders.count"] == 3  # Acme(2) + Initech(1)
-        assert by_region["EU"]["orders.count"] == 1  # Globex(1)
+        assert by_region["US"]["orders._count"] == 3  # Acme(2) + Initech(1)
+        assert by_region["EU"]["orders._count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0
 
@@ -601,12 +598,12 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = engine.execute(query=query)
 
-        by_name = {r["orders.customers.name"]: r["orders.count"] for r in result.data}
+        by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
@@ -624,13 +621,13 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = engine.execute(query=query)
 
         # Same as regions__name: US=3, EU=1
-        by_region = {r["orders.customers.regions.name"]: r["orders.count"] for r in result.data}
+        by_region = {r["orders.customers.regions.name"]: r["orders._count"] for r in result.data}
         assert by_region["US"] == 3
         assert by_region["EU"] == 1
 
@@ -647,12 +644,12 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
         )
         result = engine.execute(query=query)
         # No joined dimensions → SQL should not have LEFT JOIN
         assert "LEFT JOIN" not in result.sql
-        assert result.data[0]["orders.count"] == 4
+        assert result.data[0]["orders._count"] == 4
 
     def test_selective_joins_single_hop(self, pg_ingest_env) -> None:
         """Query with customer dimension should JOIN customers but NOT regions."""
@@ -667,7 +664,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = engine.execute(query=query)
@@ -689,7 +686,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = engine.execute(query=query)

@@ -45,7 +45,7 @@ class TestDatasourceSummary:
             sql_table="t",
             data_source="test",
             dimensions=[Dimension(name="status", type=DataType.STRING)],
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         ))
         result = _call(mcp_server, "datasource_summary")
         parsed = json.loads(result)
@@ -85,7 +85,7 @@ class TestInspectModel:
             data_source="test",
             description="Test model",
             dimensions=[Dimension(name="x", type=DataType.STRING)],
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         ))
         result = _call(mcp_server, "inspect_model", {"model_name": "test"})
         parsed = json.loads(result)
@@ -113,12 +113,25 @@ class TestCreateModel:
                 {"name": "status", "sql": "status", "type": "string"},
             ],
             "measures": [
-                {"name": "count", "type": "count"},
+                {"name": "revenue", "sql": "amount"},
             ],
         })
         assert "orders" in result
         assert "created" in result
         assert storage.get_model("orders") is not None
+
+    def test_create_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
+        result = _call(mcp_server, "create_model", {
+            "name": "orders",
+            "sql_table": "public.orders",
+            "data_source": "test_ds",
+            "measures": [
+                {"name": "revenue", "sql": "amount", "allowed_aggregations": ["sum", "avg"]},
+            ],
+        })
+        assert "created" in result
+        model = storage.get_model("orders")
+        assert model.measures[0].allowed_aggregations == ["sum", "avg"]
 
     def test_create_reports_replaced(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
@@ -130,16 +143,31 @@ class TestEditModel:
     def test_add_measure(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         ))
         result = _call(mcp_server, "edit_model", {
             "model_name": "orders",
-            "add_measures": [{"name": "total", "sql": "amount", "type": "sum"}],
+            "add_measures": [{"name": "total", "sql": "amount"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
         model = storage.get_model("orders")
         assert len(model.measures) == 2
+
+    def test_add_measure_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
+        storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            measures=[Measure(name="revenue", sql="amount")],
+        ))
+        result = _call(mcp_server, "edit_model", {
+            "model_name": "orders",
+            "add_measures": [{"name": "total", "sql": "amount", "allowed_aggregations": ["sum", "avg"]}],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        model = storage.get_model("orders")
+        total = [m for m in model.measures if m.name == "total"][0]
+        assert total.allowed_aggregations == ["sum", "avg"]
 
     def test_add_dimension(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
@@ -155,7 +183,7 @@ class TestEditModel:
     def test_remove(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            measures=[Measure(name="count", type=DataType.COUNT), Measure(name="total", sql="x", type=DataType.SUM)],
+            measures=[Measure(name="revenue", sql="amount"), Measure(name="total", sql="x")],
         ))
         result = _call(mcp_server, "edit_model", {
             "model_name": "orders",
@@ -179,12 +207,12 @@ class TestEditModel:
     def test_multiple_changes(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         ))
         result = _call(mcp_server, "edit_model", {
             "model_name": "orders",
             "description": "Orders table",
-            "add_measures": [{"name": "total", "sql": "amount", "type": "sum"}],
+            "add_measures": [{"name": "total", "sql": "amount"}],
             "add_dimensions": [{"name": "status", "sql": "status", "type": "string"}],
         })
         parsed = json.loads(result)
@@ -198,21 +226,13 @@ class TestEditModel:
     def test_duplicate_measure(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            measures=[Measure(name="count", type=DataType.COUNT)],
+            measures=[Measure(name="revenue", sql="amount")],
         ))
         result = _call(mcp_server, "edit_model", {
             "model_name": "orders",
-            "add_measures": [{"name": "count", "sql": "x", "type": "sum"}],
+            "add_measures": [{"name": "revenue", "sql": "x"}],
         })
         assert "already exists" in result
-
-    def test_invalid_measure_type(self, mcp_server, storage: YAMLStorage) -> None:
-        storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = _call(mcp_server, "edit_model", {
-            "model_name": "orders",
-            "add_measures": [{"name": "bad", "sql": "x", "type": "invalid"}],
-        })
-        assert "Invalid measure type" in result
 
     def test_model_not_found(self, mcp_server) -> None:
         result = _call(mcp_server, "edit_model", {

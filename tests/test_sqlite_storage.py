@@ -28,7 +28,7 @@ def sample_model() -> SlayerModel:
             Dimension(name="name", sql="name", type=DataType.STRING),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
+            Measure(name="revenue", sql="amount"),
         ],
     )
 

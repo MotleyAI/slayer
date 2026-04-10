@@ -33,6 +33,12 @@ class SlayerClient:
             from slayer.engine.query_engine import SlayerQueryEngine
             self._engine = SlayerQueryEngine(storage=storage)
 
+    @staticmethod
+    def _coerce_query(query: "SlayerQuery | dict") -> SlayerQuery:
+        if isinstance(query, dict):
+            return SlayerQuery.model_validate(query)
+        return query
+
     def _request(self, method: str, path: str, json: Optional[Dict] = None) -> Any:
         try:
             import httpx
@@ -43,8 +49,9 @@ class SlayerClient:
             resp.raise_for_status()
             return resp.json()
 
-    def query(self, query: SlayerQuery) -> SlayerResponse:
+    def query(self, query: "SlayerQuery | dict") -> SlayerResponse:
         """Execute a query and return a SlayerResponse."""
+        query = self._coerce_query(query)
         if self._engine is not None:
             return self._engine.execute(query=query)
         result = self._request("POST", "/query", json=query.model_dump(exclude_none=True))
@@ -58,17 +65,19 @@ class SlayerClient:
             meta=meta,
         )
 
-    def sql(self, query: SlayerQuery) -> str:
+    def sql(self, query: "SlayerQuery | dict") -> str:
         """Generate SQL for a query without executing it."""
+        query = self._coerce_query(query)
         dry_query = query.model_copy(update={"dry_run": True})
         return self.query(query=dry_query).sql
 
-    def explain(self, query: SlayerQuery) -> SlayerResponse:
+    def explain(self, query: "SlayerQuery | dict") -> SlayerResponse:
         """Run EXPLAIN ANALYZE on a query and return the result."""
+        query = self._coerce_query(query)
         explain_query = query.model_copy(update={"explain": True})
         return self.query(query=explain_query)
 
-    def query_df(self, query: SlayerQuery):
+    def query_df(self, query: "SlayerQuery | dict"):
         try:
             import pandas as pd
         except ImportError:

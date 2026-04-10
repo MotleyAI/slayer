@@ -40,82 +40,82 @@ WEEKLY_TD = [TimeDimension(
 
 QUERIES: dict[str, dict] = {
     "simple_count": dict(
-        fields=[Field(formula="count")],
+        fields=[Field(formula="*:count")],
     ),
     "count_by_category": dict(
-        fields=[Field(formula="count"), Field(formula="total_cost")],
+        fields=[Field(formula="*:count"), Field(formula="total_cost:sum")],
         dimensions=[ColumnRef(name="category")],
     ),
     "monthly_revenue": dict(
-        fields=[Field(formula="total_cost")],
+        fields=[Field(formula="total_cost:sum")],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "monthly_cumsum": dict(
-        fields=[Field(formula="total_cost"), Field(formula="cumsum(total_cost)", name="running")],
+        fields=[Field(formula="total_cost:sum"), Field(formula="cumsum(total_cost:sum)", name="running")],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "monthly_change": dict(
-        fields=[Field(formula="total_cost"), Field(formula="change(total_cost)", name="chg")],
+        fields=[Field(formula="total_cost:sum"), Field(formula="change(total_cost:sum)", name="chg")],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "monthly_change_pct": dict(
-        fields=[Field(formula="total_cost"), Field(formula="change_pct(total_cost)", name="pct")],
+        fields=[Field(formula="total_cost:sum"), Field(formula="change_pct(total_cost:sum)", name="pct")],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "monthly_time_shift": dict(
         fields=[
-            Field(formula="total_cost"),
-            Field(formula="time_shift(total_cost, -1, 'month')", name="prev"),
+            Field(formula="total_cost:sum"),
+            Field(formula="time_shift(total_cost:sum, -1, 'month')", name="prev"),
         ],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "monthly_yoy": dict(
         fields=[
-            Field(formula="total_cost"),
-            Field(formula="time_shift(total_cost, -1, 'year')", name="yoy"),
+            Field(formula="total_cost:sum"),
+            Field(formula="time_shift(total_cost:sum, -1, 'year')", name="yoy"),
         ],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "rank_by_category": dict(
         fields=[
-            Field(formula="total_cost"),
-            Field(formula="rank(total_cost)", name="rnk"),
+            Field(formula="total_cost:sum"),
+            Field(formula="rank(total_cost:sum)", name="rnk"),
         ],
         dimensions=[ColumnRef(name="category")],
-        order=[OrderItem(column=ColumnRef(name="total_cost"), direction="desc")],
+        order=[OrderItem(column=ColumnRef(name="total_cost_sum"), direction="desc")],
     ),
     "last_function": dict(
         fields=[
-            Field(formula="total_cost"),
-            Field(formula="last(total_cost)", name="latest"),
+            Field(formula="total_cost:sum"),
+            Field(formula="last(total_cost:sum)", name="latest"),
         ],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "last_agg_type": dict(
         fields=[
-            Field(formula="total_cost"),
-            Field(formula="latest_cost"),
+            Field(formula="total_cost:sum"),
+            Field(formula="latest_cost:last"),
         ],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "filtered_with_transform": dict(
-        fields=[Field(formula="total_cost")],
+        fields=[Field(formula="total_cost:sum")],
         time_dimensions=MONTHLY_TD,
-        filters=["change(total_cost) > 0"],
+        filters=["change(total_cost:sum) > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "time_shift_date_range": dict(
         fields=[
-            Field(formula="total_cost"),
-            Field(formula="time_shift(total_cost, -1, 'month')", name="prev"),
+            Field(formula="total_cost:sum"),
+            Field(formula="time_shift(total_cost:sum, -1, 'month')", name="prev"),
         ],
         time_dimensions=[TimeDimension(
             dimension=ColumnRef(name="created_at"),
@@ -126,25 +126,25 @@ QUERIES: dict[str, dict] = {
     ),
     "nested_cumsum_change": dict(
         fields=[
-            Field(formula="total_cost"),
-            Field(formula="cumsum(change(total_cost))", name="cumchg"),
+            Field(formula="total_cost:sum"),
+            Field(formula="cumsum(change(total_cost:sum))", name="cumchg"),
         ],
         time_dimensions=MONTHLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "weekly_lag_lead": dict(
         fields=[
-            Field(formula="count"),
-            Field(formula="lag(count, 1)", name="prev_week"),
-            Field(formula="lead(count, 1)", name="next_week"),
+            Field(formula="*:count"),
+            Field(formula="lag(*:count, 1)", name="prev_week"),
+            Field(formula="lead(*:count, 1)", name="next_week"),
         ],
         time_dimensions=WEEKLY_TD,
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     ),
     "having_filter": dict(
-        fields=[Field(formula="count"), Field(formula="total_cost")],
+        fields=[Field(formula="*:count"), Field(formula="total_cost:sum")],
         dimensions=[ColumnRef(name="category")],
-        filters=["count > 10"],
+        filters=["_count > 10"],
     ),
 }
 

@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +106,41 @@ class Dimension(BaseModel):
         return v
 
 
+class AggregationParam(BaseModel):
+    """A named parameter for an aggregation formula."""
+    name: str
+    sql: str  # default value — column name or SQL expression
+
+
+class Aggregation(BaseModel):
+    """A named aggregation, either overriding a built-in or fully custom.
+
+    For built-in overrides (e.g., setting default weight for weighted_avg),
+    ``formula`` may be omitted — the built-in formula is used.
+    For fully custom aggregations, ``formula`` is required.
+    """
+    name: str
+    formula: Optional[str] = None  # SQL template; None = use built-in formula
+    params: List[AggregationParam] = Field(default_factory=list)
+    description: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_formula_for_custom(self) -> "Aggregation":
+        if self.name not in BUILTIN_AGGREGATIONS and self.formula is None:
+            raise ValueError(
+                f"Aggregation '{self.name}' is not a built-in aggregation; "
+                f"a 'formula' is required. Built-in aggregations: "
+                f"{', '.join(sorted(BUILTIN_AGGREGATIONS))}"
+            )
+        return self
+
+
 class Measure(BaseModel):
     name: str
     sql: Optional[str] = None
-    type: DataType = DataType.COUNT
     description: Optional[str] = None
     hidden: bool = False
+    allowed_aggregations: Optional[List[str]] = None
 
     @field_validator("name")
     @classmethod
@@ -152,6 +181,7 @@ class SlayerModel(BaseModel):
     data_source: str = ""
     dimensions: List[Dimension] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
+    aggregations: List[Aggregation] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -175,6 +205,23 @@ class SlayerModel(BaseModel):
         """
         return [_fix_multidot_sql(f, context="Model filter") for f in v]
 
+    @model_validator(mode="after")
+    def _validate_allowed_aggregations(self) -> "SlayerModel":
+        """Validate that allowed_aggregations on measures reference valid names."""
+        custom_agg_names = {a.name for a in self.aggregations}
+        valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
+        for m in self.measures:
+            if m.allowed_aggregations is not None:
+                for agg_name in m.allowed_aggregations:
+                    if agg_name not in valid_names:
+                        raise ValueError(
+                            f"Measure '{m.name}': allowed_aggregations contains "
+                            f"'{agg_name}', which is not a built-in aggregation "
+                            f"or defined in this model's aggregations. "
+                            f"Valid: {sorted(valid_names)}"
+                        )
+        return self
+
     def get_dimension(self, name: str) -> Optional[Dimension]:
         for d in self.dimensions:
             if d.name == name:
@@ -185,6 +232,12 @@ class SlayerModel(BaseModel):
         for m in self.measures:
             if m.name == name:
                 return m
+        return None
+
+    def get_aggregation(self, name: str) -> Optional[Aggregation]:
+        for a in self.aggregations:
+            if a.name == name:
+                return a
         return None
 
 

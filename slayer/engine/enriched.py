@@ -18,10 +18,11 @@ This separation means:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.formula import ParsedFilter
+from slayer.core.models import Aggregation
 from slayer.core.query import OrderItem
 
 
@@ -39,14 +40,18 @@ class EnrichedDimension:
 
 @dataclass
 class EnrichedMeasure:
-    """A measure with its SQL expression and aggregation type fully resolved."""
+    """A measure with its SQL expression and aggregation fully resolved."""
 
     name: str
-    sql: Optional[str]  # None for COUNT(*)
-    type: DataType  # Aggregation type (count, sum, avg, etc.)
-    alias: str  # Result column name (e.g., "orders.count")
+    sql: Optional[str]  # None for *:count (COUNT(*))
+    aggregation: str  # Aggregation name: "sum", "avg", "count", "weighted_avg", etc.
+    alias: str  # Result column name (e.g., "orders.revenue_sum")
     model_name: str
+    # For custom or parameterized aggregations:
+    aggregation_def: Optional[Aggregation] = None  # Full definition (formula, params)
+    agg_kwargs: Dict[str, str] = field(default_factory=dict)  # Query-time overrides
     label: Optional[str] = None  # Human-readable label
+    time_column: Optional[str] = None  # Explicit time col for first/last (overrides query default)
 
 
 @dataclass
@@ -122,7 +127,7 @@ class EnrichedQuery:
     # Cross-model measures (from joined models, computed as separate sub-queries)
     cross_model_measures: List["CrossModelMeasure"] = field(default_factory=list)
 
-    # Time column for `type: last` aggregation (ORDER BY for ROW_NUMBER)
+    # Time column for first/last aggregation (ORDER BY for ROW_NUMBER)
     last_agg_time_column: Optional[str] = None
 
     # Filters, ordering, pagination

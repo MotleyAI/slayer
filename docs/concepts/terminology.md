@@ -8,11 +8,13 @@ Key terms used throughout SLayer documentation and code.
 
 **Dimension** — A column used for grouping and filtering. Examples: `status`, `region`, `customer_name`. Dimensions are not aggregated — they appear in GROUP BY clauses.
 
-**Measure** — A model-defined aggregation. Each measure has a name, a SQL expression, and an aggregation type (`count`, `sum`, `avg`, `min`, `max`, `count_distinct`, `last`). Examples: `count` (COUNT(*)), `revenue_sum` (SUM(amount)), `balance` (most recent value via `last`).
+**Measure** — A named row-level SQL expression defined on a model. Each measure has a name and a SQL expression (e.g., `{name: "revenue", sql: "amount"}`). Aggregation is specified at query time using colon syntax — see **Aggregation** below.
+
+**Aggregation** — Specifies how a measure is aggregated. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`.
 
 **Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs. Joins are auto-resolved transitively — `customers.regions.name` walks `orders → customers → regions` via the join graph.
 
-**Cross-model measure** — A measure from a joined model, referenced with dotted syntax (`customers.avg_score`, or multi-hop: `customers.regions.population_sum`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(customers.avg_score)`.
+**Cross-model measure** — A measure from a joined model, referenced with dotted syntax and colon aggregation (`customers.score:avg`, or multi-hop: `customers.regions.population:sum`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(customers.score:avg)`.
 
 **ModelExtension** — Extends a model inline on a query with extra dimensions, measures, or joins — without modifying the stored model. Used for SQL expression dimensions, ad-hoc joins, or adding measures.
 
@@ -24,9 +26,9 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Field** — A data column returned by a query. Defined by a formula string. A field can be a plain measure reference (`"count"`), arithmetic on measures (`"revenue / count"`), or a transform function (`"cumsum(revenue)"`). Fields support an optional `label` for human-readable display. See [Formulas](formulas.md).
+**Field** — A data column returned by a query. Defined by a formula string. A field can be an aggregated measure reference (`"revenue:sum"`), a count (`"*:count"`), arithmetic on aggregated measures (`"revenue:sum / *:count"`), or a transform function (`"cumsum(revenue:sum)"`). Fields support an optional `label` for human-readable display. See [Formulas](formulas.md).
 
-**Label** — An optional human-readable display name for a field, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "revenue / count", "name": "aov", "label": "Average Order Value"}`.
+**Label** — An optional human-readable display name for a field, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}`.
 
 **Filter** — A condition that restricts which rows are included. Defined as a formula string: `"status = 'completed'"`, `"amount > 100"`. See [Filter Formulas](formulas.md#filter-formulas).
 

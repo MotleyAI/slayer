@@ -77,9 +77,8 @@ def duckdb_env(tmp_path):
             Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
         ],
         measures=[
-            Measure(name="count", type=DataType.COUNT),
-            Measure(name="total", sql="amount", type=DataType.SUM),
-            Measure(name="avg_amount", sql="amount", type=DataType.AVERAGE),
+            Measure(name="total", sql="amount"),
+            Measure(name="avg_amount", sql="amount"),
         ],
     )
     customers_model = SlayerModel(
@@ -91,9 +90,7 @@ def duckdb_env(tmp_path):
             Dimension(name="name", sql="name", type=DataType.STRING),
             Dimension(name="region", sql="region", type=DataType.STRING),
         ],
-        measures=[
-            Measure(name="count", type=DataType.COUNT),
-        ],
+        measures=[],
     )
     storage.save_model(orders_model)
     storage.save_model(customers_model)
@@ -104,30 +101,30 @@ def duckdb_env(tmp_path):
 @pytest.mark.integration
 class TestDuckDBQueries:
     def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "count"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "*:count"}])
         result = duckdb_env.execute(query=query)
         assert result.row_count == 1
-        assert result.data[0]["orders.count"] == 6
+        assert result.data[0]["orders._count"] == 6
 
     def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "total"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "total:sum"}])
         result = duckdb_env.execute(query=query)
-        assert float(result.data[0]["orders.total"]) == 875.0
+        assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount"}])
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount:avg"}])
         result = duckdb_env.execute(query=query)
-        avg = float(result.data[0]["orders.avg_amount"])
+        avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
 
     def test_group_by_status(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
         result = duckdb_env.execute(query=query)
-        by_status = {r["orders.status"]: r["orders.count"] for r in result.data}
+        by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
         assert by_status["completed"] == 3
         assert by_status["pending"] == 2
         assert by_status["cancelled"] == 1
@@ -135,25 +132,25 @@ class TestDuckDBQueries:
     def test_filter_equals(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             filters=["status == 'completed'"],
         )
         result = duckdb_env.execute(query=query)
-        assert result.data[0]["orders.count"] == 3
+        assert result.data[0]["orders._count"] == 3
 
     def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             filters=["amount > 100"],
         )
         result = duckdb_env.execute(query=query)
-        assert result.data[0]["orders.count"] == 3  # 200, 150, 300
+        assert result.data[0]["orders._count"] == 3  # 200, 150, 300
 
     def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             order=[{"column": {"name": "count"}, "direction": "desc"}],
         )
@@ -163,7 +160,7 @@ class TestDuckDBQueries:
     def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             limit=2,
         )
@@ -173,19 +170,19 @@ class TestDuckDBQueries:
     def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}, {"formula": "total"}],
+            fields=[{"formula": "*:count"}, {"formula": "total:sum"}],
             dimensions=[{"name": "status"}],
         )
         result = duckdb_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
-        assert completed["orders.count"] == 3
-        assert float(completed["orders.total"]) == 450.0
+        assert completed["orders._count"] == 3
+        assert float(completed["orders.total_sum"]) == 450.0
 
     def test_time_dimension_month_granularity(self, duckdb_env: SlayerQueryEngine) -> None:
         """DuckDB supports DATE_TRUNC natively."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         )
         result = duckdb_env.execute(query=query)
@@ -194,7 +191,7 @@ class TestDuckDBQueries:
     def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             time_dimensions=[{
                 "dimension": {"name": "created_at"},
                 "granularity": "month",
@@ -203,17 +200,17 @@ class TestDuckDBQueries:
         )
         result = duckdb_env.execute(query=query)
         # Only Jan and Feb orders (4 orders)
-        total = sum(r["orders.count"] for r in result.data)
+        total = sum(r["orders._count"] for r in result.data)
         assert total == 4
 
     def test_composite_filter(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             filters=["status == 'completed' or status == 'pending'"],
         )
         result = duckdb_env.execute(query=query)
-        assert result.data[0]["orders.count"] == 5  # 3 completed + 2 pending
+        assert result.data[0]["orders._count"] == 5  # 3 completed + 2 pending
 
     def test_time_shift_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         """time_shift with date_range should fetch shifted data from outside the filtered range."""
@@ -226,14 +223,14 @@ class TestDuckDBQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="time_shift(total, -1, 'month')", name="prev_month"),
+                Field(formula="total:sum"),
+                Field(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = duckdb_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.total"]) == pytest.approx(375.0)
+        assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
         # Previous month (Feb) fetched from DB, not NULL
         assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
 
@@ -246,8 +243,8 @@ class TestDuckDBQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="change(total)", name="amount_change"),
+                Field(formula="total:sum"),
+                Field(formula="change(total:sum)", name="amount_change"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -265,8 +262,8 @@ class TestDuckDBQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="change_pct(total)", name="pct"),
+                Field(formula="total:sum"),
+                Field(formula="change_pct(total:sum)", name="pct"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -285,15 +282,15 @@ class TestDuckDBQueries:
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             fields=[
-                Field(formula="total"),
-                Field(formula="time_shift(total, -1, 'month')", name="prev"),
-                Field(formula="time_shift(total, 1, 'month')", name="next"),
+                Field(formula="total:sum"),
+                Field(formula="time_shift(total:sum, -1, 'month')", name="prev"),
+                Field(formula="time_shift(total:sum, 1, 'month')", name="next"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = duckdb_env.execute(query=query)
         assert result.row_count == 1
-        assert float(result.data[0]["orders.total"]) == pytest.approx(200.0)
+        assert float(result.data[0]["orders.total_sum"]) == pytest.approx(200.0)
         assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)  # Jan
         assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)  # Mar
 
@@ -386,8 +383,10 @@ class TestDuckDBIngestion:
         orders = next(m for m in models if m.name == "orders")
 
         measure_names = [m.name for m in orders.measures]
-        assert "count" in measure_names
-        assert "amount_sum" in measure_names
+        # One measure per non-ID column; no auto-created 'count'
+        assert "amount" in measure_names
+        assert "count" not in measure_names
+        assert "amount_sum" not in measure_names
         # No dotted measure names from joined models
         assert not any("." in name for name in measure_names)
 
@@ -404,12 +403,12 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = engine.execute(query=query)
 
-        by_name = {r["orders.customers.name"]: r["orders.count"] for r in result.data}
+        by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
@@ -427,13 +426,13 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}, {"formula": "amount_sum"}],
+            fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = engine.execute(query=query)
 
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
-        assert by_region["US"]["orders.count"] == 3  # Acme(2) + Initech(1)
-        assert by_region["EU"]["orders.count"] == 1  # Globex(1)
+        assert by_region["US"]["orders._count"] == 3  # Acme(2) + Initech(1)
+        assert by_region["EU"]["orders._count"] == 1  # Globex(1)
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # 100+200+150
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0

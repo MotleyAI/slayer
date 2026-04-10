@@ -7,7 +7,7 @@ Most semantic layers and BI tools basically parameterize a GROUP BY, maybe with 
 
 In many architectures, this is treated as a bolt-on. For example, Cube.js supports a specific, named list of multistage measures that you have to specify with a special syntax inside the measure definition. This is also how we initially did it in Motley.
 
-But one day, I had an insight: SLayer can automatically generate a model definition by introspecting an SQL query (string columns become dimensions, float columns give rise to sum, average, etc. measures, and so on). But each SLayer query resolves to an SQL query!
+But one day, I had an insight: SLayer can automatically generate a model definition by introspecting an SQL query (string columns become dimensions, numeric columns become measures — one measure per column — and so on). But each SLayer query resolves to an SQL query!
 
 ## Queries as models
 
@@ -30,19 +30,19 @@ For the first example above, all you need to do is use the (revenue by store and
   {
     "name": "monthly_store_revenue",
     "source_model": "orders",
-    "fields": ["order_total_sum"],
+    "fields": ["order_total:sum"],
     "dimensions": ["stores.name"],
     "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly_store_revenue",
-    "fields": ["order_total_sum_avg"],
-    "dimensions": ["stores__name"]
+    "fields": ["order_total_sum:avg"],
+    "dimensions": ["stores.name"]
   }
 ]
 ```
 
-The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model` and requests `order_total_sum_avg` — a measure auto-generated on the virtual model.
+The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model` and requests `order_total_sum:avg` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
@@ -53,16 +53,16 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
   {
     "name": "customer_activity",
     "source_model": "orders",
-    "fields": ["count"],
+    "fields": ["*:count"],
     "dimensions": ["customer_id"]
   },
   {
     "source_model": {
       "source_name": "orders",
       "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}],
-      "dimensions": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity.count >= 500 THEN 'High' WHEN customer_activity.count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "string"}]
+      "dimensions": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "string"}]
     },
-    "fields": ["count", "order_total_sum"],
+    "fields": ["*:count", "order_total:sum"],
     "dimensions": ["activity_bucket"]
   }
 ]

@@ -411,23 +411,12 @@ class SlayerQueryEngine:
         for alias, short, dtype, is_measure, label in column_map:
             dims.append(Dimension(name=short, sql=short, type=dtype, description=label))
 
-        # Provide standard aggregation measures for the outer query
-        measures = [
-            Measure(name="count", type=DataType.COUNT),
-        ]
-        # Add aggregation measures for inner columns
+        # One measure per column. Aggregation is specified at query time
+        # using colon syntax (e.g., "order_total_sum:avg"). *:count is always
+        # available for COUNT(*) without a measure definition.
+        measures = []
         for alias, short, dtype, is_measure, label in column_map:
-            if is_measure:
-                # Numeric: SUM, AVG, MIN, MAX, COUNT_DISTINCT
-                measures.append(Measure(name=f"{short}_sum", sql=short, type=DataType.SUM))
-                measures.append(Measure(name=f"{short}_avg", sql=short, type=DataType.AVERAGE))
-                measures.append(Measure(name=f"{short}_min", sql=short, type=DataType.MIN))
-                measures.append(Measure(name=f"{short}_max", sql=short, type=DataType.MAX))
-                measures.append(Measure(name=f"{short}_distinct", sql=short, type=DataType.COUNT_DISTINCT))
-            else:
-                # Non-numeric dimensions: COUNT_DISTINCT and COUNT (non-null)
-                measures.append(Measure(name=f"{short}_distinct", sql=short, type=DataType.COUNT_DISTINCT))
-                measures.append(Measure(name=f"{short}_count", sql=short, type=DataType.COUNT))
+            measures.append(Measure(name=short, sql=short))
 
         return SlayerModel(
             name=virtual_name,
@@ -488,6 +477,8 @@ class SlayerQueryEngine:
         time_dimensions: list,
         label: str = None,
         named_queries: dict = None,
+        aggregation_name: str = None,
+        agg_kwargs: dict = None,
     ) -> CrossModelMeasure:
         """Resolve a cross-model measure reference like 'customers.avg_score'.
 
@@ -518,13 +509,17 @@ class SlayerQueryEngine:
             named_queries=named_queries or {},
         )
 
-        # Find the measure in the target model
-        measure_def = target_model.get_measure(measure_name)
-        if measure_def is None:
-            raise ValueError(
-                f"Measure '{measure_name}' not found in model '{target_model_name}'. "
-                f"Available: {[m.name for m in target_model.measures]}"
-            )
+        # Find the measure in the target model (* = COUNT(*), no measure needed)
+        if measure_name == "*":
+            from slayer.core.models import Measure
+            measure_def = Measure(name="*", sql=None)
+        else:
+            measure_def = target_model.get_measure(measure_name)
+            if measure_def is None:
+                raise ValueError(
+                    f"Measure '{measure_name}' not found in model '{target_model_name}'. "
+                    f"Available: {[m.name for m in target_model.measures]}"
+                )
 
         # The cross-model sub-query starts FROM the source table with JOIN to
         # the target, so all source dimensions are available for grouping.
@@ -533,7 +528,19 @@ class SlayerQueryEngine:
         shared_time_dims = list(time_dimensions)
 
         query_model_name = query.source_model if isinstance(query.source_model, str) else model.name
-        alias = f"{query_model_name}.{target_model_name}__{measure_name}"
+
+        # Resolve aggregation: explicit colon syntax required
+        if aggregation_name:
+            agg = aggregation_name
+            canonical = f"_{aggregation_name}" if measure_name == "*" else f"{measure_name}_{aggregation_name}"
+        else:
+            raise ValueError(
+                f"Cross-model measure '{spec_name}' must include an aggregation "
+                f"(e.g., '{spec_name}:sum')."
+            )
+
+        alias = f"{query_model_name}.{target_model_name}.{canonical}"
+        aggregation_def = target_model.get_aggregation(agg)
 
         return CrossModelMeasure(
             name=field_name,
@@ -542,11 +549,13 @@ class SlayerQueryEngine:
             target_model_sql_table=target_model.sql_table,
             target_model_sql=target_model.sql,
             measure=EnrichedMeasure(
-                name=measure_name,
+                name=canonical,
                 sql=measure_def.sql,
-                type=measure_def.type,
-                alias=f"{target_model_name}.{measure_name}",
+                aggregation=agg,
+                alias=f"{target_model_name}.{canonical}",
                 model_name=target_model_name,
+                aggregation_def=aggregation_def,
+                agg_kwargs=agg_kwargs or {},
             ),
             join_pairs=join.join_pairs,
             shared_dimensions=shared_dims,

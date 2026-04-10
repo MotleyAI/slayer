@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import sqlalchemy as sa
 
@@ -13,7 +13,6 @@ from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
-VALID_MEASURE_TYPES = {"count", "count_distinct", "sum", "avg", "min", "max", "last"}
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 
 
@@ -81,7 +80,7 @@ def _model_to_summary(model: SlayerModel) -> dict:
             for d in model.dimensions if not d.hidden
         ],
         "measures": [
-            {"name": m.name, "type": str(m.type), "description": m.description}
+            {"name": m.name, "description": m.description}
             for m in model.measures if not m.hidden
         ],
     }
@@ -291,7 +290,7 @@ def create_mcp_server(storage: StorageBackend):
         data_source: Optional[str] = None,
         description: Optional[str] = None,
         dimensions: Optional[List[Dict[str, str]]] = None,
-        measures: Optional[List[Dict[str, str]]] = None,
+        measures: Optional[List[Dict[str, Union[str, List[str]]]]] = None,
     ) -> str:
         """Create a new semantic model that maps to a database table.
 
@@ -305,6 +304,7 @@ def create_mcp_server(storage: StorageBackend):
                 Types: string, number, time, date, boolean.
             measures: List of measure definitions. Each: {"name": "total", "sql": "amount", "type": "sum"}.
                 Types: count, count_distinct, sum, avg, min, max.
+                Optional: "allowed_aggregations": ["sum", "avg"] to restrict usable aggregations.
         """
         data = _build_dict(
             name=name, sql_table=sql_table, sql=sql, data_source=data_source,
@@ -351,7 +351,7 @@ def create_mcp_server(storage: StorageBackend):
         description: Optional[str] = None,
         data_source: Optional[str] = None,
         default_time_dimension: Optional[str] = None,
-        add_measures: Optional[List[Dict[str, str]]] = None,
+        add_measures: Optional[List[Dict[str, Union[str, List[str]]]]] = None,
         add_dimensions: Optional[List[Dict[str, str]]] = None,
         remove: Optional[List[str]] = None,
     ) -> str:
@@ -364,6 +364,7 @@ def create_mcp_server(storage: StorageBackend):
             default_time_dimension: Default time dimension for transforms.
             add_measures: Measures to add. Each: {"name": "total", "sql": "amount", "type": "sum", "description": "..."}.
                 Types: count, count_distinct, sum, avg, min, max.
+                Optional: "allowed_aggregations": ["sum", "avg"] to restrict usable aggregations.
             add_dimensions: Dimensions to add. Each: {"name": "region", "sql": "region", "type": "string", "description": "..."}.
                 Types: string, number, time, date, boolean.
             remove: Names of measures or dimensions to remove.
@@ -406,11 +407,11 @@ def create_mcp_server(storage: StorageBackend):
             name = spec.get("name", "")
             if name in existing_measure_names:
                 return f"Measure '{name}' already exists on model '{model_name}'."
-            measure_type = spec.get("type", "")
-            if measure_type not in VALID_MEASURE_TYPES:
-                return f"Invalid measure type '{measure_type}'. Must be one of: {', '.join(sorted(VALID_MEASURE_TYPES))}"
             model.measures.append(Measure(
-                name=name, sql=spec.get("sql"), type=measure_type, description=spec.get("description"),
+                name=name,
+                sql=spec.get("sql"),
+                description=spec.get("description"),
+                allowed_aggregations=spec.get("allowed_aggregations"),
             ))
             existing_measure_names.add(name)
             changes.append(f"added measure '{name}'")

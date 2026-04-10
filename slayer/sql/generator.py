@@ -7,30 +7,62 @@ query engine's _enrich() step.
 
 import copy
 import logging
+import re
 from typing import Optional
 
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.enums import (
+    BUILTIN_AGGREGATION_FORMULAS,
+    BUILTIN_AGGREGATION_REQUIRED_PARAMS,
+    TimeGranularity,
+)
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 
 logger = logging.getLogger(__name__)
 
-_AGG_FUNCTION_MAP = {
-    DataType.COUNT: "COUNT",
-    DataType.COUNT_DISTINCT: "COUNT_DISTINCT",
-    DataType.SUM: "SUM",
-    DataType.AVERAGE: "AVG",
-    DataType.MIN: "MIN",
-    DataType.MAX: "MAX",
-    # DataType.LAST is not here — it uses a special ROW_NUMBER + conditional aggregate
+# Maps aggregation name (string) → SQL function name.
+_AGG_FUNCTION_MAP: dict[str, str] = {
+    "count": "COUNT",
+    "count_distinct": "COUNT_DISTINCT",
+    "sum": "SUM",
+    "avg": "AVG",
+    "min": "MIN",
+    "max": "MAX",
+    "median": "MEDIAN",
+    # "first", "last" use special ROW_NUMBER + conditional aggregate
+    # "weighted_avg" and custom aggregations use formula substitution
 }
 
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
 # and handles gaps in time series correctly.
 _SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
+
+# Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
+_SAFE_AGG_PARAM_RE = re.compile(
+    r'^(?:'
+    r'[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*'  # identifier or qualified name
+    r'|'
+    r'-?\d+(?:\.\d+)?'  # numeric literal
+    r')$'
+)
+
+
+def _validate_agg_param_value(value: str, param_name: str, agg_name: str) -> None:
+    """Validate that a query-time aggregation parameter value is safe for substitution.
+
+    Only allows column names (optionally table-qualified) and numeric literals.
+    Rejects arbitrary SQL to prevent injection via formula string substitution.
+    """
+    if not _SAFE_AGG_PARAM_RE.match(value):
+        raise ValueError(
+            f"Unsafe value '{value}' for parameter '{param_name}' in "
+            f"aggregation '{agg_name}'. Parameter values must be column names "
+            f"(e.g., 'quantity') or numeric literals (e.g., '0.95')."
+        )
+
 
 _GRANULARITY_MAP = {
     TimeGranularity.SECOND: "second",
@@ -191,11 +223,12 @@ class SQLGenerator:
         """
         from_clause = self._build_from_clause(enriched=enriched)
 
-        # If any measure has type=last, prepend a ROW_NUMBER CTE to mark the
-        # latest row per group. The FROM is replaced with this ranked subquery.
-        has_last_measures = any(m.type == DataType.LAST for m in enriched.measures)
-        if has_last_measures and enriched.last_agg_time_column:
-            from_clause = self._build_last_ranked_from(
+        # If any measure has first/last aggregation, prepend a ROW_NUMBER CTE
+        # to mark the latest (or earliest) row per group.
+        has_first_or_last = any(m.aggregation in ("first", "last") for m in enriched.measures)
+        rn_suffix_map: dict[str, str] = {}
+        if has_first_or_last and enriched.last_agg_time_column:
+            from_clause, rn_suffix_map = self._build_last_ranked_from(
                 enriched=enriched, base_from=from_clause, time_offset=time_offset,
             )
 
@@ -204,7 +237,7 @@ class SQLGenerator:
 
         for dim in enriched.dimensions:
             col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
-            if has_last_measures:
+            if has_first_or_last:
                 # In ranked subquery, dimensions are already columns — reference directly
                 col_expr = exp.Column(this=exp.to_identifier(dim.name))
             select_columns.append(col_expr.as_(dim.alias))
@@ -212,7 +245,7 @@ class SQLGenerator:
 
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-            if has_last_measures:
+            if has_first_or_last:
                 # Time dimension is already truncated in the ranked subquery
                 col_expr = exp.Column(this=exp.to_identifier(f"_td_{td.name}"))
             else:
@@ -228,12 +261,19 @@ class SQLGenerator:
 
         has_aggregation = False
         for measure in enriched.measures:
-            agg_expr, is_agg = self._build_agg(measure=measure)
+            agg_expr, is_agg = self._build_agg(
+                measure=measure,
+                rn_suffix_map=rn_suffix_map,
+                default_time_col=enriched.last_agg_time_column,
+            )
             select_columns.append(agg_expr.as_(measure.alias))
             if is_agg:
                 has_aggregation = True
 
-        where_clause, having_clause = self._build_where_and_having(enriched=enriched)
+        where_clause, having_clause = self._build_where_and_having(
+            enriched=enriched,
+            rn_suffix_map=rn_suffix_map,
+        )
 
         select = exp.Select()
         for col in select_columns:
@@ -242,7 +282,7 @@ class SQLGenerator:
         select = select.from_(from_clause)
 
         # When using ranked subquery for type=last, WHERE is already inside the subquery
-        if where_clause is not None and not has_last_measures:
+        if where_clause is not None and not has_first_or_last:
             select = select.where(where_clause)
 
         # Group by when there are aggregations, or when cross-model measures
@@ -743,7 +783,7 @@ class SQLGenerator:
         if enriched.order:
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = f"{col.model or enriched.model_name}.{col.name}"
+                col_name = self._resolve_order_column(col=col, enriched=enriched)
                 order_col = exp.Column(this=exp.to_identifier(col_name, quoted=True))
                 ascending = order_item.direction == "asc"
                 select = select.order_by(exp.Ordered(this=order_col, desc=not ascending))
@@ -755,6 +795,51 @@ class SQLGenerator:
             select = select.offset(enriched.offset)
 
         return select
+
+    @staticmethod
+    def _resolve_order_column(col, enriched: EnrichedQuery) -> str:
+        """Resolve an order column reference to the correct enriched alias.
+
+        Users refer to columns by their short name (e.g., ``count``,
+        ``revenue_sum``).  The enriched query stores fully qualified aliases
+        (e.g., ``orders._count``, ``orders.revenue_sum``).  This method
+        matches the user-provided name against all enriched columns and
+        returns the matching alias.  If no match is found, the name is
+        qualified with the model name as a fallback.
+
+        For ``*:count`` results, the internal name is ``_count`` but users
+        refer to it as ``count``.  A fallback check for ``_name`` handles
+        this case.
+        """
+        user_name = col.name
+        model_prefix = col.model or enriched.model_name
+
+        # Build a lookup: short name → alias for all enriched columns
+        alias_lookup: dict[str, str] = {}
+        for d in enriched.dimensions:
+            alias_lookup[d.name] = d.alias
+        for td in enriched.time_dimensions:
+            alias_lookup[td.name] = td.alias
+        for m in enriched.measures:
+            alias_lookup[m.name] = m.alias
+        for e in enriched.expressions:
+            alias_lookup[e.name] = e.alias
+        for t in enriched.transforms:
+            alias_lookup[t.name] = t.alias
+        for cm in enriched.cross_model_measures:
+            alias_lookup[cm.name] = cm.alias
+
+        # Direct match on the user-provided name
+        if user_name in alias_lookup:
+            return alias_lookup[user_name]
+
+        # Fallback for *:count → _count: user says "count", internal is "_count"
+        prefixed = f"_{user_name}"
+        if prefixed in alias_lookup:
+            return alias_lookup[prefixed]
+
+        # Fallback: qualify with model prefix
+        return f"{model_prefix}.{user_name}"
 
     # ------------------------------------------------------------------
     # FROM / JOIN building
@@ -769,18 +854,21 @@ class SQLGenerator:
         else:
             raise ValueError(f"Model '{enriched.model_name}' has neither sql_table nor sql defined")
 
-    def _build_last_ranked_from(self, enriched: EnrichedQuery,
-                                 base_from: exp.Expression,
-                                 time_offset: Optional[tuple[int, str]] = None) -> exp.Expression:
-        """Build a ranked subquery for `type: last` aggregation.
+    def _build_last_ranked_from(
+        self,
+        enriched: EnrichedQuery,
+        base_from: exp.Expression,
+        time_offset: Optional[tuple[int, str]] = None,
+    ) -> tuple[exp.Expression, dict[str, str]]:
+        """Build a ranked subquery for first/last aggregation.
 
-        Wraps the source table in a subquery that adds:
-          ROW_NUMBER() OVER (PARTITION BY [group-dims] ORDER BY time_col DESC) AS _last_rn
-        Plus all original columns and pre-computed time dimension expressions.
-        The outer query then uses MAX(CASE WHEN _last_rn = 1 THEN col END) for last-type measures.
+        Wraps the source table in a subquery that adds ROW_NUMBER columns
+        for each distinct time column used by first/last measures.
+        Returns (subquery, rn_suffix_map) where rn_suffix_map maps each
+        effective time column to its ROW_NUMBER alias suffix.
         """
         model = enriched.model_name
-        time_col = enriched.last_agg_time_column
+        default_time_col = enriched.last_agg_time_column
 
         # Build SELECT * plus ROW_NUMBER
         parts = [f"{model}.*"]
@@ -814,12 +902,33 @@ class SQLGenerator:
 
         partition_clause = f"PARTITION BY {', '.join(partition_parts)}" if partition_parts else ""
 
-        # ORDER BY the resolved time column (qualified as "table.column")
-        time_col_expr = self._resolve_sql(sql=time_col, name=time_col, model_name=model)
-        order_sql = time_col_expr.sql(dialect=self.dialect)
+        # Collect distinct effective time columns from first/last measures
+        # default_time_col is guaranteed non-None here (checked at call site)
+        assert default_time_col is not None
+        time_col_agg_types: dict[str, set[str]] = {}
+        for m in enriched.measures:
+            if m.aggregation in ("first", "last"):
+                effective = m.time_column or default_time_col
+                if effective not in time_col_agg_types:
+                    time_col_agg_types[effective] = set()
+                time_col_agg_types[effective].add(m.aggregation)
 
-        rn_expr = f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} DESC) AS _last_rn"
-        parts.append(rn_expr)
+        # Assign stable suffixes: first sorted gets "", second gets "_2", etc.
+        sorted_time_cols = sorted(time_col_agg_types.keys())
+        rn_suffix_map: dict[str, str] = {}
+        for i, tc in enumerate(sorted_time_cols):
+            rn_suffix_map[tc] = "" if i == 0 else f"_{i + 1}"
+
+        # Generate ROW_NUMBER columns per distinct time column
+        for tc in sorted_time_cols:
+            tc_expr = self._resolve_sql(sql=tc, name=tc, model_name=model)
+            order_sql = tc_expr.sql(dialect=self.dialect)
+            suffix = rn_suffix_map[tc]
+            agg_types = time_col_agg_types[tc]
+            if "last" in agg_types:
+                parts.append(f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} DESC) AS _last_rn{suffix}")
+            if "first" in agg_types:
+                parts.append(f"ROW_NUMBER() OVER ({partition_clause} ORDER BY {order_sql} ASC) AS _first_rn{suffix}")
 
         select_sql = ", ".join(parts)
         from_sql = base_from.sql(dialect=self.dialect)
@@ -831,7 +940,7 @@ class SQLGenerator:
             ranked_sql += f" WHERE {where_clause.sql(dialect=self.dialect)}"
 
         parsed = sqlglot.parse_one(ranked_sql, dialect=self.dialect)
-        return exp.Subquery(this=parsed, alias=exp.to_identifier(model))
+        return exp.Subquery(this=parsed, alias=exp.to_identifier(model)), rn_suffix_map
 
     # ------------------------------------------------------------------
     # Column / measure resolution (from enriched SQL expressions)
@@ -846,17 +955,15 @@ class SQLGenerator:
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
         return sqlglot.parse_one(sql=sql, dialect=self.dialect)
 
-    def _build_agg(self, measure: EnrichedMeasure) -> tuple[exp.Expression, bool]:
+    def _build_agg(
+        self,
+        measure: EnrichedMeasure,
+        rn_suffix_map: Optional[dict[str, str]] = None,
+        default_time_col: Optional[str] = None,
+    ) -> tuple[exp.Expression, bool]:
         """Build an aggregation expression from an enriched measure."""
-        # type=last: MAX(CASE WHEN _last_rn = 1 THEN col END)
-        # The _last_rn column comes from _build_last_ranked_from
-        if measure.type == DataType.LAST:
-            col = measure.sql or measure.name
-            case_sql = f"MAX(CASE WHEN _last_rn = 1 THEN {measure.model_name}.{col} END)"
-            return sqlglot.parse_one(case_sql, dialect=self.dialect), True
-
-        agg_func = _AGG_FUNCTION_MAP.get(measure.type)
-        if agg_func is None:
+        agg_name = measure.aggregation
+        if not agg_name:
             # Not an aggregation — raw expression
             if measure.sql:
                 return self._resolve_sql(sql=measure.sql, name=measure.name, model_name=measure.model_name), False
@@ -865,8 +972,23 @@ class SQLGenerator:
                 table=exp.to_identifier(measure.model_name),
             ), False
 
-        # COUNT(*) special case
-        if measure.type == DataType.COUNT and measure.sql is None:
+        # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
+        if agg_name in ("first", "last"):
+            col = measure.sql or measure.name
+            suffix = ""
+            if rn_suffix_map and default_time_col:
+                effective_tc = measure.time_column or default_time_col
+                suffix = rn_suffix_map.get(effective_tc, "")
+            rn_col = f"_first_rn{suffix}" if agg_name == "first" else f"_last_rn{suffix}"
+            case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {measure.model_name}.{col} END)"
+            return sqlglot.parse_one(case_sql, dialect=self.dialect), True
+
+        # --- Custom or parameterized aggregation (formula-based) ---
+        if agg_name not in _AGG_FUNCTION_MAP:
+            return self._build_formula_agg(measure, agg_name), True
+
+        # --- Resolve inner expression ---
+        if agg_name == "count" and measure.sql is None:
             inner = exp.Star()
         elif measure.sql:
             inner = self._resolve_sql(sql=measure.sql, name=measure.name, model_name=measure.model_name)
@@ -876,9 +998,15 @@ class SQLGenerator:
                 table=exp.to_identifier(measure.model_name),
             )
 
-        if measure.type == DataType.COUNT_DISTINCT:
+        # --- count_distinct ---
+        if agg_name == "count_distinct":
             return exp.Count(this=exp.Distinct(expressions=[inner])), True
 
+        # --- median (dialect-dependent) ---
+        if agg_name == "median":
+            return self._build_median(inner), True
+
+        # --- Standard aggregations (sum, avg, min, max, count) ---
         agg_class_map = {
             "COUNT": exp.Count,
             "SUM": exp.Sum,
@@ -886,15 +1014,72 @@ class SQLGenerator:
             "MIN": exp.Min,
             "MAX": exp.Max,
         }
+        agg_func = _AGG_FUNCTION_MAP[agg_name]
         agg_class = agg_class_map[agg_func]
         return agg_class(this=inner), True
+
+    def _build_formula_agg(self, measure: EnrichedMeasure, agg_name: str) -> exp.Expression:
+        """Build SQL for formula-based aggregations (weighted_avg, custom)."""
+        # Get formula: from aggregation_def or built-in
+        formula = None
+        if measure.aggregation_def and measure.aggregation_def.formula:
+            formula = measure.aggregation_def.formula
+        elif agg_name in BUILTIN_AGGREGATION_FORMULAS:
+            formula = BUILTIN_AGGREGATION_FORMULAS[agg_name]
+
+        if formula is None:
+            raise ValueError(
+                f"Aggregation '{agg_name}' has no formula. "
+                f"Custom aggregations must define a formula."
+            )
+
+        # Collect param values: query-time overrides > aggregation_def defaults
+        param_defaults = {}
+        if measure.aggregation_def:
+            param_defaults = {p.name: p.sql for p in measure.aggregation_def.params}
+        params = {**param_defaults, **measure.agg_kwargs}
+
+        # Validate query-time parameter values to prevent SQL injection
+        for pname, pval in measure.agg_kwargs.items():
+            _validate_agg_param_value(pval, pname, agg_name)
+
+        # Validate required params
+        required = BUILTIN_AGGREGATION_REQUIRED_PARAMS.get(agg_name, [])
+        for req in required:
+            if req not in params:
+                raise ValueError(
+                    f"Aggregation '{agg_name}' requires parameter '{req}'. "
+                    f"Set it in the model's aggregation definition or at query time "
+                    f"(e.g., 'measure:{agg_name}({req}=column)')."
+                )
+
+        # Resolve {value} and {param_name} in formula
+        col_expr = measure.sql or measure.name
+        substituted = formula.replace("{value}", col_expr)
+        for param_name, param_val in params.items():
+            substituted = substituted.replace(f"{{{param_name}}}", param_val)
+
+        return sqlglot.parse_one(substituted, dialect=self.dialect)
+
+    def _build_median(self, inner: exp.Expression) -> exp.Expression:
+        """Build a median aggregation expression (dialect-dependent)."""
+        if self.dialect in ("clickhouse",):
+            return sqlglot.parse_one(f"median({inner.sql(dialect=self.dialect)})", dialect=self.dialect)
+        # Postgres, DuckDB, and most others: PERCENTILE_CONT
+        inner_sql = inner.sql(dialect=self.dialect)
+        return sqlglot.parse_one(
+            f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})",
+            dialect=self.dialect,
+        )
 
     # ------------------------------------------------------------------
     # WHERE / HAVING (filters still use ColumnRef for member resolution)
     # ------------------------------------------------------------------
 
     def _build_where_and_having(
-        self, enriched: EnrichedQuery,
+        self,
+        enriched: EnrichedQuery,
+        rn_suffix_map: Optional[dict[str, str]] = None,
     ) -> tuple[Optional[exp.Expression], Optional[exp.Expression]]:
         """Build WHERE and HAVING clauses from parsed filters.
 
@@ -927,7 +1112,11 @@ class SQLGenerator:
                     # Find the measure and build its aggregate expression
                     for m in enriched.measures:
                         if m.name == col_name:
-                            agg_expr, _ = self._build_agg(measure=m)
+                            agg_expr, _ = self._build_agg(
+                                measure=m,
+                                rn_suffix_map=rn_suffix_map,
+                                default_time_col=enriched.last_agg_time_column,
+                            )
                             agg_sql = agg_expr.sql(dialect=self.dialect)
                             having_sql = re.sub(
                                 rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',

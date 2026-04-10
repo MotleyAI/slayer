@@ -11,11 +11,11 @@ transformation step in the query pipeline.
 import re
 from typing import Dict, List, Optional, Set
 
-from slayer.core.enums import DataType
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
 from slayer.core.formula import (
     ALL_TRANSFORMS,
+    AggregatedMeasureRef,
     ArithmeticField,
-    MeasureRef,
     MixedArithmeticField,
     TIME_TRANSFORMS,
     TransformField,
@@ -37,7 +37,6 @@ from slayer.engine.enriched import (
 
 _SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
-
 
 def enrich_query(
     query: SlayerQuery,
@@ -104,26 +103,92 @@ def enrich_query(
     cross_model_measures: List[CrossModelMeasure] = []
     known_aliases: Dict[str, str] = {}
 
-    def _ensure_measure(mname: str):
-        if not any(m.name == mname for m in measures):
-            measure_def = model.get_measure(mname)
-            if measure_def is None:
-                raise ValueError(f"Measure '{mname}' not found in model '{model.name}'")
-            measures.append(
-                EnrichedMeasure(
-                    name=mname,
-                    sql=measure_def.sql,
-                    type=measure_def.type,
-                    alias=f"{model_name_str}.{mname}",
-                    model_name=model.name,
+    def _ensure_aggregated_measure(
+        alias_key: str,
+        measure_name: str,
+        aggregation_name: str,
+        agg_args: Optional[list] = None,
+        agg_kwargs: Optional[dict] = None,
+    ):
+        """Create an EnrichedMeasure for an aggregated measure ref.
+
+        Args:
+            alias_key: Key to use in known_aliases (placeholder ID or canonical name).
+            measure_name: Measure name ("revenue") or "*" for COUNT(*).
+            aggregation_name: Aggregation name ("sum", "weighted_avg", etc.).
+            agg_args: Positional args from colon syntax (e.g., time col for last/first).
+            agg_kwargs: Keyword args from colon syntax (e.g., weight override).
+        """
+        agg_args = agg_args or []
+        agg_kwargs = agg_kwargs or {}
+
+        # Canonical name for the result column (colon → underscore)
+        if measure_name == "*":
+            canonical_name = f"_{aggregation_name}"  # *:count → "_count"
+        else:
+            canonical_name = f"{measure_name}_{aggregation_name}"
+
+        # Skip if already ensured with this alias_key
+        alias = f"{model_name_str}.{canonical_name}"
+        if any(m.alias == alias for m in measures):
+            known_aliases[alias_key] = alias
+            return
+
+        # Resolve measure SQL
+        if measure_name == "*":
+            if aggregation_name != "count":
+                raise ValueError(
+                    f"Aggregation '{aggregation_name}' not allowed with measure '*' "
+                    f"— use '*:count' for COUNT(*)"
                 )
+            sql = None
+        else:
+            measure_def = model.get_measure(measure_name)
+            if measure_def is None:
+                raise ValueError(f"Measure '{measure_name}' not found in model '{model.name}'")
+            if measure_def.allowed_aggregations is not None:
+                if aggregation_name not in measure_def.allowed_aggregations:
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' not allowed for measure "
+                        f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                    )
+            sql = measure_def.sql
+
+        # Validate aggregation exists
+        aggregation_def = model.get_aggregation(aggregation_name)
+        if aggregation_name not in BUILTIN_AGGREGATIONS and aggregation_def is None:
+            raise ValueError(
+                f"Aggregation '{aggregation_name}' is not a built-in aggregation "
+                f"and is not defined in model '{model.name}'."
             )
-            known_aliases[mname] = f"{model_name_str}.{mname}"
+
+        # For first/last with explicit time dimension arg, store on the measure
+        explicit_time_col = None
+        if aggregation_name in ("first", "last") and agg_args:
+            explicit_time_col = agg_args[0]
+            if "." not in explicit_time_col:
+                explicit_time_col = f"{model.name}.{explicit_time_col}"
+
+        measures.append(
+            EnrichedMeasure(
+                name=canonical_name,
+                sql=sql,
+                aggregation=aggregation_name,
+                alias=alias,
+                model_name=model.name,
+                aggregation_def=aggregation_def,
+                agg_kwargs=agg_kwargs,
+                time_column=explicit_time_col,
+            )
+        )
+        known_aliases[alias_key] = alias
 
     def _resolve_sql(sql: str) -> str:
         resolved = sql
         for name, alias in sorted(known_aliases.items(), key=lambda x: -len(x[0])):
-            resolved = re.sub(rf"\b{re.escape(name)}\b", f'"{alias}"', resolved)
+            # Negative lookbehind for . and " prevents matching inside
+            # already-quoted identifiers (e.g., _count inside "orders._count")
+            resolved = re.sub(rf'(?<![."])\b{re.escape(name)}\b', f'"{alias}"', resolved)
         return resolved
 
     def _add_transform(name: str, transform: str, measure_alias: str, offset: int = 1, granularity: str = None):
@@ -152,27 +217,66 @@ def enrich_query(
         )
         known_aliases[name] = alias
 
+    def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
+        """Ensure a measure is resolved — handles agg refs only."""
+        agg_refs = agg_refs or {}
+        if mname in agg_refs:
+            ref = agg_refs[mname]
+            if "." in ref.measure_name and ref.measure_name != "*":
+                # Cross-model aggregated measure — not yet supported via agg_refs
+                raise ValueError(
+                    "Cross-model measures with explicit aggregation not yet supported "
+                    "in arithmetic expressions. Use a separate field."
+                )
+            _ensure_aggregated_measure(
+                alias_key=mname,
+                measure_name=ref.measure_name,
+                aggregation_name=ref.aggregation_name,
+                agg_args=ref.agg_args,
+                agg_kwargs=ref.agg_kwargs,
+            )
+        else:
+            raise ValueError(
+                f"Bare measure name '{mname}' in expression is not valid. "
+                f"Use colon syntax."
+            )
+
     def _flatten_spec(spec, field_name: str) -> str:
-        if isinstance(spec, MeasureRef):
-            if "." in spec.name:
+        if isinstance(spec, AggregatedMeasureRef):
+            if "." in spec.measure_name and spec.measure_name != "*":
+                # Cross-model aggregated measure
                 cm = resolve_cross_model_measure(
-                    spec_name=spec.name,
+                    spec_name=spec.measure_name,
                     field_name=field_name,
                     model=model,
                     query=query,
                     dimensions=dimensions,
                     time_dimensions=time_dimensions,
                     named_queries=named_queries,
+                    aggregation_name=spec.aggregation_name,
+                    agg_kwargs=spec.agg_kwargs,
                 )
                 cross_model_measures.append(cm)
                 known_aliases[field_name] = cm.alias
                 return cm.alias
-            _ensure_measure(spec.name)
-            return f"{model_name_str}.{spec.name}"
+
+            canonical_name = (
+                f"_{spec.aggregation_name}"
+                if spec.measure_name == "*"
+                else f"{spec.measure_name}_{spec.aggregation_name}"
+            )
+            _ensure_aggregated_measure(
+                alias_key=canonical_name,
+                measure_name=spec.measure_name,
+                aggregation_name=spec.aggregation_name,
+                agg_args=spec.agg_args,
+                agg_kwargs=spec.agg_kwargs,
+            )
+            return f"{model_name_str}.{canonical_name}"
 
         elif isinstance(spec, ArithmeticField):
             for mname in spec.measure_names:
-                _ensure_measure(mname)
+                _ensure_measure_from_spec(mname, spec.agg_refs)
             alias = f"{model_name_str}.{field_name}"
             enriched_expressions.append(
                 EnrichedExpression(
@@ -186,7 +290,7 @@ def enrich_query(
 
         elif isinstance(spec, MixedArithmeticField):
             for mname in spec.measure_names:
-                _ensure_measure(mname)
+                _ensure_measure_from_spec(mname, spec.agg_refs)
             for placeholder, sub_transform in spec.sub_transforms:
                 _flatten_spec(sub_transform, placeholder)
             alias = f"{model_name_str}.{field_name}"
@@ -212,8 +316,13 @@ def enrich_query(
                     f"(e.g., cumsum, lag)."
                 )
             inner_name = f"_inner_{field_name}"
-            if isinstance(spec.inner, MeasureRef):
-                inner_alias = _flatten_spec(spec.inner, spec.inner.name)
+            if isinstance(spec.inner, AggregatedMeasureRef):
+                canonical = (
+                    spec.inner.aggregation_name
+                    if spec.inner.measure_name == "*"
+                    else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
+                )
+                inner_alias = _flatten_spec(spec.inner, canonical)
             else:
                 inner_alias = _flatten_spec(spec.inner, inner_name)
 
@@ -240,12 +349,22 @@ def enrich_query(
     # Process each query field
     for qfield in query.fields or []:
         spec = parse_formula(qfield.formula)
-        field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_")
+        field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", "")
 
-        if isinstance(spec, MeasureRef):
-            if "." in spec.name and model.get_measure(spec.name) is None:
+        if isinstance(spec, AggregatedMeasureRef):
+            # New colon syntax: "revenue:sum", "*:count", etc.
+            canonical_name = (
+                f"_{spec.aggregation_name}"
+                if spec.measure_name == "*"
+                else f"{spec.measure_name}_{spec.aggregation_name}"
+            )
+            if field_name == qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", ""):
+                field_name = canonical_name
+
+            if "." in spec.measure_name and spec.measure_name != "*":
+                # Cross-model aggregated measure
                 cm = resolve_cross_model_measure(
-                    spec_name=spec.name,
+                    spec_name=spec.measure_name,
                     field_name=field_name,
                     model=model,
                     query=query,
@@ -253,21 +372,32 @@ def enrich_query(
                     time_dimensions=time_dimensions,
                     label=qfield.label,
                     named_queries=named_queries,
+                    aggregation_name=spec.aggregation_name,
+                    agg_kwargs=spec.agg_kwargs,
                 )
                 cross_model_measures.append(cm)
                 continue
 
-            _ensure_measure(spec.name)
-            measure_def = model.get_measure(spec.name)
-            if measure_def and measure_def.type == DataType.LAST and last_agg_time_column is None:
+            _ensure_aggregated_measure(
+                alias_key=canonical_name,
+                measure_name=spec.measure_name,
+                aggregation_name=spec.aggregation_name,
+                agg_args=spec.agg_args,
+                agg_kwargs=spec.agg_kwargs,
+            )
+
+            if spec.aggregation_name in ("first", "last") and last_agg_time_column is None:
                 raise ValueError(
-                    f"Measure '{spec.name}' has type=last but no time column could be resolved. "
-                    f"Add a time dimension, set main_time_dimension, or set default_time_dimension on the model."
+                    f"Aggregation '{spec.aggregation_name}' on measure '{spec.measure_name}' "
+                    f"requires a time column. Add a time dimension, use an explicit arg "
+                    f"(e.g., '{spec.measure_name}:{spec.aggregation_name}(time_col)'), "
+                    f"or set default_time_dimension on the model."
                 )
             if qfield.label:
                 for m in measures:
-                    if m.name == spec.name:
+                    if m.name == canonical_name:
                         m.label = qfield.label
+
         else:
             _flatten_spec(spec, field_name)
             if qfield.label:
@@ -302,7 +432,7 @@ def enrich_query(
             _flatten_spec(spec, name)
         processed_filters.append(rewritten)
 
-    has_last_measures = any(m.type == DataType.LAST for m in measures)
+    has_first_or_last = any(m.aggregation in ("first", "last") for m in measures)
 
     # --- Resolve JOINs ---
     resolved_joins = _resolve_joins(
@@ -328,7 +458,7 @@ def enrich_query(
         expressions=enriched_expressions,
         transforms=enriched_transforms,
         cross_model_measures=cross_model_measures,
-        last_agg_time_column=last_agg_time_column if has_last_measures else None,
+        last_agg_time_column=last_agg_time_column if has_first_or_last else None,
         filters=classify_filters(
             filters=resolve_filter_columns(
                 parsed_filters=[parse_filter(f) for f in processed_filters],
@@ -572,10 +702,24 @@ def extract_filter_transforms(
     """
     import ast as _ast
 
+    from slayer.core.formula import _preprocess_agg_refs
+
     if counter is None:
         counter = [0]
 
     preprocessed = _preprocess_like(filter_str)
+    # Preprocess colon syntax (e.g., "order_total:sum") into ast-safe placeholders
+    preprocessed, agg_refs = _preprocess_agg_refs(preprocessed)
+    # Build reverse map: placeholder → original colon form
+    _agg_reverse = {
+        ph: (
+            f"{ref.measure_name}:{ref.aggregation_name}"
+            if not ref.agg_args and not ref.agg_kwargs
+            else f"{ref.measure_name}:{ref.aggregation_name}({', '.join(ref.agg_args + [f'{k}={v}' for k, v in ref.agg_kwargs.items()])})"
+        )
+        for ph, ref in agg_refs.items()
+    }
+
     try:
         tree = _ast.parse(preprocessed, mode="eval")
     except SyntaxError:
@@ -583,11 +727,17 @@ def extract_filter_transforms(
 
     transforms: List[tuple] = []
 
+    def _unmangle(s: str) -> str:
+        """Restore colon syntax from placeholders in unparsed formulas."""
+        for ph, orig in _agg_reverse.items():
+            s = s.replace(ph, orig)
+        return s
+
     def _replace(node):
         if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name) and node.func.id in ALL_TRANSFORMS:
             name = f"_ft{counter[0]}"
             counter[0] += 1
-            formula = _ast.unparse(node)
+            formula = _unmangle(_ast.unparse(node))
             transforms.append((name, formula))
             return _ast.Name(id=name, ctx=_ast.Load())
         if isinstance(node, _ast.BinOp):
@@ -605,7 +755,7 @@ def extract_filter_transforms(
     modified = _replace(tree.body)
     if not transforms:
         return filter_str, []
-    return _ast.unparse(modified), transforms
+    return _unmangle(_ast.unparse(modified)), transforms
 
 
 def resolve_filter_columns(

@@ -450,21 +450,12 @@ def _columns_to_model(
         else:
             non_numeric_columns.append(col_name)
 
-    # Add COUNT measure
-    measures.append(Measure(name="count", type=DataType.COUNT))
-
-    # Add SUM, AVG, MIN, MAX, COUNT_DISTINCT for numeric non-ID columns
-    for col_name in numeric_columns:
-        measures.append(Measure(name=f"{col_name}_sum", sql=col_name, type=DataType.SUM))
-        measures.append(Measure(name=f"{col_name}_avg", sql=col_name, type=DataType.AVERAGE))
-        measures.append(Measure(name=f"{col_name}_min", sql=col_name, type=DataType.MIN))
-        measures.append(Measure(name=f"{col_name}_max", sql=col_name, type=DataType.MAX))
-        measures.append(Measure(name=f"{col_name}_distinct", sql=col_name, type=DataType.COUNT_DISTINCT))
-
-    # Add COUNT_DISTINCT and COUNT (non-null) for non-numeric non-ID columns
-    for col_name in non_numeric_columns:
-        measures.append(Measure(name=f"{col_name}_distinct", sql=col_name, type=DataType.COUNT_DISTINCT))
-        measures.append(Measure(name=f"{col_name}_count", sql=col_name, type=DataType.COUNT))
+    # One measure per non-ID column. Aggregation is specified at query time
+    # using colon syntax (e.g., "revenue:sum", "customer_id:count_distinct").
+    # *:count is always available for COUNT(*) without any measure definition.
+    for col_name in numeric_columns + non_numeric_columns:
+        measure_name = "count_col" if col_name == "_count" else col_name
+        measures.append(Measure(name=measure_name, sql=col_name))
 
     return SlayerModel(
         name=name,

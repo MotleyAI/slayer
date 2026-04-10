@@ -25,17 +25,17 @@ curl http://localhost:5143/models
 # Query: orders by status
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "status"}]}'
+  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "status"}]}'
 
 # Query: orders by product category (rollup join)
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "products__category"}]}'
+  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "products.category"}]}'
 
 # Query: orders by region (transitive rollup)
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "count"}], "dimensions": [{"name": "regions__name"}]}'
+  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "regions.name"}]}'
 ```
 
 ## Verify

@@ -4,15 +4,31 @@ SLayer uses formula strings in two places: **fields** (data columns) and **filte
 
 ---
 
+## Colon Syntax
+
+Measures and aggregations are separate concepts in SLayer. Measures are named row-level expressions defined on a model. Aggregation is specified at query time using **colon syntax**: `measure_name:aggregation`.
+
+```
+revenue:sum          — SUM the "revenue" measure
+*:count              — COUNT(*), always available, no measure definition needed
+revenue:avg          — AVG the "revenue" measure
+price:weighted_avg(weight=quantity)  — weighted average with kwargs
+customers.score:avg  — cross-model: AVG of "score" from the joined "customers" model
+```
+
+Colon syntax is used everywhere measures appear: in `fields`, in arithmetic expressions, in transform function arguments, and in filters.
+
+---
+
 ## Field Formulas
 
 Field formulas define what data columns a query returns. They go in the `fields` parameter:
 
 ```json
 "fields": [
-  "count",
-  {"formula": "revenue / count", "name": "aov", "label": "Average Order Value"},
-  "cumsum(revenue)",
+  "*:count",
+  {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
+  "cumsum(revenue:sum)",
   ...
 ]
 ```
@@ -23,17 +39,17 @@ The `name` is optional — if omitted, it's auto-generated from the formula. The
 
 | Operator | Example | SQL |
 |----------|---------|-----|
-| `+` | `"revenue + bonus"` | `revenue + bonus` |
-| `-` | `"revenue - cost"` | `revenue - cost` |
-| `*` | `"price * quantity"` | `price * quantity` |
-| `/` | `"revenue / count"` | `revenue / count` |
-| `**` | `"value ** 2"` | `value ** 2` |
+| `+` | `"revenue:sum + bonus:sum"` | `SUM(revenue) + SUM(bonus)` |
+| `-` | `"revenue:sum - cost:sum"` | `SUM(revenue) - SUM(cost)` |
+| `*` | `"price:avg * quantity:sum"` | `AVG(price) * SUM(quantity)` |
+| `/` | `"revenue:sum / *:count"` | `SUM(revenue) / COUNT(*)` |
+| `**` | `"value:sum ** 2"` | `SUM(value) ** 2` |
 
-Parentheses work as expected: `"(revenue - cost) / count"`.
+Parentheses work as expected: `"(revenue:sum - cost:sum) / *:count"`.
 
-All measure names referenced in the formula must exist in the model. For measures from joined models, use dotted syntax: `"customers.avg_score"` or multi-hop: `"customers.regions.population_sum"`. Joins are auto-resolved by walking the join graph. See [Cross-Model Measures](queries.md#cross-model-measures).
+All measure names referenced in the formula must exist in the model (except `*` which is always available). For measures from joined models, use dotted syntax with colon aggregation: `"customers.score:avg"` or multi-hop: `"customers.regions.population:sum"`. Joins are auto-resolved by walking the join graph. See [Cross-Model Measures](queries.md#cross-model-measures).
 
-Transforms work on cross-model measures: `"cumsum(customers.avg_score)"`, `"last(customers.avg_score)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
+Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
 ### Transform Functions
 
@@ -68,10 +84,10 @@ Field formulas support arbitrary nesting — functions can wrap other functions 
 
 ```json
 "fields": [
-  {"formula": "change(cumsum(revenue))", "name": "cumsum_delta"},
-  "last(change(cumsum(revenue)))",
-  {"formula": "cumsum(revenue / count)", "name": "running_aov"},
-  {"formula": "cumsum(revenue) / count", "name": "cumsum_div_count"},
+  {"formula": "change(cumsum(revenue:sum))", "name": "cumsum_delta"},
+  "last(change(cumsum(revenue:sum)))",
+  {"formula": "cumsum(revenue:sum / *:count)", "name": "running_aov"},
+  {"formula": "cumsum(revenue:sum) / *:count", "name": "cumsum_div_count"},
   ...
 ]
 ```
@@ -91,10 +107,10 @@ The ranking granularity depends on the query's dimensions and time dimensions. E
   "source_model": "orders",
   "dimensions": ["customer_name"],
   "fields": [
-    "revenue_sum",
-    {"formula": "rank(revenue_sum)", "name": "rnk"}
+    "revenue:sum",
+    {"formula": "rank(revenue:sum)", "name": "rnk"}
   ],
-  "order": [{"column": "revenue_sum", "direction": "desc"}]
+  "order": [{"column": "revenue:sum", "direction": "desc"}]
 }
 ```
 
@@ -103,7 +119,7 @@ This ranks customers by total revenue. Combine with `limit` to get "top N":
 ```json
 {
   ...
-  "filters": ["rank(revenue_sum) <= 10"]
+  "filters": ["rank(revenue:sum) <= 10"]
 }
 ```
 
@@ -119,14 +135,14 @@ Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at ra
 {
   "source_model": "orders",
   "fields": [
-    "revenue_sum",
-    {"formula": "last(revenue_sum)", "name": "latest_revenue"}
+    "revenue:sum",
+    {"formula": "last(revenue:sum)", "name": "latest_revenue"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
 ```
 
-This returns monthly revenue with an extra column showing the most recent month's revenue on every row — useful for comparisons like "this month vs latest" or for filtering: `"last(change(revenue)) < 0"` keeps rows only if the trend is negative.
+This returns monthly revenue with an extra column showing the most recent month's revenue on every row — useful for comparisons like "this month vs latest" or for filtering: `"last(change(revenue:sum)) < 0"` keeps rows only if the trend is negative.
 
 `last()` requires a time dimension with granularity in the query (same resolution as `time_shift`).
 
@@ -140,9 +156,9 @@ Both field and filter formulas are parsed by `slayer/core/formula.py` using Pyth
 
 **Field formulas** are classified into:
 
-- **MeasureRef** — bare measure name (`"count"`)
-- **ArithmeticField** — arithmetic on measures (`"revenue / count"`)
-- **TransformField** — function call, possibly nested (`"cumsum(revenue)"`)
-- **MixedArithmeticField** — arithmetic containing function calls (`"cumsum(revenue) / count"`)
+- **AggregatedMeasureRef** — measure with colon aggregation (`"revenue:sum"`, `"*:count"`)
+- **ArithmeticField** — arithmetic on aggregated measures (`"revenue:sum / *:count"`)
+- **TransformField** — function call, possibly nested (`"cumsum(revenue:sum)"`)
+- **MixedArithmeticField** — arithmetic containing function calls (`"cumsum(revenue:sum) / *:count"`)
 
 The query engine's `_enrich()` method processes field formulas into ordered enrichment steps, and the SQL generator translates them into stacked CTEs.

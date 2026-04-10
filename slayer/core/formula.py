@@ -1,20 +1,21 @@
 """Formula parser for SLayer fields.
 
-Parses formula strings like "revenue / count", "cumsum(revenue)", "change(cumsum(revenue))"
-into structured FieldSpec objects using Python's ast module.
+Parses formula strings into structured FieldSpec objects using Python's ast module.
 
 A formula can be:
-- A bare measure name: "count" → MeasureRef
-- Arithmetic on measures: "revenue / count" → ArithmeticField
-- A transform function call: "cumsum(revenue)" → TransformField
-- Nested transforms: "change(cumsum(revenue))" → TransformField wrapping TransformField
-- Arithmetic on transforms: "cumsum(revenue) / count" → MixedArithmeticField
+- An aggregated measure ref: "revenue:sum" → AggregatedMeasureRef
+- Star count: "*:count" → AggregatedMeasureRef("*", "count")
+- With agg args: "price:weighted_avg(weight=quantity)" → AggregatedMeasureRef with kwargs
+- Arithmetic: "revenue:sum / *:count" → ArithmeticField
+- A transform: "cumsum(revenue:sum)" → TransformField wrapping AggregatedMeasureRef
+- Nested transforms: "change(cumsum(revenue:sum))" → TransformField wrapping TransformField
+- Arithmetic on transforms: "cumsum(revenue:sum) / *:count" → MixedArithmeticField
 """
 
 import ast
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 # Transforms that require a time dimension for ORDER BY
 TIME_TRANSFORMS = {"cumsum", "change", "change_pct", "time_shift", "last", "lag", "lead"}
@@ -26,23 +27,37 @@ ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
 
 @dataclass
-class MeasureRef:
-    """A reference to a model measure by name."""
-    name: str
+class AggregatedMeasureRef:
+    """A measure reference with explicit aggregation (new colon syntax).
+
+    Examples:
+        "revenue:sum"                        → AggregatedMeasureRef("revenue", "sum")
+        "*:count"                            → AggregatedMeasureRef("*", "count")
+        "customers.revenue:sum"              → AggregatedMeasureRef("customers.revenue", "sum")
+        "price:weighted_avg(weight=quantity)" → AggregatedMeasureRef("price", "weighted_avg",
+                                                                     agg_kwargs={"weight": "quantity"})
+        "revenue:last(ordered_at)"           → AggregatedMeasureRef("revenue", "last",
+                                                                     agg_args=["ordered_at"])
+    """
+    measure_name: str  # e.g., "revenue", "customers.revenue", "*"
+    aggregation_name: str  # e.g., "sum", "weighted_avg"
+    agg_args: List[str] = field(default_factory=list)  # positional args
+    agg_kwargs: Dict[str, str] = field(default_factory=dict)  # keyword args
 
 
 @dataclass
 class ArithmeticField:
     """An arithmetic expression over measures only (no transform calls inside)."""
-    sql: str
-    measure_names: List[str]
+    sql: str  # Preprocessed formula (placeholders for aggregated refs)
+    measure_names: List[str]  # Placeholder IDs or bare names
+    agg_refs: Dict[str, AggregatedMeasureRef] = field(default_factory=dict)
 
 
 @dataclass
 class TransformField:
     """A transform function call, possibly wrapping another transform or arithmetic."""
     transform: str  # cumsum, lag, lead, change, change_pct, rank, time_shift, last
-    inner: "FieldSpec"  # What's being transformed (can be MeasureRef, ArithmeticField, or TransformField)
+    inner: "FieldSpec"  # What's being transformed
     args: List[Any] = field(default_factory=list)
 
 
@@ -50,47 +65,126 @@ class TransformField:
 class MixedArithmeticField:
     """Arithmetic that contains transform sub-expressions.
 
-    E.g., "cumsum(revenue) / count" — the cumsum needs to be computed first
+    E.g., "cumsum(revenue:sum) / *:count" — the cumsum needs to be computed first
     as a CTE step, then the arithmetic references its result.
     """
-    sql: str  # Original formula string
-    measure_names: List[str]  # Bare measure names (e.g., ["count"])
-    sub_transforms: List[tuple]  # List of (placeholder_name, TransformField) for embedded transforms
+    sql: str  # Preprocessed formula with placeholders
+    measure_names: List[str]  # Placeholder IDs or bare measure names
+    sub_transforms: List[tuple]  # List of (placeholder_name, TransformField)
+    agg_refs: Dict[str, AggregatedMeasureRef] = field(default_factory=dict)
 
 
 # The parsed result of a single field
-FieldSpec = Union[MeasureRef, ArithmeticField, TransformField, MixedArithmeticField]
+FieldSpec = Union[AggregatedMeasureRef, ArithmeticField, TransformField, MixedArithmeticField]
+
+
+# ---------------------------------------------------------------------------
+# Colon-syntax preprocessing
+# ---------------------------------------------------------------------------
+
+# Matches: measure_name:agg_name or measure_name:agg_name(args)
+# measure_name = * | identifier(.identifier)* | identifier(.identifier)*.* (cross-model star)
+# agg_name = identifier
+# args = anything inside balanced parens (simple, no nesting)
+_AGG_REF_RE = re.compile(
+    r'(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)'  # group 1: measure name, *, or path.*
+    r':'                                                  # colon separator
+    r'([a-zA-Z_]\w*)'                                    # group 2: aggregation name
+    r'(\([^)]*\))?'                                      # group 3: optional (args)
+)
+
+
+def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasureRef]]:
+    """Replace colon-syntax aggregated measure refs with placeholder identifiers.
+
+    Returns (preprocessed_formula, {placeholder: AggregatedMeasureRef}).
+    """
+    refs: Dict[str, AggregatedMeasureRef] = {}
+    counter = [0]
+
+    def _replace(match: re.Match) -> str:
+        measure_name = match.group(1)
+        agg_name = match.group(2)
+        args_str = match.group(3)
+
+        agg_args: list[str] = []
+        agg_kwargs: dict[str, str] = {}
+        if args_str:
+            inner = args_str[1:-1].strip()
+            if inner:
+                for part in inner.split(","):
+                    part = part.strip()
+                    if "=" in part:
+                        key, val = part.split("=", 1)
+                        agg_kwargs[key.strip()] = val.strip()
+                    else:
+                        agg_args.append(part)
+
+        placeholder = f"__agg{counter[0]}__"
+        counter[0] += 1
+        refs[placeholder] = AggregatedMeasureRef(
+            measure_name=measure_name,
+            aggregation_name=agg_name,
+            agg_args=agg_args,
+            agg_kwargs=agg_kwargs,
+        )
+        return placeholder
+
+    processed = _AGG_REF_RE.sub(_replace, formula)
+    return processed, refs
 
 
 def parse_formula(formula: str) -> FieldSpec:
     """Parse a formula string into a FieldSpec.
 
     Examples:
-        "count"                              → MeasureRef("count")
-        "revenue / count"                    → ArithmeticField(...)
-        "cumsum(revenue)"                    → TransformField("cumsum", MeasureRef("revenue"))
-        "change(cumsum(revenue))"            → TransformField("change", TransformField("cumsum", MeasureRef("revenue")))
-        "cumsum(revenue) / count"            → MixedArithmeticField(sub_transforms=[("_t0", cumsum(revenue))])
-        "time_shift(revenue, -1, 'year')"    → TransformField(...)
+        "revenue:sum"                        → AggregatedMeasureRef("revenue", "sum")
+        "*:count"                            → AggregatedMeasureRef("*", "count")
+        "revenue:sum / *:count"              → ArithmeticField(...)
+        "cumsum(revenue:sum)"                → TransformField("cumsum", AggregatedMeasureRef(...))
+        "price:weighted_avg(weight=qty)"     → AggregatedMeasureRef(..., agg_kwargs={"weight": "qty"})
+        "revenue:last(ordered_at)"           → AggregatedMeasureRef(..., agg_args=["ordered_at"])
+
+    Bare measure names (e.g., "revenue") are not valid — use colon syntax.
     """
+    # Preprocess colon syntax into ast-parseable placeholders
+    processed, agg_refs = _preprocess_agg_refs(formula)
+
     try:
-        tree = ast.parse(formula, mode="eval")
+        tree = ast.parse(processed, mode="eval")
     except SyntaxError as e:
         raise ValueError(f"Invalid formula syntax: {formula!r} — {e}")
 
-    return _parse_node(tree.body, formula)
+    return _parse_node(tree.body, original=formula, agg_refs=agg_refs)
 
 
-def _parse_node(node: ast.AST, original: str) -> FieldSpec:
+def _parse_node(
+    node: ast.AST,
+    original: str,
+    agg_refs: Optional[Dict[str, AggregatedMeasureRef]] = None,
+) -> FieldSpec:
     """Recursively parse an AST node into a FieldSpec."""
+    if agg_refs is None:
+        agg_refs = {}
 
-    # Simple name → measure reference
+    # Simple name → aggregation placeholder or error for bare names
     if isinstance(node, ast.Name):
-        return MeasureRef(name=node.id)
+        if node.id in agg_refs:
+            return agg_refs[node.id]
+        name = node.id
+        raise ValueError(
+            f"Bare measure name '{name}' is not valid. "
+            f"Use colon syntax (e.g., '{name}:sum', '{name}:avg'). "
+            f"For COUNT(*), use '*:count'."
+        )
 
-    # Dotted name → cross-model measure reference (e.g., customers.avg_score)
+    # Dotted name → cross-model measure must include aggregation
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-        return MeasureRef(name=f"{node.value.id}.{node.attr}")
+        name = f"{node.value.id}.{node.attr}"
+        raise ValueError(
+            f"Cross-model measure '{name}' must include an aggregation "
+            f"(e.g., '{name}:sum')."
+        )
 
     # Function call → transform
     if isinstance(node, ast.Call):
@@ -108,7 +202,7 @@ def _parse_node(node: ast.AST, original: str) -> FieldSpec:
             raise ValueError(f"Transform '{func_name}' requires at least one argument (the measure)")
 
         # First arg is the measure/expression being transformed
-        inner = _parse_node(node.args[0], original)
+        inner = _parse_node(node.args[0], original, agg_refs)
 
         # Remaining args are transform parameters (offset, granularity, etc.)
         extra_args = []
@@ -120,13 +214,31 @@ def _parse_node(node: ast.AST, original: str) -> FieldSpec:
     # Binary/unary operation → check if it contains transform calls
     if isinstance(node, (ast.BinOp, ast.UnaryOp)):
         if _contains_call(node):
-            return _parse_mixed_arithmetic(node, original)
+            return _parse_mixed_arithmetic(node, original, agg_refs)
         measure_names = _collect_names(node)
-        return ArithmeticField(sql=original, measure_names=measure_names)
+        # Reject bare measure names (not from colon syntax preprocessing)
+        for mname in measure_names:
+            if mname not in agg_refs:
+                if "." in mname:
+                    raise ValueError(
+                        f"Cross-model measure '{mname}' must include an aggregation "
+                        f"(e.g., '{mname}:sum')."
+                    )
+                raise ValueError(
+                    f"Bare measure name '{mname}' is not valid. "
+                    f"Use colon syntax (e.g., '{mname}:sum', '{mname}:avg'). "
+                    f"For COUNT(*), use '*:count'."
+                )
+        field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}
+        return ArithmeticField(
+            sql=ast.unparse(node),
+            measure_names=measure_names,
+            agg_refs=field_agg_refs,
+        )
 
     # Constant (bare number)
     if isinstance(node, ast.Constant):
-        return ArithmeticField(sql=original, measure_names=[])
+        return ArithmeticField(sql=ast.unparse(node), measure_names=[])
 
     raise ValueError(f"Unsupported formula syntax: {original!r}")
 
@@ -139,12 +251,19 @@ def _contains_call(node: ast.AST) -> bool:
     return False
 
 
-def _parse_mixed_arithmetic(node: ast.AST, original: str) -> MixedArithmeticField:
+def _parse_mixed_arithmetic(
+    node: ast.AST,
+    original: str,
+    agg_refs: Optional[Dict[str, AggregatedMeasureRef]] = None,
+) -> MixedArithmeticField:
     """Parse arithmetic that contains transform calls.
 
     Extracts transform calls, replaces them with placeholder names,
     and returns a MixedArithmeticField.
     """
+    if agg_refs is None:
+        agg_refs = {}
+
     sub_transforms: list[tuple] = []
     measure_names: list[str] = []
     counter = [0]
@@ -155,7 +274,7 @@ def _parse_mixed_arithmetic(node: ast.AST, original: str) -> MixedArithmeticFiel
             placeholder = f"_t{counter[0]}"
             counter[0] += 1
             # Parse the call as a transform
-            transform = _parse_node(n, original)
+            transform = _parse_node(n, original, agg_refs)
             sub_transforms.append((placeholder, transform))
             return ast.Name(id=placeholder, ctx=ast.Load())
 
@@ -179,10 +298,13 @@ def _parse_mixed_arithmetic(node: ast.AST, original: str) -> MixedArithmeticFiel
     # Reconstruct SQL from modified AST
     modified_sql = ast.unparse(modified)
 
+    field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}
+
     return MixedArithmeticField(
         sql=modified_sql,
         measure_names=measure_names,
         sub_transforms=sub_transforms,
+        agg_refs=field_agg_refs,
     )
 
 
@@ -293,11 +415,28 @@ def parse_filter(formula: str) -> ParsedFilter:
         "status IS NOT NULL"             → WHERE status IS NOT NULL
         "name like '%acme%'"             → WHERE name LIKE '%acme%'
         "name not like '%test%'"         → WHERE name NOT LIKE '%test%'
+
+    Also handles colon syntax for aggregated measure refs in filters
+    (e.g., "total_amount:sum > 100"). These are converted to canonical
+    names (total_amount_sum) for the parsed output.
     """
     # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing
     processed = _preprocess_sql_operators(formula)
     # Pre-process `like` / `not like` operators into internal function calls
     processed = _preprocess_like(processed)
+    # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names
+    processed, agg_refs = _preprocess_agg_refs(processed)
+    # Build reverse map: placeholder → canonical name (measure_aggregation)
+    agg_canonical = {}
+    for ph, ref in agg_refs.items():
+        if ref.measure_name == "*":
+            canonical = f"_{ref.aggregation_name}"
+        else:
+            canonical = f"{ref.measure_name}_{ref.aggregation_name}"
+        agg_canonical[ph] = canonical
+    # Replace placeholders with canonical names in the formula
+    for ph, canonical in agg_canonical.items():
+        processed = processed.replace(ph, canonical)
     try:
         tree = ast.parse(processed, mode="eval")
     except SyntaxError as e:
