@@ -89,7 +89,7 @@ Aggregation is applied at query time via colon syntax: `measure_name:aggregation
 | `median` | `revenue:median` | Median value |
 | `percentile` | `revenue:percentile(p=0.95)` | 95th percentile |
 
-`*:count` is always available — no measure definition needed. `*` means "all rows", `count` is a regular aggregation.
+`*:count` is always available — no measure definition needed. `*` means "all rows" and can **only** be used with `count` (i.e., `*:count` for `COUNT(*)`). Other aggregations like `*:sum` or `*:avg` are not valid.
 
 ### The `first` and `last` Aggregations
 

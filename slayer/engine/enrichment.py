@@ -38,7 +38,6 @@ from slayer.engine.enriched import (
 _SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
 
-
 def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
@@ -137,6 +136,11 @@ def enrich_query(
 
         # Resolve measure SQL
         if measure_name == "*":
+            if aggregation_name != "count":
+                raise ValueError(
+                    f"Aggregation '{aggregation_name}' not allowed with measure '*' "
+                    f"— use '*:count' for COUNT(*)"
+                )
             sql = None
         else:
             measure_def = model.get_measure(measure_name)

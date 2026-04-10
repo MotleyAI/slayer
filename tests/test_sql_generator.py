@@ -60,6 +60,13 @@ class TestBasicQueries:
         assert "COUNT(*)" in sql
         assert "public.orders" in sql
 
+    def test_star_rejects_non_count_aggregation(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="*:sum")])
+        with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
+            _generate(generator, query, orders_model)
+
     def test_dimensions_only(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
         sql = _generate(generator, query, orders_model)

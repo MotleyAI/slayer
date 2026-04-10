@@ -7,109 +7,78 @@ description: How to construct and execute SLayer queries. Use when building quer
 ## SlayerQuery Structure
 
 ```python
-from slayer.core.query import SlayerQuery, ColumnRef, TimeDimension, OrderItem
+from slayer.core.query import SlayerQuery
 
 query = SlayerQuery(
-    source_model="orders",                               # Source model name
-    fields=[{"formula": "count"}, {"formula": "revenue"}],
-    dimensions=[ColumnRef(name="status")],
-    time_dimensions=[
-        TimeDimension(
-            dimension=ColumnRef(name="created_at"),
-            granularity=TimeGranularity.MONTH,         # Required
-            date_range=["2024-01-01", "2024-12-31"],   # Optional
-        )
-    ],
-    filters=[
-        "status == 'active'",
-    ],
-    order=[OrderItem(column=ColumnRef(name="count", model="orders"), direction="desc")],
+    source_model="orders",
+    fields=["*:count", "revenue:sum"],
+    dimensions=["status"],
+    time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+    filters=["status = 'active'"],
+    order=[{"column": "*:count", "direction": "desc"}],
     limit=10,
-    offset=0,
-
-    whole_periods_only=False,                       # Optional: snap date filters to time bucket boundaries
 )
 ```
 
-## ColumnRef
+## Fields — Measures with Colon Aggregation
 
-- `ColumnRef(name="status")` — column in the query's model
-- `ColumnRef(name="status", label="Order Status")` — with optional human-readable label
-- `ColumnRef.from_string("orders.status")` — parse from dotted string
-
-## Filters
-
-Filters are simple formula strings passed as `List[str]`:
+Measures are row-level expressions; aggregation is chosen at query time with **colon syntax**:
 
 ```python
-filters=[
-    "status == 'active'",
-    "amount > 100",
-    "status == 'completed' or status == 'pending'",
+fields=[
+    "*:count",                          # COUNT(*)
+    "revenue:sum",                      # SUM(revenue)
+    "revenue:avg",                      # AVG(revenue)
+    "price:weighted_avg(weight=quantity)",  # weighted average
+    {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
+    "cumsum(revenue:sum)",              # running total
+    "change_pct(revenue:sum)",          # month-over-month growth
+    "last(revenue:sum)",               # most recent period's value
+    "time_shift(revenue:sum, -1, 'year')",  # year-over-year
+    "lag(revenue:sum, 1)",             # previous row (window function)
+    "rank(revenue:sum)",               # ranking
 ]
 ```
 
-**Operators**: `=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`
+Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`.
 
-**Boolean logic**: `and`, `or`, `not` within a single string
+`*:count` is always available — no measure definition needed. `col:count` counts non-nulls.
 
-**Pattern matching**: `like` and `not like` operators (e.g., `"name like '%acme%'"`, `"name not like '%test%'"`). Filters on measures are automatically routed to HAVING.
+Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders.count`.
 
-**Filtering on computed columns**: filters can reference field names from `fields` (e.g., `"rev_change < 0"`) or contain inline transform expressions (e.g., `"last(change(revenue)) < 0"`). These are applied as post-filters on the outer query.
+## Filters
+
+```python
+filters=[
+    "status = 'active'",
+    "amount > 100",
+    "status = 'completed' OR status = 'pending'",
+]
+```
+
+**Operators**: `=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`
+
+**Boolean logic**: `AND`, `OR`, `NOT`
+
+**Filtering on computed columns**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
 
 ## Executing
 
 ```python
-# Via engine directly
 engine = SlayerQueryEngine(storage=storage)
-result = engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql
-
-# Via client (remote)
-client = SlayerClient(url="http://localhost:5143")
-df = client.query_df(query)
-
-# Via client (local, no server)
-client = SlayerClient(storage=YAMLStorage(base_dir="./models"))
-data = client.query(query)
+result = engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .meta
 ```
-
-## Fields
-
-The `fields` parameter specifies what data columns to return. Each field has a `formula` (required), optional `name`, and optional `label` (human-readable display name). Formulas are parsed by `slayer/core/formula.py`.
-
-```python
-query = SlayerQuery(
-    source_model="orders",
-    time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-    fields=[
-        {"formula": "count"},
-        {"formula": "revenue_sum"},
-        {"formula": "revenue_sum / count", "name": "aov", "label": "Average Order Value"},
-        {"formula": "cumsum(revenue_sum)"},
-        {"formula": "change_pct(revenue_sum)"},
-        {"formula": "last(revenue_sum)", "name": "latest_rev"},
-        {"formula": "time_shift(revenue_sum, -1, 'year')", "name": "rev_last_year"},
-        {"formula": "time_shift(revenue_sum, -2)", "name": "rev_2_ago"},
-        {"formula": "lag(revenue_sum, 1)", "name": "rev_prev_row"},
-        {"formula": "rank(revenue_sum)"},
-    ],
-)
-```
-
-Available formula functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last`, `lag`, `lead`. `time_shift` always uses a self-join CTE — no edge NULLs, handles data gaps correctly. `lag(x, n)` / `lead(x, n)` use SQL window functions directly (more efficient, but NULLs at edges).
-
-Time dimension resolution: single `time_dimensions` entry is used automatically. With 2+, `main_time_dimension` disambiguates (or model's `default_time_dimension` if among query's time dims). With none, falls back to model default.
 
 ## Cross-Model Measures
 
-Reference measures from joined models with dotted syntax (auto-resolved via join graph):
+Reference measures from joined models with dotted syntax + colon aggregation:
 
 ```python
 fields=[
-    {"formula": "count"},
-    {"formula": "customers.avg_score"},                  # single hop
-    {"formula": "cumsum(customers.avg_score)"},          # transforms work too
-    {"formula": "customers.regions.population_sum"},     # multi-hop
+    "*:count",
+    "customers.score:avg",                  # single hop
+    "cumsum(customers.score:avg)",          # transforms work too
+    "customers.regions.population:sum",    # multi-hop
 ]
 ```
 
@@ -123,8 +92,8 @@ query = SlayerQuery(
         source_name="orders",
         dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
     ),
-    dimensions=[ColumnRef(name="tier")],
-    fields=[...],
+    dimensions=["tier"],
+    fields=["*:count"],
 )
 ```
 
@@ -133,13 +102,11 @@ query = SlayerQuery(
 Pass a list of queries — earlier queries are named sub-queries, last is the main:
 
 ```python
-inner = SlayerQuery(name="monthly", source_model="orders", fields=[...], time_dimensions=[...])
-outer = SlayerQuery(source_model="monthly", fields=[{"formula": "count"}])
+inner = SlayerQuery(name="monthly", source_model="orders", fields=["*:count", "revenue:sum"], time_dimensions=[...])
+outer = SlayerQuery(source_model="monthly", fields=["*:count"])
 engine.execute(query=[inner, outer])
 ```
 
-Or save a query as a permanent model with `create_model_from_query`.
-
 ## Result Format
 
-Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.status"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Response includes `meta` dict mapping column aliases to `FieldMetadata` objects (currently has `label` field).
+Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Response includes `meta` dict mapping column aliases to `FieldMetadata` objects (currently has `label` field).

@@ -4,7 +4,9 @@ A key distinction between SLayer and most other semantic layers an BI tools is i
 
 What do we mean by “dynamic”? 
 
-First and simplest, this means **query-time transforms**, as described in the [time transforms](../04_time/time.md) post. If you want to time-shift a measure, compute a ratio, etc, you can define the corresponding expressions right in your query, no model changes needed. 
+First and simplest, this means **query-time transforms**, as described in the [time transforms](../04_time/time.md) post. If you want to time-shift a measure, compute a ratio, etc, you can define the corresponding expressions right in your query, no model changes needed.
+
+It also means **query-time aggregation**: a measure is just a named expression (e.g. `revenue` = the `amount` column), and you choose how to aggregate it when you query — `"revenue:sum"`, `"revenue:avg"`, `"revenue:median"`. You can define [custom aggregations](../07_aggregations/aggregations.md) with SQL templates and parameters (e.g. weighted averages, percentiles, trimmed means) at the model level, and use them with the same colon syntax.
 
 Second, this means **extending your models on the fly**: when constructing a query, you have to choose the root model the query will apply to (and have access to its [joined models](../05_joins/joins.md)); but in addition to specifying a model name for this, you can also [specify additional measures, dimensions, filters, and joins](../05_joins/joins.md#dynamic-joins-modelextension), that will be appended to the model (or to be precise, to the copy of the model used for this query) before evaluating the query.
 

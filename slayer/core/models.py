@@ -126,6 +126,16 @@ class Aggregation(BaseModel):
     params: List[AggregationParam] = Field(default_factory=list)
     description: Optional[str] = None
 
+    @model_validator(mode="after")
+    def _require_formula_for_custom(self) -> "Aggregation":
+        if self.name not in BUILTIN_AGGREGATIONS and self.formula is None:
+            raise ValueError(
+                f"Aggregation '{self.name}' is not a built-in aggregation; "
+                f"a 'formula' is required. Built-in aggregations: "
+                f"{', '.join(sorted(BUILTIN_AGGREGATIONS))}"
+            )
+        return self
+
 
 class Measure(BaseModel):
     name: str
