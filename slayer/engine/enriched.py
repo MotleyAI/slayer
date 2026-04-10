@@ -51,6 +51,7 @@ class EnrichedMeasure:
     aggregation_def: Optional[Aggregation] = None  # Full definition (formula, params)
     agg_kwargs: Dict[str, str] = field(default_factory=dict)  # Query-time overrides
     label: Optional[str] = None  # Human-readable label
+    time_column: Optional[str] = None  # Explicit time col for first/last (overrides query default)
 
 
 @dataclass

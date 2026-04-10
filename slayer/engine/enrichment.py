@@ -161,13 +161,12 @@ def enrich_query(
                 f"and is not defined in model '{model.name}'."
             )
 
-        # For first/last with explicit time dimension arg, update last_agg_time_column
-        nonlocal last_agg_time_column
+        # For first/last with explicit time dimension arg, store on the measure
+        explicit_time_col = None
         if aggregation_name in ("first", "last") and agg_args:
-            explicit_time = agg_args[0]
-            if "." not in explicit_time:
-                explicit_time = f"{model.name}.{explicit_time}"
-            last_agg_time_column = explicit_time
+            explicit_time_col = agg_args[0]
+            if "." not in explicit_time_col:
+                explicit_time_col = f"{model.name}.{explicit_time_col}"
 
         measures.append(
             EnrichedMeasure(
@@ -178,6 +177,7 @@ def enrich_query(
                 model_name=model.name,
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs,
+                time_column=explicit_time_col,
             )
         )
         known_aliases[alias_key] = alias

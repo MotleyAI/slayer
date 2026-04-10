@@ -3,10 +3,11 @@
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Dimension, Measure, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, Dimension, Measure, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
+from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator
+from slayer.sql.generator import SQLGenerator, _validate_agg_param_value
 
 
 def _generate(
@@ -542,6 +543,103 @@ class TestFields:
         assert "MAX(" in sql
         assert "CASE" in sql
 
+    def test_last_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """last(ordered_at) should ORDER BY the explicit time column, not the default."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="balance"))
+        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="balance:last(ordered_at)")],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "ROW_NUMBER()" in sql
+        assert "orders.ordered_at" in sql
+        assert "DESC" in sql
+
+    def test_first_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """first(ordered_at) should ORDER BY the explicit time column ASC."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="balance"))
+        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="balance:first(ordered_at)")],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "ROW_NUMBER()" in sql
+        assert "orders.ordered_at" in sql
+        assert "ASC" in sql
+
+    def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Two last measures with different explicit time cols get separate ROW_NUMBER columns."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="balance"))
+        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        orders_model.dimensions.append(Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP))
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[
+                Field(formula="revenue:last(ordered_at)"),
+                Field(formula="balance:last(updated_at)"),
+            ],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Two distinct ROW_NUMBER columns with different ORDER BY
+        assert sql.count("ROW_NUMBER()") == 2
+        assert "orders.ordered_at" in sql
+        assert "orders.updated_at" in sql
+        # One gets no suffix, the other gets _2
+        assert "_last_rn " in sql or "_last_rn)" in sql
+        assert "_last_rn_2" in sql
+        # Each measure references its own rn column
+        assert "CASE WHEN _last_rn =" in sql or "CASE WHEN _last_rn=" in sql
+        assert "CASE WHEN _last_rn_2 =" in sql or "CASE WHEN _last_rn_2=" in sql
+
+    def test_mixed_explicit_and_default_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """One last with explicit time, one last with default — separate ROW_NUMBER columns."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="balance"))
+        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[
+                Field(formula="revenue:last"),
+                Field(formula="balance:last(ordered_at)"),
+            ],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Two distinct ROW_NUMBER columns
+        assert sql.count("ROW_NUMBER()") == 2
+        assert "orders.created_at" in sql
+        assert "orders.ordered_at" in sql
+
+    def test_same_explicit_time_column_shared(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Two first/last measures with the same explicit time col share one ROW_NUMBER."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="balance"))
+        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[
+                Field(formula="revenue:last(ordered_at)"),
+                Field(formula="balance:first(ordered_at)"),
+            ],
+        )
+        sql = _generate(generator, query, orders_model)
+        # One time column = one _last_rn and one _first_rn (no suffix)
+        assert "_last_rn_2" not in sql
+        assert "_first_rn_2" not in sql
+        assert "_last_rn" in sql
+        assert "_first_rn" in sql
+        assert "DESC" in sql
+        assert "ASC" in sql
+
     def test_time_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
@@ -1030,3 +1128,113 @@ class TestPathAliasJoinInference:
         join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
+
+
+class TestAggParamSanitization:
+    """Tests for SQL injection prevention in aggregation parameter values."""
+
+    @pytest.fixture
+    def agg_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="sales",
+            sql_table="public.sales",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="region", sql="region", type=DataType.STRING),
+            ],
+            measures=[
+                Measure(name="price", sql="price"),
+                Measure(name="revenue", sql="amount"),
+                Measure(name="quantity", sql="quantity"),
+            ],
+        )
+
+    @pytest.fixture
+    def gen(self) -> SQLGenerator:
+        return SQLGenerator(dialect="postgres")
+
+    def test_weighted_avg_valid_column_param(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="sales",
+            fields=[Field(formula="price:weighted_avg(weight=quantity)")],
+        )
+        sql = _generate(gen, query, agg_model)
+        assert "SUM(" in sql
+        assert "NULLIF(" in sql
+
+    def test_percentile_valid_numeric_param(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="sales",
+            fields=[Field(formula="revenue:percentile(p=0.95)")],
+        )
+        sql = _generate(gen, query, agg_model)
+        assert "PERCENTILE_CONT" in sql
+        assert "0.95" in sql
+
+    def test_qualified_column_param(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="sales",
+            fields=[Field(formula="price:weighted_avg(weight=sales.quantity)")],
+        )
+        sql = _generate(gen, query, agg_model)
+        assert "SUM(" in sql
+
+    def test_sql_injection_semicolon_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unsafe value"):
+            _validate_agg_param_value("quantity); DROP TABLE orders; --", "weight", "weighted_avg")
+
+    def test_sql_injection_union_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unsafe value"):
+            _validate_agg_param_value("1 UNION SELECT * FROM users", "weight", "weighted_avg")
+
+    def test_sql_injection_subquery_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unsafe value"):
+            _validate_agg_param_value("(SELECT password FROM users LIMIT 1)", "weight", "weighted_avg")
+
+    def test_sql_injection_function_call_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unsafe value"):
+            _validate_agg_param_value("pg_sleep(10)", "weight", "weighted_avg")
+
+    def test_empty_param_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unsafe value"):
+            _validate_agg_param_value("", "weight", "weighted_avg")
+
+    def test_model_level_defaults_not_validated(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
+        """Model-level aggregation param defaults (trusted) bypass query-time validation."""
+        agg_model.aggregations = [
+            Aggregation(
+                name="custom_weighted",
+                formula="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+                params=[
+                    AggregationParam(name="weight", sql="CASE WHEN quantity > 0 THEN quantity ELSE 0 END"),
+                ],
+            ),
+        ]
+        query = SlayerQuery(
+            source_model="sales",
+            fields=[Field(formula="price:custom_weighted")],
+        )
+        # Should succeed — model-level defaults are trusted
+        sql = _generate(gen, query, agg_model)
+        assert "CASE WHEN" in sql
+        assert "SUM(" in sql
+
+    def test_injection_via_direct_enriched_measure(self, gen: SQLGenerator) -> None:
+        """Malicious agg_kwargs on a directly constructed EnrichedMeasure are rejected."""
+        enriched = EnrichedQuery(
+            model_name="sales",
+            sql_table="public.sales",
+            measures=[
+                EnrichedMeasure(
+                    name="price_weighted_avg",
+                    sql="price",
+                    aggregation="weighted_avg",
+                    alias="sales.price_weighted_avg",
+                    model_name="sales",
+                    agg_kwargs={"weight": "quantity); DROP TABLE orders; --"},
+                )
+            ],
+        )
+        with pytest.raises(ValueError, match="Unsafe value"):
+            gen.generate(enriched=enriched)
