@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Set
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig, Dimension, Measure, ModelJoin, SlayerModel
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,16 @@ _SA_TYPE_MAP = {
 
 _NUMERIC_TYPES = {DataType.NUMBER}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
+
+# Float-like SA type names — these columns get measures only, no dimensions.
+_FLOAT_LIKE_SA_TYPES = frozenset({
+    "FLOAT", "REAL", "DOUBLE", "DOUBLE_PRECISION", "NUMERIC", "DECIMAL",
+})
+
+# Float-like INFORMATION_SCHEMA type names
+_FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset({
+    "FLOAT", "DOUBLE", "REAL",
+})
 
 # Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback)
 _INFO_SCHEMA_TYPE_MAP = {
@@ -84,6 +95,15 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     if type_str in _SA_TYPE_MAP:
         return _SA_TYPE_MAP[type_str]
     return DataType.STRING
+
+
+def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
+    """Return True if the SQLAlchemy type is float-like (FLOAT, DOUBLE, NUMERIC, DECIMAL, etc.)."""
+    type_name = type(sa_type).__name__.upper()
+    if type_name in _FLOAT_LIKE_SA_TYPES:
+        return True
+    type_str = str(sa_type).split("(")[0].upper().strip()
+    return type_str in _FLOAT_LIKE_SA_TYPES
 
 
 class RollupGraphError(Exception):
@@ -272,13 +292,15 @@ def _get_columns_fallback(
         # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL")
         base_type = data_type_str.split("(")[0].upper().strip()
         sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
+        is_float = base_type in _FLOAT_LIKE_INFO_SCHEMA_TYPES
         if sa_type is None and "INT" in base_type:
             sa_type = DataType.NUMBER
         elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
             sa_type = DataType.STRING
         elif sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type):
             sa_type = DataType.NUMBER
-        result.append({"name": col_name, "type": sa_type or DataType.STRING})
+            is_float = True
+        result.append({"name": col_name, "type": sa_type or DataType.STRING, "is_float": is_float})
     return result
 
 
@@ -358,7 +380,7 @@ def _introspect_query_columns_via_inspector(
 ) -> List[tuple]:
     """Introspect columns from a rollup query or plain table.
 
-    Returns list of (column_name, DataType, is_primary_key) tuples.
+    Returns list of (column_name, DataType, is_primary_key, is_float) tuples.
     For rollup queries, uses per-table inspector data since LIMIT 0
     type inference can be unreliable across databases.
     """
@@ -372,9 +394,14 @@ def _introspect_query_columns_via_inspector(
     for col in columns:
         col_name = col["name"]
         col_type = col["type"]
-        data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
+        if isinstance(col_type, DataType):
+            data_type = col_type
+            is_float = col.get("is_float", False)
+        else:
+            data_type = _sa_type_to_data_type(col_type)
+            is_float = _sa_type_is_float(col_type)
         is_pk = col_name in pk_columns
-        results.append((col_name, data_type, is_pk))
+        results.append((col_name, data_type, is_pk, is_float))
 
     # Build list of (ref_table, dotted_path) from joins — supports diamond joins
     # where the same table appears via multiple paths
@@ -404,9 +431,14 @@ def _introspect_query_columns_via_inspector(
                 continue
             alias = f"{path}.{col['name']}"
             col_type = col["type"]
-            data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
+            if isinstance(col_type, DataType):
+                data_type = col_type
+                is_float = col.get("is_float", False)
+            else:
+                data_type = _sa_type_to_data_type(col_type)
+                is_float = _sa_type_is_float(col_type)
             is_pk = col["name"] in ref_pk_cols
-            results.append((alias, data_type, is_pk))
+            results.append((alias, data_type, is_pk, is_float))
 
     return results
 
@@ -420,40 +452,50 @@ def _columns_to_model(
     columns: List[tuple],
     data_source: str,
     sql_table: Optional[str] = None,
-    source_table_pk_columns: Optional[Set[str]] = None,
     joins: Optional[List[ModelJoin]] = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel from introspected (column_name, DataType, is_pk) tuples."""
+    """Generate a SlayerModel from introspected (column_name, DataType, is_pk, is_float) tuples."""
     dimensions = []
     measures = []
-    numeric_columns = []
+    numeric_columns: List[tuple] = []
+    non_numeric_columns: List[str] = []
 
-    non_numeric_columns = []
+    _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
+    _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col_name, data_type, is_pk in columns:
+    for col_name, data_type, is_pk, is_float in columns:
         # Skip joined columns — their dimensions/measures live on the target
         # model and are resolved via the join graph at query time.
         if "." in col_name:
             continue
 
-        dimensions.append(Dimension(
-            name=col_name,
-            sql=col_name,
-            type=data_type,
-            primary_key=is_pk,
-        ))
+        # Float-like columns get measures only, no dimension (following Storyline pattern)
+        if not is_float:
+            dim_format = _INT_FORMAT if (data_type in _NUMERIC_TYPES) else None
+            dimensions.append(Dimension(
+                name=col_name,
+                sql=col_name,
+                type=data_type,
+                primary_key=is_pk,
+                format=dim_format,
+            ))
 
         if is_pk or _is_id_column(col_name):
             continue
         if data_type in _NUMERIC_TYPES:
-            numeric_columns.append(col_name)
+            numeric_columns.append((col_name, is_float))
         else:
             non_numeric_columns.append(col_name)
 
     # One measure per non-ID column. Aggregation is specified at query time
     # using colon syntax (e.g., "revenue:sum", "customer_id:count_distinct").
     # *:count is always available for COUNT(*) without any measure definition.
-    for col_name in numeric_columns + non_numeric_columns:
+    for col_name, is_float in numeric_columns:
+        measure_name = "count_col" if col_name == "_count" else col_name
+        measure_format = _FLOAT_FORMAT if is_float else _INT_FORMAT
+        measures.append(Measure(name=measure_name, sql=col_name, format=measure_format))
+
+    for col_name in non_numeric_columns:
         measure_name = "count_col" if col_name == "_count" else col_name
         measures.append(Measure(name=measure_name, sql=col_name))
 

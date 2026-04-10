@@ -8,7 +8,7 @@ import sqlalchemy as sa
 
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -180,9 +180,9 @@ def create_mcp_server(storage: StorageBackend):
                 return f"SQL:\n{result.sql}"
             if explain:
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
-                output += _format_output(data=result.data, columns=result.columns, fmt=fmt)
+                output += _format_output(result=result, fmt=fmt)
                 return output
-            output = _format_output(data=result.data, columns=result.columns, fmt=fmt)
+            output = _format_output(result=result, fmt=fmt)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
             if result.meta:
@@ -747,25 +747,13 @@ def _format_csv(data: List[Dict[str, Any]], columns: List[str]) -> str:
     return "\n".join(lines)
 
 
-def _format_markdown(data: List[Dict[str, Any]], columns: List[str]) -> str:
-    """Format data as a Markdown table."""
-    if not data:
-        return "No results."
-    header = "| " + " | ".join(columns) + " |"
-    separator = "| " + " | ".join("---" for _ in columns) + " |"
-    body_lines = []
-    for row in data:
-        body_lines.append("| " + " | ".join(str(row.get(c, "")) for c in columns) + " |")
-    return "\n".join([header, separator] + body_lines)
-
-
-def _format_output(data: List[Dict[str, Any]], columns: List[str], fmt: str) -> str:
+def _format_output(result: SlayerResponse, fmt: str) -> str:
     """Format query output in the requested format."""
     if fmt == "csv":
-        return _format_csv(data=data, columns=columns)
+        return _format_csv(data=result.data, columns=result.columns)
     if fmt == "markdown":
-        return _format_markdown(data=data, columns=columns)
-    return _format_json(data=data, columns=columns)
+        return result.to_markdown()
+    return _format_json(data=result.data, columns=result.columns)
 
 
 def _format_meta(meta: Dict[str, Any]) -> str:
@@ -775,6 +763,8 @@ def _format_meta(meta: Dict[str, Any]) -> str:
         parts = []
         if fm.label:
             parts.append(f"label={fm.label}")
+        if fm.format:
+            parts.append(f"format={fm.format.type.value}")
         if parts:
             lines.append(f"  {col}: {', '.join(parts)}")
     if len(lines) == 1:

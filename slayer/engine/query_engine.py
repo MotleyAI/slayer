@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.enriched import (
@@ -62,6 +63,7 @@ class FieldMetadata:
     """Metadata for a single field in the query response."""
 
     label: Optional[str] = None
+    format: Optional[NumberFormat] = None
 
 
 @dataclass
@@ -80,6 +82,55 @@ class SlayerResponse:
     @property
     def row_count(self) -> int:
         return len(self.data)
+
+    def _format_value(self, column: str, value: Any) -> str:
+        """Format a single cell value using column format metadata if available."""
+        if value is None:
+            return ""
+        fm = self.meta.get(column)
+        if fm and fm.format and isinstance(value, (int, float)):
+            return format_number(value=value, format_spec=fm.format)
+        return str(value)
+
+    def to_markdown(self) -> str:
+        """Format data as a Markdown table with number formatting applied."""
+        if not self.data:
+            return "No results."
+        header = "| " + " | ".join(self.columns) + " |"
+        separator = "| " + " | ".join("---" for _ in self.columns) + " |"
+        body_lines = []
+        for row in self.data:
+            cells = [self._format_value(column=c, value=row.get(c, "")) for c in self.columns]
+            body_lines.append("| " + " | ".join(cells) + " |")
+        return "\n".join([header, separator] + body_lines)
+
+
+def _infer_aggregated_format(
+    model: SlayerModel, measure_name: str, aggregation: str,
+) -> Optional[NumberFormat]:
+    """Infer NumberFormat for an aggregated measure based on aggregation type and source measure format.
+
+    Rules (following Storyline):
+    - count, count_distinct: always INTEGER
+    - avg, weighted_avg, median: always FLOAT
+    - sum, min, max, first, last: inherit from source measure
+    - *:count (measure_name="*"): INTEGER
+    """
+    if measure_name == "*":
+        return NumberFormat(type=NumberFormatType.INTEGER)
+
+    if aggregation in ("count", "count_distinct"):
+        return NumberFormat(type=NumberFormatType.INTEGER)
+
+    if aggregation in ("avg", "weighted_avg", "median"):
+        return NumberFormat(type=NumberFormatType.FLOAT)
+
+    # sum, min, max, first, last: inherit from source measure
+    source_measure = model.get_measure(measure_name)
+    if source_measure and source_measure.format:
+        return source_measure.format
+
+    return None
 
 
 class SlayerQueryEngine:
@@ -134,20 +185,23 @@ class SlayerQueryEngine:
         # Collect field metadata from enriched query
         meta: Dict[str, FieldMetadata] = {}
         for d in enriched.dimensions:
-            if d.label:
-                meta[d.alias] = FieldMetadata(label=d.label)
+            dim_obj = model.get_dimension(d.name)
+            dim_fmt = dim_obj.format if dim_obj else None
+            if d.label or dim_fmt:
+                meta[d.alias] = FieldMetadata(label=d.label, format=dim_fmt)
         for td in enriched.time_dimensions:
             if td.label:
                 meta[td.alias] = FieldMetadata(label=td.label)
         for m in enriched.measures:
-            if m.label:
-                meta[m.alias] = FieldMetadata(label=m.label)
+            measure_fmt = _infer_aggregated_format(model=model, measure_name=m.name, aggregation=m.aggregation)
+            if m.label or measure_fmt:
+                meta[m.alias] = FieldMetadata(label=m.label, format=measure_fmt)
         for e in enriched.expressions:
             if e.label:
-                meta[e.alias] = FieldMetadata(label=e.label)
+                meta[e.alias] = FieldMetadata(label=e.label, format=NumberFormat(type=NumberFormatType.FLOAT))
         for t in enriched.transforms:
             if t.label:
-                meta[t.alias] = FieldMetadata(label=t.label)
+                meta[t.alias] = FieldMetadata(label=t.label, format=NumberFormat(type=NumberFormatType.FLOAT))
 
         # Derive expected column names from the enriched query, excluding internal aliases
         # (_inner_* from nested transforms, _ft* from filter transform extraction)
@@ -383,40 +437,45 @@ class SlayerQueryEngine:
             # Replace remaining dots with __ to encode the original join path
             return stripped.replace(".", "__")
 
-        column_map = []  # (inner_alias, short_name, data_type, is_measure, label)
+        # Build format lookup from source model
+        source_dim_fmt = {d.name: d.format for d in inner_model.dimensions if d.format}
+
+        column_map = []  # (inner_alias, short_name, data_type, is_measure, label, format)
         for d in enriched.dimensions:
             short = _alias_to_short(d.alias)
             label = d.label or source_dim_desc.get(d.name)
-            column_map.append((d.alias, short, d.type, False, label))
+            fmt = source_dim_fmt.get(d.name)
+            column_map.append((d.alias, short, d.type, False, label, fmt))
         for td in enriched.time_dimensions:
             short = _alias_to_short(td.alias)
             label = td.label or source_dim_desc.get(td.name)
-            column_map.append((td.alias, short, DataType.TIMESTAMP, False, label))
+            column_map.append((td.alias, short, DataType.TIMESTAMP, False, label, None))
         for m in enriched.measures:
             label = m.label or source_measure_desc.get(m.name)
-            column_map.append((m.alias, m.name, DataType.NUMBER, True, label))
+            fmt = _infer_aggregated_format(model=inner_model, measure_name=m.name, aggregation=m.aggregation)
+            column_map.append((m.alias, m.name, DataType.NUMBER, True, label, fmt))
         for t in enriched.transforms:
-            column_map.append((t.alias, t.name, DataType.NUMBER, True, t.label))
+            column_map.append((t.alias, t.name, DataType.NUMBER, True, t.label, NumberFormat(type=NumberFormatType.FLOAT)))
         for e in enriched.expressions:
-            column_map.append((e.alias, e.name, DataType.NUMBER, True, e.label))
+            column_map.append((e.alias, e.name, DataType.NUMBER, True, e.label, NumberFormat(type=NumberFormatType.FLOAT)))
         for cm in enriched.cross_model_measures:
             short = _alias_to_short(cm.alias)
-            column_map.append((cm.alias, short, DataType.NUMBER, True, None))
+            column_map.append((cm.alias, short, DataType.NUMBER, True, None, None))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
-        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _ in column_map]
+        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
 
         dims = []
-        for alias, short, dtype, is_measure, label in column_map:
-            dims.append(Dimension(name=short, sql=short, type=dtype, description=label))
+        for alias, short, dtype, is_measure, label, fmt in column_map:
+            dims.append(Dimension(name=short, sql=short, type=dtype, description=label, format=fmt))
 
         # One measure per column. Aggregation is specified at query time
         # using colon syntax (e.g., "order_total_sum:avg"). *:count is always
         # available for COUNT(*) without a measure definition.
         measures = []
-        for alias, short, dtype, is_measure, label in column_map:
-            measures.append(Measure(name=short, sql=short))
+        for alias, short, dtype, is_measure, label, fmt in column_map:
+            measures.append(Measure(name=short, sql=short, format=fmt))
 
         return SlayerModel(
             name=virtual_name,

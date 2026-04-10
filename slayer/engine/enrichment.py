@@ -8,7 +8,6 @@ Separated from query_engine.py for clarity — this is the largest single
 transformation step in the query pipeline.
 """
 
-import logging
 import re
 from typing import Dict, List, Optional, Set
 
@@ -35,8 +34,6 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
-
-logger = logging.getLogger(__name__)
 
 _SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
