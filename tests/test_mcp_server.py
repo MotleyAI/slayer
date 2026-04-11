@@ -139,6 +139,30 @@ class TestCreateModel:
         result = _call(mcp_server, "create_model", {"name": "orders", "sql_table": "t2", "data_source": "test"})
         assert "replaced" in result
 
+    def test_create_from_query_rejects_mixed_params(self, mcp_server) -> None:
+        result = _call(mcp_server, "create_model", {
+            "name": "bad",
+            "query": {"source_model": "orders", "fields": ["*:count"]},
+            "sql_table": "public.orders",
+        })
+        assert "Error" in result
+        assert "query" in result
+        assert "sql_table" in result
+
+    def test_create_from_query_routes_to_engine(self, mcp_server, storage: YAMLStorage) -> None:
+        # Without a real datasource/data, the engine will return a friendly error —
+        # but the error message proves we routed to the query path.
+        storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="test_ds",
+            measures=[Measure(name="amount", sql="amount")],
+        ))
+        result = _call(mcp_server, "create_model", {
+            "name": "summary",
+            "query": {"source_model": "orders", "fields": ["amount:sum"]},
+        })
+        # Should fail on missing datasource, not on "missing sql_table"
+        assert "Datasource" in result
+
 
 class TestEditModel:
     def test_add_measure(self, mcp_server, storage: YAMLStorage) -> None:

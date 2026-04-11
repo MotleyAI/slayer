@@ -294,8 +294,19 @@ def create_mcp_server(storage: StorageBackend):
         description: Optional[str] = None,
         dimensions: Optional[List[Dict[str, str]]] = None,
         measures: Optional[List[Dict[str, Union[str, List[str]]]]] = None,
+        query: Optional[Dict] = None,
     ) -> str:
-        """Create a new semantic model that maps to a database table.
+        """Create a new semantic model, either from a database table or from a query.
+
+        **From a table** (provide sql_table or sql):
+            create_model(name="orders", sql_table="public.orders", data_source="mydb",
+                         dimensions=[...], measures=[...])
+
+        **From a query** (provide query):
+            create_model(name="monthly_summary", query={"source_model": "orders",
+                         "fields": ["*:count", "amount:sum"],
+                         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]})
+            Dimensions and measures are auto-introspected from the query result.
 
         Args:
             name: Unique model name (lowercase, underscores).
@@ -305,10 +316,37 @@ def create_mcp_server(storage: StorageBackend):
             description: What this model represents.
             dimensions: List of dimension definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
                 Types: string, number, time, date, boolean.
-            measures: List of measure definitions. Each: {"name": "total", "sql": "amount", "type": "sum"}.
-                Types: count, count_distinct, sum, avg, min, max.
+            measures: List of measure definitions. Each: {"name": "total", "sql": "amount"}.
                 Optional: "allowed_aggregations": ["sum", "avg"] to restrict usable aggregations.
+            query: A SLayer query dict. When provided, the query's SQL becomes the model source
+                and dimensions/measures are auto-introspected. Mutually exclusive with
+                sql_table, sql, dimensions, and measures.
         """
+        if query is not None:
+            table_params = _build_dict(
+                sql_table=sql_table, sql=sql, dimensions=dimensions, measures=measures,
+            )
+            if table_params:
+                return (
+                    f"Error: 'query' cannot be combined with {', '.join(table_params.keys())}. "
+                    "Use 'query' alone to create from a query, or provide table details without 'query'."
+                )
+            try:
+                parsed_query = SlayerQuery.model_validate(query)
+                model = engine.create_model_from_query(
+                    query=parsed_query, name=name, description=description,
+                )
+            except Exception as e:
+                if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                    return _friendly_db_error(e)
+                return f"Error creating model from query: {e}"
+            dims = [d.name for d in model.dimensions]
+            meas = [m.name for m in model.measures]
+            return (
+                f"Model '{name}' created from query. "
+                f"Dimensions: {dims}. Measures: {meas}."
+            )
+
         data = _build_dict(
             name=name, sql_table=sql_table, sql=sql, data_source=data_source,
             description=description, dimensions=dimensions, measures=measures,
@@ -318,35 +356,6 @@ def create_mcp_server(storage: StorageBackend):
         storage.save_model(model)
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
-
-    @mcp.tool()
-    def create_model_from_query(
-        name: str,
-        query: Dict,
-        description: Optional[str] = None,
-    ) -> str:
-        """Create a model from a query — saves the query's SQL as a reusable model.
-
-        This lets you build complex queries (with transforms, filters, time dimensions)
-        and save the result as a permanent model that can be queried like any other.
-
-        Args:
-            name: Name for the new model (lowercase, underscores).
-            query: A SLayer query dict, e.g. {"source_model": "orders", "fields": [{"formula": "count"}],
-                "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]}.
-            description: What this derived model represents.
-        """
-        from slayer.core.query import SlayerQuery as SQ
-        parsed_query = SQ.model_validate(query)
-        model = engine.create_model_from_query(
-            query=parsed_query, name=name, description=description,
-        )
-        dims = [d.name for d in model.dimensions]
-        measures = [m.name for m in model.measures]
-        return (
-            f"Model '{name}' created from query. "
-            f"Dimensions: {dims}. Measures: {measures}."
-        )
 
     @mcp.tool()
     def edit_model(

@@ -187,7 +187,7 @@ engine.create_model_from_query(
 
 The saved model can then be queried by name like any other model — useful for materializing complex aggregations.
 
-Via MCP, use the `create_model_from_query` tool. Via API, `POST /models/from_query`.
+Via MCP, use `create_model` with a `query` parameter.
 
 ### Column naming in query-derived models
 
