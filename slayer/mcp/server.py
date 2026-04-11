@@ -204,12 +204,15 @@ def create_mcp_server(storage: StorageBackend):
         ds_names = storage.list_datasources()
         datasources = []
         for name in ds_names:
-            ds = storage.get_datasource(name)
-            if ds:
-                entry = {"name": name, "type": ds.type}
-                if ds.description:
-                    entry["description"] = ds.description
-                datasources.append(entry)
+            try:
+                ds = storage.get_datasource(name)
+                if ds:
+                    entry: Dict[str, Any] = {"name": name, "type": ds.type}
+                    if ds.description:
+                        entry["description"] = ds.description
+                    datasources.append(entry)
+            except (ValueError, Exception) as exc:
+                datasources.append({"name": name, "error": str(exc)})
 
         # Models
         model_names = storage.list_models()
@@ -530,9 +533,12 @@ def create_mcp_server(storage: StorageBackend):
             return "No datasources configured. Use create_datasource to add a database connection."
         lines = []
         for name in names:
-            ds = storage.get_datasource(name)
-            ds_type = ds.type if ds else "unknown"
-            lines.append(f"- {name} ({ds_type})")
+            try:
+                ds = storage.get_datasource(name)
+                ds_type = ds.type if ds else "unknown"
+                lines.append(f"- {name} ({ds_type})")
+            except (ValueError, Exception) as exc:
+                lines.append(f"- {name} (ERROR: {exc})")
         return "\n".join(lines)
 
     @mcp.tool()
@@ -542,7 +548,10 @@ def create_mcp_server(storage: StorageBackend):
         Args:
             name: Datasource name (from list_datasources).
         """
-        ds = storage.get_datasource(name)
+        try:
+            ds = storage.get_datasource(name)
+        except (ValueError, Exception) as exc:
+            return f"Datasource '{name}' has an invalid config: {exc}"
         if ds is None:
             return f"Datasource '{name}' not found."
 
@@ -580,11 +589,14 @@ def create_mcp_server(storage: StorageBackend):
             datasource_name: Name of an existing datasource (from list_datasources).
             schema_name: Database schema (e.g. "public"). If empty, uses the default schema.
         """
-        ds = storage.get_datasource(datasource_name)
+        try:
+            ds = storage.get_datasource(datasource_name)
+        except (ValueError, Exception) as exc:
+            return f"Datasource '{datasource_name}' has an invalid config: {exc}"
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
         try:
-            conn_str = ds.resolve_env_vars().get_connection_string()
+            conn_str = ds.get_connection_string()
             sa_engine = sa.create_engine(conn_str)
             inspector = sa.inspect(sa_engine)
             schema = schema_name or None

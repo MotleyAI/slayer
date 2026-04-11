@@ -287,9 +287,18 @@ class DatasourceConfig(BaseModel):
 
     def resolve_env_vars(self) -> "DatasourceConfig":
         data = self.model_dump()
+        unresolved = []
         for key, value in data.items():
             if isinstance(value, str):
-                data[key] = _resolve_env_string(value)
+                resolved = _resolve_env_string(value)
+                data[key] = resolved
+                for match in re.finditer(r"\$\{(\w+)\}", resolved):
+                    unresolved.append(match.group(1))
+        if unresolved:
+            raise ValueError(
+                f"Datasource '{self.name}': unresolved environment variable(s): "
+                f"{', '.join(unresolved)}"
+            )
         return DatasourceConfig(**data)
 
 

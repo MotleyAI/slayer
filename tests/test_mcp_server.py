@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import tempfile
 from typing import Any
 
@@ -281,6 +282,37 @@ class TestDatasources:
         storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
         result = _call(mcp_server, "create_datasource", {"name": "ds", "type": "sqlite", "database": ":memory:"})
         assert "replaced" in result
+
+    def test_list_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
+        # A valid datasource alongside a malformed one
+        storage.save_datasource(DatasourceConfig(name="good", type="sqlite", database=":memory:"))
+        path = os.path.join(storage.datasources_dir, "bad.yaml")
+        with open(path, "w") as f:
+            f.write("name: bad\ntype: [unclosed\n")
+        result = _call(mcp_server, "list_datasources")
+        assert "good (sqlite)" in result
+        assert "bad" in result
+        assert "ERROR" in result
+
+    def test_summary_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
+        storage.save_datasource(DatasourceConfig(name="good", type="sqlite", database=":memory:"))
+        path = os.path.join(storage.datasources_dir, "bad.yaml")
+        with open(path, "w") as f:
+            f.write("name: bad\ntype: [unclosed\n")
+        result = _call(mcp_server, "datasource_summary")
+        data = json.loads(result)
+        names = [d["name"] for d in data["datasources"]]
+        assert "good" in names
+        assert "bad" in names
+        bad_entry = next(d for d in data["datasources"] if d["name"] == "bad")
+        assert "error" in bad_entry
+
+    def test_describe_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
+        path = os.path.join(storage.datasources_dir, "bad.yaml")
+        with open(path, "w") as f:
+            f.write("name: bad\ntype: [unclosed\n")
+        result = _call(mcp_server, "describe_datasource", {"name": "bad"})
+        assert "invalid" in result.lower()
 
     def test_describe_not_found(self, mcp_server) -> None:
         result = _call(mcp_server, "describe_datasource", {"name": "nope"})
