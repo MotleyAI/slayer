@@ -25,7 +25,10 @@ jobs:
         run: pip install poetry
 
       - name: Install dependencies
-        run: poetry install -E all
+        run: poetry install -E all --with dev
+
+      - name: Install jafgen (for notebook tests, not on PyPI)
+        run: poetry run pip install git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b
 
       - name: Lint with ruff
         run: poetry run ruff check slayer/ tests/
