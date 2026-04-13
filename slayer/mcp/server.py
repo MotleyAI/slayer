@@ -466,11 +466,16 @@ def create_mcp_server(storage: StorageBackend):
         if default_time_dimension is not None:
             model.default_time_dimension = default_time_dimension
             changes.append(f"set default_time_dimension to '{default_time_dimension}'")
+        if sql_table is not None and sql is not None:
+            return "Specify only one of 'sql_table' or 'sql' when editing a model."
+
         if sql_table is not None:
             model.sql_table = sql_table
+            model.sql = None
             changes.append(f"set sql_table to '{sql_table}'")
         if sql is not None:
             model.sql = sql
+            model.sql_table = None
             changes.append(f"set sql to '{sql}'")
         if hidden is not None:
             model.hidden = hidden
