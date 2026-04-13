@@ -218,8 +218,9 @@ def create_mcp_server(storage: StorageBackend):
                     if ds.description:
                         entry["description"] = ds.description
                     datasources.append(entry)
-            except (ValueError, Exception) as exc:
-                datasources.append({"name": name, "error": str(exc)})
+            except Exception as exc:
+                logger.warning("Failed to load datasource '%s': %s", name, exc)
+                datasources.append({"name": name, "error": "invalid datasource config"})
 
         # Models
         model_names = storage.list_models()
@@ -232,11 +233,11 @@ def create_mcp_server(storage: StorageBackend):
         if not datasources and not models:
             return json.dumps({"datasources": [], "models": [], "model_count": 0})
 
-        result = {}
-        if datasources:
-            result["datasources"] = datasources
-        result["models"] = models
-        result["model_count"] = len(models)
+        result = {
+            "datasources": datasources,
+            "models": models,
+            "model_count": len(models),
+        }
 
         return json.dumps(result, indent=2, default=str)
 
@@ -330,9 +331,13 @@ def create_mcp_server(storage: StorageBackend):
                 sql_table, sql, dimensions, and measures.
         """
         if query is not None:
-            table_params = _build_dict(
-                sql_table=sql_table, sql=sql, dimensions=dimensions, measures=measures,
-            )
+            table_params = {
+                k: v for k, v in {
+                    "sql_table": sql_table, "sql": sql, "data_source": data_source,
+                    "dimensions": dimensions, "measures": measures,
+                }.items()
+                if v
+            }
             if table_params:
                 return (
                     f"Error: 'query' cannot be combined with {', '.join(table_params.keys())}. "
@@ -520,22 +525,34 @@ def create_mcp_server(storage: StorageBackend):
 
         # --- Phase 3: Entity upserts ---
         for spec in dimensions or []:
-            err = _upsert_entity(model.dimensions, spec, Dimension, "name", changes, "dimension")
+            err = _upsert_entity(
+                entity_list=model.dimensions, spec=spec, entity_cls=Dimension,
+                id_field="name", changes=changes, label="dimension",
+            )
             if err:
                 return err
 
         for spec in measures or []:
-            err = _upsert_entity(model.measures, spec, Measure, "name", changes, "measure")
+            err = _upsert_entity(
+                entity_list=model.measures, spec=spec, entity_cls=Measure,
+                id_field="name", changes=changes, label="measure",
+            )
             if err:
                 return err
 
         for spec in aggregations or []:
-            err = _upsert_entity(model.aggregations, spec, Aggregation, "name", changes, "aggregation")
+            err = _upsert_entity(
+                entity_list=model.aggregations, spec=spec, entity_cls=Aggregation,
+                id_field="name", changes=changes, label="aggregation",
+            )
             if err:
                 return err
 
         for spec in joins or []:
-            err = _upsert_entity(model.joins, spec, ModelJoin, "target_model", changes, "join")
+            err = _upsert_entity(
+                entity_list=model.joins, spec=spec, entity_cls=ModelJoin,
+                id_field="target_model", changes=changes, label="join",
+            )
             if err:
                 return err
 
@@ -664,8 +681,9 @@ def create_mcp_server(storage: StorageBackend):
                 ds = storage.get_datasource(name)
                 ds_type = ds.type if ds else "unknown"
                 lines.append(f"- {name} ({ds_type})")
-            except (ValueError, Exception) as exc:
-                lines.append(f"- {name} (ERROR: {exc})")
+            except Exception as exc:
+                logger.warning("Failed to load datasource '%s': %s", name, exc)
+                lines.append(f"- {name} (ERROR: invalid datasource config)")
         return "\n".join(lines)
 
     @mcp.tool()
@@ -677,8 +695,9 @@ def create_mcp_server(storage: StorageBackend):
         """
         try:
             ds = storage.get_datasource(name)
-        except (ValueError, Exception) as exc:
-            return f"Datasource '{name}' has an invalid config: {exc}"
+        except Exception as exc:
+            logger.warning("Failed to load datasource '%s': %s", name, exc)
+            return f"Datasource '{name}' has an invalid config."
         if ds is None:
             return f"Datasource '{name}' not found."
 
@@ -718,8 +737,9 @@ def create_mcp_server(storage: StorageBackend):
         """
         try:
             ds = storage.get_datasource(datasource_name)
-        except (ValueError, Exception) as exc:
-            return f"Datasource '{datasource_name}' has an invalid config: {exc}"
+        except Exception as exc:
+            logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
+            return f"Datasource '{datasource_name}' has an invalid config."
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
         try:

@@ -64,6 +64,9 @@ class TestDatasourceSummary:
         assert parsed["models"][0]["name"] == "orders"
         assert len(parsed["models"][0]["dimensions"]) == 1
         assert len(parsed["models"][0]["measures"]) == 1
+        # Envelope is always stable — datasources key present even when empty
+        assert "datasources" in parsed
+        assert parsed["datasources"] == []
 
     def test_hidden_models_excluded(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(name="visible", sql_table="t", data_source="test"))
@@ -158,6 +161,30 @@ class TestCreateModel:
         assert "Error" in result
         assert "query" in result
         assert "sql_table" in result
+
+    def test_create_from_query_rejects_data_source(self, mcp_server) -> None:
+        result = _call(mcp_server, "create_model", {
+            "name": "bad",
+            "query": {"source_model": "orders", "fields": ["*:count"]},
+            "data_source": "mydb",
+        })
+        assert "Error" in result
+        assert "data_source" in result
+
+    def test_create_from_query_ignores_empty_placeholders(self, mcp_server, storage: YAMLStorage) -> None:
+        """Empty lists/strings should not trigger the mixed-parameter error."""
+        storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="test_ds",
+            measures=[Measure(name="amount", sql="amount")],
+        ))
+        result = _call(mcp_server, "create_model", {
+            "name": "summary",
+            "query": {"source_model": "orders", "fields": ["amount:sum"]},
+            "dimensions": [],
+            "measures": [],
+        })
+        # Should route to query path (fails on missing datasource), not mixed-param error
+        assert "Error:" not in result or "Datasource" in result
 
     def test_create_from_query_routes_to_engine(self, mcp_server, storage: YAMLStorage) -> None:
         # Without a real datasource/data, the engine will return a friendly error —
