@@ -32,6 +32,7 @@ class NumberFormat(BaseModel):
     )
     precision: Optional[int] = Field(
         default=None,
+        ge=0,
         description="Number of decimal places to show",
     )
     symbol: Optional[str] = Field(
