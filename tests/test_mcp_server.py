@@ -45,7 +45,10 @@ def _call(mcp_server, name: str, arguments: dict[str, Any] = {}) -> str:
 class TestDatasourceSummary:
     def test_empty(self, mcp_server) -> None:
         result = _call(mcp_server, "datasource_summary")
-        assert "No datasources or models" in result
+        data = json.loads(result)
+        assert data["datasources"] == []
+        assert data["models"] == []
+        assert data["model_count"] == 0
 
     def test_with_models(self, mcp_server, storage: YAMLStorage) -> None:
         storage.save_model(SlayerModel(

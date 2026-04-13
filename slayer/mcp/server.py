@@ -230,7 +230,7 @@ def create_mcp_server(storage: StorageBackend):
                 models.append(_model_to_summary(model))
 
         if not datasources and not models:
-            return "No datasources or models configured. Use create_datasource to connect a database."
+            return json.dumps({"datasources": [], "models": [], "model_count": 0})
 
         result = {}
         if datasources:
