@@ -82,7 +82,7 @@ claude mcp list
 |------|-------------|
 | `inspect_model` | Detailed model info with sample data. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false). |
 | `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `dimensions`/`measures` for table-based, or pass `query` (a SLayer query dict) to auto-introspect dimensions and measures from the query result. |
-| `edit_model` | Edit an existing model in one call. Params: `model_name` (required), `description`, `data_source`, `default_time_dimension` (optional metadata), `add_measures` (list), `add_dimensions` (list), `remove` (list of names). |
+| `edit_model` | Edit an existing model in one call. Supports upsert for dimensions, measures, aggregations, and joins (create if new, update if existing). Also manages scalar metadata and filters. See params below. |
 | `delete_model` | Delete a model entirely. |
 
 ### Querying
@@ -143,8 +143,10 @@ To explore first without auto-ingesting:
 ```
 1. edit_model(
      model_name="orders",
-     add_measures=[{"name": "avg_amount", "sql": "amount", "type": "avg"}],
-     add_dimensions=[{"name": "priority", "sql": "priority", "type": "string"}],
-     remove=["amount_sum"]
+     measures=[{"name": "avg_amount", "sql": "amount"}],
+     dimensions=[{"name": "priority", "sql": "priority", "type": "string"}],
+     remove={"measures": ["amount_sum"]}
    )
 ```
+
+Upsert semantics: if a measure/dimension/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"dimensions"`, `"measures"`, `"aggregations"`, `"joins"`).
