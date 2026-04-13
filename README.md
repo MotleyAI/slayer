@@ -1,7 +1,7 @@
 # SLayer — a semantic layer by Motley
 
 <p align="center">
-  <img src="docs/images/slayer-hero.png" alt="SLayer — AI agent operating a semantic layer" width="700">
+  <img src="https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/slayer-hero.png" alt="SLayer — AI agent operating a semantic layer" width="700">
 </p>
 
 [![PyPI](https://img.shields.io/pypi/v/motley-slayer?label=PyPI)](https://pypi.org/project/motley-slayer/)
