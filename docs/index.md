@@ -16,30 +16,36 @@ SLayer is different: models are editable at runtime, aggregation is chosen at qu
 
 ## What it looks like
 
-Given an `orders` [model](concepts/models.md) with a `revenue` measure and a join to `customers`:
+Given an `orders` [model](concepts/models.md) with a `revenue` measure and joins to `customers` and `regions`:
 
 ```json
 {
   "source_model": "orders",
   "fields": [
     "revenue:sum",
-    {"formula": "revenue:sum / *:count", "name": "aov"},
     {"formula": "change_pct(revenue:sum)", "name": "mom_growth"},
-    {"formula": "cumsum(revenue:sum)", "name": "running_total"},
-    "customers.score:avg"
+    {"formula": "revenue:sum / time_shift(revenue:sum, -1, 'year') - 1", "name": "yoy_growth"},
+    "customers.score:last(changed_at)"
   ],
-  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-  "filters": ["status = 'completed'", "change(revenue:sum) > 0"]
+  "dimensions": ["customers.regions.name"],
+  "time_dimensions": [{
+    "dimension": "created_at",
+    "granularity": "month",
+    "date_range": ["2025-01-01", "2025-12-31"]
+  }],
+  "filters": ["status = 'completed'", "change(revenue:sum) > 0"],
+  "order": [{"name": "revenue_sum", "direction": "desc"}]
 }
 ```
 
 One query, and SLayer handles:
 
-- **`revenue:sum`** — aggregation is chosen at query time, not baked into the measure definition. The same `revenue` measure works with `sum`, `avg`, `median`, `weighted_avg`, or [any custom aggregation](examples/07_aggregations/aggregations.md). No measure proliferation.
-- **`revenue:sum / *:count`** — arithmetic on aggregated measures, named inline.
-- **`change_pct(revenue:sum)`** — month-over-month growth, computed as a window transform. SLayer has [built-in transforms](examples/04_time/time.md) for `cumsum`, `change`, `time_shift`, `rank`, `lag`, `lead` — all nestable (`"change(cumsum(revenue:sum))"` works).
-- **`customers.score:avg`** — a measure from a [joined model](examples/05_joined_measures/joined_measures.md), resolved automatically by walking the join graph. No manual sub-query needed.
-- **`change(revenue:sum) > 0`** — filtering on a computed transform, right in the filter string. SLayer figures out it needs to compute the transform first, then filter.
+- **`revenue:sum`** — aggregation is chosen at query time, not baked into the measure definition. The same `revenue` measure works with `sum`, `avg`, `median`, `weighted_avg`, or [any custom aggregation](examples/07_aggregations/aggregations.md).
+- **`change_pct(revenue:sum)`** — month-over-month growth as a [transform](examples/04_time/time.md). SLayer generates the necessary window query. Other built-in transforms: `cumsum`, `change`, `time_shift`, `rank`, `lag`, `lead` — all nestable (`"change(cumsum(revenue:sum))"` works).
+- **`revenue:sum / time_shift(revenue:sum, -1, 'year') - 1`** — arithmetic on aggregated measures. `time_shift` runs a separate time-shifted sub-query and joins it back by all dimensions; dividing by it gives year-over-year growth. Standard operator precedence applies.
+- **`customers.score:last(changed_at)`** — a measure from a [joined model](examples/05_joined_measures/joined_measures.md), resolved by walking the [join graph](examples/05_joins/joins.md). `last` is an aggregation that picks the latest record's value — `changed_at` tells it which column defines "latest."
+- **`customers.regions.name`** — a multi-hop dimension: SLayer traces `orders → customers → regions` and builds the joins automatically.
+- **`change(revenue:sum) > 0`** — filtering on a computed transform. SLayer computes the transform first as a hidden field, then applies the filter on the outer query.
 
 ## What SLayer does
 
