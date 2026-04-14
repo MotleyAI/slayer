@@ -6,7 +6,14 @@ from typing import Any, Dict, List, Optional, Union
 
 import sqlalchemy as sa
 
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import (
+    Aggregation,
+    DatasourceConfig,
+    Dimension,
+    Measure,
+    ModelJoin,
+    SlayerModel,
+)
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.base import StorageBackend
@@ -200,12 +207,16 @@ def create_mcp_server(storage: StorageBackend):
         ds_names = storage.list_datasources()
         datasources = []
         for name in ds_names:
-            ds = storage.get_datasource(name)
-            if ds:
-                entry = {"name": name, "type": ds.type}
-                if ds.description:
-                    entry["description"] = ds.description
-                datasources.append(entry)
+            try:
+                ds = storage.get_datasource(name)
+                if ds:
+                    entry: Dict[str, Any] = {"name": name, "type": ds.type}
+                    if ds.description:
+                        entry["description"] = ds.description
+                    datasources.append(entry)
+            except Exception as exc:
+                logger.warning("Failed to load datasource '%s': %s", name, exc)
+                datasources.append({"name": name, "error": "invalid datasource config"})
 
         # Models
         model_names = storage.list_models()
@@ -216,13 +227,13 @@ def create_mcp_server(storage: StorageBackend):
                 models.append(_model_to_summary(model))
 
         if not datasources and not models:
-            return "No datasources or models configured. Use create_datasource to connect a database."
+            return json.dumps({"datasources": [], "models": [], "model_count": 0})
 
-        result = {}
-        if datasources:
-            result["datasources"] = datasources
-        result["models"] = models
-        result["model_count"] = len(models)
+        result = {
+            "datasources": datasources,
+            "models": models,
+            "model_count": len(models),
+        }
 
         return json.dumps(result, indent=2, default=str)
 
@@ -287,8 +298,19 @@ def create_mcp_server(storage: StorageBackend):
         description: Optional[str] = None,
         dimensions: Optional[List[Dict[str, str]]] = None,
         measures: Optional[List[Dict[str, Union[str, List[str]]]]] = None,
+        query: Optional[Dict] = None,
     ) -> str:
-        """Create a new semantic model that maps to a database table.
+        """Create a new semantic model, either from a database table or from a query.
+
+        **From a table** (provide sql_table or sql):
+            create_model(name="orders", sql_table="public.orders", data_source="mydb",
+                         dimensions=[...], measures=[...])
+
+        **From a query** (provide query):
+            create_model(name="monthly_summary", query={"source_model": "orders",
+                         "fields": ["*:count", "amount:sum"],
+                         "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]})
+            Dimensions and measures are auto-introspected from the query result.
 
         Args:
             name: Unique model name (lowercase, underscores).
@@ -298,10 +320,41 @@ def create_mcp_server(storage: StorageBackend):
             description: What this model represents.
             dimensions: List of dimension definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
                 Types: string, number, time, date, boolean.
-            measures: List of measure definitions. Each: {"name": "total", "sql": "amount", "type": "sum"}.
-                Types: count, count_distinct, sum, avg, min, max.
+            measures: List of measure definitions. Each: {"name": "total", "sql": "amount"}.
                 Optional: "allowed_aggregations": ["sum", "avg"] to restrict usable aggregations.
+            query: A SLayer query dict. When provided, the query's SQL becomes the model source
+                and dimensions/measures are auto-introspected. Mutually exclusive with
+                sql_table, sql, dimensions, and measures.
         """
+        if query is not None:
+            table_params = {
+                k: v for k, v in {
+                    "sql_table": sql_table, "sql": sql, "data_source": data_source,
+                    "dimensions": dimensions, "measures": measures,
+                }.items()
+                if v
+            }
+            if table_params:
+                return (
+                    f"Error: 'query' cannot be combined with {', '.join(table_params.keys())}. "
+                    "Use 'query' alone to create from a query, or provide table details without 'query'."
+                )
+            try:
+                parsed_query = SlayerQuery.model_validate(query)
+                model = engine.create_model_from_query(
+                    query=parsed_query, name=name, description=description,
+                )
+            except Exception as e:
+                if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                    return _friendly_db_error(e)
+                return f"Error creating model from query: {e}"
+            dims = [d.name for d in model.dimensions]
+            meas = [m.name for m in model.measures]
+            return (
+                f"Model '{name}' created from query. "
+                f"Dimensions: {dims}. Measures: {meas}."
+            )
+
         data = _build_dict(
             name=name,
             sql_table=sql_table,
@@ -317,34 +370,44 @@ def create_mcp_server(storage: StorageBackend):
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
 
-    @mcp.tool()
-    def create_model_from_query(
-        name: str,
-        query: Dict,
-        description: Optional[str] = None,
-    ) -> str:
-        """Create a model from a query — saves the query's SQL as a reusable model.
+    def _upsert_entity(
+        entity_list: list,
+        spec: dict,
+        entity_cls: type,
+        id_field: str,
+        changes: list,
+        label: str,
+    ) -> Optional[str]:
+        """Upsert a named entity in *entity_list*.
 
-        This lets you build complex queries (with transforms, filters, time dimensions)
-        and save the result as a permanent model that can be queried like any other.
-
-        Args:
-            name: Name for the new model (lowercase, underscores).
-            query: A SLayer query dict, e.g. {"source_model": "orders", "fields": [{"formula": "count"}],
-                "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}]}.
-            description: What this derived model represents.
+        Returns an error string on validation failure, ``None`` on success.
         """
-        from slayer.core.query import SlayerQuery as SQ
+        entity_id = spec.get(id_field, "")
+        if not entity_id:
+            return f"Missing '{id_field}' in {label} specification."
 
-        parsed_query = SQ.model_validate(query)
-        model = engine.create_model_from_query(
-            query=parsed_query,
-            name=name,
-            description=description,
-        )
-        dims = [d.name for d in model.dimensions]
-        measures = [m.name for m in model.measures]
-        return f"Model '{name}' created from query. Dimensions: {dims}. Measures: {measures}."
+        existing = next((e for e in entity_list if getattr(e, id_field) == entity_id), None)
+        if existing is not None:
+            merged = existing.model_dump()
+            for k, v in spec.items():
+                merged[k] = v
+            try:
+                updated = entity_cls.model_validate(merged)
+            except Exception as exc:
+                return f"Invalid {label} '{entity_id}': {exc}"
+            idx = entity_list.index(existing)
+            entity_list[idx] = updated
+            changes.append(f"updated {label} '{entity_id}'")
+        else:
+            try:
+                new_entity = entity_cls.model_validate(spec)
+            except Exception as exc:
+                return f"Invalid {label} '{entity_id}': {exc}"
+            entity_list.append(new_entity)
+            changes.append(f"created {label} '{entity_id}'")
+        return None
+
+    VALID_REMOVE_KEYS = {"dimensions", "measures", "aggregations", "joins"}
 
     @mcp.tool()
     def edit_model(
@@ -352,31 +415,54 @@ def create_mcp_server(storage: StorageBackend):
         description: Optional[str] = None,
         data_source: Optional[str] = None,
         default_time_dimension: Optional[str] = None,
-        add_measures: Optional[List[Dict[str, Union[str, List[str]]]]] = None,
-        add_dimensions: Optional[List[Dict[str, str]]] = None,
-        remove: Optional[List[str]] = None,
+        sql_table: Optional[str] = None,
+        sql: Optional[str] = None,
+        hidden: Optional[bool] = None,
+        dimensions: Optional[List[Dict[str, Any]]] = None,
+        measures: Optional[List[Dict[str, Any]]] = None,
+        aggregations: Optional[List[Dict[str, Any]]] = None,
+        joins: Optional[List[Dict[str, Any]]] = None,
+        add_filters: Optional[List[str]] = None,
+        remove_filters: Optional[List[str]] = None,
+        remove: Optional[Dict[str, List[str]]] = None,
     ) -> str:
-        """Edit an existing model — update metadata, add/remove measures and dimensions in a single call.
+        """Edit an existing model in a single call — update metadata, upsert dimensions/measures/aggregations/joins,
+        manage filters, and remove entities.
 
         Args:
             model_name: Name of the model to edit.
-            description: New description for the model.
+            description: New model description.
             data_source: New data source name.
-            default_time_dimension: Default time dimension for transforms.
-            add_measures: Measures to add. Each: {"name": "total", "sql": "amount", "type": "sum", "description": "..."}.
-                Types: count, count_distinct, sum, avg, min, max.
-                Optional: "allowed_aggregations": ["sum", "avg"] to restrict usable aggregations.
-            add_dimensions: Dimensions to add. Each: {"name": "region", "sql": "region", "type": "string", "description": "..."}.
+            default_time_dimension: Default time dimension for time-dependent transforms.
+            sql_table: Database table name.
+            sql: Custom SQL expression for the model source.
+            hidden: Whether this model is hidden from discovery.
+            dimensions: Dimensions to create or update (upsert by name). Each dict: {"name": "col", "type": "string", "sql": "col", "description": "...", "primary_key": false, "hidden": false}.
+                If a dimension with this name exists, only the provided fields are updated; omitted fields keep current values.
                 Types: string, number, time, date, boolean.
-            remove: Names of measures or dimensions to remove.
+            measures: Measures to create or update (upsert by name). Each dict: {"name": "total", "sql": "amount", "description": "...", "hidden": false, "allowed_aggregations": ["sum", "avg"]}.
+                If a measure with this name exists, only the provided fields are updated.
+            aggregations: Aggregations to create or update (upsert by name). Each dict: {"name": "weighted_avg", "formula": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)", "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
+                If an aggregation with this name exists, only the provided fields are updated.
+            joins: Joins to create or update (upsert by target_model). Each dict: {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}.
+                If a join to this target_model exists, its join_pairs are updated.
+            add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates are ignored.
+            remove_filters: SQL filter strings to remove (exact match).
+            remove: Named entities to delete, keyed by type: {"dimensions": ["name1"], "measures": ["name2"], "aggregations": ["name3"], "joins": ["target_model_name"]}.
+                Removals are processed before upserts, so you can remove and re-add in one call.
+
+        Example — update a dimension and add a measure:
+            edit_model(model_name="orders", dimensions=[{"name": "status", "type": "string"}], measures=[{"name": "profit", "sql": "revenue - cost"}])
+        Example — remove a measure:
+            edit_model(model_name="orders", remove={"measures": ["old_metric"]})
         """
         model = storage.get_model(model_name)
         if model is None:
             return f"Model '{model_name}' not found."
 
-        changes = []
+        changes: List[str] = []
 
-        # Update metadata
+        # --- Phase 1: Scalar metadata ---
         if description is not None:
             model.description = description
             changes.append("updated description")
@@ -386,74 +472,123 @@ def create_mcp_server(storage: StorageBackend):
         if default_time_dimension is not None:
             model.default_time_dimension = default_time_dimension
             changes.append(f"set default_time_dimension to '{default_time_dimension}'")
+        if sql_table is not None and sql is not None:
+            return "Specify only one of 'sql_table' or 'sql' when editing a model."
 
-        # Remove measures/dimensions
+        if sql_table is not None:
+            model.sql_table = sql_table
+            model.sql = None
+            changes.append(f"set sql_table to '{sql_table}'")
+        if sql is not None:
+            model.sql = sql
+            model.sql_table = None
+            changes.append(f"set sql to '{sql}'")
+        if hidden is not None:
+            model.hidden = hidden
+            changes.append(f"set hidden to {hidden}")
+
+        # --- Phase 2: Removals ---
         if remove:
-            for name in remove:
-                match = [m for m in model.measures if m.name == name]
-                if match:
-                    model.measures.remove(match[0])
-                    changes.append(f"removed measure '{name}'")
-                    continue
-                match = [d for d in model.dimensions if d.name == name]
-                if match:
-                    model.dimensions.remove(match[0])
-                    changes.append(f"removed dimension '{name}'")
-                    continue
-                return f"'{name}' not found as a measure or dimension on model '{model_name}'."
+            for key in remove:
+                if key not in VALID_REMOVE_KEYS:
+                    return (
+                        f"Invalid remove key '{key}'. "
+                        f"Must be one of: {', '.join(sorted(VALID_REMOVE_KEYS))}."
+                    )
 
-        # Add measures
-        existing_measure_names = {m.name for m in model.measures}
-        for spec in add_measures or []:
-            name = spec.get("name", "")
-            if name in existing_measure_names:
-                return f"Measure '{name}' already exists on model '{model_name}'."
-            model.measures.append(
-                Measure(
-                    name=name,
-                    sql=spec.get("sql"),
-                    description=spec.get("description"),
-                    allowed_aggregations=spec.get("allowed_aggregations"),
-                )
-            )
-            existing_measure_names.add(name)
-            changes.append(f"added measure '{name}'")
+            for name in remove.get("dimensions", []):
+                match = next((d for d in model.dimensions if d.name == name), None)
+                if match is None:
+                    return f"Dimension '{name}' not found on model '{model_name}'."
+                model.dimensions.remove(match)
+                changes.append(f"removed dimension '{name}'")
 
-        # Add dimensions
-        existing_dim_names = {d.name for d in model.dimensions}
-        for spec in add_dimensions or []:
-            name = spec.get("name", "")
-            if name in existing_dim_names:
-                return f"Dimension '{name}' already exists on model '{model_name}'."
-            dim_type = spec.get("type", "")
-            if dim_type not in VALID_DIMENSION_TYPES:
-                return (
-                    f"Invalid dimension type '{dim_type}'. Must be one of: {', '.join(sorted(VALID_DIMENSION_TYPES))}"
-                )
-            model.dimensions.append(
-                Dimension(
-                    name=name,
-                    sql=spec.get("sql"),
-                    type=dim_type,
-                    description=spec.get("description"),
-                )
+            for name in remove.get("measures", []):
+                match = next((m for m in model.measures if m.name == name), None)
+                if match is None:
+                    return f"Measure '{name}' not found on model '{model_name}'."
+                model.measures.remove(match)
+                changes.append(f"removed measure '{name}'")
+
+            for name in remove.get("aggregations", []):
+                match = next((a for a in model.aggregations if a.name == name), None)
+                if match is None:
+                    return f"Aggregation '{name}' not found on model '{model_name}'."
+                model.aggregations.remove(match)
+                changes.append(f"removed aggregation '{name}'")
+
+            for target in remove.get("joins", []):
+                match = next((j for j in model.joins if j.target_model == target), None)
+                if match is None:
+                    return f"Join to '{target}' not found on model '{model_name}'."
+                model.joins.remove(match)
+                changes.append(f"removed join to '{target}'")
+
+        # --- Phase 3: Entity upserts ---
+        for spec in dimensions or []:
+            err = _upsert_entity(
+                entity_list=model.dimensions, spec=spec, entity_cls=Dimension,
+                id_field="name", changes=changes, label="dimension",
             )
-            existing_dim_names.add(name)
-            changes.append(f"added dimension '{name}'")
+            if err:
+                return err
+
+        for spec in measures or []:
+            err = _upsert_entity(
+                entity_list=model.measures, spec=spec, entity_cls=Measure,
+                id_field="name", changes=changes, label="measure",
+            )
+            if err:
+                return err
+
+        for spec in aggregations or []:
+            err = _upsert_entity(
+                entity_list=model.aggregations, spec=spec, entity_cls=Aggregation,
+                id_field="name", changes=changes, label="aggregation",
+            )
+            if err:
+                return err
+
+        for spec in joins or []:
+            err = _upsert_entity(
+                entity_list=model.joins, spec=spec, entity_cls=ModelJoin,
+                id_field="target_model", changes=changes, label="join",
+            )
+            if err:
+                return err
+
+        # --- Phase 4: Filters ---
+        if add_filters:
+            existing_filters = set(model.filters)
+            for f in add_filters:
+                if f not in existing_filters:
+                    model.filters.append(f)
+                    existing_filters.add(f)
+                    changes.append(f"added filter '{f}'")
+
+        if remove_filters:
+            for f in remove_filters:
+                if f not in model.filters:
+                    return f"Filter not found on model '{model_name}': {f}"
+                model.filters.remove(f)
+                changes.append(f"removed filter '{f}'")
 
         if not changes:
             return f"No changes specified for model '{model_name}'."
 
-        storage.save_model(model)
-        return json.dumps(
-            {
-                "success": True,
-                "model_name": model_name,
-                "changes": changes,
-                "message": f"Applied {len(changes)} change(s) to '{model_name}'",
-            },
-            indent=2,
-        )
+        # --- Phase 5: Validate and save ---
+        try:
+            validated = SlayerModel.model_validate(model.model_dump(mode="json"))
+        except Exception as exc:
+            return f"Validation error: {exc}"
+
+        storage.save_model(validated)
+        return json.dumps({
+            "success": True,
+            "model_name": model_name,
+            "changes": changes,
+            "message": f"Applied {len(changes)} change(s) to '{model_name}'",
+        }, indent=2)
 
     # -----------------------------------------------------------------------
     # Datasource management
@@ -549,9 +684,13 @@ def create_mcp_server(storage: StorageBackend):
             return "No datasources configured. Use create_datasource to add a database connection."
         lines = []
         for name in names:
-            ds = storage.get_datasource(name)
-            ds_type = ds.type if ds else "unknown"
-            lines.append(f"- {name} ({ds_type})")
+            try:
+                ds = storage.get_datasource(name)
+                ds_type = ds.type if ds else "unknown"
+                lines.append(f"- {name} ({ds_type})")
+            except Exception as exc:
+                logger.warning("Failed to load datasource '%s': %s", name, exc)
+                lines.append(f"- {name} (ERROR: invalid datasource config)")
         return "\n".join(lines)
 
     @mcp.tool()
@@ -561,7 +700,11 @@ def create_mcp_server(storage: StorageBackend):
         Args:
             name: Datasource name (from list_datasources).
         """
-        ds = storage.get_datasource(name)
+        try:
+            ds = storage.get_datasource(name)
+        except Exception as exc:
+            logger.warning("Failed to load datasource '%s': %s", name, exc)
+            return f"Datasource '{name}' has an invalid config."
         if ds is None:
             return f"Datasource '{name}' not found."
 
@@ -599,11 +742,15 @@ def create_mcp_server(storage: StorageBackend):
             datasource_name: Name of an existing datasource (from list_datasources).
             schema_name: Database schema (e.g. "public"). If empty, uses the default schema.
         """
-        ds = storage.get_datasource(datasource_name)
+        try:
+            ds = storage.get_datasource(datasource_name)
+        except Exception as exc:
+            logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
+            return f"Datasource '{datasource_name}' has an invalid config."
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
         try:
-            conn_str = ds.resolve_env_vars().get_connection_string()
+            conn_str = ds.get_connection_string()
             sa_engine = sa.create_engine(conn_str)
             inspector = sa.inspect(sa_engine)
             schema = schema_name or None

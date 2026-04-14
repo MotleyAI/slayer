@@ -72,8 +72,7 @@ claude mcp list
 |------|-------------|
 | `datasource_summary` | List all datasources and their models with schemas (dimensions, measures). Returns JSON. |
 | `inspect_model` | Detailed model info with sample data. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false). |
-| `create_model` | Create a new model from table/SQL definition. |
-| `create_model_from_query` | Create a model from a query — saves the query's SQL as a reusable model with auto-introspected dimensions and measures. Params: `name`, `query` (SLayer query dict), `description` (optional). |
+| `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `dimensions`/`measures` for table-based, or pass `query` (a SLayer query dict) to auto-introspect dimensions and measures from the query result. |
 | `edit_model` | Edit an existing model in one call. Params: `model_name` (required), `description`, `data_source`, `default_time_dimension` (optional metadata), `add_measures` (list), `add_dimensions` (list), `remove` (list of names). |
 | `delete_model` | Delete a model entirely. |
 

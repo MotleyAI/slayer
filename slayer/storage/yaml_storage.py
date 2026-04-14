@@ -4,6 +4,7 @@ import os
 from typing import List, Optional
 
 import yaml
+from pydantic import ValidationError
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.storage.base import StorageBackend
@@ -55,10 +56,19 @@ class YAMLStorage(StorageBackend):
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
         if not os.path.exists(path):
             return None
-        with open(path) as f:
-            data = yaml.safe_load(f)
-        ds = DatasourceConfig.model_validate(data)
-        return ds.resolve_env_vars()
+        try:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+            ds = DatasourceConfig.model_validate(data)
+            return ds.resolve_env_vars()
+        except yaml.YAMLError as exc:
+            raise ValueError(
+                f"Datasource '{name}': invalid YAML in {path} — {exc}"
+            ) from exc
+        except ValidationError as exc:
+            raise ValueError(
+                f"Datasource '{name}': invalid config — {exc}"
+            ) from exc
 
     def list_datasources(self) -> List[str]:
         result = []

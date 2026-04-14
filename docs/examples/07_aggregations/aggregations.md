@@ -182,7 +182,7 @@ The colon becomes an underscore in result keys:
 | `revenue:avg` | `orders.revenue_avg` |
 | `customers.*:count` | `orders.customers._count` |
 
-When a query is saved as a model (`create_model_from_query`), these canonical names become the new model's column names.
+When a query is saved as a model (`create_model` with a `query` parameter), these canonical names become the new model's column names.
 
 ---
 
