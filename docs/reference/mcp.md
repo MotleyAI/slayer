@@ -2,46 +2,54 @@
 
 SLayer runs as an [MCP](https://modelcontextprotocol.io/) server, allowing AI agents (Claude, Cursor, etc.) to discover and query data conversationally.
 
+## Quick Start
+
+The fastest way to run SLayer is via `uvx` — no install needed. You only need [uv](https://docs.astral.sh/uv/getting-started/installation/).
+
+**Claude Code:**
+
+```bash
+claude mcp add slayer -- uvx --from 'motley-slayer[mcp,postgres]' slayer mcp --storage ./slayer_data
+```
+
+**JSON config** (Claude Desktop, Cursor, and other MCP-compatible agents):
+
+```json
+{
+  "mcpServers": {
+    "slayer": {
+      "command": "uvx",
+      "args": ["--from", "motley-slayer[mcp,postgres]", "slayer", "mcp", "--storage", "./slayer_data"]
+    }
+  }
+}
+```
+
+Replace `postgres` with your database driver (see [full list](../configuration/datasources.md#database-drivers)), or use `motley-slayer[all]` for all supported databases. SQLite works with just `motley-slayer[mcp]`.
+
+See the [Getting Started guide](../getting-started/mcp.md) for full setup instructions including SSE/remote and permanent install options.
+
 ## Transports
 
-SLayer supports two MCP transports. Both expose the exact same tools — the only difference is how the agent connects.
+SLayer supports two MCP transports. Both expose the exact same tools.
 
-### Stdio (local)
+### Stdio (local — recommended)
 
-The agent spawns SLayer as a subprocess and communicates via stdin/stdout. You do **not** run `slayer mcp` manually — the agent launches it. You only need to register the command with your agent.
-
-**Claude Code setup:**
-
-```bash
-claude mcp add slayer -- slayer mcp --models-dir ./slayer_data
-```
-
-If `slayer` is installed in a virtualenv (e.g. via Poetry), use the full path to the executable so the agent can find it regardless of working directory:
-
-```bash
-# Find the virtualenv path
-poetry env info -p
-# e.g. /home/user/.venvs/slayer-abc123
-
-# Register with the full path
-claude mcp add slayer -- /home/user/.venvs/slayer-abc123/bin/slayer mcp --models-dir /path/to/slayer_data
-```
+The agent spawns SLayer as a subprocess and communicates via stdin/stdout. You do **not** run `slayer mcp` manually — the agent launches it. The `claude mcp add` and JSON config examples above both use this transport.
 
 ### SSE (remote)
 
 MCP over HTTP via Server-Sent Events. You run `slayer serve` yourself — it exposes both the REST API and the MCP SSE endpoint on the same port:
 
 ```bash
-# 1. Start the server
-slayer serve --models-dir ./slayer_data
+uvx --from 'motley-slayer[mcp,postgres]' slayer serve --storage ./slayer_data
 # REST API at http://localhost:5143/
 # MCP SSE at http://localhost:5143/mcp/sse
 ```
 
-Then, in a separate terminal, register the remote endpoint with your agent:
+Then register the remote endpoint with your agent:
 
 ```bash
-# 2. Connect the agent
 claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
 ```
 
@@ -65,16 +73,16 @@ claude mcp list
 | `list_tables` | List tables in a database before ingesting. |
 | `edit_datasource` | Edit an existing datasource config. |
 | `delete_datasource` | Remove a datasource config. |
+| `datasource_summary` | List all datasources and their models with schemas (dimensions, measures). Returns JSON. |
+| `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. |
 
 ### Model Management
 
 | Tool | Description |
 |------|-------------|
-| `datasource_summary` | List all datasources and their models with schemas (dimensions, measures). Returns JSON. |
 | `inspect_model` | Detailed model info with sample data. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false). |
-| `create_model` | Create a new model from table/SQL definition. |
-| `create_model_from_query` | Create a model from a query — saves the query's SQL as a reusable model with auto-introspected dimensions and measures. Params: `name`, `query` (SLayer query dict), `description` (optional). |
-| `edit_model` | Edit an existing model in one call. Params: `model_name` (required), `description`, `data_source`, `default_time_dimension` (optional metadata), `add_measures` (list), `add_dimensions` (list), `remove` (list of names). |
+| `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `dimensions`/`measures` for table-based, or pass `query` (a SLayer query dict) to auto-introspect dimensions and measures from the query result. |
+| `edit_model` | Edit an existing model in one call. Supports upsert for dimensions, measures, aggregations, and joins (create if new, update if existing). Also manages scalar metadata and filters. See params below. |
 | `delete_model` | Delete a model entirely. |
 
 ### Querying
@@ -100,12 +108,6 @@ claude mcp list
 | `dry_run` | bool | Generate and return the SQL without executing it |
 | `explain` | bool | Run EXPLAIN ANALYZE and return the query plan |
 | `format` | string | Output format: `"markdown"` (default, compact), `"json"` (structured), or `"csv"` (most compact). Case-insensitive |
-
-### Ingestion
-
-| Tool | Description |
-|------|-------------|
-| `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. |
 
 ## Typical Agent Workflows
 
@@ -141,8 +143,10 @@ To explore first without auto-ingesting:
 ```
 1. edit_model(
      model_name="orders",
-     add_measures=[{"name": "avg_amount", "sql": "amount", "type": "avg"}],
-     add_dimensions=[{"name": "priority", "sql": "priority", "type": "string"}],
-     remove=["amount_sum"]
+     measures=[{"name": "avg_amount", "sql": "amount"}],
+     dimensions=[{"name": "priority", "sql": "priority", "type": "string"}],
+     remove={"measures": ["amount_sum"]}
    )
 ```
+
+Upsert semantics: if a measure/dimension/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"dimensions"`, `"measures"`, `"aggregations"`, `"joins"`).

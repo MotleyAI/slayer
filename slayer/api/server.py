@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource
@@ -31,6 +32,7 @@ class QueryRequest(BaseModel):
 
 class FieldMetadataResponse(BaseModel):
     label: Optional[str] = None
+    format: Optional[NumberFormat] = None
 
 
 class QueryResponse(BaseModel):
@@ -67,7 +69,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
         try:
             slayer_query = SlayerQuery.model_validate(request.model_dump(exclude_none=True))
             result = engine.execute(query=slayer_query)
-            meta = {k: FieldMetadataResponse(label=v.label) for k, v in result.meta.items()} if result.meta else None
+            meta = {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in result.meta.items()} if result.meta else None
             response = QueryResponse(data=result.data, row_count=result.row_count, columns=result.columns, meta=meta)
             if slayer_query.dry_run or slayer_query.explain:
                 response.sql = result.sql
