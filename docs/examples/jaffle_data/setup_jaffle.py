@@ -46,6 +46,7 @@ def ensure_jaffle_shop(
     storage = YAMLStorage(base_dir=MODELS_DIR)
 
     # Generate DB if missing
+    db_freshly_created = False
     if not os.path.exists(DB_PATH):
         print("Generating Jaffle Shop data (this takes ~1-2 minutes)...")
         data_dir = generate_data(output_dir=JAFFLE_DATA_DIR, years=years)
@@ -54,11 +55,12 @@ def ensure_jaffle_shop(
         load_data(conn, data_dir)
         conn.close()
         print(f"Database created at {DB_PATH}")
+        db_freshly_created = True
 
-    # Ingest models if missing
+    # Ingest models if missing or stale (DB was regenerated but models dir persisted)
     ds = DatasourceConfig(name="jaffle_shop", type="duckdb", database=DB_PATH)
     existing_models = run_sync(storage.list_models())
-    if not existing_models:
+    if not existing_models or db_freshly_created:
         print("Auto-ingesting models...")
         run_sync(storage.save_datasource(ds))
         models = ingest_datasource(datasource=ds)
