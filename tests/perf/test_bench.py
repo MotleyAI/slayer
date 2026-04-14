@@ -22,7 +22,7 @@ def _execute(env: BenchEnv, **query_kwargs) -> SlayerResponse:
     """Execute a query and return the response."""
     engine, _ = env
     query = SlayerQuery(source_model="orders", **query_kwargs)
-    return engine.execute_sync(query=query)
+    return engine.execute(query=query)
 
 
 MONTHLY_TD = [TimeDimension(

@@ -18,7 +18,7 @@ from slayer.async_utils import run_sync
 
 
 @pytest.fixture
-def duckdb_env(tmp_path):
+async def duckdb_env(tmp_path):
     """Set up a full SLayer environment against a temporary DuckDB database."""
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))
@@ -93,103 +93,103 @@ def duckdb_env(tmp_path):
         ],
         measures=[],
     )
-    run_sync(storage.save_model(orders_model))
-    run_sync(storage.save_model(customers_model))
+    await storage.save_model(orders_model)
+    await storage.save_model(customers_model)
 
     return SlayerQueryEngine(storage=storage)
 
 
 @pytest.mark.integration
 class TestDuckDBQueries:
-    def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", fields=[{"formula": "*:count"}])
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
-    def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", fields=[{"formula": "total:sum"}])
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
-    def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount:avg"}])
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
 
-    def test_group_by_status(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_group_by_status(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
         assert by_status["completed"] == 3
         assert by_status["pending"] == 2
         assert by_status["cancelled"] == 1
 
-    def test_filter_equals(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_filter_equals(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
             filters=["status == 'completed'"],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3
 
-    def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
             filters=["amount > 100"],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3  # 200, 150, 300
 
-    def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             order=[{"column": {"name": "count"}, "direction": "desc"}],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
 
-    def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             limit=2,
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.row_count == 2
 
-    def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}, {"formula": "total:sum"}],
             dimensions=[{"name": "status"}],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
         assert completed["orders._count"] == 3
         assert float(completed["orders.total_sum"]) == 450.0
 
-    def test_time_dimension_month_granularity(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_time_dimension_month_granularity(self, duckdb_env: SlayerQueryEngine) -> None:
         """DuckDB supports DATE_TRUNC natively."""
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.row_count == 3  # Jan, Feb, Mar
 
-    def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
@@ -199,21 +199,21 @@ class TestDuckDBQueries:
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         # Only Jan and Feb orders (4 orders)
         total = sum(r["orders._count"] for r in result.data)
         assert total == 4
 
-    def test_composite_filter(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_composite_filter(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             fields=[{"formula": "*:count"}],
             filters=["status == 'completed' or status == 'pending'"],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.data[0]["orders._count"] == 5  # 3 completed + 2 pending
 
-    def test_time_shift_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_time_shift_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         """time_shift with date_range should fetch shifted data from outside the filtered range."""
         # Query only March, ask for previous month (February)
         # Seed: Jan(300), Feb(200), Mar(375)
@@ -229,13 +229,13 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
         # Previous month (Feb) fetched from DB, not NULL
         assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
 
-    def test_change_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_change_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         """change() with date_range should fetch previous period from outside the filtered range."""
         query = SlayerQuery(
             source_model="orders",
@@ -249,12 +249,12 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         # Mar(375) - Feb(200) = 175
         assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
 
-    def test_change_pct_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_change_pct_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         """change_pct() with date_range should compute correct percentage from shifted data."""
         query = SlayerQuery(
             source_model="orders",
@@ -268,12 +268,12 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         # (375 - 200) / 200 = 0.875
         assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
 
-    def test_multiple_date_range_shifts(self, duckdb_env: SlayerQueryEngine) -> None:
+    async def test_multiple_date_range_shifts(self, duckdb_env: SlayerQueryEngine) -> None:
         """Multiple self-join transforms with different offsets should each get correct data."""
         # Query Feb only, ask for both previous (Jan) and next (Mar)
         query = SlayerQuery(
@@ -289,7 +289,7 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute_sync(query=query)
+        result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(200.0)
         assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)  # Jan
@@ -392,15 +392,15 @@ class TestDuckDBIngestion:
         # No dotted measure names from joined models
         assert not any("." in name for name in measure_names)
 
-    def test_rollup_query_group_by_customer(self, duckdb_ingest_env) -> None:
+    async def test_rollup_query_group_by_customer(self, duckdb_ingest_env) -> None:
         """Query orders grouped by rolled-up customer name."""
         models, ds = duckdb_ingest_env
 
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
-        run_sync(storage.save_datasource(ds))
+        await storage.save_datasource(ds)
         for m in models:
-            run_sync(storage.save_model(m))
+            await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
 
         query = SlayerQuery(
@@ -408,22 +408,22 @@ class TestDuckDBIngestion:
             fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
-        result = engine.execute_sync(query=query)
+        result = await engine.execute(query=query)
 
         by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
 
-    def test_rollup_query_group_by_region(self, duckdb_ingest_env) -> None:
+    async def test_rollup_query_group_by_region(self, duckdb_ingest_env) -> None:
         """Query orders grouped by transitively rolled-up region name."""
         models, ds = duckdb_ingest_env
 
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
-        run_sync(storage.save_datasource(ds))
+        await storage.save_datasource(ds)
         for m in models:
-            run_sync(storage.save_model(m))
+            await storage.save_model(m)
         engine = SlayerQueryEngine(storage=storage)
 
         query = SlayerQuery(
@@ -431,7 +431,7 @@ class TestDuckDBIngestion:
             fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
-        result = engine.execute_sync(query=query)
+        result = await engine.execute(query=query)
 
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders._count"] == 3  # Acme(2) + Initech(1)

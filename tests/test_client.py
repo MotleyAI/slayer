@@ -31,7 +31,7 @@ class TestLocalMode:
         client = SlayerClient(url="http://localhost:5143")
         assert client._engine is None
 
-    def test_query_dispatches_locally(self, client: SlayerClient, storage: YAMLStorage) -> None:
+    async def test_query_dispatches_locally(self, client: SlayerClient, storage: YAMLStorage) -> None:
         """Local mode query should go through engine, not HTTP."""
         run_sync(storage.save_model(SlayerModel(
             name="orders",
@@ -40,18 +40,18 @@ class TestLocalMode:
             dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
             measures=[Measure(name="revenue", sql="amount")],
         )))
-        run_sync(storage.save_datasource(DatasourceConfig(
+        await storage.save_datasource(DatasourceConfig(
             name="test_ds",
             type="sqlite",
             database=":memory:",
-        )))
+        ))
         # This will fail at SQL execution (no actual table), but proves local dispatch works
         from slayer.core.query import SlayerQuery
         query = SlayerQuery(source_model="orders", fields=[{"formula": "revenue:sum"}])
         with pytest.raises(Exception):
             client.query_sync(query)
 
-    def test_query_accepts_dict(self, client: SlayerClient, storage: YAMLStorage) -> None:
+    async def test_query_accepts_dict(self, client: SlayerClient, storage: YAMLStorage) -> None:
         """client.query_sync() should accept a plain dict and coerce it to SlayerQuery."""
         run_sync(storage.save_model(SlayerModel(
             name="orders",
@@ -60,17 +60,17 @@ class TestLocalMode:
             dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
             measures=[Measure(name="revenue", sql="amount")],
         )))
-        run_sync(storage.save_datasource(DatasourceConfig(
+        await storage.save_datasource(DatasourceConfig(
             name="test_ds",
             type="sqlite",
             database=":memory:",
-        )))
+        ))
         query_dict = {"source_model": "orders", "fields": ["revenue:sum"]}
         # Will fail at SQL execution (no actual table), but proves dict dispatch works
         with pytest.raises(Exception):
             client.query_sync(query_dict)
 
-    def test_sql_accepts_dict(self, client: SlayerClient, storage: YAMLStorage) -> None:
+    async def test_sql_accepts_dict(self, client: SlayerClient, storage: YAMLStorage) -> None:
         """client.sql_sync() should accept a plain dict."""
         run_sync(storage.save_model(SlayerModel(
             name="orders",
@@ -79,11 +79,11 @@ class TestLocalMode:
             dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
             measures=[Measure(name="revenue", sql="amount")],
         )))
-        run_sync(storage.save_datasource(DatasourceConfig(
+        await storage.save_datasource(DatasourceConfig(
             name="test_ds",
             type="sqlite",
             database=":memory:",
-        )))
+        ))
         query_dict = {"source_model": "orders", "fields": ["revenue:sum"]}
         sql = client.sql_sync(query_dict)
         assert isinstance(sql, str)
