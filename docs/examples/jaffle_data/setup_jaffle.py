@@ -11,6 +11,7 @@ from typing import List, Tuple
 import duckdb
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.async_utils import run_sync
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -56,18 +57,18 @@ def ensure_jaffle_shop(
 
     # Ingest models if missing
     ds = DatasourceConfig(name="jaffle_shop", type="duckdb", database=DB_PATH)
-    existing_models = storage.list_models()
+    existing_models = run_sync(storage.list_models())
     if not existing_models:
         print("Auto-ingesting models...")
-        storage.save_datasource(ds)
+        run_sync(storage.save_datasource(ds))
         models = ingest_datasource(datasource=ds)
         for model in models:
             if model.name in _DEFAULT_TIME_DIMENSIONS:
                 model.default_time_dimension = _DEFAULT_TIME_DIMENSIONS[model.name]
-            storage.save_model(model)
+            run_sync(storage.save_model(model))
         print(f"Ingested {len(models)} models")
     else:
-        models = [storage.get_model(name) for name in existing_models]
+        models = [run_sync(storage.get_model(name)) for name in existing_models]
 
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage, models

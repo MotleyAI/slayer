@@ -7,7 +7,12 @@ from slayer.core.models import Aggregation, AggregationParam, Dimension, Measure
 from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.async_utils import run_sync
 from slayer.sql.generator import SQLGenerator, _validate_agg_param_value
+
+
+async def _noop_async(**kw):
+    return None
 
 
 def _generate(
@@ -16,15 +21,16 @@ def _generate(
     model: SlayerModel,
 ) -> str:
     """Helper: enrich a query against a model, then generate SQL."""
+    from slayer.async_utils import run_sync
     from slayer.engine.enrichment import enrich_query
 
-    enriched = enrich_query(
+    enriched = run_sync(enrich_query(
         query=query,
         model=model,
-        resolve_dimension_via_joins=lambda **kw: None,
-        resolve_cross_model_measure=lambda **kw: None,
-        resolve_join_target=lambda **kw: None,
-    )
+        resolve_dimension_via_joins=_noop_async,
+        resolve_cross_model_measure=_noop_async,
+        resolve_join_target=_noop_async,
+    ))
     return generator.generate(enriched=enriched)
 
 
@@ -1077,7 +1083,7 @@ class TestPathAliasJoinInference:
             fields=[Field(formula="*:count")],
             dimensions=[ColumnRef(name="is_us")],
         )
-        enriched = engine._enrich(query=query, model=chained_model)
+        enriched = run_sync(engine._enrich(query=query, model=chained_model))
         join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
@@ -1114,7 +1120,7 @@ class TestPathAliasJoinInference:
             ],
             fields=[Field(formula="*:count")],
         )
-        enriched = engine._enrich(query=query, model=model)
+        enriched = run_sync(engine._enrich(query=query, model=model))
         join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
         assert "users" in join_aliases
         assert "users__orgs" in join_aliases
@@ -1131,7 +1137,7 @@ class TestPathAliasJoinInference:
             source_model="orders",
             fields=[Field(formula="region_pop_sum:sum")],
         )
-        enriched = engine._enrich(query=query, model=chained_model)
+        enriched = run_sync(engine._enrich(query=query, model=chained_model))
         join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases

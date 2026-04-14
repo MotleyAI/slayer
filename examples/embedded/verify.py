@@ -18,6 +18,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.query import Field, SlayerQuery
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.async_utils import run_sync
 from slayer.storage.yaml_storage import YAMLStorage
 
 # Derive expected counts from seed data
@@ -38,12 +39,12 @@ def main():
     # Ingest
     storage = YAMLStorage(base_dir=os.path.join(workdir, "slayer_data"))
     ds = DatasourceConfig(name="demo", type="sqlite", database=db_path)
-    storage.save_datasource(ds)
+    run_sync(storage.save_datasource(ds))
     models = ingest_datasource(datasource=ds)
     for m in models:
         if m.name == "orders":
             m.default_time_dimension = "created_at"
-        storage.save_model(m)
+        run_sync(storage.save_model(m))
 
     engine = SlayerQueryEngine(storage=storage)
     passed = 0
@@ -61,7 +62,7 @@ def main():
     # --- Model structure checks ---
     print("Model structure:")
 
-    orders_model = storage.get_model("orders")
+    orders_model = run_sync(storage.get_model("orders"))
     check("orders model exists", orders_model is not None)
     if orders_model is None:
         return
@@ -76,13 +77,13 @@ def main():
     check("orders has quantity_sum measure", "quantity_sum" in measure_names)
     check("orders has customers.count measure", "customers.count" in measure_names)
 
-    regions_model = storage.get_model("regions")
+    regions_model = run_sync(storage.get_model("regions"))
     check("regions has no rollup (sql_table set)", regions_model.sql_table is not None)
 
     # --- Basic query checks ---
     print("\nBasic queries:")
 
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             fields=[{"formula": "count"}],
@@ -90,7 +91,7 @@ def main():
     )
     check(f"total orders = {TOTAL_ORDERS}", result.data[0]["orders.count"] == TOTAL_ORDERS)
 
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             fields=[{"formula": "count"}],
@@ -102,7 +103,7 @@ def main():
         check(f"{status} orders = {expected}", by_status.get(status) == expected)
 
     # Rollup: by product category
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             fields=[{"formula": "count"}],
@@ -113,7 +114,7 @@ def main():
     check("all categories sum to total", sum(by_cat.values()) == TOTAL_ORDERS)
 
     # Filter
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             fields=[{"formula": "count"}],
@@ -126,7 +127,7 @@ def main():
     )
 
     # Order + limit
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             fields=[{"formula": "count"}],
@@ -140,7 +141,7 @@ def main():
     # --- Fields checks ---
     print("\nFields (arithmetic):")
 
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
@@ -160,7 +161,7 @@ def main():
     print("\nFields (transforms):")
 
     # Cumulative sum
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
@@ -175,7 +176,7 @@ def main():
     check("cumsum non-decreasing", all(a <= b for a, b in zip(cumvals, cumvals[1:])))
 
     # time_shift (row-based, previous period)
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
@@ -189,7 +190,7 @@ def main():
     )
 
     # Change
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
@@ -202,7 +203,7 @@ def main():
     check(f"change second month = {expected_change}", result.data[1]["orders.chg"] == expected_change)
 
     # Rank
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             dimensions=[{"name": "customers.name"}],
@@ -217,7 +218,7 @@ def main():
     print("\nUnified fields:")
 
     # Fields: measure + expression
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             dimensions=[{"name": "products.category"}],
@@ -233,7 +234,7 @@ def main():
     check("field measure column exists", "orders.count" in result.columns)
 
     # Fields: transform as formula
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
@@ -251,7 +252,7 @@ def main():
     check(f"fields cumsum final = {TOTAL_ORDERS}", result.data[-1]["orders.running"] == TOTAL_ORDERS)
 
     # Fields: last()
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
@@ -273,7 +274,7 @@ def main():
 
     # Mathematical identity: cumsum(change(x)) == x - x[0]
     # For monthly counts, cumsum of changes should equal count minus first month's count
-    result = engine.execute(
+    result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],

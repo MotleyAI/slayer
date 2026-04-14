@@ -25,6 +25,7 @@ from slayer.core.query import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.async_utils import run_sync
 
 pytestmark = pytest.mark.integration
 
@@ -91,7 +92,7 @@ def integration_env(tmp_path):
         type="sqlite",
         database=str(db_path),
     )
-    storage.save_datasource(datasource)
+    run_sync(storage.save_datasource(datasource))
 
     # -- Orders model --
     orders_model = SlayerModel(
@@ -111,7 +112,7 @@ def integration_env(tmp_path):
             Measure(name="latest_amount", sql="amount"),
         ],
     )
-    storage.save_model(orders_model)
+    run_sync(storage.save_model(orders_model))
 
     # -- Customers model --
     customers_model = SlayerModel(
@@ -125,7 +126,7 @@ def integration_env(tmp_path):
         ],
         measures=[],
     )
-    storage.save_model(customers_model)
+    run_sync(storage.save_model(customers_model))
 
     engine = SlayerQueryEngine(storage=storage)
     return engine
@@ -139,7 +140,7 @@ def test_count_query(integration_env):
         source_model="orders",
         fields=[Field(formula="*:count")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert isinstance(response, SlayerResponse)
     assert response.row_count == 1
@@ -154,7 +155,7 @@ def test_sum_measure(integration_env):
         source_model="orders",
         fields=[Field(formula="total_amount:sum")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
@@ -169,7 +170,7 @@ def test_dimensions_groupby(integration_env):
         fields=[Field(formula="*:count")],
         dimensions=[ColumnRef(name="status")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 3
     rows_by_status = {row["orders.status"]: row["orders._count"] for row in response.data}
@@ -187,7 +188,7 @@ def test_filter_equals(integration_env):
         fields=[Field(formula="*:count")],
         filters=["status == 'completed'"],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders._count"] == 3
@@ -202,7 +203,7 @@ def test_filter_gt(integration_env):
         fields=[Field(formula="*:count")],
         filters=["amount > 50"],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     # Orders with amount > 50: 100, 200, 75, 300 = 4
@@ -221,7 +222,7 @@ def test_order_by(integration_env):
             OrderItem(column=ColumnRef(name="count"), direction="desc"),
         ],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 3
     counts = [row["orders._count"] for row in response.data]
@@ -243,7 +244,7 @@ def test_limit(integration_env):
         ],
         limit=2,
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 2
 
@@ -259,7 +260,7 @@ def test_multiple_measures(integration_env):
             Field(formula="total_amount:sum"),
         ],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders._count"] == 6
@@ -283,7 +284,7 @@ def test_cumsum_change_identity(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # 3 months of data: Jan(2), Feb(2), Mar(2)
     assert response.row_count == 3
@@ -315,7 +316,7 @@ def test_nested_cumsum_of_cumsum(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 3
     # cumsum(cumsum) should be non-decreasing
@@ -337,7 +338,7 @@ def test_arithmetic_expression(integration_env):
             Field(formula="total_amount:sum / *:count", name="avg_amount"),
         ],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders._count"] == 6
@@ -361,7 +362,7 @@ def test_time_shift_row_based(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # 3 months: Jan(300), Feb(125), Mar(325)
     assert response.row_count == 3
@@ -393,7 +394,7 @@ def test_time_shift_calendar_based(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # 3 months: Jan(300), Feb(125), Mar(325)
     assert response.row_count == 3
@@ -424,7 +425,7 @@ def test_time_shift_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # Only March in the result (date filter)
     assert response.row_count == 1
@@ -451,7 +452,7 @@ def test_change_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     # March(325) - February(125) = 200
@@ -475,7 +476,7 @@ def test_change_pct_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     # (325 - 125) / 125 = 1.6
@@ -501,7 +502,7 @@ def test_multiple_date_range_shifts(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
@@ -529,7 +530,7 @@ def test_forward_row_shift_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
@@ -557,7 +558,7 @@ def test_post_filter_on_change(integration_env):
         filters=["amount_change < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # Only February should remain (change = -175)
     assert response.row_count == 1
@@ -589,7 +590,7 @@ def test_post_filter_with_base_filter(integration_env):
         filters=["status != 'cancelled'", "amount_change > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # Only March (non-cancelled=325, change=275)
     assert response.row_count == 1
@@ -613,7 +614,7 @@ def test_inline_transform_filter(integration_env):
         filters=["change(total_amount:sum) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
@@ -637,7 +638,7 @@ def test_inline_last_change_filter(integration_env):
         filters=["last(change(total_amount:sum)) > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # last(change) = 200 > 0, so all 3 rows pass
     assert response.row_count == 3
@@ -653,7 +654,7 @@ def test_inline_last_change_filter(integration_env):
         filters=["last(change(total_amount:sum)) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response2 = engine.execute(query2)
+    response2 = engine.execute_sync(query2)
     assert response2.row_count == 0
 
 
@@ -675,7 +676,7 @@ def test_arithmetic_transform_filter(integration_env):
         filters=["change(total_amount:sum) / total_amount:sum > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # Only March passes (positive change ratio)
     assert response.row_count == 1
@@ -700,7 +701,7 @@ def test_transform_on_filter_rhs(integration_env):
         filters=["total_amount:sum > time_shift(total_amount:sum, -1)"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # Only March (325 > 125)
     assert response.row_count == 1
@@ -726,7 +727,7 @@ def test_last_measure_type(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 3
     # type=last returns the latest record's value within each month:
@@ -756,7 +757,7 @@ def test_last_function(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 3
     # last() broadcasts the most recent bucket's value to ALL rows
@@ -778,7 +779,7 @@ def test_having_filter(integration_env):
         filters=["_count > 1"],
         order=[OrderItem(column=ColumnRef(name="_count"), direction="desc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 2
     assert response.data[0]["orders.status"] == "completed"
@@ -800,7 +801,7 @@ def test_having_filter_with_sum(integration_env):
         filters=["total_amount_sum > 100"],
         order=[OrderItem(column=ColumnRef(name="total_amount_sum"), direction="desc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.status"] == "completed"
@@ -822,7 +823,7 @@ def test_having_with_non_groupby_dimension_raises(integration_env):
         filters=["_count > 1 and status == 'completed'"],
     )
     with pytest.raises(ValueError, match="not in the query's dimensions"):
-        engine.execute(query)
+        engine.execute_sync(query)
 
 
 # ---------------------------------------------------------------------------
@@ -858,9 +859,9 @@ def joined_time_env(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    run_sync(storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path))))
 
-    storage.save_model(SlayerModel(
+    run_sync(storage.save_model(SlayerModel(
         name="stores", sql_table="stores", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -868,8 +869,8 @@ def joined_time_env(tmp_path):
             Dimension(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
         ],
         measures=[],
-    ))
-    storage.save_model(SlayerModel(
+    )))
+    run_sync(storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         dimensions=[
@@ -883,8 +884,8 @@ def joined_time_env(tmp_path):
             Measure(name="latest_amount", sql="amount"),
         ],
         joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
-    ))
-    storage.save_model(SlayerModel(
+    )))
+    run_sync(storage.save_model(SlayerModel(
         name="order_items", sql_table="order_items", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -896,7 +897,7 @@ def joined_time_env(tmp_path):
             Measure(name="latest_qty", sql="qty"),
         ],
         joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])],
-    ))
+    )))
 
     return SlayerQueryEngine(storage=storage)
 
@@ -920,7 +921,7 @@ def test_last_with_joined_time_dimension(joined_time_env):
         ],
         order=[OrderItem(column=ColumnRef(name="stores.opened_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 2  # 2020 and 2021
     # Verify the SQL references stores.opened_at (not orders.opened_at)
@@ -949,7 +950,7 @@ def test_last_with_multihop_joined_time_dimension(joined_time_env):
         ],
         order=[OrderItem(column=ColumnRef(name="orders.created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 3  # Jan, Feb, Mar
     # Verify the SQL references orders.created_at
@@ -986,9 +987,9 @@ def cross_model_env(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    run_sync(storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path))))
 
-    storage.save_model(SlayerModel(
+    run_sync(storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         dimensions=[
@@ -1000,8 +1001,8 @@ def cross_model_env(tmp_path):
             Measure(name="total_amount", sql="amount"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-    ))
-    storage.save_model(SlayerModel(
+    )))
+    run_sync(storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -1011,7 +1012,7 @@ def cross_model_env(tmp_path):
             Measure(name="avg_score", sql="score"),
             Measure(name="max_score", sql="score"),
         ],
-    ))
+    )))
 
     return SlayerQueryEngine(storage=storage)
 
@@ -1031,7 +1032,7 @@ def test_cross_model_measure_monthly(cross_model_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     assert response.row_count == 3
     # Jan: Alice (90), Feb: Bob (60), Mar: Charlie(80) + Alice(90) = avg 85
@@ -1049,7 +1050,7 @@ def test_cross_model_measure_no_join_raises(cross_model_env):
         fields=[Field(formula="*:count"), Field(formula="nonexistent.some_measure:sum")],
     )
     with pytest.raises(ValueError, match="has no join to"):
-        engine.execute(query)
+        engine.execute_sync(query)
 
 
 def test_transform_on_cross_model(cross_model_env):
@@ -1068,7 +1069,7 @@ def test_transform_on_cross_model(cross_model_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # Jan: Alice(90) → cumsum=90, Feb: Bob(60) → cumsum=150, Mar: Charlie(80)+Alice(90)=85 → cumsum=235
     assert response.data[0]["orders.running"] == pytest.approx(90.0)
@@ -1096,7 +1097,7 @@ def test_query_as_model_count(integration_env):
 
     # Outer: count how many months exist (references "monthly" by name)
     outer = SlayerQuery(source_model="monthly", fields=[Field(formula="*:count")])
-    response = engine.execute(query=[inner, outer])
+    response = engine.execute_sync(query=[inner, outer])
 
     assert response.row_count == 1
     assert response.data[0]["monthly._count"] == 3
@@ -1116,7 +1117,7 @@ def test_query_as_model_aggregate(integration_env):
     )
 
     outer = SlayerQuery(source_model="monthly", fields=[Field(formula="total_amount_sum:sum")])
-    response = engine.execute(query=[inner, outer])
+    response = engine.execute_sync(query=[inner, outer])
 
     assert response.row_count == 1
     assert response.data[0]["monthly.total_amount_sum_sum"] == pytest.approx(750.0)
@@ -1134,7 +1135,7 @@ def test_create_model_from_query(integration_env):
         )],
         fields=[Field(formula="*:count"), Field(formula="total_amount:sum")],
     )
-    saved = engine.create_model_from_query(
+    saved = engine.create_model_from_query_sync(
         query=source_query, name="monthly_summary",
     )
 
@@ -1146,13 +1147,13 @@ def test_create_model_from_query(integration_env):
     assert saved.source_queries is not None
 
     # Query the saved model by name
-    result = engine.execute(query=SlayerQuery(
+    result = engine.execute_sync(query=SlayerQuery(
         source_model="monthly_summary", fields=[Field(formula="*:count")],
     ))
     assert result.data[0]["monthly_summary._count"] == 3
 
     # Re-aggregate over saved model
-    result2 = engine.execute(query=SlayerQuery(
+    result2 = engine.execute_sync(query=SlayerQuery(
         source_model="monthly_summary", fields=[Field(formula="total_amount_sum:sum")],
     ))
     assert result2.data[0]["monthly_summary.total_amount_sum_sum"] == pytest.approx(750.0)
@@ -1189,7 +1190,7 @@ def test_query_list_with_joins(cross_model_env):
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
 
-    response = engine.execute(query=[sub, main])
+    response = engine.execute_sync(query=[sub, main])
 
     assert response.row_count == 3
     # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
@@ -1214,7 +1215,7 @@ def test_sql_dimension_via_model_extension(integration_env):
         dimensions=[ColumnRef(name="tier")],
         fields=[Field(formula="*:count")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     by_tier = {r["orders.tier"]: r["orders._count"] for r in response.data}
     assert by_tier["high"] == 2
@@ -1233,7 +1234,7 @@ def test_sql_dimension_with_regular(integration_env):
         dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
         fields=[Field(formula="*:count")],
     )
-    response = engine.execute(query)
+    response = engine.execute_sync(query)
 
     # completed has 3 orders: 100(low), 200(high), 300(high)
     data = {(r["orders.status"], r["orders.tier"]): r["orders._count"] for r in response.data}
@@ -1266,7 +1267,7 @@ def test_formula_dimension_via_query_list(integration_env):
         fields=[Field(formula="*:count")],
     )
 
-    response = engine.execute(query=[inner, outer])
+    response = engine.execute_sync(query=[inner, outer])
 
     # Jan(300)=high, Feb(125)=low, Mar(325)=high
     by_tier = {r["monthly.amount_tier"]: r["monthly._count"] for r in response.data}
@@ -1282,7 +1283,7 @@ def test_circular_query_reference_raises(integration_env):
     q2 = SlayerQuery(name="b", source_model="a", fields=[Field(formula="*:count")])
     main = SlayerQuery(source_model="a", fields=[Field(formula="*:count")])
     with pytest.raises(ValueError, match="Circular reference"):
-        engine.execute(query=[q1, q2, main])
+        engine.execute_sync(query=[q1, q2, main])
 
 
 def test_circular_join_graph_raises(tmp_path):
@@ -1299,24 +1300,24 @@ def test_circular_join_graph_raises(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    run_sync(storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path))))
 
     # Circular joins: a → b → a
-    storage.save_model(SlayerModel(
+    run_sync(storage.save_model(SlayerModel(
         name="a", sql_table="a", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="b_id", sql="b_id", type=DataType.NUMBER)],
         measures=[],
         joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
-    ))
-    storage.save_model(SlayerModel(
+    )))
+    run_sync(storage.save_model(SlayerModel(
         name="b", sql_table="b", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="a_id", sql="a_id", type=DataType.NUMBER),
                     Dimension(name="unique_b_field", sql="id", type=DataType.NUMBER)],
         measures=[],
         joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
-    ))
+    )))
 
     engine = SlayerQueryEngine(storage=storage)
 
@@ -1328,7 +1329,7 @@ def test_circular_join_graph_raises(tmp_path):
         fields=[Field(formula="*:count")],
     )
     with pytest.raises(ValueError, match="Circular join"):
-        engine.execute(query)
+        engine.execute_sync(query)
 
 
 # ---------------------------------------------------------------------------
@@ -1351,8 +1352,8 @@ def test_model_filter_on_joined_column(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
-    storage.save_model(SlayerModel(
+    run_sync(storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path))))
+    run_sync(storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         dimensions=[
             Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
@@ -1360,19 +1361,19 @@ def test_model_filter_on_joined_column(tmp_path):
         measures=[Measure(name="total", sql="amount")],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         filters=["customers.region == 'US'"],
-    ))
-    storage.save_model(SlayerModel(
+    )))
+    run_sync(storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="name", sql="name", type=DataType.STRING),
                     Dimension(name="region", sql="region", type=DataType.STRING)],
         measures=[],
-    ))
+    )))
 
     engine = SlayerQueryEngine(storage=storage)
 
     # Model filter "customers.region == 'US'" should exclude Bob (EU)
-    result = engine.execute(SlayerQuery(
+    result = engine.execute_sync(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="customers.name")],
         fields=[Field(formula="*:count")],
@@ -1433,10 +1434,10 @@ def diamond_env(tmp_path):
 
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
-    storage.save_datasource(ds)
+    run_sync(storage.save_datasource(ds))
     models = ingest_datasource(datasource=ds)
     for m in models:
-        storage.save_model(m)
+        run_sync(storage.save_model(m))
 
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage
@@ -1447,7 +1448,7 @@ def test_diamond_joins_both_paths(diamond_env):
     engine, storage = diamond_env
 
     # Verify the ingested model has its own columns (not flattened joined dims)
-    shipments = storage.get_model("shipments")
+    shipments = run_sync(storage.get_model("shipments"))
     dim_names = {d.name for d in shipments.dimensions}
     assert "customer_id" in dim_names
     assert "warehouse_id" in dim_names
@@ -1455,7 +1456,7 @@ def test_diamond_joins_both_paths(diamond_env):
     assert not any("." in name for name in dim_names)
 
     # Query both region paths simultaneously — resolved via join graph
-    result = engine.execute(query=SlayerQuery(
+    result = engine.execute_sync(query=SlayerQuery(
         source_model="shipments",
         dimensions=[
             ColumnRef(name="customers.regions.name"),
@@ -1484,7 +1485,7 @@ def test_query_filter_on_joined_dimension(diamond_env):
     """Query-level filter on a joined dimension resolves through the model."""
     engine, _ = diamond_env
 
-    result = engine.execute(query=SlayerQuery(
+    result = engine.execute_sync(query=SlayerQuery(
         source_model="shipments",
         fields=[Field(formula="*:count")],
         filters=["customers.regions.name == 'US'"],
@@ -1499,7 +1500,7 @@ def test_diamond_joins_single_path(diamond_env):
     """Query only one path — should work without including the other."""
     engine, _ = diamond_env
 
-    result = engine.execute(query=SlayerQuery(
+    result = engine.execute_sync(query=SlayerQuery(
         source_model="shipments",
         dimensions=[ColumnRef(name="customers.regions.name")],
         fields=[Field(formula="*:count")],

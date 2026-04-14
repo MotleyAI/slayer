@@ -13,6 +13,7 @@ from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.async_utils import run_sync
 
 from .params import (
     DATA_END_DATE, DATA_START_DATE, DB_BACKEND, DB_TYPE, DB_URL,
@@ -138,16 +139,16 @@ def _create_env(order_count: int) -> BenchEnv:
 
     # Configure SLayer
     storage = YAMLStorage(base_dir=tmpdir)
-    storage.save_datasource(ds)
+    run_sync(storage.save_datasource(ds))
 
-    storage.save_model(_build_orders_model("bench"))
-    storage.save_model(_build_shops_model("bench"))
-    storage.save_model(_build_customers_model("bench"))
+    run_sync(storage.save_model(_build_orders_model("bench")))
+    run_sync(storage.save_model(_build_shops_model("bench")))
+    run_sync(storage.save_model(_build_customers_model("bench")))
 
     slayer_engine = SlayerQueryEngine(storage=storage)
 
     # Warmup: run a simple query to prime DB caches and connection pool
-    slayer_engine.execute(query=SlayerQuery(
+    slayer_engine.execute_sync(query=SlayerQuery(
         source_model="orders", fields=[{"formula": "*:count"}],
     ))
 

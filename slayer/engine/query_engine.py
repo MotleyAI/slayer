@@ -148,7 +148,7 @@ class SlayerQueryEngine:
         self.storage = storage
         self._resolving: set = set()  # Track currently resolving models to detect cycles
 
-    def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+    async def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
         # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
             queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
@@ -169,15 +169,15 @@ class SlayerQueryEngine:
             query = query.snap_to_whole_periods()
 
         # Resolve model from query.source_model (str, SlayerModel, or ModelExtension)
-        model = self._resolve_query_model(
+        model = await self._resolve_query_model(
             query_model=query.source_model,
             named_queries=named_queries,
         )
 
-        datasource = self._resolve_datasource(model=model)
+        datasource = await self._resolve_datasource(model=model)
 
         # Enrich: SlayerQuery + model → EnrichedQuery
-        enriched = self._enrich(query=query, model=model, named_queries=named_queries)
+        enriched = await self._enrich(query=query, model=model, named_queries=named_queries)
 
         # Generate SQL from EnrichedQuery
         dialect = self._dialect_for_type(datasource.type)
@@ -236,25 +236,40 @@ class SlayerQueryEngine:
         # explain: run dialect-appropriate EXPLAIN on the query
         if query.explain:
             explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
-            rows = client.execute(sql=explain_sql)
+            rows = await client.execute(sql=explain_sql)
             return SlayerResponse(data=rows, sql=sql, meta=meta)
 
-        rows = client.execute(sql=sql)
+        rows = await client.execute(sql=sql)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, meta=meta)
 
-    def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
+    def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+        """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
+        from slayer.async_utils import run_sync
+
+        return run_sync(self.execute(query))
+
+    def create_model_from_query_sync(
+        self, query: "SlayerQuery | list[SlayerQuery]", name: str,
+        description: str = None, save: bool = True,
+    ) -> SlayerModel:
+        """Synchronous wrapper for create_model_from_query()."""
+        from slayer.async_utils import run_sync
+
+        return run_sync(self.create_model_from_query(query=query, name=name, description=description, save=save))
+
+    async def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
         from slayer.core.query import ModelExtension
 
         named_queries = named_queries or {}
 
         if isinstance(query_model, str):
-            return self._resolve_model(model_name=query_model, named_queries=named_queries)
+            return await self._resolve_model(model_name=query_model, named_queries=named_queries)
         elif isinstance(query_model, SlayerModel):
             return query_model
         elif isinstance(query_model, ModelExtension):
-            base = self._resolve_model(
+            base = await self._resolve_model(
                 model_name=query_model.source_name,
                 named_queries=named_queries,
             )
@@ -279,14 +294,14 @@ class SlayerQueryEngine:
             # Dict — could be ModelExtension or SlayerModel
             if "source_name" in query_model:
                 ext = ModelExtension.model_validate(query_model)
-                return self._resolve_query_model(ext, named_queries)
+                return await self._resolve_query_model(ext, named_queries)
             else:
                 model = SlayerModel.model_validate(query_model)
                 return model
         else:
             raise ValueError(f"Invalid query.source_model type: {type(query_model)}")
 
-    def _resolve_model(self, model_name: str, named_queries: dict[str, SlayerQuery] = None) -> SlayerModel:
+    async def _resolve_model(self, model_name: str, named_queries: dict[str, SlayerQuery] = None) -> SlayerModel:
         """Resolve a model by name — checks named queries first, then storage."""
         named_queries = named_queries or {}
 
@@ -298,16 +313,16 @@ class SlayerQueryEngine:
             )
         self._resolving.add(model_name)
         try:
-            return self._resolve_model_inner(model_name, named_queries)
+            return await self._resolve_model_inner(model_name, named_queries)
         finally:
             self._resolving.discard(model_name)
 
-    def _resolve_model_inner(self, model_name: str, named_queries: dict[str, SlayerQuery]) -> SlayerModel:
+    async def _resolve_model_inner(self, model_name: str, named_queries: dict[str, SlayerQuery]) -> SlayerModel:
         # Named query overrides stored model
         if model_name in named_queries:
-            return self._query_as_model(inner_query=named_queries[model_name], named_queries=named_queries)
+            return await self._query_as_model(inner_query=named_queries[model_name], named_queries=named_queries)
 
-        model = self.storage.get_model(model_name)
+        model = await self.storage.get_model(model_name)
         if model is None:
             raise ValueError(f"Model '{model_name}' not found")
 
@@ -315,7 +330,7 @@ class SlayerQueryEngine:
         if hasattr(model, "source_queries") and model.source_queries:
             # Parse stored queries (may be dicts from YAML round-trip)
             parsed = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in model.source_queries]
-            return self._query_as_model(
+            return await self._query_as_model(
                 inner_query=parsed[-1],
                 named_queries={q.name: q for q in parsed[:-1] if q.name},
                 override_name=model.name,
@@ -323,7 +338,7 @@ class SlayerQueryEngine:
 
         return model
 
-    def create_model_from_query(
+    async def create_model_from_query(
         self,
         query: "SlayerQuery | list[SlayerQuery]",
         name: str,
@@ -345,7 +360,7 @@ class SlayerQueryEngine:
         queries = query if isinstance(query, list) else [query]
         main_query = queries[-1]
         named = {q.name: q for q in queries[:-1] if q.name}
-        virtual = self._query_as_model(inner_query=main_query, named_queries=named)
+        virtual = await self._query_as_model(inner_query=main_query, named_queries=named)
         model = SlayerModel(
             name=name,
             source_queries=queries,
@@ -355,10 +370,10 @@ class SlayerQueryEngine:
             description=description,
         )
         if save:
-            self.storage.save_model(model)
+            await self.storage.save_model(model)
         return model
 
-    def _enrich(
+    async def _enrich(
         self,
         query: SlayerQuery,
         model: SlayerModel,
@@ -370,22 +385,22 @@ class SlayerQueryEngine:
         for model resolution (joins, cross-model measures, join targets).
         """
 
-        def _resolve_join_target(target_model_name, named_queries):
+        async def _resolve_join_target(target_model_name, named_queries):
             nq = named_queries or {}
             if target_model_name in nq:
-                target = self._query_as_model(
+                target = await self._query_as_model(
                     inner_query=nq[target_model_name],
                     named_queries=nq,
                 )
             else:
-                target = self.storage.get_model(target_model_name) if self.storage else None
+                target = await self.storage.get_model(target_model_name) if self.storage else None
             if target and target.sql_table:
                 return target.sql_table, target
             elif target and target.sql:
                 return f"({target.sql})", target
             return None
 
-        return enrich_query(
+        return await enrich_query(
             query=query,
             model=model,
             named_queries=named_queries,
@@ -394,7 +409,7 @@ class SlayerQueryEngine:
             resolve_join_target=_resolve_join_target,
         )
 
-    def _query_as_model(
+    async def _query_as_model(
         self, inner_query: SlayerQuery, named_queries: dict[str, SlayerQuery] = None, override_name: str = None
     ) -> SlayerModel:
         """Build a virtual SlayerModel from a nested query's result.
@@ -406,16 +421,16 @@ class SlayerQueryEngine:
         named_queries = named_queries or {}
 
         # Resolve the inner model (handles str, SlayerModel, ModelExtension)
-        inner_model = self._resolve_query_model(
+        inner_model = await self._resolve_query_model(
             query_model=inner_query.source_model,
             named_queries=named_queries,
         )
 
         # Enrich the inner query
-        enriched = self._enrich(query=inner_query, model=inner_model)
+        enriched = await self._enrich(query=inner_query, model=inner_model)
 
         # Generate SQL
-        datasource = self._resolve_datasource(model=inner_model)
+        datasource = await self._resolve_datasource(model=inner_model)
         dialect = self._dialect_for_type(datasource.type)
         generator = SQLGenerator(dialect=dialect)
         inner_sql = generator.generate(enriched=enriched)
@@ -502,7 +517,7 @@ class SlayerQueryEngine:
             default_time_dimension=inner_model.default_time_dimension,
         )
 
-    def _resolve_dimension_via_joins(
+    async def _resolve_dimension_via_joins(
         self,
         model: SlayerModel,
         parts: list[str],
@@ -531,7 +546,7 @@ class SlayerQueryEngine:
             if join is None:
                 return None  # No join found for this hop
             # Load the target model
-            target = self._resolve_model(
+            target = await self._resolve_model(
                 model_name=hop_name,
                 named_queries=named_queries or {},
             )
@@ -542,7 +557,7 @@ class SlayerQueryEngine:
         dim_name = parts[-1]
         return current_model.get_dimension(dim_name)
 
-    def _resolve_cross_model_measure(
+    async def _resolve_cross_model_measure(
         self,
         spec_name: str,
         field_name: str,
@@ -579,7 +594,7 @@ class SlayerQueryEngine:
             )
 
         # Load the target model (named queries take precedence)
-        target_model = self._resolve_model(
+        target_model = await self._resolve_model(
             model_name=target_model_name,
             named_queries=named_queries or {},
         )
@@ -650,14 +665,14 @@ class SlayerQueryEngine:
             format=cm_format,
         )
 
-    def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
+    async def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
         ds_name = model.data_source
         if not ds_name:
             raise ValueError(
                 f"Model '{model.name}' has no data_source configured. "
                 f"Set data_source on the model or ensure the source model has one."
             )
-        ds = self.storage.get_datasource(ds_name)
+        ds = await self.storage.get_datasource(ds_name)
         if ds is None:
             raise ValueError(f"Datasource '{ds_name}' not found for model '{model.name}'")
         return ds

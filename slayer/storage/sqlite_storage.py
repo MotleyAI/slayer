@@ -28,7 +28,7 @@ class SQLiteStorage(StorageBackend):
                 )
             """)
 
-    def save_model(self, model: SlayerModel) -> None:
+    async def save_model(self, model: SlayerModel) -> None:
         data = json.dumps(model.model_dump(mode="json", exclude_none=True))
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -36,24 +36,24 @@ class SQLiteStorage(StorageBackend):
                 (model.name, data),
             )
 
-    def get_model(self, name: str) -> Optional[SlayerModel]:
+    async def get_model(self, name: str) -> Optional[SlayerModel]:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute("SELECT data FROM models WHERE name = ?", (name,)).fetchone()
         if row is None:
             return None
         return SlayerModel.model_validate(json.loads(row[0]))
 
-    def list_models(self) -> List[str]:
+    async def list_models(self) -> List[str]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute("SELECT name FROM models ORDER BY name").fetchall()
         return [r[0] for r in rows]
 
-    def delete_model(self, name: str) -> bool:
+    async def delete_model(self, name: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM models WHERE name = ?", (name,))
             return cursor.rowcount > 0
 
-    def save_datasource(self, datasource: DatasourceConfig) -> None:
+    async def save_datasource(self, datasource: DatasourceConfig) -> None:
         data = json.dumps(datasource.model_dump(mode="json", exclude_none=True))
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -61,7 +61,7 @@ class SQLiteStorage(StorageBackend):
                 (datasource.name, data),
             )
 
-    def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
+    async def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute("SELECT data FROM datasources WHERE name = ?", (name,)).fetchone()
         if row is None:
@@ -69,12 +69,12 @@ class SQLiteStorage(StorageBackend):
         ds = DatasourceConfig.model_validate(json.loads(row[0]))
         return ds.resolve_env_vars()
 
-    def list_datasources(self) -> List[str]:
+    async def list_datasources(self) -> List[str]:
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute("SELECT name FROM datasources ORDER BY name").fetchall()
         return [r[0] for r in rows]
 
-    def delete_datasource(self, name: str) -> bool:
+    async def delete_datasource(self, name: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("DELETE FROM datasources WHERE name = ?", (name,))
             return cursor.rowcount > 0

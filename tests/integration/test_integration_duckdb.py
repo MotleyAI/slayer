@@ -14,6 +14,7 @@ from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDime
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.async_utils import run_sync
 
 
 @pytest.fixture
@@ -59,11 +60,11 @@ def duckdb_env(tmp_path):
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
 
-    storage.save_datasource(DatasourceConfig(
+    run_sync(storage.save_datasource(DatasourceConfig(
         name="testduckdb",
         type="duckdb",
         database=str(db_path),
-    ))
+    )))
 
     orders_model = SlayerModel(
         name="orders",
@@ -92,8 +93,8 @@ def duckdb_env(tmp_path):
         ],
         measures=[],
     )
-    storage.save_model(orders_model)
-    storage.save_model(customers_model)
+    run_sync(storage.save_model(orders_model))
+    run_sync(storage.save_model(customers_model))
 
     return SlayerQueryEngine(storage=storage)
 
@@ -102,18 +103,18 @@ def duckdb_env(tmp_path):
 class TestDuckDBQueries:
     def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", fields=[{"formula": "*:count"}])
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
     def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", fields=[{"formula": "total:sum"}])
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount:avg"}])
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
 
@@ -123,7 +124,7 @@ class TestDuckDBQueries:
             fields=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
         assert by_status["completed"] == 3
         assert by_status["pending"] == 2
@@ -135,7 +136,7 @@ class TestDuckDBQueries:
             fields=[{"formula": "*:count"}],
             filters=["status == 'completed'"],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.data[0]["orders._count"] == 3
 
     def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
@@ -144,7 +145,7 @@ class TestDuckDBQueries:
             fields=[{"formula": "*:count"}],
             filters=["amount > 100"],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.data[0]["orders._count"] == 3  # 200, 150, 300
 
     def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
@@ -154,7 +155,7 @@ class TestDuckDBQueries:
             dimensions=[{"name": "status"}],
             order=[{"column": {"name": "count"}, "direction": "desc"}],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.data[0]["orders.status"] == "completed"
 
     def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
@@ -164,7 +165,7 @@ class TestDuckDBQueries:
             dimensions=[{"name": "status"}],
             limit=2,
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.row_count == 2
 
     def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
@@ -173,7 +174,7 @@ class TestDuckDBQueries:
             fields=[{"formula": "*:count"}, {"formula": "total:sum"}],
             dimensions=[{"name": "status"}],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
         assert completed["orders._count"] == 3
         assert float(completed["orders.total_sum"]) == 450.0
@@ -185,7 +186,7 @@ class TestDuckDBQueries:
             fields=[{"formula": "*:count"}],
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.row_count == 3  # Jan, Feb, Mar
 
     def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
@@ -198,7 +199,7 @@ class TestDuckDBQueries:
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         # Only Jan and Feb orders (4 orders)
         total = sum(r["orders._count"] for r in result.data)
         assert total == 4
@@ -209,7 +210,7 @@ class TestDuckDBQueries:
             fields=[{"formula": "*:count"}],
             filters=["status == 'completed' or status == 'pending'"],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.data[0]["orders._count"] == 5  # 3 completed + 2 pending
 
     def test_time_shift_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
@@ -228,7 +229,7 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(375.0)
         # Previous month (Feb) fetched from DB, not NULL
@@ -248,7 +249,7 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.row_count == 1
         # Mar(375) - Feb(200) = 175
         assert float(result.data[0]["orders.amount_change"]) == pytest.approx(175.0)
@@ -267,7 +268,7 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.row_count == 1
         # (375 - 200) / 200 = 0.875
         assert float(result.data[0]["orders.pct"]) == pytest.approx(0.875)
@@ -288,7 +289,7 @@ class TestDuckDBQueries:
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
-        result = duckdb_env.execute(query=query)
+        result = duckdb_env.execute_sync(query=query)
         assert result.row_count == 1
         assert float(result.data[0]["orders.total_sum"]) == pytest.approx(200.0)
         assert float(result.data[0]["orders.prev"]) == pytest.approx(300.0)  # Jan
@@ -397,9 +398,9 @@ class TestDuckDBIngestion:
 
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
-        storage.save_datasource(ds)
+        run_sync(storage.save_datasource(ds))
         for m in models:
-            storage.save_model(m)
+            run_sync(storage.save_model(m))
         engine = SlayerQueryEngine(storage=storage)
 
         query = SlayerQuery(
@@ -407,7 +408,7 @@ class TestDuckDBIngestion:
             fields=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
-        result = engine.execute(query=query)
+        result = engine.execute_sync(query=query)
 
         by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
         assert by_name["Acme"] == 2
@@ -420,9 +421,9 @@ class TestDuckDBIngestion:
 
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
-        storage.save_datasource(ds)
+        run_sync(storage.save_datasource(ds))
         for m in models:
-            storage.save_model(m)
+            run_sync(storage.save_model(m))
         engine = SlayerQueryEngine(storage=storage)
 
         query = SlayerQuery(
@@ -430,7 +431,7 @@ class TestDuckDBIngestion:
             fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
-        result = engine.execute(query=query)
+        result = engine.execute_sync(query=query)
 
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
         assert by_region["US"]["orders._count"] == 3  # Acme(2) + Initech(1)

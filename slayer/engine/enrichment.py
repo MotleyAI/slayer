@@ -39,7 +39,7 @@ _SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
 
 
-def enrich_query(
+async def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
     named_queries: Optional[Dict[str, SlayerQuery]] = None,
@@ -63,7 +63,7 @@ def enrich_query(
     model_name_str = query.source_model if isinstance(query.source_model, str) else model.name
 
     # --- Dimensions ---
-    dimensions = _resolve_dimensions(
+    dimensions = await _resolve_dimensions(
         query=query,
         model=model,
         model_name_str=model_name_str,
@@ -75,7 +75,7 @@ def enrich_query(
     measures: List[EnrichedMeasure] = []
 
     # --- Time dimensions ---
-    time_dimensions = _resolve_time_dimensions(
+    time_dimensions = await _resolve_time_dimensions(
         query=query,
         model=model,
         model_name_str=model_name_str,
@@ -239,11 +239,11 @@ def enrich_query(
         else:
             raise ValueError(f"Bare measure name '{mname}' in expression is not valid. Use colon syntax.")
 
-    def _flatten_spec(spec, field_name: str) -> str:
+    async def _flatten_spec(spec, field_name: str) -> str:
         if isinstance(spec, AggregatedMeasureRef):
             if "." in spec.measure_name and spec.measure_name != "*":
                 # Cross-model aggregated measure
-                cm = resolve_cross_model_measure(
+                cm = await resolve_cross_model_measure(
                     spec_name=spec.measure_name,
                     field_name=field_name,
                     model=model,
@@ -290,7 +290,7 @@ def enrich_query(
             for mname in spec.measure_names:
                 _ensure_measure_from_spec(mname, spec.agg_refs)
             for placeholder, sub_transform in spec.sub_transforms:
-                _flatten_spec(sub_transform, placeholder)
+                await _flatten_spec(sub_transform, placeholder)
             alias = f"{model_name_str}.{field_name}"
             enriched_expressions.append(
                 EnrichedExpression(
@@ -320,9 +320,9 @@ def enrich_query(
                     if spec.inner.measure_name == "*"
                     else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
                 )
-                inner_alias = _flatten_spec(spec.inner, canonical)
+                inner_alias = await _flatten_spec(spec.inner, canonical)
             else:
-                inner_alias = _flatten_spec(spec.inner, inner_name)
+                inner_alias = await _flatten_spec(spec.inner, inner_name)
 
             offset = 1
             granularity = None
@@ -363,7 +363,7 @@ def enrich_query(
 
             if "." in spec.measure_name and spec.measure_name != "*":
                 # Cross-model aggregated measure
-                cm = resolve_cross_model_measure(
+                cm = await resolve_cross_model_measure(
                     spec_name=spec.measure_name,
                     field_name=field_name,
                     model=model,
@@ -399,7 +399,7 @@ def enrich_query(
                         m.label = qfield.label
 
         else:
-            _flatten_spec(spec, field_name)
+            await _flatten_spec(spec, field_name)
             if qfield.label:
                 alias = f"{model_name_str}.{field_name}"
                 for e in enriched_expressions:
@@ -429,13 +429,13 @@ def enrich_query(
         rewritten, extra_fields = extract_filter_transforms(f_str, counter=ft_counter)
         for name, formula in extra_fields:
             spec = parse_formula(formula)
-            _flatten_spec(spec, name)
+            await _flatten_spec(spec, name)
         processed_filters.append(rewritten)
 
     has_first_or_last = any(m.aggregation in ("first", "last") for m in measures)
 
     # --- Resolve JOINs ---
-    resolved_joins = _resolve_joins(
+    resolved_joins = await _resolve_joins(
         model=model,
         model_name_str=model_name_str,
         dimensions=dimensions,
@@ -460,7 +460,7 @@ def enrich_query(
         cross_model_measures=cross_model_measures,
         last_agg_time_column=last_agg_time_column if has_first_or_last else None,
         filters=classify_filters(
-            filters=resolve_filter_columns(
+            filters=await resolve_filter_columns(
                 parsed_filters=[parse_filter(f) for f in processed_filters],
                 model=model,
                 model_name=model_name_str,
@@ -482,7 +482,7 @@ def enrich_query(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_dimensions(
+async def _resolve_dimensions(
     query: SlayerQuery,
     model: SlayerModel,
     model_name_str: str,
@@ -496,7 +496,7 @@ def _resolve_dimensions(
             effective_model = model.name
         else:
             parts = dim_ref.model.split(".") + [dim_ref.name]
-            dim_def = resolve_dimension_via_joins(
+            dim_def = await resolve_dimension_via_joins(
                 model=model,
                 parts=parts,
                 named_queries=named_queries,
@@ -516,7 +516,7 @@ def _resolve_dimensions(
     return dimensions
 
 
-def _resolve_time_dimensions(
+async def _resolve_time_dimensions(
     query: SlayerQuery,
     model: SlayerModel,
     model_name_str: str,
@@ -530,7 +530,7 @@ def _resolve_time_dimensions(
             td_model_name = model.name
         else:
             parts = td.dimension.model.split(".") + [td.dimension.name]
-            dim_def = resolve_dimension_via_joins(
+            dim_def = await resolve_dimension_via_joins(
                 model=model,
                 parts=parts,
                 named_queries=named_queries,
@@ -603,7 +603,7 @@ def _resolve_last_agg_time(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_joins(
+async def _resolve_joins(
     model: SlayerModel,
     model_name_str: str,
     dimensions: List[EnrichedDimension],
@@ -661,7 +661,7 @@ def _resolve_joins(
     for mj in model.joins:
         if mj.target_model not in needed_tables:
             continue
-        target_info = resolve_join_target(
+        target_info = await resolve_join_target(
             target_model_name=mj.target_model,
             named_queries=named_queries,
         )
@@ -759,7 +759,7 @@ def extract_filter_transforms(
     return _unmangle(_ast.unparse(modified)), transforms
 
 
-def resolve_filter_columns(
+async def resolve_filter_columns(
     parsed_filters: list,
     model: SlayerModel,
     model_name: str,
@@ -799,7 +799,7 @@ def resolve_filter_columns(
                     for mj in current_model.joins:
                         if mj.target_model == segment:
                             target_info = (
-                                resolve_join_target(
+                                await resolve_join_target(
                                     target_model_name=segment,
                                     named_queries=named_queries or {},
                                 )
