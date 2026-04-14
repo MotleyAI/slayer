@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.format import NumberFormat
 from slayer.core.formula import ParsedFilter
 from slayer.core.models import Aggregation
 from slayer.core.query import OrderItem
@@ -36,6 +37,7 @@ class EnrichedDimension:
     alias: str  # Result column name (e.g., "orders.status")
     model_name: str
     label: Optional[str] = None  # Human-readable label
+    format: Optional[NumberFormat] = None  # Number format from the source dimension
 
 
 @dataclass
@@ -52,6 +54,7 @@ class EnrichedMeasure:
     agg_kwargs: Dict[str, str] = field(default_factory=dict)  # Query-time overrides
     label: Optional[str] = None  # Human-readable label
     time_column: Optional[str] = None  # Explicit time col for first/last (overrides query default)
+    source_measure_name: Optional[str] = None  # Original measure name before canonicalization
 
 
 @dataclass
@@ -146,15 +149,16 @@ class CrossModelMeasure:
     """
 
     name: str
-    alias: str                          # Result column name (e.g., "orders.customers__avg_score")
-    target_model_name: str              # The joined model name
+    alias: str  # Result column name (e.g., "orders.customers__avg_score")
+    target_model_name: str  # The joined model name
     target_model_sql_table: Optional[str]
     target_model_sql: Optional[str]
-    measure: EnrichedMeasure            # The measure to aggregate
-    join_pairs: List[List[str]]         # [[source_dim, target_dim], ...] from ModelJoin
+    measure: EnrichedMeasure  # The measure to aggregate
+    join_pairs: List[List[str]]  # [[source_dim, target_dim], ...] from ModelJoin
     shared_dimensions: List[EnrichedDimension]  # Dimensions shared between main and target
     shared_time_dimensions: List[EnrichedTimeDimension]  # Time dims shared between main and target
-    source_model_name: str              # The main query's model name
-    source_sql_table: Optional[str]     # Main model's table
-    source_sql: Optional[str]           # Main model's SQL
+    source_model_name: str  # The main query's model name
+    source_sql_table: Optional[str]  # Main model's table
+    source_sql: Optional[str]  # Main model's SQL
     label: Optional[str] = None
+    format: Optional[NumberFormat] = None  # Inferred format for this cross-model measure

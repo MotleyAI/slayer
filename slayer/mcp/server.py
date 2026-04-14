@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 
 
-
-
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
     try:
@@ -77,12 +75,10 @@ def _model_to_summary(model: SlayerModel) -> dict:
         "description": model.description,
         "dimensions": [
             {"name": d.name, "type": str(d.type), "description": d.description}
-            for d in model.dimensions if not d.hidden
+            for d in model.dimensions
+            if not d.hidden
         ],
-        "measures": [
-            {"name": m.name, "description": m.description}
-            for m in model.measures if not m.hidden
-        ],
+        "measures": [{"name": m.name, "description": m.description} for m in model.measures if not m.hidden],
     }
 
 
@@ -245,10 +241,13 @@ def create_mcp_server(storage: StorageBackend):
         """
         model = storage.get_model(model_name)
         if model is None:
-            available = sorted([
-                n for n in storage.list_models()
-                if not (storage.get_model(n) or SlayerModel(name="", data_source="")).hidden
-            ])
+            available = sorted(
+                [
+                    n
+                    for n in storage.list_models()
+                    if not (storage.get_model(n) or SlayerModel(name="", data_source="")).hidden
+                ]
+            )
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
 
         result = _model_to_summary(model)
@@ -262,16 +261,13 @@ def create_mcp_server(storage: StorageBackend):
             sample_query = SlayerQuery(
                 source_model=model_name,
                 fields=[{"formula": m.name} for m in model.measures if not m.hidden][:3],
-                dimensions=[
-                    {"name": d.name}
-                    for d in model.dimensions
-                    if not d.hidden and not d.primary_key
-                ][:2],
+                dimensions=[{"name": d.name} for d in model.dimensions if not d.hidden and not d.primary_key][:2],
                 limit=num_rows,
             )
             sample_result = engine.execute(query=sample_query)
             result["sample_data"] = _format_table(
-                data=sample_result.data, columns=sample_result.columns,
+                data=sample_result.data,
+                columns=sample_result.columns,
             )
         except Exception as e:
             result["sample_data_error"] = str(e)
@@ -307,8 +303,13 @@ def create_mcp_server(storage: StorageBackend):
                 Optional: "allowed_aggregations": ["sum", "avg"] to restrict usable aggregations.
         """
         data = _build_dict(
-            name=name, sql_table=sql_table, sql=sql, data_source=data_source,
-            description=description, dimensions=dimensions, measures=measures,
+            name=name,
+            sql_table=sql_table,
+            sql=sql,
+            data_source=data_source,
+            description=description,
+            dimensions=dimensions,
+            measures=measures,
         )
         model = SlayerModel.model_validate(data)
         existed = storage.get_model(name) is not None
@@ -334,16 +335,16 @@ def create_mcp_server(storage: StorageBackend):
             description: What this derived model represents.
         """
         from slayer.core.query import SlayerQuery as SQ
+
         parsed_query = SQ.model_validate(query)
         model = engine.create_model_from_query(
-            query=parsed_query, name=name, description=description,
+            query=parsed_query,
+            name=name,
+            description=description,
         )
         dims = [d.name for d in model.dimensions]
         measures = [m.name for m in model.measures]
-        return (
-            f"Model '{name}' created from query. "
-            f"Dimensions: {dims}. Measures: {measures}."
-        )
+        return f"Model '{name}' created from query. Dimensions: {dims}. Measures: {measures}."
 
     @mcp.tool()
     def edit_model(
@@ -403,31 +404,40 @@ def create_mcp_server(storage: StorageBackend):
 
         # Add measures
         existing_measure_names = {m.name for m in model.measures}
-        for spec in (add_measures or []):
+        for spec in add_measures or []:
             name = spec.get("name", "")
             if name in existing_measure_names:
                 return f"Measure '{name}' already exists on model '{model_name}'."
-            model.measures.append(Measure(
-                name=name,
-                sql=spec.get("sql"),
-                description=spec.get("description"),
-                allowed_aggregations=spec.get("allowed_aggregations"),
-            ))
+            model.measures.append(
+                Measure(
+                    name=name,
+                    sql=spec.get("sql"),
+                    description=spec.get("description"),
+                    allowed_aggregations=spec.get("allowed_aggregations"),
+                )
+            )
             existing_measure_names.add(name)
             changes.append(f"added measure '{name}'")
 
         # Add dimensions
         existing_dim_names = {d.name for d in model.dimensions}
-        for spec in (add_dimensions or []):
+        for spec in add_dimensions or []:
             name = spec.get("name", "")
             if name in existing_dim_names:
                 return f"Dimension '{name}' already exists on model '{model_name}'."
             dim_type = spec.get("type", "")
             if dim_type not in VALID_DIMENSION_TYPES:
-                return f"Invalid dimension type '{dim_type}'. Must be one of: {', '.join(sorted(VALID_DIMENSION_TYPES))}"
-            model.dimensions.append(Dimension(
-                name=name, sql=spec.get("sql"), type=dim_type, description=spec.get("description"),
-            ))
+                return (
+                    f"Invalid dimension type '{dim_type}'. Must be one of: {', '.join(sorted(VALID_DIMENSION_TYPES))}"
+                )
+            model.dimensions.append(
+                Dimension(
+                    name=name,
+                    sql=spec.get("sql"),
+                    type=dim_type,
+                    description=spec.get("description"),
+                )
+            )
             existing_dim_names.add(name)
             changes.append(f"added dimension '{name}'")
 
@@ -435,12 +445,15 @@ def create_mcp_server(storage: StorageBackend):
             return f"No changes specified for model '{model_name}'."
 
         storage.save_model(model)
-        return json.dumps({
-            "success": True,
-            "model_name": model_name,
-            "changes": changes,
-            "message": f"Applied {len(changes)} change(s) to '{model_name}'",
-        }, indent=2)
+        return json.dumps(
+            {
+                "success": True,
+                "model_name": model_name,
+                "changes": changes,
+                "message": f"Applied {len(changes)} change(s) to '{model_name}'",
+            },
+            indent=2,
+        )
 
     # -----------------------------------------------------------------------
     # Datasource management
@@ -478,8 +491,14 @@ def create_mcp_server(storage: StorageBackend):
         from slayer.engine.ingestion import ingest_datasource as _ingest
 
         data = _build_dict(
-            name=name, type=type, host=host, port=port, database=database,
-            username=username, password=password, connection_string=connection_string,
+            name=name,
+            type=type,
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            connection_string=connection_string,
             schema_name=schema_name,
         )
         ds = DatasourceConfig.model_validate(data)
@@ -733,6 +752,7 @@ def _format_table(data: List[Dict[str, Any]], columns: List[str], max_rows: int 
 def _format_json(data: List[Dict[str, Any]], columns: List[str]) -> str:
     """Format data as JSON array."""
     import json
+
     return json.dumps(data, default=str)
 
 
@@ -769,7 +789,12 @@ def _format_meta(meta: Dict[str, Any]) -> str:
         if fm.label:
             parts.append(f"label={fm.label}")
         if fm.format:
-            parts.append(f"format={fm.format.type.value}")
+            fmt_parts = [f"type={fm.format.type.value}"]
+            if fm.format.precision is not None:
+                fmt_parts.append(f"precision={fm.format.precision}")
+            if fm.format.symbol is not None:
+                fmt_parts.append(f"symbol={fm.format.symbol}")
+            parts.append(f"format=({', '.join(fmt_parts)})")
         if parts:
             lines.append(f"  {col}: {', '.join(parts)}")
     if len(lines) == 1:

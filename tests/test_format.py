@@ -121,6 +121,11 @@ class TestFormatNumber:
         result = format_number(value=float("nan"), format_spec=fmt)
         assert result == "nan"
 
+    def test_infinity(self):
+        fmt = NumberFormat(type=NumberFormatType.FLOAT)
+        assert format_number(value=float("inf"), format_spec=fmt) == "inf"
+        assert format_number(value=float("-inf"), format_spec=fmt) == "-inf"
+
     def test_zero(self):
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
         assert format_number(value=0, format_spec=fmt) == "0.00"
@@ -132,3 +137,41 @@ class TestFormatNumber:
     def test_non_numeric(self):
         fmt = NumberFormat(type=NumberFormatType.FLOAT)
         assert format_number(value="hello", format_spec=fmt) == "hello"
+
+    # --- Negative precision ---
+    def test_negative_precision_rejected(self):
+        with pytest.raises(ValueError):
+            NumberFormat(type=NumberFormatType.FLOAT, precision=-1)
+
+    # --- decimal.Decimal support ---
+    def test_decimal_float(self):
+        from decimal import Decimal
+
+        fmt = NumberFormat(type=NumberFormatType.FLOAT)
+        assert format_number(value=Decimal("42.123"), format_spec=fmt) == "42.1"
+
+    def test_decimal_currency(self):
+        from decimal import Decimal
+
+        fmt = NumberFormat(type=NumberFormatType.CURRENCY)
+        assert format_number(value=Decimal("1500.50"), format_spec=fmt) == "$1500"
+
+    def test_decimal_integer(self):
+        from decimal import Decimal
+
+        fmt = NumberFormat(type=NumberFormatType.INTEGER)
+        assert format_number(value=Decimal("42"), format_spec=fmt) == "42"
+
+    def test_decimal_nan(self):
+        from decimal import Decimal
+
+        fmt = NumberFormat(type=NumberFormatType.FLOAT)
+        result = format_number(value=Decimal("NaN"), format_spec=fmt)
+        assert result == "NaN"
+
+    def test_decimal_infinity(self):
+        from decimal import Decimal
+
+        fmt = NumberFormat(type=NumberFormatType.FLOAT)
+        assert format_number(value=Decimal("Infinity"), format_spec=fmt) == "Infinity"
+        assert format_number(value=Decimal("-Infinity"), format_spec=fmt) == "-Infinity"

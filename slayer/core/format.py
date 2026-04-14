@@ -1,8 +1,6 @@
-"""Number formatting for SLayer query results.
+"""Number formatting for SLayer query results."""
 
-Ported from Storyline's storyline/domain/format.py.
-"""
-
+import decimal
 import math
 import numbers
 from enum import Enum
@@ -107,12 +105,16 @@ def format_number(value: float, format_spec: NumberFormat) -> str:
     Returns:
         Formatted string representation of the value
     """
-    # Check if value is numeric (includes numpy types via numbers.Real)
-    if not isinstance(value, numbers.Real):
+    # Check if value is numeric (includes numpy types via numbers.Real, and decimal.Decimal)
+    if not isinstance(value, (numbers.Real, decimal.Decimal)):
         return str(value)
 
     # Check for NaN after confirming it's numeric
-    if isinstance(value, float) and math.isnan(value):
+    if (isinstance(value, float) and math.isnan(value)) or (isinstance(value, decimal.Decimal) and value.is_nan()):
+        return str(value)
+
+    # Check for Infinity after NaN check
+    if (isinstance(value, float) and math.isinf(value)) or (isinstance(value, decimal.Decimal) and value.is_infinite()):
         return str(value)
 
     format_type = format_spec.type
@@ -124,7 +126,7 @@ def format_number(value: float, format_spec: NumberFormat) -> str:
         is_negative = value < 0
         abs_value = abs(value)
         formatted_value, suffix, calc_precision = _format_with_notation(
-            abs_value, default_precision=3, explicit_precision=precision, max_precision=2
+            value=abs_value, default_precision=3, explicit_precision=precision, max_precision=2
         )
         formatted_str = f"{formatted_value:.{calc_precision}f}{suffix}"
 
@@ -139,18 +141,18 @@ def format_number(value: float, format_spec: NumberFormat) -> str:
     elif format_type == NumberFormatType.PERCENT:
         percent_value = value * 100
         formatted_value, suffix, calc_precision = _format_with_notation(
-            percent_value, default_precision=2, explicit_precision=precision
+            value=percent_value, default_precision=2, explicit_precision=precision
         )
         return f"{formatted_value:.{calc_precision}f}{suffix}%"
 
     elif format_type == NumberFormatType.INTEGER:
         formatted_value, suffix, calc_precision = _format_with_notation(
-            value, default_precision=0, explicit_precision=0, max_precision=0
+            value=value, default_precision=0, explicit_precision=0, max_precision=0
         )
         return f"{formatted_value:.{calc_precision}f}{suffix}"
 
     else:  # FLOAT or fallback
         formatted_value, suffix, calc_precision = _format_with_notation(
-            value, default_precision=3, explicit_precision=precision
+            value=value, default_precision=3, explicit_precision=precision
         )
         return f"{formatted_value:.{calc_precision}f}{suffix}"

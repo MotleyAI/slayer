@@ -38,6 +38,7 @@ from slayer.engine.enriched import (
 _SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
 
+
 def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
@@ -138,8 +139,7 @@ def enrich_query(
         if measure_name == "*":
             if aggregation_name != "count":
                 raise ValueError(
-                    f"Aggregation '{aggregation_name}' not allowed with measure '*' "
-                    f"— use '*:count' for COUNT(*)"
+                    f"Aggregation '{aggregation_name}' not allowed with measure '*' — use '*:count' for COUNT(*)"
                 )
             sql = None
         else:
@@ -179,6 +179,7 @@ def enrich_query(
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs,
                 time_column=explicit_time_col,
+                source_measure_name=measure_name,
             )
         )
         known_aliases[alias_key] = alias
@@ -236,10 +237,7 @@ def enrich_query(
                 agg_kwargs=ref.agg_kwargs,
             )
         else:
-            raise ValueError(
-                f"Bare measure name '{mname}' in expression is not valid. "
-                f"Use colon syntax."
-            )
+            raise ValueError(f"Bare measure name '{mname}' in expression is not valid. Use colon syntax.")
 
     def _flatten_spec(spec, field_name: str) -> str:
         if isinstance(spec, AggregatedMeasureRef):
@@ -349,7 +347,9 @@ def enrich_query(
     # Process each query field
     for qfield in query.fields or []:
         spec = parse_formula(qfield.formula)
-        field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", "")
+        field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
+            "*", ""
+        )
 
         if isinstance(spec, AggregatedMeasureRef):
             # New colon syntax: "revenue:sum", "*:count", etc.
@@ -510,6 +510,7 @@ def _resolve_dimensions(
                 alias=f"{model_name_str}.{dim_ref.full_name}",
                 model_name=effective_model,
                 label=dim_ref.label,
+                format=dim_def.format if dim_def else None,
             )
         )
     return dimensions

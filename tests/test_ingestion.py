@@ -7,6 +7,8 @@ import sqlalchemy as sa
 from slayer.engine.ingestion import (
     _get_columns_fallback,
     _get_pk_constraint_fallback,
+    _parse_info_schema_is_float,
+    _sa_type_is_float,
 )
 
 
@@ -113,9 +115,62 @@ class TestGetPkConstraintFallback:
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
         engine, conn = _setup_mock_engine([])
-        _get_pk_constraint_fallback(sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--")
+        _get_pk_constraint_fallback(
+            sa_engine=engine, table_name="'; DROP TABLE users;--", schema="'; DROP TABLE users;--"
+        )
 
         args, _ = conn.execute.call_args
         sql_str = str(args[0])
         assert "DROP TABLE" not in sql_str
         assert "'; DROP TABLE" not in sql_str
+
+
+class TestSaTypeIsFloat:
+    """Tests for _sa_type_is_float scale-aware NUMERIC/DECIMAL detection."""
+
+    def test_float_types_are_float(self):
+        assert _sa_type_is_float(sa.Float()) is True
+        assert _sa_type_is_float(sa.types.REAL()) is True
+
+    def test_numeric_with_scale_zero_is_not_float(self):
+        assert _sa_type_is_float(sa.Numeric(precision=10, scale=0)) is False
+
+    def test_numeric_with_positive_scale_is_float(self):
+        assert _sa_type_is_float(sa.Numeric(precision=10, scale=2)) is True
+
+    def test_numeric_with_no_scale_is_float(self):
+        """NUMERIC without explicit scale defaults to float-like."""
+        assert _sa_type_is_float(sa.Numeric()) is True
+
+    def test_decimal_with_scale_zero_is_not_float(self):
+        assert _sa_type_is_float(sa.DECIMAL(precision=20, scale=0)) is False
+
+    def test_decimal_with_positive_scale_is_float(self):
+        assert _sa_type_is_float(sa.DECIMAL(precision=20, scale=4)) is True
+
+    def test_integer_is_not_float(self):
+        assert _sa_type_is_float(sa.Integer()) is False
+
+
+class TestParseInfoSchemaIsFloat:
+    """Tests for _parse_info_schema_is_float scale parsing from type strings."""
+
+    def test_decimal_with_scale(self):
+        assert _parse_info_schema_is_float("DECIMAL(10,2)") is True
+
+    def test_decimal_with_zero_scale(self):
+        assert _parse_info_schema_is_float("DECIMAL(10,0)") is False
+
+    def test_numeric_with_scale(self):
+        assert _parse_info_schema_is_float("NUMERIC(18,4)") is True
+
+    def test_numeric_with_zero_scale(self):
+        assert _parse_info_schema_is_float("NUMERIC(18,0)") is False
+
+    def test_no_precision_info(self):
+        """Bare 'DECIMAL' without parens defaults to float."""
+        assert _parse_info_schema_is_float("DECIMAL") is True
+
+    def test_no_scale_in_parens(self):
+        """DECIMAL(10) with only precision defaults to float."""
+        assert _parse_info_schema_is_float("DECIMAL(10)") is True
