@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Set
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig, Dimension, Measure, ModelJoin, SlayerModel
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,29 @@ _SA_TYPE_MAP = {
 
 _NUMERIC_TYPES = {DataType.NUMBER}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
+
+# Float-like SA type names — these columns get measures only, no dimensions.
+# NUMERIC/DECIMAL are handled separately via scale inspection in _sa_type_is_float.
+_FLOAT_LIKE_SA_TYPES = frozenset(
+    {
+        "FLOAT",
+        "REAL",
+        "DOUBLE",
+        "DOUBLE_PRECISION",
+    }
+)
+
+# NUMERIC/DECIMAL type names — float-like only when scale > 0
+_NUMERIC_DECIMAL_TYPES = frozenset({"NUMERIC", "DECIMAL"})
+
+# Float-like INFORMATION_SCHEMA type names
+_FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset(
+    {
+        "FLOAT",
+        "DOUBLE",
+        "REAL",
+    }
+)
 
 # Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback)
 _INFO_SCHEMA_TYPE_MAP = {
@@ -86,6 +110,28 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     return DataType.STRING
 
 
+def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
+    """Return True if the SQLAlchemy type is float-like.
+
+    FLOAT/REAL/DOUBLE are always float-like. NUMERIC/DECIMAL are float-like
+    only when their scale is > 0 (or unknown), so NUMERIC(10,0) is treated as
+    integer-like.
+    """
+    type_name = type(sa_type).__name__.upper()
+    if type_name in _FLOAT_LIKE_SA_TYPES:
+        return True
+    if type_name in _NUMERIC_DECIMAL_TYPES:
+        scale = getattr(sa_type, "scale", None)
+        return scale is None or scale > 0
+    type_str = str(sa_type).split("(")[0].upper().strip()
+    if type_str in _FLOAT_LIKE_SA_TYPES:
+        return True
+    if type_str in _NUMERIC_DECIMAL_TYPES:
+        scale = getattr(sa_type, "scale", None)
+        return scale is None or scale > 0
+    return False
+
+
 class RollupGraphError(Exception):
     """Raised when the FK reference graph contains cycles."""
 
@@ -95,6 +141,7 @@ class RollupGraphError(Exception):
 # ---------------------------------------------------------------------------
 # FK graph utilities
 # ---------------------------------------------------------------------------
+
 
 def _get_fk_relationships(
     inspector: sa.engine.Inspector,
@@ -129,7 +176,10 @@ def _build_fk_graph(
     graph: Dict[str, Set[str]] = defaultdict(set)
     for table_name in table_names:
         for _, ref_table, _ in _get_fk_relationships(
-            inspector=inspector, table_name=table_name, schema=schema, table_set=table_set,
+            inspector=inspector,
+            table_name=table_name,
+            schema=schema,
+            table_set=table_set,
         ):
             graph[table_name].add(ref_table)
     return dict(graph)
@@ -150,9 +200,7 @@ def _check_acyclic(graph: Dict[str, Set[str]]) -> None:
             elif neighbor in rec_stack:
                 cycle_start = path.index(neighbor)
                 cycle = path[cycle_start:] + [neighbor]
-                raise RollupGraphError(
-                    f"Foreign key graph contains a cycle: {' -> '.join(cycle)}"
-                )
+                raise RollupGraphError(f"Foreign key graph contains a cycle: {' -> '.join(cycle)}")
         path.pop()
         rec_stack.remove(node)
 
@@ -183,6 +231,7 @@ def _compute_transitive_closure(graph: Dict[str, Set[str]], source: str) -> Set[
 # Join generation from FK relationships
 # ---------------------------------------------------------------------------
 
+
 def _generate_joins(
     inspector: sa.engine.Inspector,
     source_table: str,
@@ -206,7 +255,10 @@ def _generate_joins(
     while queue:
         current = queue.popleft()
         current_fk_rels = _get_fk_relationships(
-            inspector=inspector, table_name=current, schema=schema, table_set=table_set,
+            inspector=inspector,
+            table_name=current,
+            schema=schema,
+            table_set=table_set,
         )
 
         for src_col, ref_table, tgt_col in current_fk_rels:
@@ -224,10 +276,12 @@ def _generate_joins(
                 source_dim = f"{current}.{src_col}"
             join_pairs = [[source_dim, tgt_col]]
 
-            joins.append(ModelJoin(
-                target_model=ref_table,
-                join_pairs=join_pairs,
-            ))
+            joins.append(
+                ModelJoin(
+                    target_model=ref_table,
+                    join_pairs=join_pairs,
+                )
+            )
 
             # Continue BFS from the referenced table (but only expand once)
             if ref_table not in visited_for_expansion:
@@ -241,6 +295,23 @@ def _generate_joins(
 # INFORMATION_SCHEMA fallbacks (for databases like DuckDB where
 # the SQLAlchemy Inspector's pg_catalog queries may not be supported)
 # ---------------------------------------------------------------------------
+
+
+def _parse_info_schema_is_float(data_type_str: str) -> bool:
+    """Determine if a NUMERIC/DECIMAL info-schema type string is float-like.
+
+    Parses scale from strings like "DECIMAL(10,2)" or "NUMERIC(10,0)".
+    Scale > 0 means float-like; scale == 0 means integer-like; no scale
+    info defaults to float-like.
+    """
+    if "(" in data_type_str and "," in data_type_str:
+        try:
+            scale_str = data_type_str.split(",")[-1].rstrip(")").strip()
+            return int(scale_str) > 0
+        except (ValueError, IndexError):
+            return True  # Can't parse scale, default to float
+    return True  # No precision/scale info, default to float
+
 
 def _get_columns_fallback(
     sa_engine: sa.Engine,
@@ -272,13 +343,18 @@ def _get_columns_fallback(
         # Strip precision info (e.g. "DECIMAL(10,2)" → "DECIMAL")
         base_type = data_type_str.split("(")[0].upper().strip()
         sa_type = _INFO_SCHEMA_TYPE_MAP.get(base_type)
-        if sa_type is None and "INT" in base_type:
+        is_float = base_type in _FLOAT_LIKE_INFO_SCHEMA_TYPES
+        # NUMERIC/DECIMAL: check scale to decide float vs integer
+        if base_type in ("NUMERIC", "DECIMAL") or (
+            sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type)
+        ):
+            sa_type = sa_type or DataType.NUMBER
+            is_float = _parse_info_schema_is_float(data_type_str)
+        elif sa_type is None and "INT" in base_type:
             sa_type = DataType.NUMBER
         elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
             sa_type = DataType.STRING
-        elif sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type):
-            sa_type = DataType.NUMBER
-        result.append({"name": col_name, "type": sa_type or DataType.STRING})
+        result.append({"name": col_name, "type": sa_type or DataType.STRING, "is_float": is_float})
     return result
 
 
@@ -358,7 +434,7 @@ def _introspect_query_columns_via_inspector(
 ) -> List[tuple]:
     """Introspect columns from a rollup query or plain table.
 
-    Returns list of (column_name, DataType, is_primary_key) tuples.
+    Returns list of (column_name, DataType, is_primary_key, is_float) tuples.
     For rollup queries, uses per-table inspector data since LIMIT 0
     type inference can be unreliable across databases.
     """
@@ -372,9 +448,14 @@ def _introspect_query_columns_via_inspector(
     for col in columns:
         col_name = col["name"]
         col_type = col["type"]
-        data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
+        if isinstance(col_type, DataType):
+            data_type = col_type
+            is_float = col.get("is_float", False)
+        else:
+            data_type = _sa_type_to_data_type(col_type)
+            is_float = _sa_type_is_float(col_type)
         is_pk = col_name in pk_columns
-        results.append((col_name, data_type, is_pk))
+        results.append((col_name, data_type, is_pk, is_float))
 
     # Build list of (ref_table, dotted_path) from joins — supports diamond joins
     # where the same table appears via multiple paths
@@ -404,9 +485,14 @@ def _introspect_query_columns_via_inspector(
                 continue
             alias = f"{path}.{col['name']}"
             col_type = col["type"]
-            data_type = col_type if isinstance(col_type, DataType) else _sa_type_to_data_type(col_type)
+            if isinstance(col_type, DataType):
+                data_type = col_type
+                is_float = col.get("is_float", False)
+            else:
+                data_type = _sa_type_to_data_type(col_type)
+                is_float = _sa_type_is_float(col_type)
             is_pk = col["name"] in ref_pk_cols
-            results.append((alias, data_type, is_pk))
+            results.append((alias, data_type, is_pk, is_float))
 
     return results
 
@@ -415,45 +501,58 @@ def _introspect_query_columns_via_inspector(
 # Model generation from introspected columns
 # ---------------------------------------------------------------------------
 
+
 def _columns_to_model(
     name: str,
     columns: List[tuple],
     data_source: str,
     sql_table: Optional[str] = None,
-    source_table_pk_columns: Optional[Set[str]] = None,
     joins: Optional[List[ModelJoin]] = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel from introspected (column_name, DataType, is_pk) tuples."""
+    """Generate a SlayerModel from introspected (column_name, DataType, is_pk, is_float) tuples."""
     dimensions = []
     measures = []
-    numeric_columns = []
+    numeric_columns: List[tuple] = []
+    non_numeric_columns: List[str] = []
 
-    non_numeric_columns = []
+    _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
+    _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
-    for col_name, data_type, is_pk in columns:
+    for col_name, data_type, is_pk, is_float in columns:
         # Skip joined columns — their dimensions/measures live on the target
         # model and are resolved via the join graph at query time.
         if "." in col_name:
             continue
 
-        dimensions.append(Dimension(
-            name=col_name,
-            sql=col_name,
-            type=data_type,
-            primary_key=is_pk,
-        ))
+        # Float-like columns get measures only, no dimension
+        if not is_float:
+            dim_format = _INT_FORMAT if (data_type in _NUMERIC_TYPES) else None
+            dimensions.append(
+                Dimension(
+                    name=col_name,
+                    sql=col_name,
+                    type=data_type,
+                    primary_key=is_pk,
+                    format=dim_format,
+                )
+            )
 
         if is_pk or _is_id_column(col_name):
             continue
         if data_type in _NUMERIC_TYPES:
-            numeric_columns.append(col_name)
+            numeric_columns.append((col_name, is_float))
         else:
             non_numeric_columns.append(col_name)
 
     # One measure per non-ID column. Aggregation is specified at query time
     # using colon syntax (e.g., "revenue:sum", "customer_id:count_distinct").
     # *:count is always available for COUNT(*) without any measure definition.
-    for col_name in numeric_columns + non_numeric_columns:
+    for col_name, is_float in numeric_columns:
+        measure_name = "count_col" if col_name == "_count" else col_name
+        measure_format = _FLOAT_FORMAT if is_float else _INT_FORMAT
+        measures.append(Measure(name=measure_name, sql=col_name, format=measure_format))
+
+    for col_name in non_numeric_columns:
         measure_name = "count_col" if col_name == "_count" else col_name
         measures.append(Measure(name=measure_name, sql=col_name))
 
@@ -470,6 +569,7 @@ def _columns_to_model(
 # ---------------------------------------------------------------------------
 # Main ingestion
 # ---------------------------------------------------------------------------
+
 
 def ingest_datasource(
     datasource: DatasourceConfig,
@@ -513,32 +613,45 @@ def ingest_datasource(
         if referenced:
             # Build explicit joins and introspect columns
             model_joins = _generate_joins(
-                inspector=inspector, source_table=table_name,
-                referenced_tables=referenced, schema=schema, table_set=table_set,
+                inspector=inspector,
+                source_table=table_name,
+                referenced_tables=referenced,
+                schema=schema,
+                table_set=table_set,
             )
             columns = _introspect_query_columns_via_inspector(
-                sa_engine=sa_engine, inspector=inspector,
-                table_name=table_name, schema=schema,
-                rollup_sql=None, referenced_tables=referenced,
+                sa_engine=sa_engine,
+                inspector=inspector,
+                table_name=table_name,
+                schema=schema,
+                rollup_sql=None,
+                referenced_tables=referenced,
                 fk_columns_by_table=fk_columns_by_table,
                 joins=model_joins,
             )
             model = _columns_to_model(
-                name=table_name, columns=columns,
-                data_source=datasource.name, sql_table=sql_table,
+                name=table_name,
+                columns=columns,
+                data_source=datasource.name,
+                sql_table=sql_table,
                 joins=model_joins,
             )
         else:
             # Simple table — introspect directly
             columns = _introspect_query_columns_via_inspector(
-                sa_engine=sa_engine, inspector=inspector,
-                table_name=table_name, schema=schema,
-                rollup_sql=None, referenced_tables=set(),
+                sa_engine=sa_engine,
+                inspector=inspector,
+                table_name=table_name,
+                schema=schema,
+                rollup_sql=None,
+                referenced_tables=set(),
                 fk_columns_by_table=fk_columns_by_table,
             )
             model = _columns_to_model(
-                name=table_name, columns=columns,
-                data_source=datasource.name, sql_table=sql_table,
+                name=table_name,
+                columns=columns,
+                data_source=datasource.name,
+                sql_table=sql_table,
             )
 
         models.append(model)

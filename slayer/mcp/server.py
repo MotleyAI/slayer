@@ -15,14 +15,12 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
-
-
 
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
@@ -84,12 +82,10 @@ def _model_to_summary(model: SlayerModel) -> dict:
         "description": model.description,
         "dimensions": [
             {"name": d.name, "type": str(d.type), "description": d.description}
-            for d in model.dimensions if not d.hidden
+            for d in model.dimensions
+            if not d.hidden
         ],
-        "measures": [
-            {"name": m.name, "description": m.description}
-            for m in model.measures if not m.hidden
-        ],
+        "measures": [{"name": m.name, "description": m.description} for m in model.measures if not m.hidden],
     }
 
 
@@ -187,9 +183,9 @@ def create_mcp_server(storage: StorageBackend):
                 return f"SQL:\n{result.sql}"
             if explain:
                 output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
-                output += _format_output(data=result.data, columns=result.columns, fmt=fmt)
+                output += _format_output(result=result, fmt=fmt)
                 return output
-            output = _format_output(data=result.data, columns=result.columns, fmt=fmt)
+            output = _format_output(result=result, fmt=fmt)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
             if result.meta:
@@ -256,10 +252,13 @@ def create_mcp_server(storage: StorageBackend):
         """
         model = storage.get_model(model_name)
         if model is None:
-            available = sorted([
-                n for n in storage.list_models()
-                if not (storage.get_model(n) or SlayerModel(name="", data_source="")).hidden
-            ])
+            available = sorted(
+                [
+                    n
+                    for n in storage.list_models()
+                    if not (storage.get_model(n) or SlayerModel(name="", data_source="")).hidden
+                ]
+            )
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
 
         result = _model_to_summary(model)
@@ -273,16 +272,13 @@ def create_mcp_server(storage: StorageBackend):
             sample_query = SlayerQuery(
                 source_model=model_name,
                 fields=[{"formula": m.name} for m in model.measures if not m.hidden][:3],
-                dimensions=[
-                    {"name": d.name}
-                    for d in model.dimensions
-                    if not d.hidden and not d.primary_key
-                ][:2],
+                dimensions=[{"name": d.name} for d in model.dimensions if not d.hidden and not d.primary_key][:2],
                 limit=num_rows,
             )
             sample_result = engine.execute(query=sample_query)
             result["sample_data"] = _format_table(
-                data=sample_result.data, columns=sample_result.columns,
+                data=sample_result.data,
+                columns=sample_result.columns,
             )
         except Exception as e:
             result["sample_data_error"] = str(e)
@@ -360,8 +356,13 @@ def create_mcp_server(storage: StorageBackend):
             )
 
         data = _build_dict(
-            name=name, sql_table=sql_table, sql=sql, data_source=data_source,
-            description=description, dimensions=dimensions, measures=measures,
+            name=name,
+            sql_table=sql_table,
+            sql=sql,
+            data_source=data_source,
+            description=description,
+            dimensions=dimensions,
+            measures=measures,
         )
         model = SlayerModel.model_validate(data)
         existed = storage.get_model(name) is not None
@@ -625,8 +626,14 @@ def create_mcp_server(storage: StorageBackend):
         from slayer.engine.ingestion import ingest_datasource as _ingest
 
         data = _build_dict(
-            name=name, type=type, host=host, port=port, database=database,
-            username=username, password=password, connection_string=connection_string,
+            name=name,
+            type=type,
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            connection_string=connection_string,
             schema_name=schema_name,
         )
         ds = DatasourceConfig.model_validate(data)
@@ -892,6 +899,7 @@ def _format_table(data: List[Dict[str, Any]], columns: List[str], max_rows: int 
 def _format_json(data: List[Dict[str, Any]], columns: List[str]) -> str:
     """Format data as JSON array."""
     import json
+
     return json.dumps(data, default=str)
 
 
@@ -911,25 +919,13 @@ def _format_csv(data: List[Dict[str, Any]], columns: List[str]) -> str:
     return "\n".join(lines)
 
 
-def _format_markdown(data: List[Dict[str, Any]], columns: List[str]) -> str:
-    """Format data as a Markdown table."""
-    if not data:
-        return "No results."
-    header = "| " + " | ".join(columns) + " |"
-    separator = "| " + " | ".join("---" for _ in columns) + " |"
-    body_lines = []
-    for row in data:
-        body_lines.append("| " + " | ".join(str(row.get(c, "")) for c in columns) + " |")
-    return "\n".join([header, separator] + body_lines)
-
-
-def _format_output(data: List[Dict[str, Any]], columns: List[str], fmt: str) -> str:
+def _format_output(result: SlayerResponse, fmt: str) -> str:
     """Format query output in the requested format."""
     if fmt == "csv":
-        return _format_csv(data=data, columns=columns)
+        return _format_csv(data=result.data, columns=result.columns)
     if fmt == "markdown":
-        return _format_markdown(data=data, columns=columns)
-    return _format_json(data=data, columns=columns)
+        return result.to_markdown()
+    return _format_json(data=result.data, columns=result.columns)
 
 
 def _format_meta(meta: Dict[str, Any]) -> str:
@@ -939,6 +935,13 @@ def _format_meta(meta: Dict[str, Any]) -> str:
         parts = []
         if fm.label:
             parts.append(f"label={fm.label}")
+        if fm.format:
+            fmt_parts = [f"type={fm.format.type.value}"]
+            if fm.format.precision is not None:
+                fmt_parts.append(f"precision={fm.format.precision}")
+            if fm.format.symbol is not None:
+                fmt_parts.append(f"symbol={fm.format.symbol}")
+            parts.append(f"format=({', '.join(fmt_parts)})")
         if parts:
             lines.append(f"  {col}: {', '.join(parts)}")
     if len(lines) == 1:

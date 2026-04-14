@@ -503,8 +503,9 @@ class TestRollupIngestion:
         dim_names = [d.name for d in orders.dimensions]
         # Should have own columns only (no flattened joined dims)
         assert "id" in dim_names
-        assert "amount" in dim_names
         assert "customer_id" in dim_names
+        # Float-like columns (DECIMAL) get measures only, no dimension
+        assert "amount" not in dim_names
         # Joined dimensions are resolved via join graph, not pre-flattened
         assert not any("." in name for name in dim_names)
 

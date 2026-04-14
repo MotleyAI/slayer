@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
+from slayer.core.format import NumberFormat
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class Dimension(BaseModel):
     primary_key: bool = False
     description: Optional[str] = None
     hidden: bool = False
+    format: Optional[NumberFormat] = None
 
     @field_validator("name")
     @classmethod
@@ -141,6 +143,7 @@ class Measure(BaseModel):
     description: Optional[str] = None
     hidden: bool = False
     allowed_aggregations: Optional[List[str]] = None
+    format: Optional[NumberFormat] = None
 
     @field_validator("name")
     @classmethod
