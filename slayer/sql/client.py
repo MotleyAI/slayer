@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import time
-import weakref
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
