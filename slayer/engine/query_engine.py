@@ -146,8 +146,7 @@ class SlayerQueryEngine:
 
     def __init__(self, storage: StorageBackend):
         self.storage = storage
-        self._resolving: set = set()  # Track currently resolving models to detect cycles
-        self._sql_clients: Dict[str, SlayerSQLClient] = {}  # datasource name → cached client
+        self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
 
     async def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
         # Accept dicts and validate them into SlayerQuery objects
@@ -170,9 +169,11 @@ class SlayerQueryEngine:
             query = query.snap_to_whole_periods()
 
         # Resolve model from query.source_model (str, SlayerModel, or ModelExtension)
+        resolving: set = set()
         model = await self._resolve_query_model(
             query_model=query.source_model,
             named_queries=named_queries,
+            _resolving=resolving,
         )
 
         datasource = await self._resolve_datasource(model=model)
@@ -232,7 +233,7 @@ class SlayerQueryEngine:
             return SlayerResponse(data=[], columns=expected_columns, sql=sql, meta=meta)
 
         # Execute — reuse SQL client (and its connection pool) per datasource
-        ds_key = datasource.name or datasource.get_connection_string()
+        ds_key = datasource.get_connection_string()
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
@@ -262,20 +263,21 @@ class SlayerQueryEngine:
 
         return run_sync(self.create_model_from_query(query=query, name=name, description=description, save=save))
 
-    async def _resolve_query_model(self, query_model, named_queries: dict = None) -> SlayerModel:
+    async def _resolve_query_model(self, query_model, named_queries: dict = None, _resolving: set = None) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
         from slayer.core.query import ModelExtension
 
         named_queries = named_queries or {}
 
         if isinstance(query_model, str):
-            return await self._resolve_model(model_name=query_model, named_queries=named_queries)
+            return await self._resolve_model(model_name=query_model, named_queries=named_queries, _resolving=_resolving)
         elif isinstance(query_model, SlayerModel):
             return query_model
         elif isinstance(query_model, ModelExtension):
             base = await self._resolve_model(
                 model_name=query_model.source_name,
                 named_queries=named_queries,
+                _resolving=_resolving,
             )
             # Extend the base model with extra dims/measures/joins
             from slayer.core.models import ModelJoin
@@ -298,33 +300,37 @@ class SlayerQueryEngine:
             # Dict — could be ModelExtension or SlayerModel
             if "source_name" in query_model:
                 ext = ModelExtension.model_validate(query_model)
-                return await self._resolve_query_model(ext, named_queries)
+                return await self._resolve_query_model(ext, named_queries, _resolving=_resolving)
             else:
                 model = SlayerModel.model_validate(query_model)
                 return model
         else:
             raise ValueError(f"Invalid query.source_model type: {type(query_model)}")
 
-    async def _resolve_model(self, model_name: str, named_queries: dict[str, SlayerQuery] = None) -> SlayerModel:
+    async def _resolve_model(
+        self, model_name: str, named_queries: dict[str, SlayerQuery] = None,
+        _resolving: set = None,
+    ) -> SlayerModel:
         """Resolve a model by name — checks named queries first, then storage."""
         named_queries = named_queries or {}
+        _resolving = _resolving if _resolving is not None else set()
 
-        # Circular reference protection
-        if model_name in self._resolving:
+        # Circular reference protection (per-call set, safe for concurrent requests)
+        if model_name in _resolving:
             raise ValueError(
                 f"Circular reference detected: '{model_name}' references itself "
-                f"(resolution chain: {' → '.join(self._resolving)} → {model_name})"
+                f"(resolution chain: {' → '.join(_resolving)} → {model_name})"
             )
-        self._resolving.add(model_name)
+        _resolving.add(model_name)
         try:
-            return await self._resolve_model_inner(model_name, named_queries)
+            return await self._resolve_model_inner(model_name, named_queries, _resolving=_resolving)
         finally:
-            self._resolving.discard(model_name)
+            _resolving.discard(model_name)
 
-    async def _resolve_model_inner(self, model_name: str, named_queries: dict[str, SlayerQuery]) -> SlayerModel:
+    async def _resolve_model_inner(self, model_name: str, named_queries: dict[str, SlayerQuery], _resolving: set = None) -> SlayerModel:
         # Named query overrides stored model
         if model_name in named_queries:
-            return await self._query_as_model(inner_query=named_queries[model_name], named_queries=named_queries)
+            return await self._query_as_model(inner_query=named_queries[model_name], named_queries=named_queries, _resolving=_resolving)
 
         model = await self.storage.get_model(model_name)
         if model is None:
@@ -338,6 +344,7 @@ class SlayerQueryEngine:
                 inner_query=parsed[-1],
                 named_queries={q.name: q for q in parsed[:-1] if q.name},
                 override_name=model.name,
+                _resolving=_resolving,
             )
 
         return model
@@ -364,7 +371,7 @@ class SlayerQueryEngine:
         queries = query if isinstance(query, list) else [query]
         main_query = queries[-1]
         named = {q.name: q for q in queries[:-1] if q.name}
-        virtual = await self._query_as_model(inner_query=main_query, named_queries=named)
+        virtual = await self._query_as_model(inner_query=main_query, named_queries=named, _resolving=set())
         model = SlayerModel(
             name=name,
             source_queries=queries,
@@ -414,7 +421,8 @@ class SlayerQueryEngine:
         )
 
     async def _query_as_model(
-        self, inner_query: SlayerQuery, named_queries: dict[str, SlayerQuery] = None, override_name: str = None
+        self, inner_query: SlayerQuery, named_queries: dict[str, SlayerQuery] = None,
+        override_name: str = None, _resolving: set = None,
     ) -> SlayerModel:
         """Build a virtual SlayerModel from a nested query's result.
 
@@ -428,6 +436,7 @@ class SlayerQueryEngine:
         inner_model = await self._resolve_query_model(
             query_model=inner_query.source_model,
             named_queries=named_queries,
+            _resolving=_resolving,
         )
 
         # Enrich the inner query

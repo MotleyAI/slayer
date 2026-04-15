@@ -49,10 +49,10 @@ def _ensure_jaffle_db():
     try:
         data_dir = generate_data(output_dir=str(JAFFLE_DATA_DIR), years=3)
         with duckdb.connect(database=str(JAFFLE_DB_PATH)) as conn:
-            create_schema(conn=conn, schema_file=SCHEMA_FILE)
+            create_schema(conn=conn, schema_path=SCHEMA_FILE)
             load_data(conn=conn, data_dir=data_dir)
-    except Exception as e:
-        pytest.skip(f"Jaffle shop DB generation failed: {e}")
+    except (ImportError, FileNotFoundError) as e:
+        pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 
 
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])

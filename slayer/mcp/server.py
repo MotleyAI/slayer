@@ -222,9 +222,12 @@ def create_mcp_server(storage: StorageBackend):
         model_names = await storage.list_models()
         models = []
         for name in model_names:
-            model = await storage.get_model(name)
-            if model and not model.hidden:
-                models.append(_model_to_summary(model))
+            try:
+                model = await storage.get_model(name)
+                if model and not model.hidden:
+                    models.append(_model_to_summary(model))
+            except Exception:
+                logger.warning("Failed to load model '%s', skipping", name, exc_info=True)
 
         if not datasources and not models:
             return json.dumps({"datasources": [], "models": [], "model_count": 0})
@@ -252,13 +255,13 @@ def create_mcp_server(storage: StorageBackend):
         """
         model = await storage.get_model(model_name)
         if model is None:
-            available = sorted(
-                [
-                    n
-                    for n in await storage.list_models()
-                    if not (await storage.get_model(n)) or SlayerModel(name="", data_source="").hidden
-                ]
-            )
+            all_names = await storage.list_models()
+            available = []
+            for n in all_names:
+                m = await storage.get_model(n)
+                if m is not None and not m.hidden:
+                    available.append(n)
+            available.sort()
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
 
         result = _model_to_summary(model)
