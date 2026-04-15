@@ -1245,3 +1245,60 @@ class TestAggParamSanitization:
         )
         with pytest.raises(ValueError, match="Unsafe value"):
             gen.generate(enriched=enriched)
+
+
+class TestFilteredMeasures:
+    """Tests for measure-level filter (CASE WHEN wrapping)."""
+
+    def test_filtered_sum(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_revenue:sum")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" in sql
+        assert "THEN" in sql
+        assert "SUM(" in sql
+
+    def test_filtered_count_star(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """COUNT(*) with filter becomes COUNT(CASE WHEN filter THEN 1 END)."""
+        orders_model.measures.append(
+            Measure(name="active_count", sql=None, filter="status = 'active'")
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_count:count")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" in sql
+        assert "THEN 1" in sql
+        assert "COUNT(" in sql
+        # Should NOT be COUNT(*)
+        assert "COUNT(*)" not in sql
+
+    def test_filtered_avg(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        orders_model.measures.append(
+            Measure(name="active_avg", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_avg:avg")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" in sql
+        assert "AVG(" in sql
+
+    def test_unfiltered_measure_no_case(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Measures without filter should not have CASE WHEN."""
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="revenue:sum")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" not in sql
+        assert "SUM(" in sql
+
+    def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Query with both filtered and unfiltered measures."""
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum"), Field(formula="active_revenue:sum")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should have one CASE WHEN (for active_revenue) and one plain SUM (for revenue)
+        assert sql.count("CASE WHEN") == 1
+        assert sql.count("SUM(") == 2

@@ -980,7 +980,14 @@ class SQLGenerator:
                 effective_tc = measure.time_column or default_time_col
                 suffix = rn_suffix_map.get(effective_tc, "")
             rn_col = f"_first_rn{suffix}" if agg_name == "first" else f"_last_rn{suffix}"
-            case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {measure.model_name}.{col} END)"
+            # For filtered first/last, add the filter condition
+            if measure.filter_sql:
+                case_sql = (
+                    f"MAX(CASE WHEN {rn_col} = 1 AND {measure.filter_sql} "
+                    f"THEN {measure.model_name}.{col} END)"
+                )
+            else:
+                case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {measure.model_name}.{col} END)"
             return sqlglot.parse_one(case_sql, dialect=self.dialect), True
 
         # --- Custom or parameterized aggregation (formula-based) ---
@@ -989,7 +996,12 @@ class SQLGenerator:
 
         # --- Resolve inner expression ---
         if agg_name == "count" and measure.sql is None:
-            inner = exp.Star()
+            # COUNT(*) — if filtered, use COUNT(CASE WHEN filter THEN 1 END)
+            if measure.filter_sql:
+                case_sql = f"CASE WHEN {measure.filter_sql} THEN 1 END"
+                inner = sqlglot.parse_one(case_sql, dialect=self.dialect)
+            else:
+                inner = exp.Star()
         elif measure.sql:
             inner = self._resolve_sql(sql=measure.sql, name=measure.name, model_name=measure.model_name)
         else:
@@ -997,6 +1009,12 @@ class SQLGenerator:
                 this=exp.to_identifier(measure.name),
                 table=exp.to_identifier(measure.model_name),
             )
+
+        # --- Apply measure-level filter as CASE WHEN wrapper ---
+        if measure.filter_sql and not (agg_name == "count" and measure.sql is None):
+            inner_sql = inner.sql(dialect=self.dialect)
+            case_sql = f"CASE WHEN {measure.filter_sql} THEN {inner_sql} END"
+            inner = sqlglot.parse_one(case_sql, dialect=self.dialect)
 
         # --- count_distinct ---
         if agg_name == "count_distinct":
@@ -1055,6 +1073,8 @@ class SQLGenerator:
 
         # Resolve {value} and {param_name} in formula
         col_expr = measure.sql or measure.name
+        if measure.filter_sql:
+            col_expr = f"CASE WHEN {measure.filter_sql} THEN {col_expr} END"
         substituted = formula.replace("{value}", col_expr)
         for param_name, param_val in params.items():
             substituted = substituted.replace(f"{{{param_name}}}", param_val)

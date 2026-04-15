@@ -1508,3 +1508,115 @@ def test_diamond_joins_single_path(diamond_env):
     by_region = {r["shipments.customers.regions.name"]: r["shipments._count"] for r in result.data}
     assert by_region["US"] == 2  # Alice: 2 shipments
     assert by_region["EU"] == 2  # Bob: 2 shipments
+
+
+# ---------------------------------------------------------------------------
+# Filtered measures
+# ---------------------------------------------------------------------------
+
+
+def test_filtered_measure_sum(integration_env):
+    """Measure with filter produces CASE WHEN — only matching rows aggregated."""
+    engine = integration_env
+    storage = engine.storage
+
+    # Add a filtered measure: only sum completed orders' amounts
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[
+            Field(formula="total_amount:sum"),
+            Field(formula="completed_revenue:sum"),
+        ],
+    ))
+    assert result.row_count == 1
+    row = result.data[0]
+    total = row["orders.total_amount_sum"]
+    completed = row["orders.completed_revenue_sum"]
+    assert completed <= total
+    assert completed > 0
+
+
+def test_filtered_measure_count(integration_env):
+    """Filtered count measure counts only matching rows."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_count", sql="id", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[
+            Field(formula="*:count"),
+            Field(formula="completed_count:count"),
+        ],
+    ))
+    row = result.data[0]
+    total = row["orders._count"]
+    completed = row["orders.completed_count_count"]
+    assert completed <= total
+    assert completed > 0
+
+
+def test_filtered_measure_with_dimensions(integration_env):
+    """Filtered measure works with GROUP BY dimensions."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[Field(formula="completed_revenue:sum")],
+        dimensions=[ColumnRef(name="status")],
+    ))
+    # Completed status row should have a value; others should be NULL
+    for row in result.data:
+        if row["orders.status"] == "completed":
+            assert row["orders.completed_revenue_sum"] is not None
+            assert row["orders.completed_revenue_sum"] > 0
+        else:
+            # Non-completed rows: the CASE WHEN produces NULL, SUM of NULLs is NULL
+            assert row["orders.completed_revenue_sum"] is None
+
+
+def test_label_propagation_enrichment(integration_env):
+    """Model-level labels propagate through enrichment to query results."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    # Add labels to a dimension and measure
+    for d in orders.dimensions:
+        if d.name == "status":
+            d.label = "Order Status"
+    orders.measures.append(
+        Measure(name="labeled_rev", sql="amount", label="Total Revenue")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[Field(formula="labeled_rev:sum")],
+        dimensions=[ColumnRef(name="status")],
+    ))
+    # Labels should appear in result meta
+    status_meta = result.meta.get("orders.status")
+    assert status_meta is not None
+    assert status_meta.label == "Order Status"
+    rev_meta = result.meta.get("orders.labeled_rev_sum")
+    assert rev_meta is not None
+    assert rev_meta.label == "Total Revenue"

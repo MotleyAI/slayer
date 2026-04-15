@@ -55,6 +55,7 @@ class EnrichedMeasure:
     label: Optional[str] = None  # Human-readable label
     time_column: Optional[str] = None  # Explicit time col for first/last (overrides query default)
     source_measure_name: Optional[str] = None  # Original measure name before canonicalization
+    filter_sql: Optional[str] = None  # Resolved SQL condition for filtered measures (CASE WHEN)
 
 
 @dataclass

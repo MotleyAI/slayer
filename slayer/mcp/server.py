@@ -77,15 +77,35 @@ def _friendly_db_error(exc: Exception) -> str:
 
 def _model_to_summary(model: SlayerModel) -> dict:
     """Convert a SlayerModel to a summary dict."""
+    dims = []
+    for d in model.dimensions:
+        if d.hidden:
+            continue
+        entry = {"name": d.name, "type": str(d.type)}
+        if d.label:
+            entry["label"] = d.label
+        if d.description:
+            entry["description"] = d.description
+        dims.append(entry)
+
+    measures = []
+    for m in model.measures:
+        if m.hidden:
+            continue
+        entry: dict = {"name": m.name}
+        if m.label:
+            entry["label"] = m.label
+        if m.description:
+            entry["description"] = m.description
+        if m.filter:
+            entry["filter"] = m.filter
+        measures.append(entry)
+
     return {
         "name": model.name,
         "description": model.description,
-        "dimensions": [
-            {"name": d.name, "type": str(d.type), "description": d.description}
-            for d in model.dimensions
-            if not d.hidden
-        ],
-        "measures": [{"name": m.name, "description": m.description} for m in model.measures if not m.hidden],
+        "dimensions": dims,
+        "measures": measures,
     }
 
 
