@@ -147,6 +147,7 @@ class SlayerQueryEngine:
     def __init__(self, storage: StorageBackend):
         self.storage = storage
         self._resolving: set = set()  # Track currently resolving models to detect cycles
+        self._sql_clients: Dict[str, SlayerSQLClient] = {}  # datasource name → cached client
 
     async def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
         # Accept dicts and validate them into SlayerQuery objects
@@ -230,8 +231,11 @@ class SlayerQueryEngine:
         if query.dry_run:
             return SlayerResponse(data=[], columns=expected_columns, sql=sql, meta=meta)
 
-        # Execute
-        client = SlayerSQLClient(datasource=datasource)
+        # Execute — reuse SQL client (and its connection pool) per datasource
+        ds_key = datasource.name or datasource.get_connection_string()
+        if ds_key not in self._sql_clients:
+            self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
+        client = self._sql_clients[ds_key]
 
         # explain: run dialect-appropriate EXPLAIN on the query
         if query.explain:
