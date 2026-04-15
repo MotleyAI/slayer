@@ -1538,8 +1538,8 @@ def test_filtered_measure_sum(integration_env):
     row = result.data[0]
     total = row["orders.total_amount_sum"]
     completed = row["orders.completed_revenue_sum"]
-    assert completed <= total
-    assert completed > 0
+    assert total == pytest.approx(750.0)
+    assert completed == pytest.approx(600.0)
 
 
 def test_filtered_measure_count(integration_env):
@@ -1563,8 +1563,8 @@ def test_filtered_measure_count(integration_env):
     row = result.data[0]
     total = row["orders._count"]
     completed = row["orders.completed_count_count"]
-    assert completed <= total
-    assert completed > 0
+    assert total == 6
+    assert completed == 3
 
 
 def test_filtered_measure_with_dimensions(integration_env):
@@ -1591,6 +1591,81 @@ def test_filtered_measure_with_dimensions(integration_env):
         else:
             # Non-completed rows: the CASE WHEN produces NULL, SUM of NULLs is NULL
             assert row["orders.completed_revenue_sum"] is None
+
+
+def test_filtered_last_picks_correct_row(integration_env):
+    """Filtered last measure picks the latest row that matches the filter,
+    not the globally latest row.
+
+    Fixture: orders (1..6), Order 6 (pending, Mar-20) is globally latest,
+    Order 5 (completed, 300.0, Mar-5) is the latest completed.
+    """
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_latest", sql="amount", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    # Query with monthly granularity so we get per-month last values
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        time_dimensions=[
+            TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            ),
+        ],
+        fields=[
+            Field(formula="completed_latest:last"),
+            Field(formula="latest_amount:last"),
+        ],
+    ))
+    rows_by_month = {row["orders.created_at"]: row for row in result.data}
+    # March: globally latest is Order 6 (pending, 25.0), but the latest
+    # completed is Order 5 (completed, 300.0). The filter must participate
+    # in ranking so the correct row is picked.
+    mar = rows_by_month["2025-03-01"]
+    assert mar["orders.completed_latest_last"] == pytest.approx(300.0)
+    assert mar["orders.latest_amount_last"] == pytest.approx(25.0)  # unfiltered picks Order 6
+
+    # January: latest is Order 2 (completed, 200.0) — passes filter
+    jan = rows_by_month["2025-01-01"]
+    assert jan["orders.completed_latest_last"] == pytest.approx(200.0)
+
+    # February: no completed orders — should be NULL
+    feb = rows_by_month["2025-02-01"]
+    assert feb["orders.completed_latest_last"] is None
+
+
+def test_time_dimension_label_fallback(integration_env):
+    """Time dimension inherits label from model dimension definition."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    for d in orders.dimensions:
+        if d.name == "created_at":
+            d.label = "Order Date"
+    storage.save_model(orders)
+
+    # Query with time dimension but no explicit label on TimeDimension
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        time_dimensions=[
+            TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            ),
+        ],
+        fields=[Field(formula="total_amount:sum")],
+    ))
+    # The model-level label should propagate through
+    td_meta = result.meta.get("orders.created_at")
+    assert td_meta is not None
+    assert td_meta.label == "Order Date"
 
 
 def test_label_propagation_enrichment(integration_env):

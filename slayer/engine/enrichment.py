@@ -560,7 +560,7 @@ def _resolve_time_dimensions(
                 date_range=td.date_range,
                 alias=f"{model_name_str}.{td.dimension.full_name}",
                 model_name=td_model_name,
-                label=td.label,
+                label=td.label or (dim_def.label if dim_def else None),
             )
         )
     return time_dimensions

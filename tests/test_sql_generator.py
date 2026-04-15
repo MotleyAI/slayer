@@ -1302,3 +1302,89 @@ class TestFilteredMeasures:
         # Should have one CASE WHEN (for active_revenue) and one plain SUM (for revenue)
         assert sql.count("CASE WHEN") == 1
         assert sql.count("SUM(") == 2
+
+    def test_filtered_last_generates_dedicated_rn(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Filtered last measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(
+            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="completed_balance:last")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should have a dedicated filtered ROW_NUMBER column
+        assert "_last_rn_f0" in sql
+        # The ORDER BY should include CASE WHEN filter THEN 0 ELSE 1 END
+        assert "CASE WHEN" in sql
+        assert "THEN 0 ELSE 1" in sql
+        # Standard ROW_NUMBER should NOT be present (no unfiltered first/last)
+        assert "_last_rn " not in sql or "_last_rn_f0" in sql
+
+    def test_filtered_first_generates_dedicated_rn(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Filtered first measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(
+            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="completed_balance:first")],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "_first_rn_f0" in sql
+        assert "ASC" in sql
+        assert "CASE WHEN" in sql
+        assert "THEN 0 ELSE 1" in sql
+
+    def test_unfiltered_last_unchanged(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Unfiltered last measure uses the shared ROW_NUMBER, no _rn_f columns."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="amount"))
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="balance:last")],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "_last_rn" in sql
+        assert "_last_rn_f" not in sql
+
+    def test_mixed_filtered_and_unfiltered_last(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Both filtered and unfiltered last measures get separate ROW_NUMBER columns."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="amount"))
+        orders_model.measures.append(
+            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[
+                Field(formula="balance:last"),
+                Field(formula="completed_balance:last"),
+            ],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should have both the shared _last_rn and the filtered _last_rn_f0
+        assert "_last_rn" in sql
+        assert "_last_rn_f0" in sql
