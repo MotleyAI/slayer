@@ -3,7 +3,7 @@
 import json
 import os
 import tempfile
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -22,7 +22,6 @@ from slayer.mcp.server import (
     create_mcp_server,
 )
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.async_utils import run_sync
 
 
 @pytest.fixture
@@ -36,29 +35,29 @@ def mcp_server(storage: YAMLStorage):
     return create_mcp_server(storage=storage)
 
 
-async def _call(mcp_server, name: str, arguments: dict[str, Any] = {}) -> str:
+async def _call(mcp_server, *, name: str, arguments: Optional[dict[str, Any]] = None) -> str:
     """Call an MCP tool and return the text result."""
-    content_blocks, result_dict = await mcp_server.call_tool(name, arguments)
+    content_blocks, result_dict = await mcp_server.call_tool(name=name, arguments=arguments or {})
     return content_blocks[0].text
 
 
 class TestDatasourceSummary:
     async def test_empty(self, mcp_server) -> None:
-        result = await _call(mcp_server, "datasource_summary")
+        result = await _call(mcp_server, name="datasource_summary")
         data = json.loads(result)
         assert data["datasources"] == []
         assert data["models"] == []
         assert data["model_count"] == 0
 
     async def test_with_models(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders",
             sql_table="t",
             data_source="test",
             dimensions=[Dimension(name="status", type=DataType.STRING)],
             measures=[Measure(name="revenue", sql="amount")],
-        )))
-        result = await _call(mcp_server, "datasource_summary")
+        ))
+        result = await _call(mcp_server, name="datasource_summary")
         parsed = json.loads(result)
         assert parsed["model_count"] == 1
         assert parsed["models"][0]["name"] == "orders"
@@ -71,7 +70,7 @@ class TestDatasourceSummary:
     async def test_hidden_models_excluded(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="visible", sql_table="t", data_source="test"))
         await storage.save_model(SlayerModel(name="hidden", sql_table="t", data_source="test", hidden=True))
-        result = await _call(mcp_server, "datasource_summary")
+        result = await _call(mcp_server, name="datasource_summary")
         parsed = json.loads(result)
         assert parsed["model_count"] == 1
         assert parsed["models"][0]["name"] == "visible"
@@ -81,7 +80,7 @@ class TestDatasourceSummary:
         await storage.save_datasource(DatasourceConfig(
             name="mydb", type="postgres", host="localhost", description="Production DB",
         ))
-        result = await _call(mcp_server, "datasource_summary")
+        result = await _call(mcp_server, name="datasource_summary")
         parsed = json.loads(result)
         assert parsed["datasources"][0]["name"] == "mydb"
         assert parsed["datasources"][0]["description"] == "Production DB"
@@ -89,19 +88,19 @@ class TestDatasourceSummary:
 
 class TestInspectModel:
     async def test_not_found(self, mcp_server) -> None:
-        result = await _call(mcp_server, "inspect_model", {"model_name": "nonexistent"})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "nonexistent"})
         assert "not found" in result
 
     async def test_found_with_schema(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="test",
             sql_table="t",
             data_source="test",
             description="Test model",
             dimensions=[Dimension(name="x", type=DataType.STRING)],
             measures=[Measure(name="revenue", sql="amount")],
-        )))
-        result = await _call(mcp_server, "inspect_model", {"model_name": "test"})
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test"})
         parsed = json.loads(result)
         assert parsed["name"] == "test"
         assert parsed["description"] == "Test model"
@@ -111,14 +110,14 @@ class TestInspectModel:
 
     async def test_show_sql(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="test", sql_table="public.test", data_source="test"))
-        result = await _call(mcp_server, "inspect_model", {"model_name": "test", "show_sql": True})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test", "show_sql": True})
         parsed = json.loads(result)
         assert parsed["sql_table"] == "public.test"
 
 
 class TestCreateModel:
     async def test_create(self, mcp_server, storage: YAMLStorage) -> None:
-        result = await _call(mcp_server, "create_model", {
+        result = await _call(mcp_server, name="create_model", arguments={
             "name": "orders",
             "sql_table": "public.orders",
             "data_source": "test_ds",
@@ -135,7 +134,7 @@ class TestCreateModel:
         assert await storage.get_model("orders") is not None
 
     async def test_create_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
-        result = await _call(mcp_server, "create_model", {
+        result = await _call(mcp_server, name="create_model", arguments={
             "name": "orders",
             "sql_table": "public.orders",
             "data_source": "test_ds",
@@ -149,11 +148,11 @@ class TestCreateModel:
 
     async def test_create_reports_replaced(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "create_model", {"name": "orders", "sql_table": "t2", "data_source": "test"})
+        result = await _call(mcp_server, name="create_model", arguments={"name": "orders", "sql_table": "t2", "data_source": "test"})
         assert "replaced" in result
 
     async def test_create_from_query_rejects_mixed_params(self, mcp_server) -> None:
-        result = await _call(mcp_server, "create_model", {
+        result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
             "query": {"source_model": "orders", "fields": ["*:count"]},
             "sql_table": "public.orders",
@@ -163,7 +162,7 @@ class TestCreateModel:
         assert "sql_table" in result
 
     async def test_create_from_query_rejects_data_source(self, mcp_server) -> None:
-        result = await _call(mcp_server, "create_model", {
+        result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
             "query": {"source_model": "orders", "fields": ["*:count"]},
             "data_source": "mydb",
@@ -173,11 +172,11 @@ class TestCreateModel:
 
     async def test_create_from_query_ignores_empty_placeholders(self, mcp_server, storage: YAMLStorage) -> None:
         """Empty lists/strings should not trigger the mixed-parameter error."""
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="test_ds",
             measures=[Measure(name="amount", sql="amount")],
-        )))
-        result = await _call(mcp_server, "create_model", {
+        ))
+        result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
             "query": {"source_model": "orders", "fields": ["amount:sum"]},
             "dimensions": [],
@@ -189,11 +188,11 @@ class TestCreateModel:
     async def test_create_from_query_routes_to_engine(self, mcp_server, storage: YAMLStorage) -> None:
         # Without a real datasource/data, the engine will return a friendly error —
         # but the error message proves we routed to the query path.
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="test_ds",
             measures=[Measure(name="amount", sql="amount")],
-        )))
-        result = await _call(mcp_server, "create_model", {
+        ))
+        result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
             "query": {"source_model": "orders", "fields": ["amount:sum"]},
         })
@@ -207,11 +206,11 @@ class TestEditModel:
     # --- Measure upserts ---
 
     async def test_upsert_new_measure(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             measures=[Measure(name="revenue", sql="amount")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [{"name": "total", "sql": "amount"}],
         })
@@ -222,11 +221,11 @@ class TestEditModel:
         assert len(model.measures) == 2
 
     async def test_upsert_measure_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             measures=[Measure(name="revenue", sql="amount")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [{"name": "total", "sql": "amount", "allowed_aggregations": ["sum", "avg"]}],
         })
@@ -238,11 +237,11 @@ class TestEditModel:
 
     async def test_upsert_existing_measure(self, mcp_server, storage: YAMLStorage) -> None:
         """Upserting an existing measure updates it instead of erroring."""
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             measures=[Measure(name="revenue", sql="amount", description="old")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [{"name": "revenue", "sql": "price"}],
         })
@@ -255,11 +254,11 @@ class TestEditModel:
 
     async def test_upsert_existing_measure_partial_update(self, mcp_server, storage: YAMLStorage) -> None:
         """Partial upsert: only specified fields change, others are preserved."""
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             measures=[Measure(name="revenue", sql="amount", description="Total revenue")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [{"name": "revenue", "description": "Updated description"}],
         })
@@ -273,7 +272,7 @@ class TestEditModel:
 
     async def test_upsert_new_dimension(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "dimensions": [{"name": "region", "sql": "region", "type": "string"}],
         })
@@ -283,11 +282,11 @@ class TestEditModel:
         assert any(d.name == "region" for d in (await storage.get_model("orders")).dimensions)
 
     async def test_upsert_existing_dimension_partial_update(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             dimensions=[Dimension(name="status", sql="status", type=DataType.STRING)],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "dimensions": [{"name": "status", "description": "Order status"}],
         })
@@ -300,11 +299,11 @@ class TestEditModel:
 
     async def test_upsert_multiple_mixed_create_update(self, mcp_server, storage: YAMLStorage) -> None:
         """One new + one existing entity in the same call."""
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             measures=[Measure(name="revenue", sql="amount")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [
                 {"name": "revenue", "description": "Updated"},
@@ -320,7 +319,7 @@ class TestEditModel:
 
     async def test_invalid_dimension_type_on_upsert(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "dimensions": [{"name": "bad", "type": "invalid_type"}],
         })
@@ -330,7 +329,7 @@ class TestEditModel:
 
     async def test_upsert_new_aggregation(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "aggregations": [{"name": "my_agg", "formula": "SUM({value})"}],
         })
@@ -341,11 +340,11 @@ class TestEditModel:
         assert model.aggregations[0].name == "my_agg"
 
     async def test_upsert_existing_aggregation(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             aggregations=[Aggregation(name="my_agg", formula="SUM({value})")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "aggregations": [{"name": "my_agg", "formula": "AVG({value})"}],
         })
@@ -355,11 +354,11 @@ class TestEditModel:
         assert model.aggregations[0].formula == "AVG({value})"
 
     async def test_remove_aggregation(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             aggregations=[Aggregation(name="my_agg", formula="SUM({value})")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"aggregations": ["my_agg"]},
         })
@@ -371,7 +370,7 @@ class TestEditModel:
 
     async def test_upsert_new_join(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
         })
@@ -382,11 +381,11 @@ class TestEditModel:
         assert model.joins[0].target_model == "customers"
 
     async def test_upsert_existing_join(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "joins": [{"target_model": "customers", "join_pairs": [["buyer_id", "id"]]}],
         })
@@ -397,11 +396,11 @@ class TestEditModel:
         assert model.joins[0].join_pairs == [["buyer_id", "id"]]
 
     async def test_remove_join(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"joins": ["customers"]},
         })
@@ -413,7 +412,7 @@ class TestEditModel:
 
     async def test_add_filter(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "add_filters": ["deleted_at IS NULL"],
         })
@@ -426,7 +425,7 @@ class TestEditModel:
             name="orders", sql_table="t", data_source="test",
             filters=["deleted_at IS NULL"],
         ))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "add_filters": ["deleted_at IS NULL"],
         })
@@ -438,7 +437,7 @@ class TestEditModel:
             name="orders", sql_table="t", data_source="test",
             filters=["deleted_at IS NULL"],
         ))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove_filters": ["deleted_at IS NULL"],
         })
@@ -448,7 +447,7 @@ class TestEditModel:
 
     async def test_remove_filter_not_found(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove_filters": ["nonexistent"],
         })
@@ -458,7 +457,7 @@ class TestEditModel:
 
     async def test_update_description(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "description": "Updated",
         })
@@ -468,7 +467,7 @@ class TestEditModel:
 
     async def test_set_sql_table(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "sql_table": "public.orders",
         })
@@ -478,7 +477,7 @@ class TestEditModel:
 
     async def test_set_hidden(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "hidden": True,
         })
@@ -489,11 +488,11 @@ class TestEditModel:
     # --- Multiple changes ---
 
     async def test_multiple_changes(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             measures=[Measure(name="revenue", sql="amount")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "description": "Orders table",
             "measures": [{"name": "total", "sql": "amount"}],
@@ -510,11 +509,11 @@ class TestEditModel:
     # --- Typed remove ---
 
     async def test_remove_measure_typed(self, mcp_server, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             measures=[Measure(name="revenue", sql="amount"), Measure(name="total", sql="x")],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"measures": ["total"]},
         })
@@ -525,7 +524,7 @@ class TestEditModel:
 
     async def test_remove_dimension_not_found(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"dimensions": ["nonexistent"]},
         })
@@ -533,7 +532,7 @@ class TestEditModel:
 
     async def test_remove_invalid_key(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"invalid": ["x"]},
         })
@@ -541,11 +540,11 @@ class TestEditModel:
 
     async def test_remove_then_recreate_same_call(self, mcp_server, storage: YAMLStorage) -> None:
         """Remove a dimension then upsert one with the same name in the same call."""
-        run_sync(storage.save_model(SlayerModel(
+        await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             dimensions=[Dimension(name="status", sql="old_col", type=DataType.STRING)],
-        )))
-        result = await _call(mcp_server, "edit_model", {
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"dimensions": ["status"]},
             "dimensions": [{"name": "status", "sql": "new_col", "type": "string"}],
@@ -558,7 +557,7 @@ class TestEditModel:
     # --- Error cases ---
 
     async def test_model_not_found(self, mcp_server) -> None:
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "nope",
             "description": "test",
         })
@@ -566,13 +565,13 @@ class TestEditModel:
 
     async def test_no_changes(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {"model_name": "orders"})
+        result = await _call(mcp_server, name="edit_model", arguments={"model_name": "orders"})
         assert "No changes" in result
 
     async def test_cross_field_validation_error(self, mcp_server, storage: YAMLStorage) -> None:
         """allowed_aggregations referencing a non-existent aggregation should fail."""
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "edit_model", {
+        result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "measures": [{"name": "rev", "sql": "amount", "allowed_aggregations": ["nonexistent_agg"]}],
         })
@@ -581,12 +580,12 @@ class TestEditModel:
 
 class TestDatasources:
     async def test_list_empty(self, mcp_server) -> None:
-        result = await _call(mcp_server, "list_datasources")
+        result = await _call(mcp_server, name="list_datasources")
         assert "No datasources configured" in result
         assert "create_datasource" in result
 
     async def test_create_and_list(self, mcp_server, storage: YAMLStorage) -> None:
-        result = await _call(mcp_server, "create_datasource", {
+        result = await _call(mcp_server, name="create_datasource", arguments={
             "name": "mydb",
             "type": "postgres",
             "host": "localhost",
@@ -594,12 +593,12 @@ class TestDatasources:
         assert "mydb" in result
         assert await storage.get_datasource("mydb") is not None
 
-        result = await _call(mcp_server, "list_datasources")
+        result = await _call(mcp_server, name="list_datasources")
         assert "mydb" in result
         assert "postgres" in result
 
     async def test_create_reports_connection_failure(self, mcp_server) -> None:
-        result = await _call(mcp_server, "create_datasource", {
+        result = await _call(mcp_server, name="create_datasource", arguments={
             "name": "bad",
             "type": "postgres",
             "host": "localhost",
@@ -611,7 +610,7 @@ class TestDatasources:
 
     async def test_create_reports_replaced(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
-        result = await _call(mcp_server, "create_datasource", {"name": "ds", "type": "sqlite", "database": ":memory:"})
+        result = await _call(mcp_server, name="create_datasource", arguments={"name": "ds", "type": "sqlite", "database": ":memory:"})
         assert "replaced" in result
 
     async def test_list_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
@@ -620,7 +619,7 @@ class TestDatasources:
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
-        result = await _call(mcp_server, "list_datasources")
+        result = await _call(mcp_server, name="list_datasources")
         assert "good (sqlite)" in result
         assert "bad" in result
         assert "ERROR" in result
@@ -630,7 +629,7 @@ class TestDatasources:
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
-        result = await _call(mcp_server, "datasource_summary")
+        result = await _call(mcp_server, name="datasource_summary")
         data = json.loads(result)
         names = [d["name"] for d in data["datasources"]]
         assert "good" in names
@@ -642,18 +641,18 @@ class TestDatasources:
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
-        result = await _call(mcp_server, "describe_datasource", {"name": "bad"})
+        result = await _call(mcp_server, name="describe_datasource", arguments={"name": "bad"})
         assert "invalid" in result.lower()
 
     async def test_describe_not_found(self, mcp_server) -> None:
-        result = await _call(mcp_server, "describe_datasource", {"name": "nope"})
+        result = await _call(mcp_server, name="describe_datasource", arguments={"name": "nope"})
         assert "not found" in result
 
     async def test_describe_shows_details(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="testds", type="postgres", host="localhost", port=5432, database="testdb", username="user",
         ))
-        result = await _call(mcp_server, "describe_datasource", {"name": "testds"})
+        result = await _call(mcp_server, name="describe_datasource", arguments={"name": "testds"})
         assert "Datasource: testds" in result
         assert "Type: postgres" in result
         assert "Host: localhost" in result
@@ -664,22 +663,22 @@ class TestDatasources:
 class TestDeleteTools:
     async def test_delete_model(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, "delete_model", {"name": "orders"})
+        result = await _call(mcp_server, name="delete_model", arguments={"name": "orders"})
         assert "deleted" in result
         assert await storage.get_model("orders") is None
 
     async def test_delete_model_not_found(self, mcp_server) -> None:
-        result = await _call(mcp_server, "delete_model", {"name": "nope"})
+        result = await _call(mcp_server, name="delete_model", arguments={"name": "nope"})
         assert "not found" in result
 
     async def test_delete_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
-        result = await _call(mcp_server, "delete_datasource", {"name": "ds"})
+        result = await _call(mcp_server, name="delete_datasource", arguments={"name": "ds"})
         assert "deleted" in result
         assert await storage.get_datasource("ds") is None
 
     async def test_delete_datasource_not_found(self, mcp_server) -> None:
-        result = await _call(mcp_server, "delete_datasource", {"name": "nope"})
+        result = await _call(mcp_server, name="delete_datasource", arguments={"name": "nope"})
         assert "not found" in result
 
 

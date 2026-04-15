@@ -75,11 +75,13 @@ class SlayerClient:
 
     # ----- Async API -----
 
-    async def query(self, query: SlayerQuery) -> SlayerResponse:
-        """Execute a query asynchronously."""
+    async def query(self, query) -> SlayerResponse:
+        """Execute a query asynchronously. Accepts SlayerQuery or dict."""
+        if isinstance(query, dict):
+            query = SlayerQuery.model_validate(query)
         if self._engine is not None:
             return await self._engine.execute(query=query)
-        result = await self._request("POST", "/query", json=query.model_dump(exclude_none=True))
+        result = await self._request(method="POST", path="/query", json=query.model_dump(exclude_none=True))
         return self._parse_response(result)
 
     async def sql(self, query) -> str:
@@ -97,27 +99,29 @@ class SlayerClient:
         return await self.query(query=explain_query)
 
     async def list_models(self) -> List[str]:
-        return await self._request("GET", "/models")
+        return await self._request(method="GET", path="/models")
 
     async def get_model(self, name: str) -> Dict[str, Any]:
-        return await self._request("GET", f"/models/{name}")
+        return await self._request(method="GET", path=f"/models/{name}")
 
     async def create_model(self, model: Dict[str, Any]) -> Dict[str, str]:
-        return await self._request("POST", "/models", json=model)
+        return await self._request(method="POST", path="/models", json=model)
 
     async def list_datasources(self) -> List[str]:
-        return await self._request("GET", "/datasources")
+        return await self._request(method="GET", path="/datasources")
 
     async def create_datasource(self, datasource: Dict[str, Any]) -> Dict[str, str]:
-        return await self._request("POST", "/datasources", json=datasource)
+        return await self._request(method="POST", path="/datasources", json=datasource)
 
     # ----- Sync API (for notebooks, scripts, CLI) -----
 
-    def query_sync(self, query: SlayerQuery) -> SlayerResponse:
-        """Execute a query synchronously."""
+    def query_sync(self, query) -> SlayerResponse:
+        """Execute a query synchronously. Accepts SlayerQuery or dict."""
+        if isinstance(query, dict):
+            query = SlayerQuery.model_validate(query)
         if self._engine is not None:
             return self._engine.execute_sync(query=query)
-        result = self._request_sync("POST", "/query", json=query.model_dump(exclude_none=True))
+        result = self._request_sync(method="POST", path="/query", json=query.model_dump(exclude_none=True))
         return self._parse_response(result)
 
     def sql_sync(self, query) -> str:
@@ -144,7 +148,7 @@ class SlayerClient:
         return pd.DataFrame(result.data)
 
     def list_models_sync(self) -> List[str]:
-        return self._request_sync("GET", "/models")
+        return self._request_sync(method="GET", path="/models")
 
     def get_model_sync(self, name: str) -> Dict[str, Any]:
         return self._request_sync("GET", f"/models/{name}")

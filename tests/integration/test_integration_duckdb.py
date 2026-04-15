@@ -14,7 +14,6 @@ from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDime
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.async_utils import run_sync
 
 
 @pytest.fixture
@@ -60,11 +59,11 @@ async def duckdb_env(tmp_path):
     tmpdir = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=tmpdir)
 
-    run_sync(storage.save_datasource(DatasourceConfig(
+    await storage.save_datasource(DatasourceConfig(
         name="testduckdb",
         type="duckdb",
         database=str(db_path),
-    )))
+    ))
 
     orders_model = SlayerModel(
         name="orders",

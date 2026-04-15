@@ -147,7 +147,7 @@ async def _create_env(order_count: int) -> BenchEnv:
     slayer_engine = SlayerQueryEngine(storage=storage)
 
     # Warmup: run a simple query to prime DB caches and connection pool
-    slayer_engine.execute(query=SlayerQuery(
+    await slayer_engine.execute(query=SlayerQuery(
         source_model="orders", fields=[{"formula": "*:count"}],
     ))
 
@@ -162,6 +162,7 @@ for _name, _count in SCALES.items():
     def _make_fixture(n: int, fixture_name: str) -> BenchEnv:
         @pytest.fixture(scope="session", name=fixture_name)
         def _fixture() -> BenchEnv:
-            return _create_env(n)
+            from slayer.async_utils import run_sync
+            return run_sync(_create_env(n))
         return _fixture
     globals()[f"env_{_name}"] = _make_fixture(_count, f"env_{_name}")

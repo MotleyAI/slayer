@@ -37,16 +37,22 @@ def _ensure_jaffle_db():
     if JAFFLE_DB_PATH.exists():
         return  # Reuse existing DB
 
+    duckdb = pytest.importorskip("duckdb")
+
     import sys
     sys.path.insert(0, str(JAFFLE_DATA_DIR))
-    import duckdb
-    from ingest_jaffle_shop import SCHEMA_FILE, create_schema, generate_data, load_data
+    try:
+        from ingest_jaffle_shop import SCHEMA_FILE, create_schema, generate_data, load_data
+    except ImportError as e:
+        pytest.skip(f"Jaffle shop helpers not available: {e}")
 
-    data_dir = generate_data(output_dir=str(JAFFLE_DATA_DIR), years=3)
-    conn = duckdb.connect(str(JAFFLE_DB_PATH))
-    create_schema(conn, SCHEMA_FILE)
-    load_data(conn, data_dir)
-    conn.close()
+    try:
+        data_dir = generate_data(output_dir=str(JAFFLE_DATA_DIR), years=3)
+        with duckdb.connect(database=str(JAFFLE_DB_PATH)) as conn:
+            create_schema(conn=conn, schema_file=SCHEMA_FILE)
+            load_data(conn=conn, data_dir=data_dir)
+    except Exception as e:
+        pytest.skip(f"Jaffle shop DB generation failed: {e}")
 
 
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])

@@ -109,8 +109,10 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.put("/models/{name}")
     async def update_model(name: str, model: SlayerModel) -> Dict[str, str]:
+        if model.name != name:
+            raise HTTPException(status_code=400, detail=f"Path name '{name}' does not match body name '{model.name}'")
         await storage.save_model(model)
-        return {"status": "updated", "name": model.name}
+        return {"status": "updated", "name": name}
 
     @app.delete("/models/{name}")
     async def delete_model(name: str) -> Dict[str, Any]:
