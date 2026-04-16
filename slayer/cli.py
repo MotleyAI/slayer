@@ -401,16 +401,19 @@ def _run_import_dbt(args):
     from slayer.dbt.parser import parse_dbt_project
 
     storage = _resolve_storage(args)
-    project = parse_dbt_project(args.dbt_project_path)
-
     include_hidden = bool(args.include_hidden_models)
+    project = parse_dbt_project(
+        args.dbt_project_path,
+        include_regular_models=include_hidden,
+    )
+
     if not project.semantic_models and not (include_hidden and project.regular_models):
         print(f"No semantic models found in {args.dbt_project_path}")
         sys.exit(1)
 
     sa_engine = None
     if include_hidden:
-        ds = storage.get_datasource(args.datasource)
+        ds = run_sync(storage.get_datasource(args.datasource))
         if ds is None:
             storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
             print(
@@ -436,7 +439,7 @@ def _run_import_dbt(args):
     # Save models
     hidden_count = 0
     for model in result.models:
-        storage.save_model(model)
+        run_sync(storage.save_model(model))
         suffix = " [hidden]" if model.hidden else ""
         if model.hidden:
             hidden_count += 1

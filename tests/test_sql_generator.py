@@ -1524,6 +1524,91 @@ class TestFilteredMeasures:
         # (would double-join). Count: only one occurrence of the join clause.
         assert sql.count("LEFT JOIN public.customers") == 1
 
+    async def test_filtered_last_outer_aggregate_uses_match_flag_not_joined_filter(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Regression for CodeRabbit B6-4 — when a filtered first/last measure's
+        filter references a JOINED table (e.g. customers.status), the outer
+        aggregate must reference a per-measure boolean match flag projected by
+        the ranked subquery, NOT re-emit the original filter_sql. The outer FROM
+        is the ranked subquery alias, which only projects model.*, _td_*,
+        _rn*, and _match_*. Re-emitting `customers.status = 'active'` outside
+        that subquery references a table that isn't in scope → invalid SQL."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="public.customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            measures=[
+                Measure(
+                    name="active_balance",
+                    sql="amount",
+                    filter="customers.status = 'active'",
+                ),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            default_time_dimension="created_at",
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("public.customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="active_balance:last")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+
+        # Extract the OUTER part of the SQL (everything after the closing
+        # paren of the ranked subquery). That section selects from the
+        # subquery alias, so 'customers' is not in scope there.
+        sub_start = sql.find("FROM (") + len("FROM (")
+        depth = 1
+        pos = sub_start
+        while pos < len(sql) and depth > 0:
+            if sql[pos] == "(":
+                depth += 1
+            elif sql[pos] == ")":
+                depth -= 1
+            pos += 1
+        outer_part = sql[pos:]  # everything after the ) AS orders
+
+        assert "customers." not in outer_part, (
+            f"Outer aggregate references joined table 'customers' which is "
+            f"not in scope outside the ranked subquery — would generate "
+            f"invalid SQL. Outer part:\n{outer_part}\n\nFull SQL:\n{sql}"
+        )
+        # Sanity: the match flag _match_f0 should be projected by the
+        # subquery and tested by the outer MAX(CASE WHEN ...)
+        assert "_match_f0" in sql
+
     async def test_filter_with_dotted_string_literal_does_not_pull_spurious_join(
         self, generator: SQLGenerator,
     ) -> None:
@@ -1618,7 +1703,7 @@ class TestFilteredMeasures:
         assert "status = 'completed'" in sql
 
     async def test_filtered_measure_uses_source_alias_not_model_name(
-        self, orders_model: SlayerModel,
+        self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
         """Regression for CodeRabbit #7 — filter columns must be qualified with the
         source alias (model_name_str) and not the underlying model.name when the
@@ -1648,6 +1733,44 @@ class TestFilteredMeasures:
         assert measure.filter_sql is not None
         assert "orders_alias.status" in measure.filter_sql
         assert "orders_underlying" not in measure.filter_sql
+
+    async def test_filtered_measure_source_alias_propagates_to_generated_sql(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Regression for CodeRabbit B6-3 — extends the test above to assert
+        on the *generated SQL*. Previously, even though filter_sql was resolved
+        against the source alias, the EnrichedMeasure.model_name (and the
+        EnrichedQuery.model_name driving the FROM clause) still used model.name.
+        The generated SQL ended up with `CASE WHEN orders_alias.status THEN
+        orders_underlying.amount END` from `FROM ... AS orders_underlying` —
+        invalid because the source alias isn't in the FROM."""
+        from slayer.engine.enrichment import enrich_query
+
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        underlying = orders_model.model_copy(update={"name": "orders_underlying"})
+        query = SlayerQuery(
+            source_model="orders_alias",
+            fields=[Field(formula="active_revenue:sum")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=underlying,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        sql = generator.generate(enriched=enriched)
+        # The generated SQL must use the source alias consistently — never
+        # the underlying model name. If even one site still uses model.name,
+        # this assertion catches it.
+        assert "orders_underlying" not in sql, (
+            f"Underlying model.name leaked into generated SQL alongside source "
+            f"alias 'orders_alias' — would produce invalid SQL. SQL:\n{sql}"
+        )
+        # Sanity: the source alias should appear at least in the FROM and the filter.
+        assert "orders_alias" in sql
 
 
 class TestMeasureFilterInjection:

@@ -64,7 +64,11 @@ def _collect_yaml_paths(directory: str) -> List[str]:
     return paths
 
 
-def parse_dbt_project(project_path: str) -> DbtProject:
+def parse_dbt_project(
+    project_path: str,
+    *,
+    include_regular_models: bool = False,
+) -> DbtProject:
     """Parse a dbt project directory into a DbtProject.
 
     Walks the project directory (typically contains a models/ subdirectory)
@@ -73,6 +77,11 @@ def parse_dbt_project(project_path: str) -> DbtProject:
 
     Args:
         project_path: Path to the dbt project root or models directory.
+        include_regular_models: When True, also discover regular (non-semantic)
+            dbt models via the dbt manifest. This invokes ``dbt parse`` if the
+            manifest is missing, which is slow and fails noisily without
+            dbt-core installed — so the default is False, matching the
+            ``--include-hidden-models`` opt-in flag on the CLI.
     """
     all_semantic_models: List[DbtSemanticModel] = []
     all_metrics: List[DbtMetric] = []
@@ -125,7 +134,11 @@ def parse_dbt_project(project_path: str) -> DbtProject:
             except Exception as e:
                 logger.warning("Failed to parse metric in %s: %s", path, e)
 
-    regular_models = _parse_regular_models(project_path)
+    # Only load the dbt manifest when the caller actually needs the regular
+    # (non-semantic) models. Manifest loading can invoke `dbt parse`, which
+    # is slow and fails when dbt-core isn't installed — keeping it gated on
+    # opt-in preserves the YAML-only fast path.
+    regular_models = _parse_regular_models(project_path) if include_regular_models else []
 
     logger.info(
         "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",

@@ -2,6 +2,7 @@
 
 import json
 import textwrap
+from unittest.mock import patch
 
 import pytest
 
@@ -37,6 +38,60 @@ class TestExtractRefName:
     def test_versioned_package_qualified(self) -> None:
         """Combined: package-qualified AND versioned."""
         assert _extract_ref_name("ref('pkg', 'orders', v=1)") == "orders"
+
+
+class TestRegularModelsOptIn:
+    """Regression for CodeRabbit B6-2 — manifest loading must be opt-in.
+
+    Plain `parse_dbt_project(path)` should NOT call load_or_generate_manifest,
+    which can invoke `dbt parse` (slow) and fail noisily without dbt-core.
+    The manifest is only needed when --include-hidden-models is set, so
+    parse_dbt_project gates it on include_regular_models=True.
+    """
+
+    def test_default_does_not_load_manifest(self, tmp_path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "orders.yaml").write_text(textwrap.dedent("""\
+            semantic_models:
+              - name: orders
+                model: ref('orders')
+                entities:
+                  - name: order_id
+                    type: primary
+                    expr: id
+                dimensions: []
+                measures: []
+        """))
+
+        with patch("slayer.dbt.parser.load_or_generate_manifest") as mock_load:
+            project = parse_dbt_project(str(tmp_path))
+
+        mock_load.assert_not_called()
+        assert len(project.semantic_models) == 1
+        assert project.regular_models == []
+
+    def test_opt_in_loads_manifest(self, tmp_path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "orders.yaml").write_text(textwrap.dedent("""\
+            semantic_models:
+              - name: orders
+                model: ref('orders')
+                entities:
+                  - name: order_id
+                    type: primary
+                    expr: id
+                dimensions: []
+                measures: []
+        """))
+
+        with patch(
+            "slayer.dbt.parser.load_or_generate_manifest", return_value=None
+        ) as mock_load:
+            parse_dbt_project(str(tmp_path), include_regular_models=True)
+
+        mock_load.assert_called_once_with(str(tmp_path))
 
 
 @pytest.fixture
@@ -196,7 +251,9 @@ class TestParseDbtProject:
 
 class TestParseDbtProjectRegularModels:
     def test_no_manifest_yields_empty_regular_models(self, dbt_project_dir) -> None:
-        project = parse_dbt_project(str(dbt_project_dir))
+        # Pass include_regular_models=True to actually exercise the manifest
+        # code path; without it, the manifest isn't loaded at all (B6-2).
+        project = parse_dbt_project(str(dbt_project_dir), include_regular_models=True)
         assert project.regular_models == []
 
     def test_populates_regular_models_from_manifest(self, dbt_project_dir) -> None:
@@ -231,7 +288,7 @@ class TestParseDbtProjectRegularModels:
         }
         (target / "manifest.json").write_text(json.dumps(manifest_payload))
 
-        project = parse_dbt_project(str(dbt_project_dir))
+        project = parse_dbt_project(str(dbt_project_dir), include_regular_models=True)
         assert len(project.regular_models) == 1
         rm = project.regular_models[0]
         assert rm.name == "raw_events"

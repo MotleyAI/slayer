@@ -228,8 +228,14 @@ class SQLGenerator:
         has_first_or_last = any(m.aggregation in ("first", "last") for m in enriched.measures)
         rn_suffix_map: dict[str, str] = {}
         filtered_rn_map: dict[str, str] = {}
+        filtered_match_map: dict[str, str] = {}
         if has_first_or_last and enriched.last_agg_time_column:
-            from_clause, rn_suffix_map, filtered_rn_map = self._build_last_ranked_from(
+            (
+                from_clause,
+                rn_suffix_map,
+                filtered_rn_map,
+                filtered_match_map,
+            ) = self._build_last_ranked_from(
                 enriched=enriched, base_from=from_clause, time_offset=time_offset,
             )
 
@@ -267,6 +273,7 @@ class SQLGenerator:
                 rn_suffix_map=rn_suffix_map,
                 default_time_col=enriched.last_agg_time_column,
                 filtered_rn_map=filtered_rn_map,
+                filtered_match_map=filtered_match_map,
             )
             select_columns.append(agg_expr.as_(measure.alias))
             if is_agg:
@@ -865,15 +872,19 @@ class SQLGenerator:
         enriched: EnrichedQuery,
         base_from: exp.Expression,
         time_offset: Optional[tuple[int, str]] = None,
-    ) -> tuple[exp.Expression, dict[str, str], dict[str, str]]:
+    ) -> tuple[exp.Expression, dict[str, str], dict[str, str], dict[str, str]]:
         """Build a ranked subquery for first/last aggregation.
 
         Wraps the source table in a subquery that adds ROW_NUMBER columns
         for each distinct time column used by first/last measures.
-        Returns (subquery, rn_suffix_map, filtered_rn_map) where rn_suffix_map
-        maps each effective time column to its ROW_NUMBER alias suffix,
-        and filtered_rn_map maps "measure_name:agg" to a dedicated ROW_NUMBER
-        alias for filtered first/last measures.
+        Returns (subquery, rn_suffix_map, filtered_rn_map, filtered_match_map):
+        rn_suffix_map maps each effective time column to its ROW_NUMBER alias
+        suffix; filtered_rn_map and filtered_match_map both key by
+        EnrichedMeasure.alias and map to the dedicated ROW_NUMBER column and
+        boolean match-flag column for filtered first/last measures. The match
+        flag is needed by the outer aggregate so it doesn't have to re-emit
+        measure.filter_sql (which can reference joined-table columns that
+        aren't in scope outside this subquery).
         """
         model = enriched.model_name
         default_time_col = enriched.last_agg_time_column
@@ -944,9 +955,14 @@ class SQLGenerator:
         # Generate dedicated ROW_NUMBER columns for filtered first/last measures.
         # These push non-matching rows to the bottom of the ranking so that
         # rn=1 picks the first matching row, not the globally first row.
+        # Also project a per-filter boolean *match flag* so the outer aggregate
+        # doesn't have to re-emit `measure.filter_sql` (which can reference
+        # joined-table columns that aren't visible outside the ranked subquery).
         filtered_rn_map: dict[str, str] = {}
+        filtered_match_map: dict[str, str] = {}
         filter_idx = 0
-        seen_filters: dict[tuple[str, str, str], str] = {}  # (filter_sql, tc, agg) -> alias
+        # cache_key -> (rn_alias, match_alias)
+        seen_filters: dict[tuple[str, str, str], tuple[str, str]] = {}
         for m in enriched.measures:
             if m.aggregation in ("first", "last") and m.filter_sql:
                 effective_tc = m.time_column or default_time_col
@@ -954,22 +970,27 @@ class SQLGenerator:
                 order_sql = tc_expr.sql(dialect=self.dialect)
                 cache_key = (m.filter_sql, effective_tc, m.aggregation)
                 if cache_key in seen_filters:
-                    # Reuse existing column for identical filter+time_col+agg
-                    alias = seen_filters[cache_key]
+                    # Reuse existing columns for identical filter+time_col+agg
+                    rn_alias, match_alias = seen_filters[cache_key]
                 else:
-                    alias = f"_{'first' if m.aggregation == 'first' else 'last'}_rn_f{filter_idx}"
+                    rn_alias = f"_{'first' if m.aggregation == 'first' else 'last'}_rn_f{filter_idx}"
+                    match_alias = f"_match_f{filter_idx}"
                     order_dir = "ASC" if m.aggregation == "first" else "DESC"
                     parts.append(
                         f"ROW_NUMBER() OVER ({partition_clause} ORDER BY "
                         f"CASE WHEN {m.filter_sql} THEN 0 ELSE 1 END, "
-                        f"{order_sql} {order_dir}) AS {alias}"
+                        f"{order_sql} {order_dir}) AS {rn_alias}"
                     )
-                    seen_filters[cache_key] = alias
+                    parts.append(
+                        f"CASE WHEN {m.filter_sql} THEN 1 ELSE 0 END AS {match_alias}"
+                    )
+                    seen_filters[cache_key] = (rn_alias, match_alias)
                     filter_idx += 1
                 # Key by alias (unique per enriched measure) so two filtered
                 # measures that share source/agg but differ in filter or time
                 # column don't clobber each other.
-                filtered_rn_map[m.alias] = alias
+                filtered_rn_map[m.alias] = rn_alias
+                filtered_match_map[m.alias] = match_alias
 
         select_sql = ", ".join(parts)
         from_sql = base_from.sql(dialect=self.dialect)
@@ -992,7 +1013,12 @@ class SQLGenerator:
             ranked_sql += f" WHERE {where_clause.sql(dialect=self.dialect)}"
 
         parsed = sqlglot.parse_one(ranked_sql, dialect=self.dialect)
-        return exp.Subquery(this=parsed, alias=exp.to_identifier(model)), rn_suffix_map, filtered_rn_map
+        return (
+            exp.Subquery(this=parsed, alias=exp.to_identifier(model)),
+            rn_suffix_map,
+            filtered_rn_map,
+            filtered_match_map,
+        )
 
     # ------------------------------------------------------------------
     # Column / measure resolution (from enriched SQL expressions)
@@ -1014,6 +1040,7 @@ class SQLGenerator:
         rn_suffix_map: Optional[dict[str, str]] = None,
         default_time_col: Optional[str] = None,
         filtered_rn_map: Optional[dict[str, str]] = None,
+        filtered_match_map: Optional[dict[str, str]] = None,
     ) -> tuple[exp.Expression, bool]:
         """Build an aggregation expression from an enriched measure."""
         agg_name = measure.aggregation
@@ -1038,11 +1065,22 @@ class SQLGenerator:
             # that pushes non-matching rows to the bottom of the ranking.
             # Look up by alias (unique per enriched measure) so two filtered
             # measures sharing source/agg but with different filters map to
-            # their own respective rank columns.
+            # their own respective rank columns. Use the per-measure match
+            # flag (also projected by the ranked subquery) instead of
+            # re-emitting measure.filter_sql here — the filter can reference
+            # joined-table columns that are not in scope outside the subquery.
             if measure.filter_sql and filtered_rn_map:
                 filtered_rn = filtered_rn_map.get(measure.alias, rn_col)
+                match_col = (
+                    filtered_match_map.get(measure.alias)
+                    if filtered_match_map
+                    else None
+                )
+                # Fall back to the raw filter expression only if no match flag
+                # was projected (legacy callers); accepts the leak risk.
+                filter_clause = f"{match_col} = 1" if match_col else measure.filter_sql
                 case_sql = (
-                    f"MAX(CASE WHEN {filtered_rn} = 1 AND {measure.filter_sql} "
+                    f"MAX(CASE WHEN {filtered_rn} = 1 AND {filter_clause} "
                     f"THEN {measure.model_name}.{col} END)"
                 )
             else:

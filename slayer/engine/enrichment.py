@@ -191,7 +191,7 @@ async def enrich_query(
                 sql=sql,
                 aggregation=aggregation_name,
                 alias=alias,
-                model_name=model.name,
+                model_name=model_name_str,
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs,
                 label=measure_def.label if measure_def else None,
@@ -476,7 +476,7 @@ async def enrich_query(
     )
 
     return EnrichedQuery(
-        model_name=model.name,
+        model_name=model_name_str,
         sql_table=model.sql_table,
         sql=model.sql,
         resolved_joins=resolved_joins,
@@ -521,7 +521,7 @@ async def _resolve_dimensions(
     for dim_ref in query.dimensions or []:
         if dim_ref.model is None:
             dim_def = model.get_dimension(dim_ref.name)
-            effective_model = model.name
+            effective_model = model_name_str
         else:
             parts = dim_ref.model.split(".") + [dim_ref.name]
             dim_def = await resolve_dimension_via_joins(
@@ -555,7 +555,7 @@ async def _resolve_time_dimensions(
     for td in query.time_dimensions or []:
         if td.dimension.model is None:
             dim_def = model.get_dimension(td.dimension.name)
-            td_model_name = model.name
+            td_model_name = model_name_str
         else:
             parts = td.dimension.model.split(".") + [td.dimension.name]
             dim_def = await resolve_dimension_via_joins(

@@ -398,6 +398,70 @@ class TestQueriesDirForStorage:
         assert _queries_dir_for_storage("slayer.db") == "."
 
 
+class TestImportDbtCli:
+    """End-to-end regression tests for slayer import-dbt (`_run_import_dbt`)."""
+
+    def test_models_are_persisted_to_storage(self, tmp_path) -> None:
+        """Regression for CodeRabbit B6-1 — _run_import_dbt must wrap the async
+        storage.save_model with run_sync. Without that wrapper, save_model returns
+        a coroutine that's silently discarded and the model is never written.
+
+        End-to-end: build a minimal dbt project on disk, run the CLI handler,
+        and assert the model is actually retrievable from storage afterwards."""
+        import argparse
+        import textwrap as _tw
+
+        from slayer.async_utils import run_sync
+        from slayer.cli import _run_import_dbt
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        # Minimal dbt project with one semantic model + one measure
+        project_dir = tmp_path / "dbt_project"
+        models_dir = project_dir / "models"
+        models_dir.mkdir(parents=True)
+        (models_dir / "orders.yaml").write_text(_tw.dedent("""\
+            semantic_models:
+              - name: orders
+                model: ref('orders')
+                entities:
+                  - name: order_id
+                    type: primary
+                    expr: id
+                dimensions:
+                  - name: status
+                    type: categorical
+                measures:
+                  - name: total
+                    agg: sum
+                    expr: amount
+        """))
+
+        storage_dir = tmp_path / "slayer_data"
+        storage_dir.mkdir()
+
+        args = argparse.Namespace(
+            dbt_project_path=str(project_dir),
+            datasource="test_db",
+            storage=str(storage_dir),
+            models_dir=None,
+            no_strict_aggregations=False,
+            include_hidden_models=False,
+        )
+
+        _run_import_dbt(args)
+
+        # The persisted model should be retrievable. If save_model's coroutine
+        # was discarded (the bug), get_model returns None and this assertion fails.
+        storage = YAMLStorage(base_dir=str(storage_dir))
+        persisted = run_sync(storage.get_model("orders"))
+        assert persisted is not None, (
+            "orders model was not persisted — storage.save_model coroutine "
+            "was likely discarded without run_sync"
+        )
+        assert persisted.name == "orders"
+        assert any(m.name == "total" for m in persisted.measures)
+
+
 class TestParserRoundTrip:
     """Test parsing YAML → converting → verifying output."""
 

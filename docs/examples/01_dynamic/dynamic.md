@@ -1,6 +1,6 @@
 # Make it dynamic!
 
-SLayer's intended audience are **agents and humans formulating ad hoc queries**, not dashboards replaying the same request day in, day out. 
+SLayer's intended audience is **agents and humans formulating ad hoc queries**, not dashboards replaying the same request day in, day out. 
 For the dashboard case, pre-computing every aggregate can be a crucial performance booster, and that requires specifying them all upfront.  
 For the ad hoc case, it's the wrong trade — the query you need next is the one nobody foresaw when the model was written, 
 so the priority shifts to **how easily you can shape the query at the moment you write it**. 
