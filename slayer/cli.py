@@ -31,6 +31,17 @@ def _resolve_storage(args):
     return resolve_storage(path)
 
 
+def _queries_dir_for_storage(storage_path: str) -> str:
+    """Return the directory where queries.yaml should be written.
+
+    If storage_path points at a SQLite file (e.g. "slayer.db"), use its
+    parent directory. Otherwise the storage_path is itself a directory.
+    """
+    if storage_path.endswith((".db", ".sqlite", ".sqlite3")):
+        return os.path.dirname(storage_path) or "."
+    return storage_path
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="slayer",
@@ -437,8 +448,10 @@ def _run_import_dbt(args):
     # Save queries to queries.yaml if any
     if result.queries:
         storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-        queries_path = os.path.join(storage_path, "queries.yaml")
-        with open(queries_path, "w") as f:
+        queries_dir = _queries_dir_for_storage(storage_path)
+        os.makedirs(queries_dir, exist_ok=True)
+        queries_path = os.path.join(queries_dir, "queries.yaml")
+        with open(queries_path, "w", encoding="utf-8") as f:
             _yaml.dump(result.queries, f, sort_keys=False, default_flow_style=False)
         print(f"Generated {len(result.queries)} metric queries → {queries_path}")
 

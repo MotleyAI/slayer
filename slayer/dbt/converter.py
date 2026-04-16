@@ -5,6 +5,7 @@ measure consolidation, metric-to-measure and metric-to-query generation.
 """
 
 import logging
+import re
 from collections import defaultdict
 from typing import Dict, List, Optional
 
@@ -456,15 +457,23 @@ class DbtToSlayerConverter:
             ))
             return None
 
-        # Build the formula: replace metric names with SLayer colon syntax
+        # Build the formula: replace metric names with SLayer colon syntax.
+        # Use word-boundary regex so a ref like "total" doesn't mutate
+        # `subtotal` or `total_orders` elsewhere in the expression.
         formula = expr
         if metric.type_params.metrics:
             for m_input in metric.type_params.metrics:
                 ref_name = m_input.alias or m_input.name
-                # Try to resolve to a measure:agg reference
                 resolved = self._resolve_metric_to_formula(m_input.name)
                 if resolved:
-                    formula = formula.replace(ref_name, resolved)
+                    formula = re.sub(
+                        rf"\b{re.escape(ref_name)}\b",
+                        # Escape backreference syntax in the replacement so
+                        # any literal \1 / \g<...> in the resolved colon
+                        # expression is treated as text, not a backref.
+                        resolved.replace("\\", r"\\"),
+                        formula,
+                    )
 
         # Find a source model for this query
         source_model = self._find_metric_source_model(metric)

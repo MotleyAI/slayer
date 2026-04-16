@@ -244,6 +244,62 @@ class TestSimpleMetricConversion:
 
 
 class TestDerivedMetricConversion:
+    def test_derived_metric_ref_replacement_is_token_aware(self) -> None:
+        """Regression for CodeRabbit #3 — when a metric named 'total' is referenced
+        inside a derived expression that also mentions 'subtotal' or 'total_orders',
+        only the standalone 'total' token must be replaced. Plain str.replace
+        previously mutated the substring inside the other identifiers."""
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    dimensions=[],
+                    measures=[
+                        DbtMeasure(name="total", agg="sum", expr="amount"),
+                        DbtMeasure(name="subtotal", agg="sum", expr="subtotal"),
+                        DbtMeasure(name="total_orders", agg="count", expr="id"),
+                    ],
+                ),
+            ],
+            metrics=[
+                DbtMetric(name="total", type="simple",
+                          type_params=DbtMetricTypeParams(measure="total")),
+                DbtMetric(name="subtotal", type="simple",
+                          type_params=DbtMetricTypeParams(measure="subtotal")),
+                DbtMetric(name="total_orders", type="simple",
+                          type_params=DbtMetricTypeParams(measure="total_orders")),
+                DbtMetric(
+                    name="weird_ratio",
+                    type="derived",
+                    type_params=DbtMetricTypeParams(
+                        expr="(subtotal + total) / total_orders",
+                        metrics=[
+                            DbtMetricInput(name="total"),
+                            DbtMetricInput(name="subtotal"),
+                            DbtMetricInput(name="total_orders"),
+                        ],
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        q = next(qq for qq in result.queries if qq["name"] == "weird_ratio")
+        formula = q["fields"][0]["formula"]
+        # `total:sum`, `subtotal:sum`, and `total_orders:count` should all appear,
+        # each as a complete token. The bug would have produced something like
+        # `subtotal:sum + total:sum) / total:sum_orders` because plain replace
+        # rewrites the "total" substring inside "subtotal" and "total_orders".
+        assert "total:sum" in formula
+        assert "subtotal:sum" in formula
+        assert "total_orders:count" in formula
+        # Bug check: the "total" inside "subtotal" was NOT mangled into "total:sum"
+        assert "subtotal:sum" in formula
+        assert "subtotal:sum:sum" not in formula
+        # Bug check: the "total" inside "total_orders" was NOT mangled
+        assert "total:sum_orders" not in formula
+
     def test_derived_metric_generates_query(self) -> None:
         project = DbtProject(
             semantic_models=[
@@ -312,6 +368,34 @@ class TestConversionWarnings:
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         assert len(result.warnings) == 1
+
+
+class TestQueriesDirForStorage:
+    """Regression tests for CodeRabbit #1 — _queries_dir_for_storage helper.
+
+    `slayer import-dbt --storage slayer.db` must write queries.yaml beside the
+    SQLite file, not inside `slayer.db/queries.yaml` (which would fail because
+    the .db file is not a directory).
+    """
+
+    def test_directory_storage_path_returned_as_is(self) -> None:
+        from slayer.cli import _queries_dir_for_storage
+
+        assert _queries_dir_for_storage("./slayer_data") == "./slayer_data"
+        assert _queries_dir_for_storage("/tmp/models") == "/tmp/models"
+
+    def test_sqlite_db_uses_parent_directory(self) -> None:
+        from slayer.cli import _queries_dir_for_storage
+
+        assert _queries_dir_for_storage("/tmp/slayer.db") == "/tmp"
+        assert _queries_dir_for_storage("./data/slayer.sqlite") == "./data"
+        assert _queries_dir_for_storage("project.sqlite3") == "."
+
+    def test_bare_sqlite_filename_in_cwd(self) -> None:
+        """A bare 'slayer.db' (no directory) should write to the current dir."""
+        from slayer.cli import _queries_dir_for_storage
+
+        assert _queries_dir_for_storage("slayer.db") == "."
 
 
 class TestParserRoundTrip:

@@ -17,19 +17,37 @@ from slayer.dbt.models import DbtMetric, DbtProject, DbtRegularModel, DbtSemanti
 
 logger = logging.getLogger(__name__)
 
-_REF_PATTERN = re.compile(r"ref\(\s*['\"](\w+)['\"]\s*\)")
+# Match dbt ref() in any of its supported forms:
+#   ref('name')                 → group(2) None, group(1) = 'name'
+#   ref("name")                 → same
+#   ref('pkg', 'name')          → group(1) = 'pkg',  group(2) = 'name'
+#   ref('name', v=1)            → group(2) None, group(1) = 'name'
+#   ref('pkg', 'name', v=1)     → group(1) = 'pkg',  group(2) = 'name'
+_REF_PATTERN = re.compile(
+    r"ref\(\s*"
+    r"['\"](\w+)['\"]"                    # first positional string arg
+    r"(?:\s*,\s*['\"](\w+)['\"])?"        # optional second positional string arg
+    r"\s*(?:,\s*\w+\s*=\s*[^)]+)?"        # optional trailing kwargs (e.g. v=1)
+    r"\s*\)"
+)
 
 
 def _extract_ref_name(raw: str) -> str:
     """Extract model name from dbt ref() syntax.
 
-    "ref('claim')" → "claim"
-    "ref(\"claim\")" → "claim"
+    Handles single-arg, package-qualified two-arg, and versioned forms:
+        "ref('claim')"               → "claim"
+        "ref(\"claim\")"             → "claim"
+        "ref('pkg', 'claim')"        → "claim"   (package-qualified)
+        "ref('claim', v=1)"          → "claim"   (versioned)
+        "ref('pkg', 'claim', v=2)"   → "claim"
     Plain string without ref() is returned as-is.
     """
     match = _REF_PATTERN.search(raw)
     if match:
-        return match.group(1)
+        # In the two-arg form the second positional arg is the model name;
+        # otherwise the first arg is the model name.
+        return match.group(2) or match.group(1)
     return raw
 
 

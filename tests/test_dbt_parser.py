@@ -22,6 +22,22 @@ class TestExtractRefName:
     def test_plain_string(self) -> None:
         assert _extract_ref_name("plain_name") == "plain_name"
 
+    def test_package_qualified_two_arg(self) -> None:
+        """Regression for CodeRabbit #5 — two-arg package-qualified ref().
+        Model name is the SECOND positional string arg, not the first."""
+        assert _extract_ref_name("ref('my_package', 'orders')") == "orders"
+        assert _extract_ref_name('ref("pkg", "orders")') == "orders"
+        assert _extract_ref_name("ref( 'pkg' , 'orders' )") == "orders"
+
+    def test_versioned_ref(self) -> None:
+        """Versioned single-arg ref() with v=N kwarg."""
+        assert _extract_ref_name("ref('orders', v=1)") == "orders"
+        assert _extract_ref_name("ref('orders', version=2)") == "orders"
+
+    def test_versioned_package_qualified(self) -> None:
+        """Combined: package-qualified AND versioned."""
+        assert _extract_ref_name("ref('pkg', 'orders', v=1)") == "orders"
+
 
 @pytest.fixture
 def dbt_project_dir(tmp_path):

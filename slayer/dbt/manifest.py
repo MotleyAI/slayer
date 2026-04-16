@@ -35,7 +35,7 @@ def _manifest_path(project_path: str) -> str:
 
 def _load_manifest_file(path: str) -> Optional[dict]:
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Failed to read dbt manifest at %s: %s", path, exc)
