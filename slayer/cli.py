@@ -4,6 +4,8 @@ import argparse
 import os
 import sys
 
+from slayer.async_utils import run_sync
+
 _STORAGE_DEFAULT = os.environ.get("SLAYER_STORAGE", os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
@@ -281,7 +283,7 @@ def _run_query(args):
 
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
-    result = engine.execute(query=slayer_query)
+    result = engine.execute_sync(query=slayer_query)
 
     if slayer_query.dry_run:
         print(result.sql)
@@ -329,7 +331,7 @@ def _run_ingest(args):
     from slayer.engine.ingestion import ingest_datasource
 
     storage = _resolve_storage(args)
-    ds = storage.get_datasource(args.datasource)
+    ds = run_sync(storage.get_datasource(args.datasource))
     if ds is None:
         storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
         print(f"Datasource '{args.datasource}' not found in {storage_path}")
@@ -345,7 +347,7 @@ def _run_ingest(args):
         exclude_tables=exclude,
     )
     for model in models:
-        storage.save_model(model)
+        run_sync(storage.save_model(model))
         print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
 
 
@@ -357,19 +359,19 @@ def _run_models(args):
     storage = _resolve_storage(args)
 
     if args.models_command == "list":
-        names = storage.list_models()
+        names = run_sync(storage.list_models())
         if not names:
             print("No models found.")
             return
         for name in names:
-            model = storage.get_model(name)
+            model = run_sync(storage.get_model(name))
             if model and model.hidden:
                 continue
             desc = f"  — {model.description}" if model and model.description else ""
             print(f"{name}{desc}")
 
     elif args.models_command == "show":
-        model = storage.get_model(args.name)
+        model = run_sync(storage.get_model(args.name))
         if model is None:
             print(f"Model '{args.name}' not found.")
             sys.exit(1)
@@ -380,11 +382,11 @@ def _run_models(args):
         with open(args.file) as f:
             data = yaml.safe_load(f)
         model = SlayerModel.model_validate(data)
-        storage.save_model(model)
+        run_sync(storage.save_model(model))
         print(f"Created model '{model.name}'.")
 
     elif args.models_command == "delete":
-        deleted = storage.delete_model(args.name)
+        deleted = run_sync(storage.delete_model(args.name))
         if deleted:
             print(f"Deleted model '{args.name}'.")
         else:
@@ -404,17 +406,17 @@ def _run_datasources(args):
     storage = _resolve_storage(args)
 
     if args.datasources_command == "list":
-        names = storage.list_datasources()
+        names = run_sync(storage.list_datasources())
         if not names:
             print("No datasources found.")
             return
         for name in names:
-            ds = storage.get_datasource(name)
+            ds = run_sync(storage.get_datasource(name))
             ds_type = ds.type if ds and ds.type else "unknown"
             print(f"{name}  ({ds_type})")
 
     elif args.datasources_command == "show":
-        ds = storage.get_datasource(args.name)
+        ds = run_sync(storage.get_datasource(args.name))
         if ds is None:
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)
@@ -429,7 +431,7 @@ def _run_datasources(args):
         with open(args.file) as f:
             data = yaml.safe_load(f)
         ds = DatasourceConfig.model_validate(data)
-        storage.save_datasource(ds)
+        run_sync(storage.save_datasource(ds))
         print(f"Created datasource '{ds.name}' ({ds.type}).")
 
     elif args.datasources_command == "create-inline":
@@ -445,11 +447,11 @@ def _run_datasources(args):
                 getpass.getpass("Password: ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
             )
         ds = DatasourceConfig.model_validate(ds_data)
-        storage.save_datasource(ds)
+        run_sync(storage.save_datasource(ds))
         print(f"Created datasource '{ds.name}' ({ds.type}).")
 
     elif args.datasources_command == "delete":
-        deleted = storage.delete_datasource(args.name)
+        deleted = run_sync(storage.delete_datasource(args.name))
         if deleted:
             print(f"Deleted datasource '{args.name}'.")
         else:
@@ -457,7 +459,7 @@ def _run_datasources(args):
             sys.exit(1)
 
     elif args.datasources_command == "test":
-        ds = storage.get_datasource(args.name)
+        ds = run_sync(storage.get_datasource(args.name))
         if ds is None:
             print(f"Datasource '{args.name}' not found.")
             sys.exit(1)

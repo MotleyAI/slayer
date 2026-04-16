@@ -68,7 +68,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
     async def query(request: QueryRequest) -> QueryResponse:
         try:
             slayer_query = SlayerQuery.model_validate(request.model_dump(exclude_none=True))
-            result = engine.execute(query=slayer_query)
+            result = await engine.execute(query=slayer_query)
             meta = {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in result.meta.items()} if result.meta else None
             response = QueryResponse(data=result.data, row_count=result.row_count, columns=result.columns, meta=meta)
             if slayer_query.dry_run or slayer_query.explain:
@@ -80,8 +80,8 @@ def create_app(storage: StorageBackend) -> FastAPI:
     @app.get("/models")
     async def list_models() -> List[Dict[str, Any]]:
         result = []
-        for name in storage.list_models():
-            model = storage.get_model(name)
+        for name in await storage.list_models():
+            model = await storage.get_model(name)
             if model and model.hidden:
                 continue
             entry: Dict[str, Any] = {"name": name}
@@ -92,7 +92,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.get("/models/{name}")
     async def get_model(name: str) -> Dict[str, Any]:
-        model = storage.get_model(name)
+        model = await storage.get_model(name)
         if model is None:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
         data = model.model_dump(exclude_none=True)
@@ -104,17 +104,19 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.post("/models")
     async def create_model(model: SlayerModel) -> Dict[str, str]:
-        storage.save_model(model)
+        await storage.save_model(model)
         return {"status": "created", "name": model.name}
 
     @app.put("/models/{name}")
     async def update_model(name: str, model: SlayerModel) -> Dict[str, str]:
-        storage.save_model(model)
-        return {"status": "updated", "name": model.name}
+        if model.name != name:
+            raise HTTPException(status_code=400, detail=f"Path name '{name}' does not match body name '{model.name}'")
+        await storage.save_model(model)
+        return {"status": "updated", "name": name}
 
     @app.delete("/models/{name}")
     async def delete_model(name: str) -> Dict[str, Any]:
-        deleted = storage.delete_model(name)
+        deleted = await storage.delete_model(name)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
         return {"status": "deleted", "name": name}
@@ -122,8 +124,8 @@ def create_app(storage: StorageBackend) -> FastAPI:
     @app.get("/datasources")
     async def list_datasources() -> List[Dict[str, Any]]:
         result = []
-        for name in storage.list_datasources():
-            ds = storage.get_datasource(name)
+        for name in await storage.list_datasources():
+            ds = await storage.get_datasource(name)
             entry: Dict[str, Any] = {"name": name}
             if ds:
                 entry["type"] = ds.type
@@ -132,7 +134,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.get("/datasources/{name}")
     async def get_datasource(name: str) -> Dict[str, Any]:
-        ds = storage.get_datasource(name)
+        ds = await storage.get_datasource(name)
         if ds is None:
             raise HTTPException(status_code=404, detail=f"Datasource '{name}' not found")
         # Mask credentials
@@ -144,19 +146,19 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.post("/datasources")
     async def create_datasource(datasource: DatasourceConfig) -> Dict[str, str]:
-        storage.save_datasource(datasource)
+        await storage.save_datasource(datasource)
         return {"status": "created", "name": datasource.name}
 
     @app.delete("/datasources/{name}")
     async def delete_datasource(name: str) -> Dict[str, Any]:
-        deleted = storage.delete_datasource(name)
+        deleted = await storage.delete_datasource(name)
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Datasource '{name}' not found")
         return {"status": "deleted", "name": name}
 
     @app.post("/ingest")
     async def ingest(request: IngestRequest) -> Dict[str, Any]:
-        ds = storage.get_datasource(request.datasource)
+        ds = await storage.get_datasource(request.datasource)
         if ds is None:
             raise HTTPException(status_code=404, detail=f"Datasource '{request.datasource}' not found")
         models = ingest_datasource(
@@ -166,7 +168,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
             schema=request.schema_name,
         )
         for model in models:
-            storage.save_model(model)
+            await storage.save_model(model)
         return {"status": "ingested", "models": [m.name for m in models]}
 
     return app

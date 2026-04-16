@@ -46,88 +46,88 @@ def sample_datasource() -> DatasourceConfig:
 
 
 class TestModelStorage:
-    def test_save_and_get(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        storage.save_model(sample_model)
-        loaded = storage.get_model("test_model")
+    async def test_save_and_get(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
+        await storage.save_model(sample_model)
+        loaded = await storage.get_model("test_model")
         assert loaded is not None
         assert loaded.name == "test_model"
         assert loaded.sql_table == "public.test_table"
         assert len(loaded.dimensions) == 2
         assert len(loaded.measures) == 1
 
-    def test_list_models(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        assert storage.list_models() == []
-        storage.save_model(sample_model)
-        assert storage.list_models() == ["test_model"]
+    async def test_list_models(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
+        assert await storage.list_models() == []
+        await storage.save_model(sample_model)
+        assert await storage.list_models() == ["test_model"]
 
-    def test_delete_model(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        storage.save_model(sample_model)
-        assert storage.delete_model("test_model") is True
-        assert storage.get_model("test_model") is None
-        assert storage.delete_model("nonexistent") is False
+    async def test_delete_model(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
+        await storage.save_model(sample_model)
+        assert await storage.delete_model("test_model") is True
+        assert await storage.get_model("test_model") is None
+        assert await storage.delete_model("nonexistent") is False
 
-    def test_get_nonexistent(self, storage: YAMLStorage) -> None:
-        assert storage.get_model("nonexistent") is None
+    async def test_get_nonexistent(self, storage: YAMLStorage) -> None:
+        assert await storage.get_model("nonexistent") is None
 
-    def test_update_model(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
-        storage.save_model(sample_model)
+    async def test_update_model(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
+        await storage.save_model(sample_model)
         sample_model.description = "Updated description"
-        storage.save_model(sample_model)
-        loaded = storage.get_model("test_model")
+        await storage.save_model(sample_model)
+        loaded = await storage.get_model("test_model")
         assert loaded.description == "Updated description"
 
 
 class TestDatasourceStorage:
-    def test_save_and_get(self, storage: YAMLStorage, sample_datasource: DatasourceConfig) -> None:
-        storage.save_datasource(sample_datasource)
-        loaded = storage.get_datasource("test_ds")
+    async def test_save_and_get(self, storage: YAMLStorage, sample_datasource: DatasourceConfig) -> None:
+        await storage.save_datasource(sample_datasource)
+        loaded = await storage.get_datasource("test_ds")
         assert loaded is not None
         assert loaded.name == "test_ds"
         assert loaded.type == "postgres"
         assert loaded.host == "localhost"
 
-    def test_list_datasources(self, storage: YAMLStorage, sample_datasource: DatasourceConfig) -> None:
-        assert storage.list_datasources() == []
-        storage.save_datasource(sample_datasource)
-        assert storage.list_datasources() == ["test_ds"]
+    async def test_list_datasources(self, storage: YAMLStorage, sample_datasource: DatasourceConfig) -> None:
+        assert await storage.list_datasources() == []
+        await storage.save_datasource(sample_datasource)
+        assert await storage.list_datasources() == ["test_ds"]
 
-    def test_delete_datasource(self, storage: YAMLStorage, sample_datasource: DatasourceConfig) -> None:
-        storage.save_datasource(sample_datasource)
-        assert storage.delete_datasource("test_ds") is True
-        assert storage.get_datasource("test_ds") is None
+    async def test_delete_datasource(self, storage: YAMLStorage, sample_datasource: DatasourceConfig) -> None:
+        await storage.save_datasource(sample_datasource)
+        assert await storage.delete_datasource("test_ds") is True
+        assert await storage.get_datasource("test_ds") is None
 
-    def test_env_var_resolution(self, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_env_var_resolution(self, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_DB_HOST", "resolved-host")
         ds = DatasourceConfig(name="env_ds", type="postgres", host="${TEST_DB_HOST}")
-        storage.save_datasource(ds)
-        loaded = storage.get_datasource("env_ds")
+        await storage.save_datasource(ds)
+        loaded = await storage.get_datasource("env_ds")
         assert loaded.host == "resolved-host"
 
-    def test_malformed_yaml_raises_valueerror(self, storage: YAMLStorage) -> None:
+    async def test_malformed_yaml_raises_valueerror(self, storage: YAMLStorage) -> None:
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
         with pytest.raises(ValueError, match="Datasource 'bad': invalid YAML"):
-            storage.get_datasource("bad")
+            await storage.get_datasource("bad")
 
-    def test_invalid_config_raises_valueerror(self, storage: YAMLStorage) -> None:
+    async def test_invalid_config_raises_valueerror(self, storage: YAMLStorage) -> None:
         path = os.path.join(storage.datasources_dir, "bad_type.yaml")
         with open(path, "w") as f:
             f.write("name: bad_type\nport: not_a_number\n")
         with pytest.raises(ValueError, match="Datasource 'bad_type': invalid config"):
-            storage.get_datasource("bad_type")
+            await storage.get_datasource("bad_type")
 
-    def test_unresolved_env_var_raises_valueerror(self, storage: YAMLStorage) -> None:
+    async def test_unresolved_env_var_raises_valueerror(self, storage: YAMLStorage) -> None:
         ds = DatasourceConfig(
             name="missing_env", type="postgres", host="${NONEXISTENT_VAR_12345}"
         )
-        storage.save_datasource(ds)
+        await storage.save_datasource(ds)
         with pytest.raises(ValueError, match="unresolved environment variable"):
-            storage.get_datasource("missing_env")
+            await storage.get_datasource("missing_env")
 
-    def test_malformed_datasource_does_not_break_list(self, storage: YAMLStorage) -> None:
+    async def test_malformed_datasource_does_not_break_list(self, storage: YAMLStorage) -> None:
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
-        names = storage.list_datasources()
+        names = await storage.list_datasources()
         assert "bad" in names
