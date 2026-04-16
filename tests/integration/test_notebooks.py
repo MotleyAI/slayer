@@ -2,8 +2,14 @@
 
 Each notebook under docs/examples/ is run via nbclient. Success means
 the notebook completes without raising any exceptions.
+
+The Jaffle Shop database is generated once per test session (slow ~1-2 min).
+The models directory is cleaned before each notebook to prevent stale
+cross-notebook state (custom models created by one notebook shouldn't
+leak into another).
 """
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,6 +20,9 @@ nbformat = pytest.importorskip("nbformat")
 pytestmark = pytest.mark.integration
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "examples"
+JAFFLE_DATA_DIR = EXAMPLES_DIR / "jaffle_data"
+JAFFLE_DB_PATH = JAFFLE_DATA_DIR / "jaffle_shop.duckdb"
+JAFFLE_MODELS_DIR = JAFFLE_DATA_DIR / "slayer_models"
 
 # Discover all .ipynb files, excluding checkpoints
 _NOTEBOOKS = sorted(
@@ -22,8 +31,36 @@ _NOTEBOOKS = sorted(
 )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_jaffle_db():
+    """Generate the Jaffle Shop DuckDB once for the entire test session."""
+    if JAFFLE_DB_PATH.exists():
+        return  # Reuse existing DB
+
+    duckdb = pytest.importorskip("duckdb")
+
+    import sys
+    sys.path.insert(0, str(JAFFLE_DATA_DIR))
+    try:
+        from ingest_jaffle_shop import SCHEMA_FILE, create_schema, generate_data, load_data
+    except ImportError as e:
+        pytest.skip(f"Jaffle shop helpers not available: {e}")
+
+    try:
+        data_dir = generate_data(output_dir=str(JAFFLE_DATA_DIR), years=3)
+        with duckdb.connect(database=str(JAFFLE_DB_PATH)) as conn:
+            create_schema(conn=conn, schema_path=SCHEMA_FILE)
+            load_data(conn=conn, data_dir=data_dir)
+    except (ImportError, FileNotFoundError) as e:
+        pytest.skip(f"Jaffle shop prerequisite missing: {e}")
+
+
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
 def notebook_path(request):
+    # Clean models before each notebook so custom models from one
+    # notebook don't leak into another (e.g., order_items_custom).
+    if JAFFLE_MODELS_DIR.exists():
+        shutil.rmtree(JAFFLE_MODELS_DIR)
     return request.param
 
 

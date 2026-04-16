@@ -11,6 +11,7 @@ from typing import List, Tuple
 import duckdb
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.async_utils import run_sync
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -45,6 +46,7 @@ def ensure_jaffle_shop(
     storage = YAMLStorage(base_dir=MODELS_DIR)
 
     # Generate DB if missing
+    db_freshly_created = False
     if not os.path.exists(DB_PATH):
         print("Generating Jaffle Shop data (this takes ~1-2 minutes)...")
         data_dir = generate_data(output_dir=JAFFLE_DATA_DIR, years=years)
@@ -53,21 +55,22 @@ def ensure_jaffle_shop(
         load_data(conn, data_dir)
         conn.close()
         print(f"Database created at {DB_PATH}")
+        db_freshly_created = True
 
-    # Ingest models if missing
+    # Ingest models if missing or stale (DB was regenerated but models dir persisted)
     ds = DatasourceConfig(name="jaffle_shop", type="duckdb", database=DB_PATH)
-    existing_models = storage.list_models()
-    if not existing_models:
+    existing_models = run_sync(storage.list_models())
+    if not existing_models or db_freshly_created:
         print("Auto-ingesting models...")
-        storage.save_datasource(ds)
+        run_sync(storage.save_datasource(ds))
         models = ingest_datasource(datasource=ds)
         for model in models:
             if model.name in _DEFAULT_TIME_DIMENSIONS:
                 model.default_time_dimension = _DEFAULT_TIME_DIMENSIONS[model.name]
-            storage.save_model(model)
+            run_sync(storage.save_model(model))
         print(f"Ingested {len(models)} models")
     else:
-        models = [storage.get_model(name) for name in existing_models]
+        models = [run_sync(storage.get_model(name)) for name in existing_models]
 
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage, models

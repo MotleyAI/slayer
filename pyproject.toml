@@ -40,7 +40,9 @@ pandas = {version = ">=2.0", optional = true}
 mcp = {version = ">=1.0", optional = true}
 mkdocs-material = {version = ">=9.0", optional = true}
 psycopg2-binary = {version = ">=2.9", optional = true}
+asyncpg = {version = ">=0.27", optional = true}
 pymysql = {version = ">=1.0", optional = true}
+aiomysql = {version = ">=0.2", optional = true}
 clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
 duckdb = {version = ">=0.9", optional = true}
 duckdb-engine = {version = ">=0.13", optional = true}
@@ -52,14 +54,14 @@ dbt-core = {version = ">=1.7", optional = true}
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
 mcp = ["mcp"]
-postgres = ["psycopg2-binary"]
-mysql = ["pymysql"]
+postgres = ["psycopg2-binary", "asyncpg"]
+mysql = ["pymysql", "aiomysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
 duckdb = ["duckdb", "duckdb-engine"]
 dbt = ["dbt-core"]
 docs = ["mkdocs-material"]
 examples = ["duckdb", "duckdb-engine"]
-all = ["httpx", "pandas", "mcp", "psycopg2-binary", "pymysql", "clickhouse-sqlalchemy", "duckdb", "duckdb-engine", "dbt-core"]
+all = ["httpx", "pandas", "mcp", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "duckdb", "duckdb-engine", "dbt-core"]
 
 [project.scripts]
 slayer = "slayer.cli:main"
@@ -78,6 +80,7 @@ nbformat = ">=5.10"
 ipykernel = ">=6.0"
 pre-commit = "^4.5.1"
 notebook = "^7.5.5"
+pytest-asyncio = "^1.3.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -85,6 +88,7 @@ addopts = "--ignore=tests/perf --cov=slayer --cov-report=term-missing --cov-repo
 markers = [
     "integration: marks tests as integration tests (require a real database)",
 ]
+asyncio_mode = "auto"
 
 [tool.ruff]
 target-version = "py311"

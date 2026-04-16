@@ -504,9 +504,7 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
         if node.value is None:
             return "NULL"
         if isinstance(node.value, str):
-            # Escape single quotes
-            escaped = node.value.replace("'", "''")
-            return f"'{escaped}'"
+            return _escape_sql_string(node.value)
         return str(node.value)
 
     # Negative number
@@ -576,10 +574,36 @@ def _compare_op_to_sql(op: ast.AST, comparator: ast.AST) -> str:
     raise ValueError(f"Unsupported comparison operator: {type(op).__name__}")
 
 
+def _escape_sql_string(value: str) -> str:
+    """Render a Python string as a safely-quoted SQL string literal.
+
+    Escapes both ``\\`` and ``'`` so the emitted literal is safe under every
+    supported dialect — including MySQL and ClickHouse, whose default string
+    parsing treats backslash as an escape character (so an unescaped trailing
+    ``\\`` would break out of the quoted literal). Backslashes are escaped
+    **before** single quotes so the newly-inserted ``''`` pair isn't itself
+    re-escaped into ``\\''``.
+
+    Note: for strict-ANSI dialects (Postgres with ``standard_conforming_strings``
+    on, SQLite, DuckDB) a literal backslash in the input is now rendered as
+    ``\\\\`` in the SQL, which those dialects treat as two backslashes. Since
+    measure filters almost never contain backslashes this trade-off is
+    preferred over a dialect-specific emission that could silently mis-escape
+    on MySQL.
+    """
+    escaped = value.replace("\\", "\\\\").replace("'", "''")
+    return f"'{escaped}'"
+
+
 def _get_string_arg(node: ast.AST, original: str) -> str:
-    """Extract a string value from an AST node (for LIKE patterns)."""
+    """Extract a string value from an AST node (for LIKE patterns).
+
+    Returns the content with single quotes doubled and backslashes escaped,
+    ready for interpolation between ``'...'`` in the emitted SQL. See
+    :func:`_escape_sql_string` for rationale.
+    """
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value.replace("'", "''")
+        return node.value.replace("\\", "\\\\").replace("'", "''")
     raise ValueError(f"Expected a string argument in filter: {original!r}")
 
 

@@ -127,7 +127,7 @@ def create_mcp_server(storage: StorageBackend):
     engine = SlayerQueryEngine(storage=storage)
 
     @mcp.tool()
-    def query(
+    async def query(
         source_model: str,
         fields: Optional[List[Dict[str, str]]] = None,
         dimensions: Optional[List[str]] = None,
@@ -198,7 +198,7 @@ def create_mcp_server(storage: StorageBackend):
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
             slayer_query = SlayerQuery.model_validate(data)
-            result = engine.execute(query=slayer_query)
+            result = await engine.execute(query=slayer_query)
             if dry_run:
                 return f"SQL:\n{result.sql}"
             if explain:
@@ -221,14 +221,14 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    def datasource_summary() -> str:
+    async def datasource_summary() -> str:
         """List all datasources and their models with schemas (dimensions, measures). Does not include sample data — use inspect_model for that."""
         # Datasources
-        ds_names = storage.list_datasources()
+        ds_names = await storage.list_datasources()
         datasources = []
         for name in ds_names:
             try:
-                ds = storage.get_datasource(name)
+                ds = await storage.get_datasource(name)
                 if ds:
                     entry: Dict[str, Any] = {"name": name, "type": ds.type}
                     if ds.description:
@@ -239,12 +239,15 @@ def create_mcp_server(storage: StorageBackend):
                 datasources.append({"name": name, "error": "invalid datasource config"})
 
         # Models
-        model_names = storage.list_models()
+        model_names = await storage.list_models()
         models = []
         for name in model_names:
-            model = storage.get_model(name)
-            if model and not model.hidden:
-                models.append(_model_to_summary(model))
+            try:
+                model = await storage.get_model(name)
+                if model and not model.hidden:
+                    models.append(_model_to_summary(model))
+            except Exception:
+                logger.warning("Failed to load model '%s', skipping", name, exc_info=True)
 
         if not datasources and not models:
             return json.dumps({"datasources": [], "models": [], "model_count": 0})
@@ -258,7 +261,7 @@ def create_mcp_server(storage: StorageBackend):
         return json.dumps(result, indent=2, default=str)
 
     @mcp.tool()
-    def inspect_model(
+    async def inspect_model(
         model_name: str,
         num_rows: int = 3,
         show_sql: bool = False,
@@ -270,15 +273,15 @@ def create_mcp_server(storage: StorageBackend):
             num_rows: Number of sample rows to include (default: 3).
             show_sql: Whether to include the SQL query/table definition in the response.
         """
-        model = storage.get_model(model_name)
+        model = await storage.get_model(model_name)
         if model is None:
-            available = sorted(
-                [
-                    n
-                    for n in storage.list_models()
-                    if not (storage.get_model(n) or SlayerModel(name="", data_source="")).hidden
-                ]
-            )
+            all_names = await storage.list_models()
+            available = []
+            for n in all_names:
+                m = await storage.get_model(n)
+                if m is not None and not m.hidden:
+                    available.append(n)
+            available.sort()
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
 
         result = _model_to_summary(model)
@@ -295,7 +298,7 @@ def create_mcp_server(storage: StorageBackend):
                 dimensions=[{"name": d.name} for d in model.dimensions if not d.hidden and not d.primary_key][:2],
                 limit=num_rows,
             )
-            sample_result = engine.execute(query=sample_query)
+            sample_result = await engine.execute(query=sample_query)
             result["sample_data"] = _format_table(
                 data=sample_result.data,
                 columns=sample_result.columns,
@@ -310,7 +313,7 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    def create_model(
+    async def create_model(
         name: str,
         sql_table: Optional[str] = None,
         sql: Optional[str] = None,
@@ -361,7 +364,7 @@ def create_mcp_server(storage: StorageBackend):
                 )
             try:
                 parsed_query = SlayerQuery.model_validate(query)
-                model = engine.create_model_from_query(
+                model = await engine.create_model_from_query(
                     query=parsed_query, name=name, description=description,
                 )
             except Exception as e:
@@ -385,8 +388,8 @@ def create_mcp_server(storage: StorageBackend):
             measures=measures,
         )
         model = SlayerModel.model_validate(data)
-        existed = storage.get_model(name) is not None
-        storage.save_model(model)
+        existed = await storage.get_model(name) is not None
+        await storage.save_model(model)
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
 
@@ -430,7 +433,7 @@ def create_mcp_server(storage: StorageBackend):
     VALID_REMOVE_KEYS = {"dimensions", "measures", "aggregations", "joins"}
 
     @mcp.tool()
-    def edit_model(
+    async def edit_model(
         model_name: str,
         description: Optional[str] = None,
         data_source: Optional[str] = None,
@@ -476,7 +479,7 @@ def create_mcp_server(storage: StorageBackend):
         Example — remove a measure:
             edit_model(model_name="orders", remove={"measures": ["old_metric"]})
         """
-        model = storage.get_model(model_name)
+        model = await storage.get_model(model_name)
         if model is None:
             return f"Model '{model_name}' not found."
 
@@ -602,7 +605,7 @@ def create_mcp_server(storage: StorageBackend):
         except Exception as exc:
             return f"Validation error: {exc}"
 
-        storage.save_model(validated)
+        await storage.save_model(validated)
         return json.dumps({
             "success": True,
             "model_name": model_name,
@@ -615,7 +618,7 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    def create_datasource(
+    async def create_datasource(
         name: str,
         type: str,
         host: Optional[str] = None,
@@ -657,8 +660,8 @@ def create_mcp_server(storage: StorageBackend):
             schema_name=schema_name,
         )
         ds = DatasourceConfig.model_validate(data)
-        existed = storage.get_datasource(name) is not None
-        storage.save_datasource(ds)
+        existed = await storage.get_datasource(name) is not None
+        await storage.save_datasource(ds)
         verb = "replaced" if existed else "created"
 
         ok, msg = _test_connection(ds)
@@ -680,7 +683,7 @@ def create_mcp_server(storage: StorageBackend):
             raise
 
         for model in models:
-            storage.save_model(model)
+            await storage.save_model(model)
 
         if not models:
             lines.append("No tables found to ingest.")
@@ -697,15 +700,15 @@ def create_mcp_server(storage: StorageBackend):
         return "\n".join(lines)
 
     @mcp.tool()
-    def list_datasources() -> str:
+    async def list_datasources() -> str:
         """List all configured database connections (names and types only, credentials are not shown). Use describe_datasource for connection details and status."""
-        names = storage.list_datasources()
+        names = await storage.list_datasources()
         if not names:
             return "No datasources configured. Use create_datasource to add a database connection."
         lines = []
         for name in names:
             try:
-                ds = storage.get_datasource(name)
+                ds = await storage.get_datasource(name)
                 ds_type = ds.type if ds else "unknown"
                 lines.append(f"- {name} ({ds_type})")
             except Exception as exc:
@@ -714,14 +717,14 @@ def create_mcp_server(storage: StorageBackend):
         return "\n".join(lines)
 
     @mcp.tool()
-    def describe_datasource(name: str) -> str:
+    async def describe_datasource(name: str) -> str:
         """Show datasource details including connection status and available schemas. Use this to verify a datasource works before ingesting.
 
         Args:
             name: Datasource name (from list_datasources).
         """
         try:
-            ds = storage.get_datasource(name)
+            ds = await storage.get_datasource(name)
         except Exception as exc:
             logger.warning("Failed to load datasource '%s': %s", name, exc)
             return f"Datasource '{name}' has an invalid config."
@@ -755,7 +758,7 @@ def create_mcp_server(storage: StorageBackend):
         return "\n".join(lines)
 
     @mcp.tool()
-    def list_tables(datasource_name: str, schema_name: str = "") -> str:
+    async def list_tables(datasource_name: str, schema_name: str = "") -> str:
         """List tables in a database. Use this to explore what's available before ingesting.
 
         Args:
@@ -763,7 +766,7 @@ def create_mcp_server(storage: StorageBackend):
             schema_name: Database schema (e.g. "public"). If empty, uses the default schema.
         """
         try:
-            ds = storage.get_datasource(datasource_name)
+            ds = await storage.get_datasource(datasource_name)
         except Exception as exc:
             logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
             return f"Datasource '{datasource_name}' has an invalid config."
@@ -796,7 +799,7 @@ def create_mcp_server(storage: StorageBackend):
         return "\n".join(lines)
 
     @mcp.tool()
-    def edit_datasource(
+    async def edit_datasource(
         name: str,
         description: Optional[str] = None,
     ) -> str:
@@ -806,14 +809,14 @@ def create_mcp_server(storage: StorageBackend):
             name: Datasource name to update.
             description: New description for the datasource.
         """
-        ds = storage.get_datasource(name)
+        ds = await storage.get_datasource(name)
         if ds is None:
             return f"Datasource '{name}' not found."
 
         if description is not None:
             ds.description = description
 
-        storage.save_datasource(ds)
+        await storage.save_datasource(ds)
         return f"Datasource '{name}' updated."
 
     # -----------------------------------------------------------------------
@@ -821,24 +824,24 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    def delete_model(name: str) -> str:
+    async def delete_model(name: str) -> str:
         """Delete a semantic model.
 
         Args:
             name: Model name to delete.
         """
-        if storage.delete_model(name):
+        if await storage.delete_model(name):
             return f"Model '{name}' deleted."
         return f"Model '{name}' not found."
 
     @mcp.tool()
-    def delete_datasource(name: str) -> str:
+    async def delete_datasource(name: str) -> str:
         """Delete a datasource configuration.
 
         Args:
             name: Datasource name to delete.
         """
-        if storage.delete_datasource(name):
+        if await storage.delete_datasource(name):
             return f"Datasource '{name}' deleted."
         return f"Datasource '{name}' not found."
 
@@ -847,7 +850,7 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    def ingest_datasource_models(datasource_name: str, include_tables: str = "", schema_name: str = "") -> str:
+    async def ingest_datasource_models(datasource_name: str, include_tables: str = "", schema_name: str = "") -> str:
         """Auto-discover tables in a database and create semantic models from them. Inspects the schema and generates one model per table with dimensions and measures inferred from column types.
 
         Args:
@@ -857,7 +860,7 @@ def create_mcp_server(storage: StorageBackend):
         """
         from slayer.engine.ingestion import ingest_datasource as _ingest
 
-        ds = storage.get_datasource(datasource_name)
+        ds = await storage.get_datasource(datasource_name)
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
 
@@ -870,7 +873,7 @@ def create_mcp_server(storage: StorageBackend):
             raise
 
         for model in models:
-            storage.save_model(model)
+            await storage.save_model(model)
 
         if not models:
             schema_label = f" in schema '{schema_name}'" if schema_name else ""

@@ -30,7 +30,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def integration_env(tmp_path):
+async def integration_env(tmp_path):
     """Create a real SQLite database with test data, configure storage, models, and engine."""
 
     # -- SQLite database --
@@ -91,7 +91,7 @@ def integration_env(tmp_path):
         type="sqlite",
         database=str(db_path),
     )
-    storage.save_datasource(datasource)
+    await storage.save_datasource(datasource)
 
     # -- Orders model --
     orders_model = SlayerModel(
@@ -111,7 +111,7 @@ def integration_env(tmp_path):
             Measure(name="latest_amount", sql="amount"),
         ],
     )
-    storage.save_model(orders_model)
+    await storage.save_model(orders_model)
 
     # -- Customers model --
     customers_model = SlayerModel(
@@ -125,13 +125,13 @@ def integration_env(tmp_path):
         ],
         measures=[],
     )
-    storage.save_model(customers_model)
+    await storage.save_model(customers_model)
 
     engine = SlayerQueryEngine(storage=storage)
     return engine
 
 
-def test_count_query(integration_env):
+async def test_count_query(integration_env):
     """Count all orders."""
     engine = integration_env
 
@@ -139,14 +139,14 @@ def test_count_query(integration_env):
         source_model="orders",
         fields=[Field(formula="*:count")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert isinstance(response, SlayerResponse)
     assert response.row_count == 1
     assert response.data[0]["orders._count"] == 6
 
 
-def test_sum_measure(integration_env):
+async def test_sum_measure(integration_env):
     """Sum of order amounts."""
     engine = integration_env
 
@@ -154,13 +154,13 @@ def test_sum_measure(integration_env):
         source_model="orders",
         fields=[Field(formula="total_amount:sum")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
-def test_dimensions_groupby(integration_env):
+async def test_dimensions_groupby(integration_env):
     """Count orders grouped by status."""
     engine = integration_env
 
@@ -169,7 +169,7 @@ def test_dimensions_groupby(integration_env):
         fields=[Field(formula="*:count")],
         dimensions=[ColumnRef(name="status")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 3
     rows_by_status = {row["orders.status"]: row["orders._count"] for row in response.data}
@@ -178,7 +178,7 @@ def test_dimensions_groupby(integration_env):
     assert rows_by_status["cancelled"] == 1
 
 
-def test_filter_equals(integration_env):
+async def test_filter_equals(integration_env):
     """Filter orders where status = 'completed'."""
     engine = integration_env
 
@@ -187,13 +187,13 @@ def test_filter_equals(integration_env):
         fields=[Field(formula="*:count")],
         filters=["status == 'completed'"],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders._count"] == 3
 
 
-def test_filter_gt(integration_env):
+async def test_filter_gt(integration_env):
     """Filter orders where amount > 50."""
     engine = integration_env
 
@@ -202,14 +202,14 @@ def test_filter_gt(integration_env):
         fields=[Field(formula="*:count")],
         filters=["amount > 50"],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     # Orders with amount > 50: 100, 200, 75, 300 = 4
     assert response.data[0]["orders._count"] == 4
 
 
-def test_order_by(integration_env):
+async def test_order_by(integration_env):
     """Order results by count descending."""
     engine = integration_env
 
@@ -221,7 +221,7 @@ def test_order_by(integration_env):
             OrderItem(column=ColumnRef(name="count"), direction="desc"),
         ],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 3
     counts = [row["orders._count"] for row in response.data]
@@ -230,7 +230,7 @@ def test_order_by(integration_env):
     assert response.data[0]["orders.status"] == "completed"
 
 
-def test_limit(integration_env):
+async def test_limit(integration_env):
     """Limit results to 2 rows."""
     engine = integration_env
 
@@ -243,12 +243,12 @@ def test_limit(integration_env):
         ],
         limit=2,
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 2
 
 
-def test_multiple_measures(integration_env):
+async def test_multiple_measures(integration_env):
     """Count and sum in the same query."""
     engine = integration_env
 
@@ -259,7 +259,7 @@ def test_multiple_measures(integration_env):
             Field(formula="total_amount:sum"),
         ],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders._count"] == 6
@@ -267,7 +267,7 @@ def test_multiple_measures(integration_env):
 
 
 
-def test_cumsum_change_identity(integration_env):
+async def test_cumsum_change_identity(integration_env):
     """Mathematical identity: cumsum(change(x)) == x - x[0] for all rows after the first."""
     engine = integration_env
 
@@ -283,7 +283,7 @@ def test_cumsum_change_identity(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # 3 months of data: Jan(2), Feb(2), Mar(2)
     assert response.row_count == 3
@@ -298,7 +298,7 @@ def test_cumsum_change_identity(integration_env):
         assert row["orders.cumsum_change"] == row["orders._count"] - first_count
 
 
-def test_nested_cumsum_of_cumsum(integration_env):
+async def test_nested_cumsum_of_cumsum(integration_env):
     """Nested transforms: cumsum(cumsum(x)) should produce monotonically increasing values."""
     engine = integration_env
 
@@ -315,7 +315,7 @@ def test_nested_cumsum_of_cumsum(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 3
     # cumsum(cumsum) should be non-decreasing
@@ -325,7 +325,7 @@ def test_nested_cumsum_of_cumsum(integration_env):
     assert vals == [2, 6, 12]
 
 
-def test_arithmetic_expression(integration_env):
+async def test_arithmetic_expression(integration_env):
     """Arithmetic field: total_amount / count = average."""
     engine = integration_env
 
@@ -337,14 +337,14 @@ def test_arithmetic_expression(integration_env):
             Field(formula="total_amount:sum / *:count", name="avg_amount"),
         ],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders._count"] == 6
     assert response.data[0]["orders.avg_amount"] == pytest.approx(125.0)
 
 
-def test_time_shift_row_based(integration_env):
+async def test_time_shift_row_based(integration_env):
     """time_shift(x, -1) without granularity → LAG (previous row)."""
     engine = integration_env
 
@@ -361,7 +361,7 @@ def test_time_shift_row_based(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # 3 months: Jan(300), Feb(125), Mar(325)
     assert response.row_count == 3
@@ -377,7 +377,7 @@ def test_time_shift_row_based(integration_env):
     assert response.data[2]["orders.next"] is None
 
 
-def test_time_shift_calendar_based(integration_env):
+async def test_time_shift_calendar_based(integration_env):
     """time_shift(x, -1, 'month') with granularity → calendar-based self-join."""
     engine = integration_env
 
@@ -393,7 +393,7 @@ def test_time_shift_calendar_based(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # 3 months: Jan(300), Feb(125), Mar(325)
     assert response.row_count == 3
@@ -406,7 +406,7 @@ def test_time_shift_calendar_based(integration_env):
     assert response.data[2]["orders.prev_month"] == pytest.approx(125.0)
 
 
-def test_time_shift_with_date_range(integration_env):
+async def test_time_shift_with_date_range(integration_env):
     """time_shift with date_range should fetch shifted data from outside the filtered range."""
     engine = integration_env
 
@@ -424,7 +424,7 @@ def test_time_shift_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # Only March in the result (date filter)
     assert response.row_count == 1
@@ -433,7 +433,7 @@ def test_time_shift_with_date_range(integration_env):
     assert response.data[0]["orders.prev_month"] == pytest.approx(125.0)
 
 
-def test_change_with_date_range(integration_env):
+async def test_change_with_date_range(integration_env):
     """change() with date_range should fetch previous period from outside the filtered range."""
     engine = integration_env
 
@@ -451,14 +451,14 @@ def test_change_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     # March(325) - February(125) = 200
     assert response.data[0]["orders.amount_change"] == pytest.approx(200.0)
 
 
-def test_change_pct_with_date_range(integration_env):
+async def test_change_pct_with_date_range(integration_env):
     """change_pct() with date_range should compute correct percentage from shifted data."""
     engine = integration_env
 
@@ -475,14 +475,14 @@ def test_change_pct_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     # (325 - 125) / 125 = 1.6
     assert response.data[0]["orders.pct"] == pytest.approx(1.6)
 
 
-def test_multiple_date_range_shifts(integration_env):
+async def test_multiple_date_range_shifts(integration_env):
     """Multiple self-join transforms with different offsets should each get correct shifted data."""
     engine = integration_env
 
@@ -501,7 +501,7 @@ def test_multiple_date_range_shifts(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
@@ -511,7 +511,7 @@ def test_multiple_date_range_shifts(integration_env):
     assert response.data[0]["orders.next"] == pytest.approx(325.0)
 
 
-def test_forward_row_shift_with_date_range(integration_env):
+async def test_forward_row_shift_with_date_range(integration_env):
     """time_shift(x, 1) (forward, row-based) with date_range should fetch the next period."""
     engine = integration_env
 
@@ -529,7 +529,7 @@ def test_forward_row_shift_with_date_range(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
@@ -537,7 +537,7 @@ def test_forward_row_shift_with_date_range(integration_env):
     assert response.data[0]["orders.next_period"] == pytest.approx(325.0)
 
 
-def test_post_filter_on_change(integration_env):
+async def test_post_filter_on_change(integration_env):
     """Filter on a computed column (change) should only return matching rows."""
     engine = integration_env
 
@@ -557,7 +557,7 @@ def test_post_filter_on_change(integration_env):
         filters=["amount_change < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # Only February should remain (change = -175)
     assert response.row_count == 1
@@ -565,7 +565,7 @@ def test_post_filter_on_change(integration_env):
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
 
 
-def test_post_filter_with_base_filter(integration_env):
+async def test_post_filter_with_base_filter(integration_env):
     """Post-filter and base filter should both be applied correctly."""
     engine = integration_env
 
@@ -589,14 +589,14 @@ def test_post_filter_with_base_filter(integration_env):
         filters=["status != 'cancelled'", "amount_change > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # Only March (non-cancelled=325, change=275)
     assert response.row_count == 1
     assert response.data[0]["orders.amount_change"] == pytest.approx(275.0)
 
 
-def test_inline_transform_filter(integration_env):
+async def test_inline_transform_filter(integration_env):
     """Transform expressions can be used directly in filters (auto-extracted as hidden fields)."""
     engine = integration_env
 
@@ -613,13 +613,13 @@ def test_inline_transform_filter(integration_env):
         filters=["change(total_amount:sum) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(125.0)
 
 
-def test_inline_last_change_filter(integration_env):
+async def test_inline_last_change_filter(integration_env):
     """last(change(x)) in filter: keep rows only if the most recent period's change matches."""
     engine = integration_env
 
@@ -637,7 +637,7 @@ def test_inline_last_change_filter(integration_env):
         filters=["last(change(total_amount:sum)) > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # last(change) = 200 > 0, so all 3 rows pass
     assert response.row_count == 3
@@ -653,11 +653,11 @@ def test_inline_last_change_filter(integration_env):
         filters=["last(change(total_amount:sum)) < 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response2 = engine.execute(query2)
+    response2 = await engine.execute(query2)
     assert response2.row_count == 0
 
 
-def test_arithmetic_transform_filter(integration_env):
+async def test_arithmetic_transform_filter(integration_env):
     """Arithmetic expressions with transforms in filters: change(x) / x > threshold."""
     engine = integration_env
 
@@ -675,14 +675,14 @@ def test_arithmetic_transform_filter(integration_env):
         filters=["change(total_amount:sum) / total_amount:sum > 0"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # Only March passes (positive change ratio)
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(325.0)
 
 
-def test_transform_on_filter_rhs(integration_env):
+async def test_transform_on_filter_rhs(integration_env):
     """Transform expressions work on the RHS of filters too."""
     engine = integration_env
 
@@ -700,14 +700,14 @@ def test_transform_on_filter_rhs(integration_env):
         filters=["total_amount:sum > time_shift(total_amount:sum, -1)"],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # Only March (325 > 125)
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(325.0)
 
 
-def test_last_measure_type(integration_env):
+async def test_last_measure_type(integration_env):
     """A measure with type=last should return the most recent time bucket's value."""
     engine = integration_env
 
@@ -726,7 +726,7 @@ def test_last_measure_type(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 3
     # type=last returns the latest record's value within each month:
@@ -738,7 +738,7 @@ def test_last_measure_type(integration_env):
     assert response.data[2]["orders.latest_amount_last"] == pytest.approx(25.0)
 
 
-def test_last_function(integration_env):
+async def test_last_function(integration_env):
     """last() function should broadcast the most recent time bucket's value to all rows."""
     engine = integration_env
 
@@ -756,7 +756,7 @@ def test_last_function(integration_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 3
     # last() broadcasts the most recent bucket's value to ALL rows
@@ -765,7 +765,7 @@ def test_last_function(integration_env):
     assert latest_vals[0] == pytest.approx(325.0)  # March's SUM
 
 
-def test_having_filter(integration_env):
+async def test_having_filter(integration_env):
     """Filters on measures should use HAVING with the aggregate expression."""
     engine = integration_env
 
@@ -778,7 +778,7 @@ def test_having_filter(integration_env):
         filters=["_count > 1"],
         order=[OrderItem(column=ColumnRef(name="_count"), direction="desc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 2
     assert response.data[0]["orders.status"] == "completed"
@@ -787,7 +787,7 @@ def test_having_filter(integration_env):
     assert response.data[1]["orders._count"] == 2
 
 
-def test_having_filter_with_sum(integration_env):
+async def test_having_filter_with_sum(integration_env):
     """HAVING on a SUM measure should use the SUM() expression."""
     engine = integration_env
 
@@ -800,14 +800,14 @@ def test_having_filter_with_sum(integration_env):
         filters=["total_amount_sum > 100"],
         order=[OrderItem(column=ColumnRef(name="total_amount_sum"), direction="desc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 1
     assert response.data[0]["orders.status"] == "completed"
     assert response.data[0]["orders.total_amount_sum"] == pytest.approx(600.0)
 
 
-def test_having_with_non_groupby_dimension_raises(integration_env):
+async def test_having_with_non_groupby_dimension_raises(integration_env):
     """HAVING filter referencing a dimension not in GROUP BY should error early."""
     engine = integration_env
 
@@ -822,7 +822,7 @@ def test_having_with_non_groupby_dimension_raises(integration_env):
         filters=["_count > 1 and status == 'completed'"],
     )
     with pytest.raises(ValueError, match="not in the query's dimensions"):
-        engine.execute(query)
+        await engine.execute(query)
 
 
 # ---------------------------------------------------------------------------
@@ -830,7 +830,7 @@ def test_having_with_non_groupby_dimension_raises(integration_env):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def joined_time_env(tmp_path):
+async def joined_time_env(tmp_path):
     """Schema: order_items → orders (with created_at) → stores (with opened_at).
 
     Tests that type=last resolves through join paths correctly.
@@ -858,9 +858,9 @@ def joined_time_env(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="stores", sql_table="stores", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -869,7 +869,7 @@ def joined_time_env(tmp_path):
         ],
         measures=[],
     ))
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         dimensions=[
@@ -884,7 +884,7 @@ def joined_time_env(tmp_path):
         ],
         joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
     ))
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="order_items", sql_table="order_items", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -902,7 +902,7 @@ def joined_time_env(tmp_path):
 
 
 @pytest.mark.integration
-def test_last_with_joined_time_dimension(joined_time_env):
+async def test_last_with_joined_time_dimension(joined_time_env):
     """type=last resolves correctly when the time dimension is from a joined model (single hop)."""
     engine = joined_time_env
 
@@ -920,7 +920,7 @@ def test_last_with_joined_time_dimension(joined_time_env):
         ],
         order=[OrderItem(column=ColumnRef(name="stores.opened_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 2  # 2020 and 2021
     # Verify the SQL references stores.opened_at (not orders.opened_at)
@@ -931,7 +931,7 @@ def test_last_with_joined_time_dimension(joined_time_env):
 
 
 @pytest.mark.integration
-def test_last_with_multihop_joined_time_dimension(joined_time_env):
+async def test_last_with_multihop_joined_time_dimension(joined_time_env):
     """type=last resolves correctly through multi-hop joins (order_items → orders.created_at)."""
     engine = joined_time_env
 
@@ -949,7 +949,7 @@ def test_last_with_multihop_joined_time_dimension(joined_time_env):
         ],
         order=[OrderItem(column=ColumnRef(name="orders.created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 3  # Jan, Feb, Mar
     # Verify the SQL references orders.created_at
@@ -966,7 +966,7 @@ def test_last_with_multihop_joined_time_dimension(joined_time_env):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def cross_model_env(tmp_path):
+async def cross_model_env(tmp_path):
     """SQLite env with orders + customers models and an explicit join."""
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
@@ -986,9 +986,9 @@ def cross_model_env(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         dimensions=[
@@ -1001,7 +1001,7 @@ def cross_model_env(tmp_path):
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -1016,7 +1016,7 @@ def cross_model_env(tmp_path):
     return SlayerQueryEngine(storage=storage)
 
 
-def test_cross_model_measure_monthly(cross_model_env):
+async def test_cross_model_measure_monthly(cross_model_env):
     """Cross-model measure: monthly order count + avg customer score from joined model."""
     engine = cross_model_env
 
@@ -1031,7 +1031,7 @@ def test_cross_model_measure_monthly(cross_model_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     assert response.row_count == 3
     # Jan: Alice (90), Feb: Bob (60), Mar: Charlie(80) + Alice(90) = avg 85
@@ -1040,7 +1040,7 @@ def test_cross_model_measure_monthly(cross_model_env):
     assert response.data[2]["orders.customers.avg_score_avg"] == pytest.approx(85.0)
 
 
-def test_cross_model_measure_no_join_raises(cross_model_env):
+async def test_cross_model_measure_no_join_raises(cross_model_env):
     """Referencing a model with no join should raise."""
     engine = cross_model_env
 
@@ -1049,10 +1049,10 @@ def test_cross_model_measure_no_join_raises(cross_model_env):
         fields=[Field(formula="*:count"), Field(formula="nonexistent.some_measure:sum")],
     )
     with pytest.raises(ValueError, match="has no join to"):
-        engine.execute(query)
+        await engine.execute(query)
 
 
-def test_transform_on_cross_model(cross_model_env):
+async def test_transform_on_cross_model(cross_model_env):
     """Transforms on cross-model measures work (applied after the cross-model join)."""
     engine = cross_model_env
 
@@ -1068,7 +1068,7 @@ def test_transform_on_cross_model(cross_model_env):
         ],
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # Jan: Alice(90) → cumsum=90, Feb: Bob(60) → cumsum=150, Mar: Charlie(80)+Alice(90)=85 → cumsum=235
     assert response.data[0]["orders.running"] == pytest.approx(90.0)
@@ -1080,7 +1080,7 @@ def test_transform_on_cross_model(cross_model_env):
 # Query as model (multistage queries)
 # ---------------------------------------------------------------------------
 
-def test_query_as_model_count(integration_env):
+async def test_query_as_model_count(integration_env):
     """A named query can be used as the model for another query via list."""
     engine = integration_env
 
@@ -1096,13 +1096,13 @@ def test_query_as_model_count(integration_env):
 
     # Outer: count how many months exist (references "monthly" by name)
     outer = SlayerQuery(source_model="monthly", fields=[Field(formula="*:count")])
-    response = engine.execute(query=[inner, outer])
+    response = await engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
     assert response.data[0]["monthly._count"] == 3
 
 
-def test_query_as_model_aggregate(integration_env):
+async def test_query_as_model_aggregate(integration_env):
     """Outer query can aggregate over inner query's computed values."""
     engine = integration_env
 
@@ -1116,13 +1116,13 @@ def test_query_as_model_aggregate(integration_env):
     )
 
     outer = SlayerQuery(source_model="monthly", fields=[Field(formula="total_amount_sum:sum")])
-    response = engine.execute(query=[inner, outer])
+    response = await engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
     assert response.data[0]["monthly.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
-def test_create_model_from_query(integration_env):
+async def test_create_model_from_query(integration_env):
     """A query can be saved as a permanent model and then queried by name."""
     engine = integration_env
 
@@ -1134,7 +1134,7 @@ def test_create_model_from_query(integration_env):
         )],
         fields=[Field(formula="*:count"), Field(formula="total_amount:sum")],
     )
-    saved = engine.create_model_from_query(
+    saved = await engine.create_model_from_query(
         query=source_query, name="monthly_summary",
     )
 
@@ -1146,19 +1146,19 @@ def test_create_model_from_query(integration_env):
     assert saved.source_queries is not None
 
     # Query the saved model by name
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="monthly_summary", fields=[Field(formula="*:count")],
     ))
     assert result.data[0]["monthly_summary._count"] == 3
 
     # Re-aggregate over saved model
-    result2 = engine.execute(query=SlayerQuery(
+    result2 = await engine.execute(query=SlayerQuery(
         source_model="monthly_summary", fields=[Field(formula="total_amount_sum:sum")],
     ))
     assert result2.data[0]["monthly_summary.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
-def test_query_list_with_joins(cross_model_env):
+async def test_query_list_with_joins(cross_model_env):
     """A query list where the main query joins to a named sub-query."""
     engine = cross_model_env
 
@@ -1189,7 +1189,7 @@ def test_query_list_with_joins(cross_model_env):
         order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
     )
 
-    response = engine.execute(query=[sub, main])
+    response = await engine.execute(query=[sub, main])
 
     assert response.row_count == 3
     # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
@@ -1202,7 +1202,7 @@ def test_query_list_with_joins(cross_model_env):
 # Expanded dimensions (SQL expressions)
 # ---------------------------------------------------------------------------
 
-def test_sql_dimension_via_model_extension(integration_env):
+async def test_sql_dimension_via_model_extension(integration_env):
     """SQL expression dimension via ModelExtension: CASE to bucket amounts."""
     engine = integration_env
 
@@ -1214,14 +1214,14 @@ def test_sql_dimension_via_model_extension(integration_env):
         dimensions=[ColumnRef(name="tier")],
         fields=[Field(formula="*:count")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     by_tier = {r["orders.tier"]: r["orders._count"] for r in response.data}
     assert by_tier["high"] == 2
     assert by_tier["low"] == 4
 
 
-def test_sql_dimension_with_regular(integration_env):
+async def test_sql_dimension_with_regular(integration_env):
     """SQL dimension via ModelExtension mixed with regular dimension."""
     engine = integration_env
 
@@ -1233,7 +1233,7 @@ def test_sql_dimension_with_regular(integration_env):
         dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
         fields=[Field(formula="*:count")],
     )
-    response = engine.execute(query)
+    response = await engine.execute(query)
 
     # completed has 3 orders: 100(low), 200(high), 300(high)
     data = {(r["orders.status"], r["orders.tier"]): r["orders._count"] for r in response.data}
@@ -1241,7 +1241,7 @@ def test_sql_dimension_with_regular(integration_env):
     assert data[("completed", "low")] == 1
 
 
-def test_formula_dimension_via_query_list(integration_env):
+async def test_formula_dimension_via_query_list(integration_env):
     """Formula dimensions on aggregates work via multistage query list."""
     engine = integration_env
 
@@ -1266,7 +1266,7 @@ def test_formula_dimension_via_query_list(integration_env):
         fields=[Field(formula="*:count")],
     )
 
-    response = engine.execute(query=[inner, outer])
+    response = await engine.execute(query=[inner, outer])
 
     # Jan(300)=high, Feb(125)=low, Mar(325)=high
     by_tier = {r["monthly.amount_tier"]: r["monthly._count"] for r in response.data}
@@ -1274,7 +1274,7 @@ def test_formula_dimension_via_query_list(integration_env):
     assert by_tier["low"] == 1
 
 
-def test_circular_query_reference_raises(integration_env):
+async def test_circular_query_reference_raises(integration_env):
     """Circular references between named queries should error clearly."""
     engine = integration_env
 
@@ -1282,10 +1282,10 @@ def test_circular_query_reference_raises(integration_env):
     q2 = SlayerQuery(name="b", source_model="a", fields=[Field(formula="*:count")])
     main = SlayerQuery(source_model="a", fields=[Field(formula="*:count")])
     with pytest.raises(ValueError, match="Circular reference"):
-        engine.execute(query=[q1, q2, main])
+        await engine.execute(query=[q1, q2, main])
 
 
-def test_circular_join_graph_raises(tmp_path):
+async def test_circular_join_graph_raises(tmp_path):
     """Circular joins between stored models should error when walking the join graph."""
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
@@ -1299,17 +1299,17 @@ def test_circular_join_graph_raises(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
     # Circular joins: a → b → a
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="a", sql_table="a", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="b_id", sql="b_id", type=DataType.NUMBER)],
         measures=[],
         joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
     ))
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="b", sql_table="b", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="a_id", sql="a_id", type=DataType.NUMBER),
@@ -1328,14 +1328,14 @@ def test_circular_join_graph_raises(tmp_path):
         fields=[Field(formula="*:count")],
     )
     with pytest.raises(ValueError, match="Circular join"):
-        engine.execute(query)
+        await engine.execute(query)
 
 
 # ---------------------------------------------------------------------------
 # Model filters on joined columns
 # ---------------------------------------------------------------------------
 
-def test_model_filter_on_joined_column(tmp_path):
+async def test_model_filter_on_joined_column(tmp_path):
     """Model-level filter on a joined column applies WHERE correctly."""
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
@@ -1351,8 +1351,8 @@ def test_model_filter_on_joined_column(tmp_path):
     storage_dir = tmp_path / "storage"
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
-    storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
-    storage.save_model(SlayerModel(
+    await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
+    await storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         dimensions=[
             Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
@@ -1361,7 +1361,7 @@ def test_model_filter_on_joined_column(tmp_path):
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         filters=["customers.region == 'US'"],
     ))
-    storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="name", sql="name", type=DataType.STRING),
@@ -1372,7 +1372,7 @@ def test_model_filter_on_joined_column(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
 
     # Model filter "customers.region == 'US'" should exclude Bob (EU)
-    result = engine.execute(SlayerQuery(
+    result = await engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=[ColumnRef(name="customers.name")],
         fields=[Field(formula="*:count")],
@@ -1393,7 +1393,7 @@ def test_model_filter_on_joined_column(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def diamond_env(tmp_path):
+async def diamond_env(tmp_path):
     """Schema: shipments → customers → regions, shipments → warehouses → regions.
 
     Two paths to regions, requiring path-based aliases to disambiguate.
@@ -1433,21 +1433,21 @@ def diamond_env(tmp_path):
 
     storage = YAMLStorage(base_dir=str(tmp_path / "slayer_data"))
     ds = DatasourceConfig(name="diamond_db", type="sqlite", database=str(db_path))
-    storage.save_datasource(ds)
+    await storage.save_datasource(ds)
     models = ingest_datasource(datasource=ds)
     for m in models:
-        storage.save_model(m)
+        await storage.save_model(m)
 
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage
 
 
-def test_diamond_joins_both_paths(diamond_env):
+async def test_diamond_joins_both_paths(diamond_env):
     """Query both customer region and warehouse region in one query — must not collide."""
     engine, storage = diamond_env
 
     # Verify the ingested model has its own columns (not flattened joined dims)
-    shipments = storage.get_model("shipments")
+    shipments = await storage.get_model("shipments")
     dim_names = {d.name for d in shipments.dimensions}
     assert "customer_id" in dim_names
     assert "warehouse_id" in dim_names
@@ -1455,7 +1455,7 @@ def test_diamond_joins_both_paths(diamond_env):
     assert not any("." in name for name in dim_names)
 
     # Query both region paths simultaneously — resolved via join graph
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="shipments",
         dimensions=[
             ColumnRef(name="customers.regions.name"),
@@ -1480,11 +1480,11 @@ def test_diamond_joins_both_paths(diamond_env):
     assert "warehouses__regions" in result.sql
 
 
-def test_query_filter_on_joined_dimension(diamond_env):
+async def test_query_filter_on_joined_dimension(diamond_env):
     """Query-level filter on a joined dimension resolves through the model."""
     engine, _ = diamond_env
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="shipments",
         fields=[Field(formula="*:count")],
         filters=["customers.regions.name == 'US'"],
@@ -1495,11 +1495,11 @@ def test_query_filter_on_joined_dimension(diamond_env):
     assert "customers__regions" in result.sql
 
 
-def test_diamond_joins_single_path(diamond_env):
+async def test_diamond_joins_single_path(diamond_env):
     """Query only one path — should work without including the other."""
     engine, _ = diamond_env
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="shipments",
         dimensions=[ColumnRef(name="customers.regions.name")],
         fields=[Field(formula="*:count")],
@@ -1515,19 +1515,19 @@ def test_diamond_joins_single_path(diamond_env):
 # ---------------------------------------------------------------------------
 
 
-def test_filtered_measure_sum(integration_env):
+async def test_filtered_measure_sum(integration_env):
     """Measure with filter produces CASE WHEN — only matching rows aggregated."""
     engine = integration_env
     storage = engine.storage
 
     # Add a filtered measure: only sum completed orders' amounts
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[
             Field(formula="total_amount:sum"),
@@ -1542,18 +1542,18 @@ def test_filtered_measure_sum(integration_env):
     assert completed == pytest.approx(600.0)
 
 
-def test_filtered_measure_count(integration_env):
+async def test_filtered_measure_count(integration_env):
     """Filtered count measure counts only matching rows."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_count", sql="id", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[
             Field(formula="*:count"),
@@ -1567,18 +1567,18 @@ def test_filtered_measure_count(integration_env):
     assert completed == 3
 
 
-def test_filtered_measure_with_dimensions(integration_env):
+async def test_filtered_measure_with_dimensions(integration_env):
     """Filtered measure works with GROUP BY dimensions."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[Field(formula="completed_revenue:sum")],
         dimensions=[ColumnRef(name="status")],
@@ -1593,7 +1593,7 @@ def test_filtered_measure_with_dimensions(integration_env):
             assert row["orders.completed_revenue_sum"] is None
 
 
-def test_filtered_last_picks_correct_row(integration_env):
+async def test_filtered_last_picks_correct_row(integration_env):
     """Filtered last measure picks the latest row that matches the filter,
     not the globally latest row.
 
@@ -1603,14 +1603,14 @@ def test_filtered_last_picks_correct_row(integration_env):
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_latest", sql="amount", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
     # Query with monthly granularity so we get per-month last values
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         time_dimensions=[
             TimeDimension(
@@ -1640,19 +1640,19 @@ def test_filtered_last_picks_correct_row(integration_env):
     assert feb["orders.completed_latest_last"] is None
 
 
-def test_time_dimension_label_fallback(integration_env):
+async def test_time_dimension_label_fallback(integration_env):
     """Time dimension inherits label from model dimension definition."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     for d in orders.dimensions:
         if d.name == "created_at":
             d.label = "Order Date"
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
     # Query with time dimension but no explicit label on TimeDimension
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         time_dimensions=[
             TimeDimension(
@@ -1668,12 +1668,12 @@ def test_time_dimension_label_fallback(integration_env):
     assert td_meta.label == "Order Date"
 
 
-def test_label_propagation_enrichment(integration_env):
+async def test_label_propagation_enrichment(integration_env):
     """Model-level labels propagate through enrichment to query results."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     # Add labels to a dimension and measure
     for d in orders.dimensions:
         if d.name == "status":
@@ -1681,9 +1681,9 @@ def test_label_propagation_enrichment(integration_env):
     orders.measures.append(
         Measure(name="labeled_rev", sql="amount", label="Total Revenue")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[Field(formula="labeled_rev:sum")],
         dimensions=[ColumnRef(name="status")],
