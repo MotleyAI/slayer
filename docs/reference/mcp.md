@@ -9,7 +9,7 @@ The fastest way to run SLayer is via `uvx` — no install needed. You only need 
 **Claude Code:**
 
 ```bash
-claude mcp add slayer -- uvx --from 'motley-slayer[mcp,postgres]' slayer mcp --storage ./slayer_data
+claude mcp add slayer -- uvx --from 'motley-slayer[postgres]' slayer mcp --storage ./slayer_data
 ```
 
 **JSON config** (Claude Desktop, Cursor, and other MCP-compatible agents):
@@ -19,13 +19,13 @@ claude mcp add slayer -- uvx --from 'motley-slayer[mcp,postgres]' slayer mcp --s
   "mcpServers": {
     "slayer": {
       "command": "uvx",
-      "args": ["--from", "motley-slayer[mcp,postgres]", "slayer", "mcp", "--storage", "./slayer_data"]
+      "args": ["--from", "motley-slayer[postgres]", "slayer", "mcp", "--storage", "./slayer_data"]
     }
   }
 }
 ```
 
-Replace `postgres` with your database driver (see [full list](../configuration/datasources.md#database-drivers)), or use `motley-slayer[all]` for all supported databases. SQLite works with just `motley-slayer[mcp]`.
+Replace `postgres` with your database driver (see [full list](../configuration/datasources.md#database-drivers)), or use `motley-slayer[all]` for all supported databases. SQLite and MCP work out of the box with the base install.
 
 See the [Getting Started guide](../getting-started/mcp.md) for full setup instructions including SSE/remote and permanent install options.
 
@@ -42,7 +42,7 @@ The agent spawns SLayer as a subprocess and communicates via stdin/stdout. You d
 MCP over HTTP via Server-Sent Events. You run `slayer serve` yourself — it exposes both the REST API and the MCP SSE endpoint on the same port:
 
 ```bash
-uvx --from 'motley-slayer[mcp,postgres]' slayer serve --storage ./slayer_data
+uvx --from 'motley-slayer[postgres]' slayer serve --storage ./slayer_data
 # REST API at http://localhost:5143/
 # MCP SSE at http://localhost:5143/mcp/sse
 ```

@@ -13,13 +13,13 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) — the fa
 Register SLayer as an MCP server — Claude Code will spawn it automatically when needed:
 
 ```bash
-claude mcp add slayer -- uvx --from 'motley-slayer[mcp]' slayer mcp --storage ./slayer_data
+claude mcp add slayer -- uvx --from motley-slayer slayer mcp --storage ./slayer_data
 ```
 
 For databases other than SQLite, add the driver extra (see [full list](../configuration/datasources.md#database-drivers)):
 
 ```bash
-claude mcp add slayer -- uvx --from 'motley-slayer[mcp,postgres]' slayer mcp --storage ./slayer_data
+claude mcp add slayer -- uvx --from 'motley-slayer[postgres]' slayer mcp --storage ./slayer_data
 ```
 
 ### Other agents (JSON config)
@@ -31,7 +31,7 @@ Most MCP-compatible agents accept a JSON server configuration. Add this to your 
   "mcpServers": {
     "slayer": {
       "command": "uvx",
-      "args": ["--from", "motley-slayer[mcp,postgres]", "slayer", "mcp", "--storage", "./slayer_data"]
+      "args": ["--from", "motley-slayer[postgres]", "slayer", "mcp", "--storage", "./slayer_data"]
     }
   }
 }
@@ -95,6 +95,6 @@ The agent should call `datasource_summary` and return a list of your tables/mode
 If you prefer a traditional install instead of `uvx`:
 
 ```bash
-uv tool install 'motley-slayer[mcp,postgres]'
+uv tool install 'motley-slayer[postgres]'
 claude mcp add slayer -- slayer mcp --storage ./slayer_data
 ```

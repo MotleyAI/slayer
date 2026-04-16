@@ -113,7 +113,7 @@ def create_mcp_server(storage: StorageBackend):
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
-        raise ImportError("MCP support requires the 'mcp' extra: pip install motley-slayer[mcp]")
+        raise ImportError("MCP package not found. Reinstall SLayer: pip install motley-slayer")
 
     mcp = FastMCP(
         "SLayer",
