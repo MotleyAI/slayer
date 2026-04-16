@@ -95,7 +95,7 @@ class Dimension(BaseModel):
     label: Optional[str] = None
     hidden: bool = False
     format: Optional[NumberFormat] = None
-    extra: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
 
     @field_validator("name")
     @classmethod
@@ -148,7 +148,7 @@ class Measure(BaseModel):
     allowed_aggregations: Optional[List[str]] = None
     filter: Optional[str] = None
     format: Optional[NumberFormat] = None
-    extra: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
 
     @field_validator("name")
     @classmethod
@@ -207,7 +207,7 @@ class SlayerModel(BaseModel):
     default_time_dimension: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
-    extra: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
 
     @field_validator("filters")
     @classmethod

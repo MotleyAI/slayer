@@ -63,14 +63,21 @@ class SlayerClient:
     @staticmethod
     def _parse_response(result: dict) -> SlayerResponse:
         """Parse an API JSON response into a SlayerResponse."""
-        meta = {}
-        for k, v in (result.get("meta") or {}).items():
-            meta[k] = FieldMetadata(label=v.get("label"))
+        from slayer.engine.query_engine import ResponseAttributes
+
+        def _parse_meta_dict(d: dict) -> Dict[str, FieldMetadata]:
+            return {k: FieldMetadata(label=v.get("label")) for k, v in (d or {}).items()}
+
+        attrs_raw = result.get("attributes") or {}
+        attributes = ResponseAttributes(
+            dimensions=_parse_meta_dict(attrs_raw.get("dimensions")),
+            measures=_parse_meta_dict(attrs_raw.get("measures")),
+        )
         return SlayerResponse(
             data=result["data"],
             columns=result.get("columns") or [],
             sql=result.get("sql"),
-            meta=meta,
+            attributes=attributes,
         )
 
     # ----- Async API -----
