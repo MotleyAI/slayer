@@ -172,6 +172,7 @@ async def enrich_query(
 
         # Resolve measure-level filter
         filter_sql = None
+        filter_columns: List[str] = []
         if measure_def and measure_def.filter:
             parsed = parse_filter(measure_def.filter)
             resolved = await resolve_filter_columns(
@@ -182,6 +183,7 @@ async def enrich_query(
                 named_queries=named_queries,
             )
             filter_sql = resolved[0].sql
+            filter_columns = list(resolved[0].columns)
 
         measures.append(
             EnrichedMeasure(
@@ -196,6 +198,7 @@ async def enrich_query(
                 time_column=explicit_time_col,
                 source_measure_name=measure_name,
                 filter_sql=filter_sql,
+                filter_columns=filter_columns,
             )
         )
         known_aliases[alias_key] = alias
@@ -656,11 +659,16 @@ async def _resolve_joins(
                 parts = col.split(".")
                 for part in parts[:-1]:
                     needed_tables.add(part)
-    # Scan measure filters for dotted column references
+    # Scan measure filters for dotted column references — use the structured
+    # filter_columns from ParsedFilter rather than regexing rendered SQL.
+    # The regex approach can mis-fire on dotted literals (e.g. inside string
+    # literals like "description LIKE '%foo.bar%'") and pull in spurious joins.
     for m in measures:
-        if m.filter_sql and "." in m.filter_sql:
-            for match in _TABLE_COL_RE.finditer(m.filter_sql):
-                needed_tables.update(match.group(1).split("__"))
+        for col in m.filter_columns:
+            if "." in col:
+                parts = col.split(".")
+                for part in parts[:-1]:
+                    needed_tables.update(part.split("__"))
 
     # BFS transitive expansion
     expanded = set(needed_tables)

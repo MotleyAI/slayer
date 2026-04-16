@@ -1524,6 +1524,67 @@ class TestFilteredMeasures:
         # (would double-join). Count: only one occurrence of the join clause.
         assert sql.count("LEFT JOIN public.customers") == 1
 
+    async def test_filter_with_dotted_string_literal_does_not_pull_spurious_join(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Regression for CodeRabbit #6 — when a measure filter contains a string
+        literal that happens to include a dot (e.g. "url LIKE 'foo.bar%'"), the
+        join planner must NOT mistake the literal for a `customers.<col>` ref
+        and pull in an unwanted LEFT JOIN. The structured filter_columns from
+        ParsedFilter only lists real column references."""
+        from slayer.engine.enrichment import enrich_query
+
+        # Tracker: was resolve_join_target asked about 'foo'? If so, the regex
+        # path leaked. With structured filter_columns it should never be queried.
+        join_target_lookups: list = []
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            join_target_lookups.append(target_model_name)
+            return None
+
+        # Inline ModelJoin to a 'foo' model that resolve_join_target doesn't know.
+        # Without the fix, the regex pattern foo.bar inside a string literal
+        # would match _TABLE_COL_RE and add 'foo' to needed_tables.
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="url", sql="url", type=DataType.STRING),
+            ],
+            measures=[
+                Measure(
+                    name="vendor_revenue",
+                    sql="amount",
+                    # The dot inside the literal is what would trip the regex.
+                    filter="url LIKE 'foo.bar%'",
+                ),
+            ],
+            joins=[ModelJoin(target_model="foo", join_pairs=[["id", "id"]])],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="vendor_revenue:sum")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        # The 'foo' join must NOT have been pulled in.
+        assert "foo" not in join_target_lookups, (
+            f"Spurious join planning for 'foo' triggered by dotted string "
+            f"literal in filter; lookups: {join_target_lookups}"
+        )
+        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        assert "foo" not in join_aliases
+        # And confirm the SQL never gets a LEFT JOIN we didn't ask for.
+        sql = generator.generate(enriched=enriched)
+        assert "LEFT JOIN" not in sql
+
     async def test_two_filtered_lasts_same_source_different_filters_dont_collide(
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
