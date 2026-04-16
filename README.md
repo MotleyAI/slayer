@@ -8,7 +8,6 @@
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 
-
 **SLayer** is a lightweight semantic layer that lets AI agents query data without writing SQL.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
@@ -21,7 +20,7 @@ SLayer is a semantic layer that sits between your database and whatever consumes
 
 SLayer compiles these queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences so that consumers don't have to.
 
-#### SLayer is:
+#### SLayer is
 
 1. **dynamic** – models can be updated at any time and used immediately; aggregations are [defined in queries, not models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
 2. **simple** – query structure is intuitive and easily understood by LLMs and humans
@@ -33,17 +32,18 @@ Key features include [automatic model ingestion](https://motley-slayer.readthedo
 
 > Why not just let agents write SQL? Several reasons: accuracy, consistency, interpretability, and more – see our [blog post](https://motley.ai/blog-posts/why-generating-raw-sql-by-agents-is-hard) and dbt's [benchmark analysis](https://docs.getdbt.com/blog/semantic-layer-vs-text-to-sql-2026?version=1.12).
 
-
 ## Quickstart
 
 We recommend using [uv](https://docs.astral.sh/uv/), especially if you don't work in a Python project.
 
 To run the server:
+
 ```bash
 uvx --from 'motley-slayer[all]' slayer serve
 ```
 
 Or to add the MCP server:
+
 ```bash
 claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp
 ```
@@ -51,7 +51,6 @@ claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp
 Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#datasource-setup) or ask your agent to help you do it.
 
 Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
-
 
 ## Interfaces
 
@@ -83,6 +82,7 @@ claude mcp add slayer -- slayer mcp
 # 2. HTTP-based (SSE), provided SLayer server is already running
 claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
 ```
+
 SLayer **does not expose credentials** to consumers once created.
 
 Both transports expose the same tools, allowing to inspect, create and update datasources and models and run queries. More info in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/mcp/).
@@ -154,7 +154,6 @@ measures:
     sql: qty
 ```
 
-
 ## Fields
 
 The `fields` parameter specifies what data columns to return.
@@ -199,12 +198,12 @@ Filters use simple formula strings — no verbose JSON objects:
 
 Filters support a variety of operators, composition, pattern matching. Transforms & computed columns can also be used for filtering. See [docs](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/#filters) for more.
 
-
 ## Auto-Ingestion
 
 Connect to a database and generate models automatically. SLayer introspects the schema, detects foreign key relationships, and creates models with explicit join metadata.
 
 For example, given tables `orders → customers → regions` (via FKs), the `orders` model will automatically include:
+
 - Joined dimensions: `customers.name`, `regions.name`, etc. (dotted syntax)
 - Count-distinct measures: `customers.*:count_distinct`, `regions.*:count_distinct`
 - Explicit joins — LEFT JOINs are constructed dynamically at query time
@@ -219,10 +218,10 @@ curl -X POST http://localhost:5143/ingest \
 ```
 
 Via MCP, agents can do this conversationally:
+
 1. `create_datasource(name="mydb", type="postgres", host="localhost", database="app", username="user", password="pass")`
 2. `ingest_datasource_models(datasource_name="mydb", schema_name="public")`
 3. `datasource_summary()` → `inspect_model(model_name="orders")` → `query(...)`
-
 
 ## Datasource Setup
 
@@ -243,7 +242,6 @@ Environment variable references (`${VAR}`) are resolved at read time.
 
 See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/).
 
-
 ## Storage Backends
 
 SLayer ships with two storage backends:
@@ -255,31 +253,43 @@ SLayer allows easily implementing your own storage backends, which is useful for
 
 See the [documentation page for storage backends](https://motley-slayer.readthedocs.io/en/latest/configuration/storage/) for more.
 
+## Roadmap
+
+|   #   | Step                                            | Status |
+| :---: | ----------------------------------------------- | :----: |
+|   1   | Dynamic joins                                   |   ✅    |
+|   2   | Multi-stage queries                             |   ✅    |
+|   3   | Cross-model measures                            |   ✅    |
+|   4   | Aggregation at query time                       |   ✅    |
+|   5   | Unpivoting                                      |   ❌    |
+|   6   | Smart output formatting (currency, percentages) |   ❌    |
+|   7   | Auto-propagating filters                        |   ❌    |
+|   8   | Asof joins                                      |   ❌    |
+|   9   | Chart generation (eCharts)                      |   ❌    |
+
 ## Examples
 
 The `examples/` directory contains runnable examples that also serve as integration tests:
 
-| Example | Description |
-|---------|-------------|
-| [embedded](examples/embedded/) | SQLite, no server needed |
-| [postgres](examples/postgres/) | Docker Compose with Postgres + REST API |
-| [mysql](examples/mysql/) | Docker Compose with MySQL + REST API |
+| Example                            | Description                               |
+| ---------------------------------- | ----------------------------------------- |
+| [embedded](examples/embedded/)     | SQLite, no server needed                  |
+| [postgres](examples/postgres/)     | Docker Compose with Postgres + REST API   |
+| [mysql](examples/mysql/)           | Docker Compose with MySQL + REST API      |
 | [clickhouse](examples/clickhouse/) | Docker Compose with ClickHouse + REST API |
-
 
 ## Tutorials
 
 The `docs/examples/` directory contains Jupyter notebooks that walk through SLayer's features step by step.
 
-| Notebook | Topic |
-|----------|-------|
-| [SQL vs DSL](docs/examples/02_sql_vs_dsl/) | How model SQL and query DSL stay cleanly separated |
-| [Auto-Ingestion](docs/examples/03_auto_ingest/) | Schema introspection, FK graph discovery, automatic model generation |
-| [Time Operations](docs/examples/04_time/) | `change`, `change_pct`, `time_shift`, `lag`, `lead`, `last` — composable time transforms |
-| [Joins](docs/examples/05_joins/) | Dot syntax, multi-hop joins, diamond join disambiguation |
-| [Joined Measures](docs/examples/05_joined_measures/) | Cross-model measures with sub-query isolation |
-| [Multistage Queries](docs/examples/06_multistage_queries/) | Query chaining, queries-as-models, `ModelExtension` |
-
+| Notebook                                                   | Topic                                                                                    |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [SQL vs DSL](docs/examples/02_sql_vs_dsl/)                 | How model SQL and query DSL stay cleanly separated                                       |
+| [Auto-Ingestion](docs/examples/03_auto_ingest/)            | Schema introspection, FK graph discovery, automatic model generation                     |
+| [Time Operations](docs/examples/04_time/)                  | `change`, `change_pct`, `time_shift`, `lag`, `lead`, `last` — composable time transforms |
+| [Joins](docs/examples/05_joins/)                           | Dot syntax, multi-hop joins, diamond join disambiguation                                 |
+| [Joined Measures](docs/examples/05_joined_measures/)       | Cross-model measures with sub-query isolation                                            |
+| [Multistage Queries](docs/examples/06_multistage_queries/) | Query chaining, queries-as-models, `ModelExtension`                                      |
 
 ## Claude Code Skills
 
@@ -289,12 +299,10 @@ SLayer includes Claude Code skills in `.claude/skills/` to help Claude understan
 - **slayer-query** — how to construct queries with fields, dimensions, filters, time dimensions
 - **slayer-models** — model definitions, datasource configs, auto-ingestion, incremental editing
 
-
 ## Known limitations
 
 SLayer currently has no caching or pre-aggregation engine.
 If you need to process lots of requests to large databases at sub-second latency, consider adding a caching layer or pre-aggregation engine.
-
 
 ## License
 
