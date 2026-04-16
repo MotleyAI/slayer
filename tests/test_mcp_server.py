@@ -733,3 +733,41 @@ class TestFormatTable:
         result = _format_table(data=data, columns=["x"], max_rows=10)
         assert "100 total rows" in result
         assert "showing first 10" in result
+
+
+class TestHelp:
+    async def test_no_arg_returns_intro(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="help")
+        assert "SLayer" in result
+        # At least one of the landing-page invariants should be present
+        assert any(
+            phrase in result
+            for phrase in (
+                "Measures are not aggregates",
+                "Joined data is reached",
+                "Filters on measures",
+            )
+        )
+
+    async def test_valid_topic_returns_body(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="help", arguments={"topic": "transforms"})
+        # The transforms topic should mention the key transform names
+        assert "cumsum" in result
+        assert "change" in result
+        assert "time_shift" in result
+
+    async def test_invalid_topic_returns_friendly_error(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="help", arguments={"topic": "bogus"})
+        assert "Unknown help topic" in result
+        assert "bogus" in result
+        # The error should list every valid topic
+        for name in ("queries", "formulas", "transforms", "workflow"):
+            assert name in result
+
+    async def test_tool_description_carries_topic_list(self, mcp_server) -> None:
+        tools = await mcp_server.list_tools()
+        help_tool = next(t for t in tools if t.name == "help")
+        assert help_tool.description is not None
+        assert "Available help topics:" in help_tool.description
+        for name in ("queries", "formulas", "transforms", "workflow"):
+            assert name in help_tool.description

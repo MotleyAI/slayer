@@ -106,6 +106,27 @@ claude mcp list
 |------|-------------|
 | `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. |
 
+### Conceptual Help
+
+| Tool | Description |
+|------|-------------|
+| `help` | Return SLayer concept explanations that complement the schema-focused tool docstrings. Call without arguments for the intro; pass `topic="..."` for a deep dive. The tool description lists every available topic — no exploratory call needed. |
+
+Available topics and what they cover (content lives in `slayer/help/topics/*.md`, discovered dynamically):
+
+| Topic | Covers |
+|-------|--------|
+| `queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
+| `formulas` | The [formula mini-language](../concepts/formulas.md) shared by `fields` and `filters`; colon syntax; arithmetic; nesting |
+| `aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
+| `transforms` | `cumsum`, `time_shift`, `change`, `lag`, `rank`, `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
+| `time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
+| `filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
+| `joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
+| `models` | `sql_table` vs `sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
+| `extending` | `ModelExtension`, query lists, `create_model_from_query` ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
+| `workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
+
 ## Typical Agent Workflows
 
 ### Connect and explore a new database

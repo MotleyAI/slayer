@@ -245,6 +245,28 @@ examples:
     datasources_test_parser = datasources_subparsers.add_parser("test", help="Test datasource connectivity")
     datasources_test_parser.add_argument("name", help="Datasource name")
 
+    # ── help ──────────────────────────────────────────────────────────
+    from slayer.help import TOPIC_SUMMARY_LINE
+
+    help_parser = subparsers.add_parser(
+        "help",
+        help="Show conceptual help on SLayer (concepts, query composition, transforms, joins, workflow)",
+        epilog=(
+            f"{TOPIC_SUMMARY_LINE}\n\n"
+            "examples:\n"
+            "  slayer help                  # intro\n"
+            "  slayer help queries          # deep dive on a topic\n"
+            "  slayer help transforms\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    help_parser.add_argument(
+        "topic",
+        nargs="?",
+        default=None,
+        help="Topic name (optional). If omitted, prints the intro.",
+    )
+
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -259,9 +281,17 @@ examples:
         _run_models(args)
     elif args.command == "datasources":
         _run_datasources(args)
+    elif args.command == "help":
+        _run_help(args)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_help(args):
+    from slayer.help import render_help
+
+    print(render_help(topic=args.topic))
 
 
 def _run_query(args):

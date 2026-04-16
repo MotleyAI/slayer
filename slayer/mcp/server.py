@@ -16,6 +16,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.help import TOPIC_SUMMARY_LINE, render_help
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -120,11 +121,24 @@ def create_mcp_server(storage: StorageBackend):
         instructions=(
             "SLayer is a semantic layer for querying databases. "
             "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
+            "Call help() for an overview of SLayer concepts, and help(topic='...') for deep dives on specific topics. "
             "Typical workflow: datasource_summary → inspect_model → query. "
             "To connect a new database: create_datasource → describe_datasource (to verify) → ingest_datasource_models → datasource_summary."
         ),
     )
     engine = SlayerQueryEngine(storage=storage)
+
+    _help_description = (
+        "Return conceptual help on SLayer. "
+        "Call without a topic for the intro (what SLayer is, core entities, the query shape). "
+        "Pass a topic name for a deep dive. "
+        f"{TOPIC_SUMMARY_LINE} "
+        "Args: topic (optional) — the topic name. Unknown topics return a friendly error listing the valid ones."
+    )
+
+    @mcp.tool(description=_help_description)
+    async def help(topic: Optional[str] = None) -> str:  # noqa: A001 — intentional shadow of builtin inside factory
+        return render_help(topic=topic)
 
     @mcp.tool()
     async def query(
