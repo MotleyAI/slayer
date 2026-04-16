@@ -169,6 +169,15 @@ examples:
         action="store_true",
         help="Don't restrict measures to their dbt-defined aggregation types",
     )
+    import_dbt_parser.add_argument(
+        "--include-hidden-models",
+        action="store_true",
+        help=(
+            "Also import regular dbt models (those not wrapped by a semantic_model) "
+            "as hidden SLayer models via SQL introspection. Requires dbt-core "
+            "(pip install 'motley-slayer[dbt]') and a working connection on --datasource."
+        ),
+    )
     _add_storage_arg(import_dbt_parser)
 
     # ── models ────────────────────────────────────────────────────────
@@ -372,6 +381,7 @@ def _run_ingest(args):
 
 
 def _run_import_dbt(args):
+    import sqlalchemy as sa
     import yaml as _yaml
 
     from slayer.dbt.converter import DbtToSlayerConverter
@@ -380,21 +390,47 @@ def _run_import_dbt(args):
     storage = _resolve_storage(args)
     project = parse_dbt_project(args.dbt_project_path)
 
-    if not project.semantic_models:
+    include_hidden = bool(args.include_hidden_models)
+    if not project.semantic_models and not (include_hidden and project.regular_models):
         print(f"No semantic models found in {args.dbt_project_path}")
         sys.exit(1)
 
-    converter = DbtToSlayerConverter(
-        project=project,
-        data_source=args.datasource,
-        strict_aggregations=not args.no_strict_aggregations,
-    )
-    result = converter.convert()
+    sa_engine = None
+    if include_hidden:
+        ds = storage.get_datasource(args.datasource)
+        if ds is None:
+            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+            print(
+                f"Datasource '{args.datasource}' not found in {storage_path}; "
+                "required for --include-hidden-models."
+            )
+            sys.exit(1)
+        sa_engine = sa.create_engine(ds.resolve_env_vars().get_connection_string())
+
+    try:
+        converter = DbtToSlayerConverter(
+            project=project,
+            data_source=args.datasource,
+            strict_aggregations=not args.no_strict_aggregations,
+            sa_engine=sa_engine,
+            include_hidden_models=include_hidden,
+        )
+        result = converter.convert()
+    finally:
+        if sa_engine is not None:
+            sa_engine.dispose()
 
     # Save models
+    hidden_count = 0
     for model in result.models:
         storage.save_model(model)
-        print(f"Imported model: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+        suffix = " [hidden]" if model.hidden else ""
+        if model.hidden:
+            hidden_count += 1
+        print(
+            f"Imported model: {model.name}{suffix} "
+            f"({len(model.dimensions)} dims, {len(model.measures)} measures)"
+        )
 
     # Save queries to queries.yaml if any
     if result.queries:
@@ -409,7 +445,11 @@ def _run_import_dbt(args):
         context = w.model_name or w.metric_name or "general"
         print(f"  WARNING [{context}]: {w.message}")
 
-    print(f"\nDone: {len(result.models)} models, {len(result.queries)} queries, {len(result.warnings)} warnings")
+    visible_count = len(result.models) - hidden_count
+    print(
+        f"\nDone: {visible_count} models, {hidden_count} hidden, "
+        f"{len(result.queries)} queries, {len(result.warnings)} warnings"
+    )
 
 
 def _run_models(args):

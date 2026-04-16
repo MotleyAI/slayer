@@ -1,11 +1,17 @@
 """Tests for the dbt-to-SLayer converter."""
 
 import textwrap
+from unittest.mock import MagicMock, patch
 
+import sqlalchemy as sa
+from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
+from slayer.core.models import Dimension, Measure, SlayerModel
+from slayer.dbt import converter as converter_module
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import (
+    DbtColumnMeta,
     DbtDefaults,
     DbtDimension,
     DbtEntity,
@@ -14,6 +20,7 @@ from slayer.dbt.models import (
     DbtMetricInput,
     DbtMetricTypeParams,
     DbtProject,
+    DbtRegularModel,
     DbtSemanticModel,
 )
 from slayer.dbt.parser import parse_dbt_project
@@ -355,3 +362,142 @@ class TestParserRoundTrip:
         rev_measure = next(me for me in m.measures if me.name == "revenue")
         assert rev_measure.label == "Revenue"
         assert rev_measure.allowed_aggregations == ["sum"]
+
+
+def _sample_slayer_model(name: str = "raw_events") -> SlayerModel:
+    """A realistic result of introspecting a regular dbt model."""
+    return SlayerModel(
+        name=name,
+        sql_table="staging.raw_events",
+        data_source="test_db",
+        dimensions=[
+            Dimension(name="event_id", sql="event_id", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="event_type", sql="event_type", type=DataType.STRING),
+        ],
+        measures=[
+            Measure(name="event_type", sql="event_type"),
+        ],
+    )
+
+
+def _project_with_orphan(
+    *,
+    with_semantic: bool = True,
+    orphan_name: str = "raw_events",
+    extra_column_descriptions: bool = True,
+) -> DbtProject:
+    semantic_models = []
+    if with_semantic:
+        semantic_models.append(
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                dimensions=[DbtDimension(name="status", type="categorical")],
+                measures=[DbtMeasure(name="total", agg="sum", expr="amount")],
+            )
+        )
+    columns = []
+    if extra_column_descriptions:
+        columns = [
+            DbtColumnMeta(name="event_id", description="Unique event identifier"),
+            DbtColumnMeta(name="event_type", description="Category of event"),
+        ]
+    return DbtProject(
+        semantic_models=semantic_models,
+        metrics=[],
+        regular_models=[
+            DbtRegularModel(
+                name=orphan_name,
+                schema_name="staging",
+                alias=orphan_name,
+                description="Raw event log",
+                columns=columns,
+            ),
+        ],
+    )
+
+
+class TestRegularModelConversion:
+    """Hidden-model import from regular dbt models."""
+
+    def test_default_off_skips_regular_models(self) -> None:
+        project = _project_with_orphan()
+        # No sa_engine, no flag — hidden-model pass must be a no-op.
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        assert all(not m.hidden for m in result.models)
+        assert [m.name for m in result.models] == ["orders"]
+
+    def test_opt_in_without_engine_warns_and_skips(self) -> None:
+        project = _project_with_orphan()
+        result = DbtToSlayerConverter(
+            project=project, data_source="test_db", include_hidden_models=True,
+        ).convert()
+        assert [m.name for m in result.models] == ["orders"]
+        assert any("no SQLAlchemy engine" in w.message for w in result.warnings)
+
+    def test_opt_in_with_engine_produces_hidden_model(self) -> None:
+        project = _project_with_orphan()
+        engine = MagicMock(spec=sa.Engine)
+        fake_model = _sample_slayer_model(name="raw_events")
+
+        with patch.object(sa, "inspect", return_value=MagicMock()), \
+             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
+            result = DbtToSlayerConverter(
+                project=project,
+                data_source="test_db",
+                include_hidden_models=True,
+                sa_engine=engine,
+            ).convert()
+
+        hidden = [m for m in result.models if m.hidden]
+        assert len(hidden) == 1
+        raw = hidden[0]
+        assert raw.name == "raw_events"
+        # Model description overlaid from dbt manifest
+        assert raw.description == "Raw event log"
+        # Column descriptions overlaid onto dimensions
+        event_id_dim = next(d for d in raw.dimensions if d.name == "event_id")
+        assert event_id_dim.description == "Unique event identifier"
+
+    def test_introspection_failure_is_skipped_with_warning(self) -> None:
+        project = _project_with_orphan()
+        engine = MagicMock(spec=sa.Engine)
+
+        def raise_err(**_kwargs):
+            raise SQLAlchemyError("table not found")
+
+        with patch.object(sa, "inspect", return_value=MagicMock()), \
+             patch.object(converter_module, "introspect_table_to_model", side_effect=raise_err):
+            result = DbtToSlayerConverter(
+                project=project,
+                data_source="test_db",
+                include_hidden_models=True,
+                sa_engine=engine,
+            ).convert()
+
+        # Semantic model still came through
+        assert [m.name for m in result.models] == ["orders"]
+        # And a warning was recorded
+        assert any(w.model_name == "raw_events" for w in result.warnings)
+
+    def test_name_collision_prefers_semantic_model(self) -> None:
+        # Regular model named the same as the semantic model — must be skipped
+        # so the semantic (visible) model is not shadowed.
+        project = _project_with_orphan(orphan_name="orders")
+        engine = MagicMock(spec=sa.Engine)
+        fake_model = _sample_slayer_model(name="orders")
+
+        with patch.object(sa, "inspect", return_value=MagicMock()), \
+             patch.object(converter_module, "introspect_table_to_model", return_value=fake_model):
+            result = DbtToSlayerConverter(
+                project=project,
+                data_source="test_db",
+                include_hidden_models=True,
+                sa_engine=engine,
+            ).convert()
+
+        # Only the semantic (visible) model survives under the name 'orders'
+        assert len(result.models) == 1
+        assert result.models[0].name == "orders"
+        assert not result.models[0].hidden

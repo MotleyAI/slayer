@@ -8,6 +8,7 @@ import logging
 from collections import defaultdict
 from typing import Dict, List, Optional
 
+import sqlalchemy as sa
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
@@ -19,8 +20,10 @@ from slayer.dbt.models import (
     DbtMeasure,
     DbtMetric,
     DbtProject,
+    DbtRegularModel,
     DbtSemanticModel,
 )
+from slayer.engine.ingestion import introspect_table_to_model
 
 logger = logging.getLogger(__name__)
 
@@ -160,10 +163,14 @@ class DbtToSlayerConverter:
         project: DbtProject,
         data_source: str,
         strict_aggregations: bool = True,
+        sa_engine: Optional[sa.Engine] = None,
+        include_hidden_models: bool = False,
     ) -> None:
         self.project = project
         self.data_source = data_source
         self.strict_aggregations = strict_aggregations
+        self.sa_engine = sa_engine
+        self.include_hidden_models = include_hidden_models
         self.entity_registry = EntityRegistry()
         self._warnings: List[ConversionWarning] = []
         # {model_name: SlayerModel} for metric resolution
@@ -194,11 +201,89 @@ class DbtToSlayerConverter:
             if query is not None:
                 queries.append(query)
 
+        # 5. Convert orphan regular dbt models into hidden SLayer models
+        if self.include_hidden_models and self.project.regular_models:
+            models.extend(self._convert_regular_models(existing_names={m.name for m in models}))
+
         return ConversionResult(
             models=models,
             queries=queries,
             warnings=self._warnings,
         )
+
+    def _convert_regular_models(self, existing_names: set) -> List[SlayerModel]:
+        """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models.
+
+        Requires a live SQLAlchemy engine for SQL introspection. If no engine was
+        provided, logs one warning and returns [].
+        """
+        if self.sa_engine is None:
+            self._warnings.append(ConversionWarning(
+                message=(
+                    "include_hidden_models=True but no SQLAlchemy engine was provided; "
+                    "skipping regular-model import."
+                ),
+            ))
+            return []
+
+        engine = self.sa_engine
+        inspector = sa.inspect(engine)
+        results: List[SlayerModel] = []
+        for rm in self.project.regular_models:
+            if rm.name in existing_names:
+                # A semantic_model with the same name already produced a visible
+                # SLayer model; don't shadow it with a hidden import.
+                continue
+            converted = self._convert_regular_model(rm=rm, sa_engine=engine, inspector=inspector)
+            if converted is not None:
+                results.append(converted)
+                existing_names.add(converted.name)
+        return results
+
+    def _convert_regular_model(
+        self,
+        rm: DbtRegularModel,
+        sa_engine: sa.Engine,
+        inspector: sa.engine.Inspector,
+    ) -> Optional[SlayerModel]:
+        """Introspect a regular dbt model and wrap it as a hidden SlayerModel."""
+        table_name = rm.alias or rm.name
+        try:
+            model = introspect_table_to_model(
+                sa_engine=sa_engine,
+                inspector=inspector,
+                table_name=table_name,
+                schema=rm.schema_name,
+                data_source=self.data_source,
+                model_name=rm.name,
+            )
+        except Exception as exc:
+            self._warnings.append(ConversionWarning(
+                model_name=rm.name,
+                message=(
+                    f"Skipped hidden import of dbt model '{rm.name}' "
+                    f"(table '{table_name}'): {type(exc).__name__}: {exc}"
+                ),
+            ))
+            return None
+
+        model.hidden = True
+        if rm.description:
+            model.description = rm.description
+
+        # Overlay column-level descriptions from dbt manifest onto dims/measures.
+        col_descriptions = {c.name: c.description for c in rm.columns if c.description}
+        if col_descriptions:
+            for d in model.dimensions:
+                desc = col_descriptions.get(d.name)
+                if desc and not d.description:
+                    d.description = desc
+            for m in model.measures:
+                desc = col_descriptions.get(m.name)
+                if desc and not m.description:
+                    m.description = desc
+
+        return model
 
     def _convert_semantic_model(self, sm: DbtSemanticModel) -> SlayerModel:
         """Convert a single dbt semantic model to a SlayerModel."""

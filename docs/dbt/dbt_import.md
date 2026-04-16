@@ -140,6 +140,63 @@ The converter produces:
 2. **`queries.yaml`** — SlayerQuery definitions for derived/ratio/cumulative metrics (if any)
 3. **Console report** — summary of models imported, queries generated, and warnings
 
+## Regular dbt Models (Hidden Import)
+
+By default, `import-dbt` ingests only dbt models that are wrapped by a `semantic_model`. Every other dbt model — staging tables, marts that never got a semantic layer, raw sources materialized as models — stays invisible to SLayer.
+
+Pass `--include-hidden-models` to change that. SLayer will use dbt's own parser to enumerate every regular model in the project, skip the ones already represented by a `semantic_model`, introspect the materialized tables via SQL, and register each one as a **hidden** SLayer model (`hidden: true`).
+
+Hidden models are queryable by name via the REST API, MCP, and SQL engine but are excluded from discovery surfaces (`slayer models list`, MCP `datasource_summary`, and the hidden dimensions/measures of `GET /models/{name}`). Agents looking for what's available see only the curated semantic layer; agents that already know a table's name can still reach it.
+
+### Prerequisites
+
+Install the optional `dbt` extra so SLayer can invoke `dbt parse` and read `target/manifest.json`:
+
+```bash
+pip install 'motley-slayer[dbt]'
+# or, with Poetry:
+poetry install -E dbt
+```
+
+The datasource passed to `--datasource` must be able to open a live connection — SQL introspection reads actual column types from the warehouse.
+
+### Usage
+
+```bash
+slayer import-dbt ./my_dbt_project \
+  --datasource my_warehouse \
+  --include-hidden-models
+```
+
+Each hidden model is printed with a `[hidden]` marker. The final line summarises how many are visible vs hidden.
+
+### Metadata Carried Over
+
+When the dbt manifest supplies column-level documentation, it is overlaid onto the introspected dimensions/measures:
+
+- Model `description` → SlayerModel `description`
+- Column `description` → matching `Dimension.description` or `Measure.description` (only fills blanks — introspected values are not overwritten)
+
+Columns without a dbt description fall back to whatever SQL introspection produced.
+
+### Failure Semantics
+
+Hidden-model import is deliberately best-effort:
+
+- **dbt-core not installed**: logged once, the regular-model pass is skipped entirely, semantic-model import still runs.
+- **Table not materialized yet / connection error**: one warning per failed model, SLayer keeps going for the rest.
+- **Name collision**: if a regular model shares a name with a semantic model, the regular one is skipped — the visible semantic model wins.
+
+### Toggling Hidden Later
+
+The `hidden` flag lives on each SlayerModel, Dimension, and Measure. You can flip it with the MCP `edit_model` tool:
+
+```json
+{"model_name": "raw_events", "hidden": false}
+```
+
+This lets you promote a silently imported table to first-class visibility once you have decided it belongs in the semantic layer.
+
 ## Limitations
 
 - **Non-additive dimensions** (`non_additive_dimension`): not converted. Use `balance:last(time_col)` for snapshot measures, or multi-stage queries for complex patterns.
@@ -161,4 +218,7 @@ Options:
   --datasource NAME         SLayer datasource name for imported models (required)
   --storage PATH            Storage directory for output (default: ./slayer_data)
   --no-strict-aggregations  Allow all aggregation types (don't restrict to dbt's defined agg)
+  --include-hidden-models   Also import regular dbt models (not wrapped by a
+                            semantic_model) as hidden SLayer models via SQL
+                            introspection. Requires the `dbt` extra.
 ```

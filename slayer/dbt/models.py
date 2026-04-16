@@ -112,7 +112,32 @@ class DbtMetric(BaseModel):
     filter: Optional[str] = None
 
 
+class DbtColumnMeta(BaseModel):
+    """Column-level metadata from dbt's manifest for a regular (non-semantic) model."""
+    name: str
+    description: Optional[str] = None
+    data_type: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class DbtRegularModel(BaseModel):
+    """A regular dbt model (not wrapped by a semantic_model).
+
+    Extracted from ``manifest.json`` nodes of ``resource_type == "model"`` that
+    are not referenced by any ``semantic_model``. Carries just enough metadata
+    to introspect the materialized table and overlay dbt-documented descriptions.
+    """
+    name: str
+    database: Optional[str] = None
+    schema_name: Optional[str] = None  # avoids shadowing pydantic's `schema` method
+    alias: Optional[str] = None  # materialized table name; falls back to `name`
+    description: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    columns: List[DbtColumnMeta] = Field(default_factory=list)
+
+
 class DbtProject(BaseModel):
     """Aggregated result of parsing all YAML files in a dbt project."""
     semantic_models: List[DbtSemanticModel] = Field(default_factory=list)
     metrics: List[DbtMetric] = Field(default_factory=list)
+    regular_models: List[DbtRegularModel] = Field(default_factory=list)

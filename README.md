@@ -30,6 +30,7 @@ When AI agents write raw SQL, things break in production — hallucinated column
 - **Cross-model measures** — Query measures from joined models with dotted syntax and colon aggregation (`"customers.score:avg"`, multi-hop: `"customers.regions.name"`). Joins auto-resolved via graph walk. Transforms work on cross-model measures (`"cumsum(customers.score:avg)"`).
 - **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model for reuse. `ModelExtension` extends models inline with extra dimensions/joins.
 - **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at IS NULL"`).
+- **dbt import** — `slayer import-dbt` ingests dbt Semantic Layer definitions (semantic_models, metrics). Pass `--include-hidden-models` (requires the `dbt` extra) to also register every regular dbt model not wrapped by a `semantic_model` as a hidden SlayerModel via SQL introspection — agents can still query those tables by name, but they stay out of discovery listings. See [docs/dbt/dbt_import.md](docs/dbt/dbt_import.md).
 
 ### Roadmap
 - Unpivoting

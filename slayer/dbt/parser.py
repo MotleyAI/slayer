@@ -12,7 +12,8 @@ from typing import List
 
 import yaml
 
-from slayer.dbt.models import DbtMetric, DbtProject, DbtSemanticModel
+from slayer.dbt.manifest import load_or_generate_manifest, regular_models_from_manifest
+from slayer.dbt.models import DbtMetric, DbtProject, DbtRegularModel, DbtSemanticModel
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,26 @@ def parse_dbt_project(project_path: str) -> DbtProject:
             except Exception as e:
                 logger.warning("Failed to parse metric in %s: %s", path, e)
 
+    regular_models = _parse_regular_models(project_path)
+
     logger.info(
-        "Parsed dbt project: %d semantic models, %d metrics from %d files",
-        len(all_semantic_models), len(all_metrics), len(yaml_paths),
+        "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",
+        len(all_semantic_models), len(all_metrics), len(regular_models), len(yaml_paths),
     )
-    return DbtProject(semantic_models=all_semantic_models, metrics=all_metrics)
+    return DbtProject(
+        semantic_models=all_semantic_models,
+        metrics=all_metrics,
+        regular_models=regular_models,
+    )
+
+
+def _parse_regular_models(project_path: str) -> List[DbtRegularModel]:
+    """Discover regular (non-semantic) dbt models via the dbt manifest.
+
+    Returns an empty list when the manifest is absent and dbt-core is not
+    installed — the YAML-only path is still fully functional in that case.
+    """
+    manifest = load_or_generate_manifest(project_path)
+    if manifest is None:
+        return []
+    return regular_models_from_manifest(manifest)

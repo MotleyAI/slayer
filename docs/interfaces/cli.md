@@ -101,6 +101,23 @@ slayer ingest --datasource my_postgres --exclude migrations,django_session
 | `--exclude` | No | Comma-separated tables to exclude |
 | `--storage` | No | Storage path |
 
+### `slayer import-dbt`
+
+Import dbt Semantic Layer definitions into SLayer.
+
+```bash
+slayer import-dbt ./my_dbt_project --datasource my_postgres
+slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-models
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `dbt_project_path` | Yes | Path to the dbt project root (or a models directory) |
+| `--datasource` | Yes | SLayer datasource name for the imported models |
+| `--no-strict-aggregations` | No | Don't restrict measures to their dbt-defined aggregation types |
+| `--include-hidden-models` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer models via SQL introspection. Requires the `dbt` extra. |
+| `--storage` | No | Storage path |
+
 ### `slayer models`
 
 Manage models.

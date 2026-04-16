@@ -1,5 +1,6 @@
 """Tests for dbt YAML parser."""
 
+import json
 import textwrap
 
 import pytest
@@ -175,6 +176,53 @@ class TestParseDbtProject:
         assert m.name == "number_of_policies"
         assert m.expr == "1"
         assert isinstance(m.expr, str)
+
+
+class TestParseDbtProjectRegularModels:
+    def test_no_manifest_yields_empty_regular_models(self, dbt_project_dir) -> None:
+        project = parse_dbt_project(str(dbt_project_dir))
+        assert project.regular_models == []
+
+    def test_populates_regular_models_from_manifest(self, dbt_project_dir) -> None:
+        target = dbt_project_dir / "target"
+        target.mkdir()
+        manifest_payload = {
+            "nodes": {
+                "model.proj.orders": {
+                    "resource_type": "model",
+                    "name": "orders",
+                    "schema": "public",
+                    "alias": "orders",
+                    "columns": {},
+                },
+                "model.proj.raw_events": {
+                    "resource_type": "model",
+                    "name": "raw_events",
+                    "schema": "staging",
+                    "alias": "raw_events",
+                    "description": "Unwrapped raw events table",
+                    "columns": {
+                        "event_id": {"name": "event_id", "description": "PK"},
+                    },
+                },
+            },
+            "semantic_models": {
+                "semantic_model.proj.orders": {
+                    "name": "orders",
+                    "depends_on": {"nodes": ["model.proj.orders"]},
+                },
+            },
+        }
+        (target / "manifest.json").write_text(json.dumps(manifest_payload))
+
+        project = parse_dbt_project(str(dbt_project_dir))
+        assert len(project.regular_models) == 1
+        rm = project.regular_models[0]
+        assert rm.name == "raw_events"
+        assert rm.schema_name == "staging"
+        assert rm.description == "Unwrapped raw events table"
+        assert len(rm.columns) == 1
+        assert rm.columns[0].name == "event_id"
 
 
 class TestDbtMeasureExprCoercion:
