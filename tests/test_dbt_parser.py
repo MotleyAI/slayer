@@ -4,6 +4,7 @@ import textwrap
 
 import pytest
 
+from slayer.dbt.models import DbtMeasure
 from slayer.dbt.parser import parse_dbt_project, _extract_ref_name
 
 
@@ -148,3 +149,47 @@ class TestParseDbtProject:
         (hidden / "test.yaml").write_text("semantic_models:\n  - name: secret\n")
         project = parse_dbt_project(str(tmp_path))
         assert len(project.semantic_models) == 0
+
+    def test_numeric_measure_expr(self, tmp_path) -> None:
+        """dbt allows `expr: 1` (int) for count-via-sum measures like number_of_policies."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "policy.yaml").write_text(textwrap.dedent("""\
+            semantic_models:
+              - name: policy
+                model: ref('policy')
+                entities:
+                  - name: policy_id
+                    type: primary
+                dimensions:
+                  - name: status
+                    type: categorical
+                measures:
+                  - name: number_of_policies
+                    agg: sum
+                    expr: 1
+        """))
+        project = parse_dbt_project(str(tmp_path))
+        assert len(project.semantic_models) == 1
+        m = project.semantic_models[0].measures[0]
+        assert m.name == "number_of_policies"
+        assert m.expr == "1"
+        assert isinstance(m.expr, str)
+
+
+class TestDbtMeasureExprCoercion:
+    def test_int_expr_coerced_to_str(self) -> None:
+        m = DbtMeasure(name="count_all", agg="sum", expr=1)
+        assert m.expr == "1"
+
+    def test_float_expr_coerced_to_str(self) -> None:
+        m = DbtMeasure(name="weight", agg="sum", expr=1.5)
+        assert m.expr == "1.5"
+
+    def test_none_expr_stays_none(self) -> None:
+        m = DbtMeasure(name="count_all", agg="count")
+        assert m.expr is None
+
+    def test_string_expr_unchanged(self) -> None:
+        m = DbtMeasure(name="total", agg="sum", expr="amount")
+        assert m.expr == "amount"

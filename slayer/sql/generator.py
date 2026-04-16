@@ -984,7 +984,8 @@ class SQLGenerator:
         if sql is None:
             return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(model_name))
         # Bare column name → qualify with model name
-        if "." not in sql and " " not in sql and "(" not in sql:
+        # Use isidentifier() to distinguish column names from literals (e.g. "1")
+        if sql.isidentifier():
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
         return sqlglot.parse_one(sql=sql, dialect=self.dialect)
 

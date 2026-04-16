@@ -7,7 +7,7 @@ compatibility shim and has heavy transitive dependencies we don't need.
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class DbtTimeTypeParams(BaseModel):
@@ -53,6 +53,14 @@ class DbtMeasure(BaseModel):
     agg_time_dimension: Optional[str] = None
     agg_params: Optional[DbtMeasureAggParams] = None
     non_additive_dimension: Optional[DbtNonAdditiveDimension] = None
+
+    @field_validator("expr", mode="before")
+    @classmethod
+    def _coerce_expr_to_str(cls, v: object) -> Optional[str]:
+        """Coerce numeric expr values to strings (e.g. dbt `expr: 1`)."""
+        if v is None:
+            return None
+        return str(v)
 
 
 class DbtDefaults(BaseModel):

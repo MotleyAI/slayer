@@ -54,6 +54,25 @@ def generator() -> SQLGenerator:
 
 
 class TestBasicQueries:
+    def test_numeric_literal_measure(self, generator: SQLGenerator) -> None:
+        """Measures with numeric SQL expressions (e.g. dbt `expr: 1`) should generate
+        SUM(1), not SUM(model."1")."""
+        model = SlayerModel(
+            name="policy",
+            sql_table="policy",
+            data_source="test",
+            dimensions=[
+                Dimension(name="status", type=DataType.STRING),
+            ],
+            measures=[
+                Measure(name="num_policies", sql="1", allowed_aggregations=["sum"]),
+            ],
+        )
+        query = SlayerQuery(source_model="policy", fields=[Field(formula="num_policies:sum")])
+        sql = _generate(generator, query, model)
+        assert "SUM(1)" in sql
+        assert '"1"' not in sql
+
     def test_simple_count(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(source_model="orders", fields=[Field(formula="*:count")])
         sql = _generate(generator, query, orders_model)
