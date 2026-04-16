@@ -484,3 +484,96 @@ class TestMeasureFilter:
         m = Measure(name="x", sql="amount")
         data = m.model_dump(exclude_none=True)
         assert "filter" not in data
+
+
+class TestSubstituteVariables:
+    def test_string_variable(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="status = '{status_val}'",
+            variables={"status_val": "active"},
+        )
+        assert result == "status = 'active'"
+
+    def test_number_variable(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="amount > {min_amount}",
+            variables={"min_amount": 100},
+        )
+        assert result == "amount > 100"
+
+    def test_float_variable(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="rate < {max_rate}",
+            variables={"max_rate": 0.05},
+        )
+        assert result == "rate < 0.05"
+
+    def test_multiple_variables(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="status = '{status}' AND amount > {min}",
+            variables={"status": "completed", "min": 50},
+        )
+        assert result == "status = 'completed' AND amount > 50"
+
+    def test_escaped_braces(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="name LIKE '{{prefix}}%' AND status = '{val}'",
+            variables={"val": "ok"},
+        )
+        assert result == "name LIKE '{prefix}%' AND status = 'ok'"
+
+    def test_undefined_variable_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        with pytest.raises(ValueError, match="Undefined variable 'missing'"):
+            substitute_variables(
+                filter_str="status = '{missing}'",
+                variables={},
+            )
+
+    def test_invalid_variable_name_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        with pytest.raises(ValueError, match="Invalid variable name"):
+            substitute_variables(
+                filter_str="status = '{bad-name}'",
+                variables={"bad-name": "x"},
+            )
+
+    def test_invalid_type_raises(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        with pytest.raises(ValueError, match="must be a string or number"):
+            substitute_variables(
+                filter_str="status = '{val}'",
+                variables={"val": [1, 2, 3]},
+            )
+
+    def test_no_variables_no_change(self) -> None:
+        from slayer.core.query import substitute_variables
+
+        result = substitute_variables(
+            filter_str="status = 'active'",
+            variables={},
+        )
+        assert result == "status = 'active'"
+
+    def test_variable_in_slayer_query(self) -> None:
+        """Variables field is accepted on SlayerQuery."""
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            filters=["status = '{val}'"],
+            variables={"val": "completed"},
+        )
+        assert q.variables == {"val": "completed"}

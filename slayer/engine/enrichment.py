@@ -441,7 +441,16 @@ async def enrich_query(
                 )
 
     # --- Process filters ---
-    all_filter_strs = list(model.filters) + list(query.filters or [])
+    # Apply variable substitution to query-level filters (not model-level)
+    query_filters = list(query.filters or [])
+    if query.variables and query_filters:
+        from slayer.core.query import substitute_variables
+
+        query_filters = [
+            substitute_variables(filter_str=f, variables=query.variables) for f in query_filters
+        ]
+
+    all_filter_strs = list(model.filters) + query_filters
     processed_filters = []
     ft_counter = [0]
     for f_str in all_filter_strs:
