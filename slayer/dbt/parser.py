@@ -92,7 +92,7 @@ def parse_dbt_project(
         return DbtProject()
 
     for path in yaml_paths:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             try:
                 data = yaml.safe_load(f)
             except yaml.YAMLError as e:
