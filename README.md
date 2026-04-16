@@ -1,7 +1,5 @@
-# SLayer — a semantic layer by Motley
-
 <p align="center">
-  <img src="https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/slayer-hero.png" alt="SLayer — AI agent operating a semantic layer" width="700">
+  <img src="https://raw.githubusercontent.com/MotleyAI/slayer/main/docs/images/slayer-hero.png" alt="SLayer — AI agent operating a semantic layer" width="600">
 </p>
 
 [![PyPI](https://img.shields.io/pypi/v/motley-slayer?label=PyPI)](https://pypi.org/project/motley-slayer/)
@@ -10,89 +8,49 @@
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 
-> [If you find SLayer useful, a ⭐ helps others discover it!](https://github.com/MotleyAI/slayer/stargazers)
 
-A lightweight, open-source semantic layer that lets AI agents query data without writing SQL.
+**SLayer** is a lightweight semantic layer that lets AI agents query data without writing SQL.
 
----
-
-## The problem
-
-When AI agents write raw SQL, things break in production — hallucinated column names, incorrect joins, metrics that drift across queries. Existing semantic layers (Cube, dbt metrics) were built for dashboards: heavy infrastructure, slow model refresh cycles, and limited expressiveness for the kinds of ad-hoc analysis agents need.
-
-### What SLayer does differently
-
-- **Auto-ingestion with FK awareness** — Connect a database, and SLayer introspects the schema, detects foreign keys, and generates usable models with denormalized joins instantly. No manual modeling required to get started.
-- **Dynamic model manipulation** — Agents create and edit models at runtime. Changes take effect immediately — no rebuild, no deploy, no restart.
-- **Aggregation at query time** — Define a measure once (`revenue` = the `amount` column), pick the aggregation when you query: `"revenue:sum"`, `"revenue:avg"`, `"revenue:median"`. No `revenue_sum` / `revenue_avg` / `revenue_min` proliferation. Custom aggregations (weighted averages, percentiles, your own SQL templates) are first-class and parametrized.
-- **Query-time expressions** — Compose derived metrics on the fly with the `fields` API (`"revenue:sum / *:count"`, `"cumsum(revenue:sum)"`, `"change_pct(revenue:sum)"`). Aggregation is specified at query time via colon syntax — no need to pre-define every metric.
-- **First-class time operations** — Built-in `time_shift`, `change`, `change_pct`, `cumsum`, `rank`, and `last` — all composable and nestable (e.g., `"last(change(revenue:sum))"`).
-- **Cross-model measures** — Query measures from joined models with dotted syntax and colon aggregation (`"customers.score:avg"`, multi-hop: `"customers.regions.name"`). Joins auto-resolved via graph walk. Transforms work on cross-model measures (`"cumsum(customers.score:avg)"`).
-- **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model for reuse. `ModelExtension` extends models inline with extra dimensions/joins.
-- **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at IS NULL"`).
-
-### Roadmap
-- Unpivoting
-- Smart output formatting (currency, percentages)
-- Auto-propagating filters
-- Asof joins
-- Chart generation (eCharts)
+> If you find SLayer useful, a ⭐ helps others discover it!
 
 ---
-
-### What's new since 0.1
-
-- **Aggregation separated from measures** — Measures are row-level expressions; aggregation (`sum`, `avg`, `median`, `weighted_avg`, `percentile`, ...) is chosen at query time with colon syntax (`"revenue:sum"`). Custom aggregations with SQL templates and parameters can be defined at the model level. Per-measure `allowed_aggregations` whitelists.
-- **Cross-model measures** — Query measures from joined models with dot syntax and colon aggregation (`"customers.*:count"`, `"customers.score:avg"`, multi-hop: `"customers.regions.name"`). Sub-query isolation prevents JOIN row multiplication. Transforms compose on cross-model measures (`"cumsum(customers.score:avg)"`).
-- **Multistage queries** — Use a query as the source for another query, or save any query as a permanent model with `create_model_from_query`. `ModelExtension` extends models inline with extra dimensions, measures, or joins at query time.
-- **Dynamic joins with diamond support** — Joins are auto-resolved at query time by walking the join graph. Path-based aliases (`customers__regions` vs `warehouses__regions`) disambiguate when the same table is reachable via multiple FK paths.
-- **Model filters** — Always-applied WHERE conditions on models (e.g., `"deleted_at IS NULL"`).
-- **DuckDB support** — New Tier 1 database, fully integration-tested, no Docker required.
-- **Query introspection** — `dry_run` previews generated SQL without executing; `explain` shows execution plans.
-- **Simpler query syntax** — Dimensions, measures, time dimensions, and order accept plain strings (`"status"` instead of `{"name": "status"}`).
-- **SQL-style filters** — Operators `=`, `<>`, `IN`, `IS NULL`; multi-hop filters (`"customers.regions.name = 'US'"`); computed-column filters (`"change(revenue:sum) > 0"`).
-
----
-
-
-## Quick Start
-
-```bash
-# Run instantly with uv (no install needed, SQLite works out of the box)
-uvx --from motley-slayer slayer serve --models-dir ./my_models
-
-# Or install as a standalone tool
-uv tool install 'motley-slayer[postgres]'
-slayer serve --models-dir ./my_models
-
-# Or install with pip
-pip install motley-slayer[all]           # all interfaces + all database drivers
-pip install motley-slayer[postgres]      # PostgreSQL
-pip install motley-slayer[mysql]         # MySQL / MariaDB
-pip install motley-slayer[clickhouse]    # ClickHouse
-
-# Start the HTTP server
-slayer serve --models-dir ./my_models
-
-# Or set up stdio MCP for an agent like Claude Code
-# (the agent spawns slayer as a subprocess — you don't run this manually)
-claude mcp add slayer -- slayer mcp --models-dir ./my_models
-```
 
 ## What is SLayer?
 
-SLayer is a semantic layer that sits between your database and whatever consumes the data — AI agents, internal tools, dashboards, or scripts. You define your data model once (or let SLayer auto-generate it from your schema), and consumers query using a structured API of measures, dimensions, and filters instead of writing SQL directly.
+SLayer is a semantic layer that sits between your database and whatever consumes the data – AI agents, internal tools, dashboards, or scripts. You define your data models (or let SLayer auto-generate them from the schema), and query using a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters instead of writing SQL directly.
 
-SLayer compiles these queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences so that consumers don't have to. Models are editable at runtime — agents can add metrics, adjust definitions, and query the results immediately, with no redeploy step.
+SLayer compiles these queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences so that consumers don't have to.
 
-**Key features:**
+#### SLayer is:
 
-* **Four interfaces, one query language** — MCP (stdio + SSE), REST API, CLI and Python SDK all expose the same capabilities. Agents, apps, and humans use the same models.
-* **14 database dialects** — CI-tested against Postgres, MySQL, ClickHouse, DuckDB, and SQLite; additional support for Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, and Oracle via sqlglot.
-* **Composable `fields` API** — Derived metrics as formula strings (`"revenue:sum / *:count"`, `"cumsum(revenue:sum)"`, `"time_shift(revenue:sum, -1, 'year')"`). Aggregation specified at query time via colon syntax. Arbitrary nesting works — `change(cumsum(revenue:sum))` just compiles.
-* **Zero-config onboarding** — Point SLayer at a database and it introspects the schema, detects foreign keys, and generates models with explicit joins. LEFT JOINs are built dynamically at query time.
-* **Instant model editing** — Add or remove measures and dimensions on a running system via API, CLI, or MCP tool. No rebuild, no restart — changes are queryable immediately.
-* **Embeddable** — Use it as a standalone service or import it as a Python module with no network layer.
+1. **dynamic** – models can be updated at any time and used immediately; aggregations are [defined in queries, not models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
+2. **simple** – query structure is intuitive and easily understood by LLMs and humans
+3. **expressive** – [allows](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) to query things like _"month-on-month % increase in total revenue, compared to the previous year"_
+4. **embeddable** – can be used as a standalone service or imported as a Python module with no extra server
+5. **flexible** – exposes several interfaces – [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), supports most popular DB dialects
+
+Key features include [automatic model ingestion](https://motley-slayer.readthedocs.io/en/latest/concepts/ingestion/), [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/), [auto-applied filters](https://motley-slayer.readthedocs.io/en/latest/concepts/models/#model-filters); see [more](https://motley-slayer.readthedocs.io/en/latest/).
+
+> Why not just let agents write SQL? Several reasons: accuracy, consistency, interpretability, and more – see our [blog post](https://motley.ai/blog-posts/why-generating-raw-sql-by-agents-is-hard) and dbt's [benchmark analysis](https://docs.getdbt.com/blog/semantic-layer-vs-text-to-sql-2026?version=1.12).
+
+
+## Quickstart
+
+We recommend using [uv](https://docs.astral.sh/uv/), especially if you don't work in a Python project.
+
+To run the server:
+```bash
+uvx --from 'motley-slayer[all]' slayer serve
+```
+
+Or to add the MCP server:
+```bash
+claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp
+```
+
+Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#configuration) or ask your agent to help you do it.
+
+Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
 
 
 ## Interfaces
@@ -110,64 +68,28 @@ curl http://localhost:5143/models
 
 # Get a single datasource (credentials masked)
 curl http://localhost:5143/datasources/my_postgres
-
-# Health check
-curl http://localhost:5143/health
 ```
+
+See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/rest-api/).
 
 ### MCP Server
 
-SLayer supports two MCP transports:
-
-**Stdio** — the agent spawns SLayer as a subprocess (for Claude Code, Cursor, etc.). You do not run `slayer mcp` manually; instead, register it with your agent:
+SLayer supports two MCP transports, **HTTP** (served alongside the API) and **stdio** (serverless, spawned by the agent).
 
 ```bash
-# Register with Claude Code (the agent will spawn the process itself)
-claude mcp add slayer -- slayer mcp --models-dir ./my_models
+# 1. stdio-based, does not require a running server
+claude mcp add slayer -- slayer mcp
 
-# If slayer is in a virtualenv, use the full path to the executable:
-#   poetry env info -p   # prints e.g. /home/user/.venvs/slayer-xyz
-#   claude mcp add slayer -- /home/user/.venvs/slayer-xyz/bin/slayer mcp --models-dir /path/to/my_models
-```
-
-**SSE (Server-Sent Events)** — MCP over HTTP, served alongside the REST API on `/mcp`. You run `slayer serve` yourself, then point the agent at the URL:
-
-```bash
-# 1. Start the server (REST API + MCP SSE)
-slayer serve --models-dir ./my_models
-# REST API at http://localhost:5143/query, /models, etc.
-# MCP SSE at http://localhost:5143/mcp/sse
-
-# 2. In a separate terminal, register the remote MCP endpoint with your agent
+# 2. HTTP-based (SSE), provided SLayer server is already running
 claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
 ```
+SLayer **does not expose credentials** to consumers once created.
 
-Both transports expose the same tools — no duplication.
-
-MCP tools:
-
-| Tool | Description |
-|------|-------------|
-| `datasource_summary` | List all datasources and their models with schemas (dimensions, measures) |
-| `inspect_model` | Detailed model info with sample data |
-| `query` | Execute semantic queries |
-| `create_model` | Create a new model from table/SQL |
-| `create_model_from_query` | Save a query as a reusable model with auto-introspected schema |
-| `edit_model` | Edit an existing model: update metadata, add measures/dimensions, remove fields — all in one call |
-| `delete_model` | Delete a model |
-| `create_datasource` | Configure a database connection (with connection test and auto-ingestion; set `auto_ingest=false` to skip) |
-| `list_datasources` | List configured datasources |
-| `describe_datasource` | Show datasource details, test connection, list schemas |
-| `list_tables` | Explore tables in a database |
-| `edit_datasource` | Edit an existing datasource config |
-| `delete_datasource` | Remove a datasource |
-| `ingest_datasource_models` | Auto-generate models from DB schema |
-
-Typical agent workflow:
-1. `create_datasource` (auto-ingests models by default) → `datasource_summary` → `inspect_model` → `query`
-2. Or with `auto_ingest=false`: `create_datasource` → `describe_datasource` → `ingest_datasource_models` → `datasource_summary` → `query`
+Both transports expose the same tools, allowing to inspect, create and update datasources and models and run queries. More info in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/mcp/).
 
 ### Python Client
+
+Useful for agents working in code execution environments, e.g. for AI data analytics, as well as any Python apps.
 
 ```python
 from slayer.client.slayer_client import SlayerClient
@@ -191,7 +113,7 @@ df = client.query_df(query)
 print(df)
 ```
 
-### CLI Query
+### CLI
 
 ```bash
 # Run a query directly from the terminal
@@ -201,10 +123,11 @@ slayer query '{"model": "orders", "fields": [{"formula": "*:count"}], "dimension
 slayer query @query.json --format json
 ```
 
+These commands do not depend on a running server.
 
 ## Models
 
-Models are defined as YAML files. Add an optional `description` to help users and agents understand complex models:
+By default, models are defined as YAML files. Add an optional `description` to help users and agents understand complex models:
 
 ```yaml
 name: orders
@@ -234,13 +157,13 @@ measures:
 
 ## Fields
 
-The `fields` parameter specifies what data columns to return. Each field has a `formula` string, an optional `name`, and an optional `label` (human-readable display name):
+The `fields` parameter specifies what data columns to return.
 
 ```json
 {
   "model": "orders",
-  "dimensions": [{"name": "status"}],
-  "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}],
+  "dimensions": ["status"],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
   "fields": [
     {"formula": "*:count"},
     {"formula": "revenue:sum"},
@@ -257,10 +180,7 @@ The `fields` parameter specifies what data columns to return. Each field has a `
 }
 ```
 
-Formulas are parsed using Python's `ast` module (see `slayer/core/formula.py`). Available functions: `cumsum`, `time_shift`, `change`, `change_pct`, `rank`, `last`, `lag`, `lead`. `time_shift` always uses a self-join CTE — it can reach outside the current result set (no edge NULLs) and handles data gaps correctly. `lag`/`lead` use SQL window functions directly (more efficient, but produce NULLs at edges). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue:sum))` or `cumsum(revenue:sum) / *:count`.
-
-Functions that need ordering over time resolve the time dimension via: query `main_time_dimension` -> query `time_dimensions` (if exactly one) -> model `default_time_dimension` -> error.
-
+Available functions: `cumsum`, `time_shift`, `change`, `lag`, and more – see [docs](https://motley-slayer.readthedocs.io/en/latest/concepts/formulas/). Formulas support arbitrary nesting — e.g., `change(cumsum(revenue:sum))` or `cumsum(revenue:sum) / *:count`.
 
 ## Filters
 
@@ -277,19 +197,7 @@ Filters use simple formula strings — no verbose JSON objects:
 }
 ```
 
-**Operators**: `=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`
-
-**Boolean logic**: combine with `and`, `or`, `not` in a single string:
-```json
-"filters": ["status = 'completed' or status = 'pending'"]
-```
-
-**Pattern matching**: `like` and `not like` operators (e.g., `"name like '%acme%'"`, `"name not like '%test%'"`). Filters on measures (e.g., `"count > 10"`) are automatically routed to HAVING.
-
-**Computed column filters**: filters can reference field names or contain inline transform expressions. These are applied as post-filters after all transforms are computed:
-```json
-"filters": ["change(revenue:sum) > 0", "last(change(revenue:sum)) < 0"]
-```
+Filters support a variety of operators, composition, pattern matching. Transforms & computed columns can also be used for filtering. See [docs](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/#filters) for more.
 
 
 ## Auto-Ingestion
@@ -316,9 +224,9 @@ Via MCP, agents can do this conversationally:
 3. `datasource_summary()` → `inspect_model(model_name="orders")` → `query(...)`
 
 
-## Configuration
+## Datasource Setup
 
-Datasources are configured as individual YAML files in the `datasources/` directory:
+By default, datasources are configured as individual YAML files in the `datasources/` directory:
 
 ```yaml
 # datasources/my_postgres.yaml
@@ -331,7 +239,9 @@ username: ${DB_USER}
 password: ${DB_PASSWORD}
 ```
 
-Environment variable references (`${VAR}`) are resolved at read time. Both `username` and `user` field names are accepted.
+Environment variable references (`${VAR}`) are resolved at read time.
+
+See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/).
 
 
 ## Storage Backends
@@ -341,52 +251,25 @@ SLayer ships with two storage backends:
 - **YAMLStorage** (default) — models and datasources as YAML files on disk. Great for version control.
 - **SQLiteStorage** — everything in a single SQLite file. Good for embedded use or when you don't want to manage files.
 
-```python
-from slayer.storage.yaml_storage import YAMLStorage
-from slayer.storage.sqlite_storage import SQLiteStorage
+SLayer allows easily implementing your own storage backends, which is useful for features such as tenant isolation.
 
-# YAML files in a directory
-storage = YAMLStorage(base_dir="./slayer_data")
-
-# Single SQLite file
-storage = SQLiteStorage(db_path="./slayer.db")
-```
-
-Both implement the `StorageBackend` protocol, so you can swap them freely or write your own:
-
-```python
-from slayer.storage.base import StorageBackend
-
-class MyCustomStorage(StorageBackend):
-    def save_model(self, model): ...
-    def get_model(self, name): ...
-    def list_models(self): ...
-    def delete_model(self, name): ...
-    # same for datasources
-```
-
-Pass any backend to `create_app()`, `create_mcp_server()`, or `SlayerClient(storage=...)`.
-
+See the [documentation page for storage backends](https://motley-slayer.readthedocs.io/en/latest/configuration/storage/) for more.
 
 ## Examples
 
 The `examples/` directory contains runnable examples that also serve as integration tests:
 
-| Example | Description | How to run |
-|---------|-------------|------------|
-| [embedded](examples/embedded/) | SQLite, no server needed | `python examples/embedded/run.py` |
-| [postgres](examples/postgres/) | Docker Compose with Postgres + REST API | `cd examples/postgres && docker compose up -d` |
-| [mysql](examples/mysql/) | Docker Compose with MySQL + REST API | `cd examples/mysql && docker compose up -d` |
-| [clickhouse](examples/clickhouse/) | Docker Compose with ClickHouse + REST API | `cd examples/clickhouse && docker compose up -d` |
-
-Each example includes a `verify.py` script that runs assertions against the seeded data.
-
-All examples use a shared seed dataset (`examples/seed.py`) with a small e-commerce schema: regions, customers, products, and orders (68 orders across 12 months). The embedded example includes derived column demo queries using `fields`.
+| Example | Description |
+|---------|-------------|
+| [embedded](examples/embedded/) | SQLite, no server needed |
+| [postgres](examples/postgres/) | Docker Compose with Postgres + REST API |
+| [mysql](examples/mysql/) | Docker Compose with MySQL + REST API |
+| [clickhouse](examples/clickhouse/) | Docker Compose with ClickHouse + REST API |
 
 
 ## Tutorials
 
-The `docs/examples/` directory contains Jupyter notebooks that walk through SLayer's features step by step. All notebooks use a shared Jaffle Shop dataset (DuckDB, ~200K orders) and are self-contained.
+The `docs/examples/` directory contains Jupyter notebooks that walk through SLayer's features step by step.
 
 | Notebook | Topic |
 |----------|-------|
@@ -422,33 +305,6 @@ poetry run ruff check slayer/ tests/
 # Start dev server
 poetry run slayer serve
 ```
-
-
-## Why SLayer?
-
-### SLayer is embeddable
-
-Besides being a standalone service, SLayer is also a Python module. That's why it can also be directly imported and used in Python applications with no network communication involved.
-
-For example, using it in a multi-tenant application could be as simple as:
-
-```python
-client = SlayerClient(storage=MyStorage(tenant_id=...))
-```
-
-No need for setting up network and auth at all.
-
-### SLayer models can be updated on the fly
-
-In SLayer, models are treated as a dynamic part of the process, rather than something that is preconfigured and frozen.
-Models can be created or edited at any time and immediately queried.
-We expose tools for interacting with the models via API, CLI and MCP.
-
-### SLayer is flexible
-
-Slayer is agnostic to the datasource type: it can be an SQL database, a BI tool or even a REST API.
-Adapters for popular databases are included, but adding a new one just takes implementing 3 straightforward methods: a query-to-datasource-input translator and a result-to-dataframe parser. Please open a pull request if you write one!
-
 
 ## Known limitations
 
