@@ -25,7 +25,6 @@ from slayer.core.query import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.yaml_storage import YAMLStorage
-from slayer.async_utils import run_sync
 
 pytestmark = pytest.mark.integration
 
@@ -861,7 +860,7 @@ async def joined_time_env(tmp_path):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    run_sync(storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="stores", sql_table="stores", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -869,8 +868,8 @@ async def joined_time_env(tmp_path):
             Dimension(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
         ],
         measures=[],
-    )))
-    run_sync(storage.save_model(SlayerModel(
+    ))
+    await storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         dimensions=[
@@ -884,8 +883,8 @@ async def joined_time_env(tmp_path):
             Measure(name="latest_amount", sql="amount"),
         ],
         joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
-    )))
-    run_sync(storage.save_model(SlayerModel(
+    ))
+    await storage.save_model(SlayerModel(
         name="order_items", sql_table="order_items", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -897,7 +896,7 @@ async def joined_time_env(tmp_path):
             Measure(name="latest_qty", sql="qty"),
         ],
         joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])],
-    )))
+    ))
 
     return SlayerQueryEngine(storage=storage)
 
@@ -989,7 +988,7 @@ async def cross_model_env(tmp_path):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    run_sync(storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         dimensions=[
@@ -1001,8 +1000,8 @@ async def cross_model_env(tmp_path):
             Measure(name="total_amount", sql="amount"),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-    )))
-    run_sync(storage.save_model(SlayerModel(
+    ))
+    await storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
         dimensions=[
             Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
@@ -1012,7 +1011,7 @@ async def cross_model_env(tmp_path):
             Measure(name="avg_score", sql="score"),
             Measure(name="max_score", sql="score"),
         ],
-    )))
+    ))
 
     return SlayerQueryEngine(storage=storage)
 
@@ -1303,21 +1302,21 @@ async def test_circular_join_graph_raises(tmp_path):
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
     # Circular joins: a → b → a
-    run_sync(storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="a", sql_table="a", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="b_id", sql="b_id", type=DataType.NUMBER)],
         measures=[],
         joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
-    )))
-    run_sync(storage.save_model(SlayerModel(
+    ))
+    await storage.save_model(SlayerModel(
         name="b", sql_table="b", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="a_id", sql="a_id", type=DataType.NUMBER),
                     Dimension(name="unique_b_field", sql="id", type=DataType.NUMBER)],
         measures=[],
         joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
-    )))
+    ))
 
     engine = SlayerQueryEngine(storage=storage)
 
@@ -1353,7 +1352,7 @@ async def test_model_filter_on_joined_column(tmp_path):
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
-    run_sync(storage.save_model(SlayerModel(
+    await storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         dimensions=[
             Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
@@ -1361,14 +1360,14 @@ async def test_model_filter_on_joined_column(tmp_path):
         measures=[Measure(name="total", sql="amount")],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         filters=["customers.region == 'US'"],
-    )))
-    run_sync(storage.save_model(SlayerModel(
+    ))
+    await storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
         dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER),
                     Dimension(name="name", sql="name", type=DataType.STRING),
                     Dimension(name="region", sql="region", type=DataType.STRING)],
         measures=[],
-    )))
+    ))
 
     engine = SlayerQueryEngine(storage=storage)
 
@@ -1516,19 +1515,19 @@ async def test_diamond_joins_single_path(diamond_env):
 # ---------------------------------------------------------------------------
 
 
-def test_filtered_measure_sum(integration_env):
+async def test_filtered_measure_sum(integration_env):
     """Measure with filter produces CASE WHEN — only matching rows aggregated."""
     engine = integration_env
     storage = engine.storage
 
     # Add a filtered measure: only sum completed orders' amounts
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[
             Field(formula="total_amount:sum"),
@@ -1543,18 +1542,18 @@ def test_filtered_measure_sum(integration_env):
     assert completed == pytest.approx(600.0)
 
 
-def test_filtered_measure_count(integration_env):
+async def test_filtered_measure_count(integration_env):
     """Filtered count measure counts only matching rows."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_count", sql="id", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[
             Field(formula="*:count"),
@@ -1568,18 +1567,18 @@ def test_filtered_measure_count(integration_env):
     assert completed == 3
 
 
-def test_filtered_measure_with_dimensions(integration_env):
+async def test_filtered_measure_with_dimensions(integration_env):
     """Filtered measure works with GROUP BY dimensions."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[Field(formula="completed_revenue:sum")],
         dimensions=[ColumnRef(name="status")],
@@ -1594,7 +1593,7 @@ def test_filtered_measure_with_dimensions(integration_env):
             assert row["orders.completed_revenue_sum"] is None
 
 
-def test_filtered_last_picks_correct_row(integration_env):
+async def test_filtered_last_picks_correct_row(integration_env):
     """Filtered last measure picks the latest row that matches the filter,
     not the globally latest row.
 
@@ -1604,14 +1603,14 @@ def test_filtered_last_picks_correct_row(integration_env):
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     orders.measures.append(
         Measure(name="completed_latest", sql="amount", filter="status = 'completed'")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
     # Query with monthly granularity so we get per-month last values
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         time_dimensions=[
             TimeDimension(
@@ -1641,19 +1640,19 @@ def test_filtered_last_picks_correct_row(integration_env):
     assert feb["orders.completed_latest_last"] is None
 
 
-def test_time_dimension_label_fallback(integration_env):
+async def test_time_dimension_label_fallback(integration_env):
     """Time dimension inherits label from model dimension definition."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     for d in orders.dimensions:
         if d.name == "created_at":
             d.label = "Order Date"
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
     # Query with time dimension but no explicit label on TimeDimension
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         time_dimensions=[
             TimeDimension(
@@ -1669,12 +1668,12 @@ def test_time_dimension_label_fallback(integration_env):
     assert td_meta.label == "Order Date"
 
 
-def test_label_propagation_enrichment(integration_env):
+async def test_label_propagation_enrichment(integration_env):
     """Model-level labels propagate through enrichment to query results."""
     engine = integration_env
     storage = engine.storage
 
-    orders = storage.get_model("orders")
+    orders = await storage.get_model("orders")
     # Add labels to a dimension and measure
     for d in orders.dimensions:
         if d.name == "status":
@@ -1682,9 +1681,9 @@ def test_label_propagation_enrichment(integration_env):
     orders.measures.append(
         Measure(name="labeled_rev", sql="amount", label="Total Revenue")
     )
-    storage.save_model(orders)
+    await storage.save_model(orders)
 
-    result = engine.execute(query=SlayerQuery(
+    result = await engine.execute(query=SlayerQuery(
         source_model="orders",
         fields=[Field(formula="labeled_rev:sum")],
         dimensions=[ColumnRef(name="status")],

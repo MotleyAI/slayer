@@ -104,7 +104,7 @@ async def enrich_query(
     cross_model_measures: List[CrossModelMeasure] = []
     known_aliases: Dict[str, str] = {}
 
-    def _ensure_aggregated_measure(
+    async def _ensure_aggregated_measure(
         alias_key: str,
         measure_name: str,
         aggregation_name: str,
@@ -174,7 +174,7 @@ async def enrich_query(
         filter_sql = None
         if measure_def and measure_def.filter:
             parsed = parse_filter(measure_def.filter)
-            resolved = resolve_filter_columns(
+            resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
                 model_name=model.name,
@@ -234,7 +234,7 @@ async def enrich_query(
         )
         known_aliases[name] = alias
 
-    def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
+    async def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
         """Ensure a measure is resolved — handles agg refs only."""
         agg_refs = agg_refs or {}
         if mname in agg_refs:
@@ -245,7 +245,7 @@ async def enrich_query(
                     "Cross-model measures with explicit aggregation not yet supported "
                     "in arithmetic expressions. Use a separate field."
                 )
-            _ensure_aggregated_measure(
+            await _ensure_aggregated_measure(
                 alias_key=mname,
                 measure_name=ref.measure_name,
                 aggregation_name=ref.aggregation_name,
@@ -279,7 +279,7 @@ async def enrich_query(
                 if spec.measure_name == "*"
                 else f"{spec.measure_name}_{spec.aggregation_name}"
             )
-            _ensure_aggregated_measure(
+            await _ensure_aggregated_measure(
                 alias_key=canonical_name,
                 measure_name=spec.measure_name,
                 aggregation_name=spec.aggregation_name,
@@ -290,7 +290,7 @@ async def enrich_query(
 
         elif isinstance(spec, ArithmeticField):
             for mname in spec.measure_names:
-                _ensure_measure_from_spec(mname, spec.agg_refs)
+                await _ensure_measure_from_spec(mname, spec.agg_refs)
             alias = f"{model_name_str}.{field_name}"
             enriched_expressions.append(
                 EnrichedExpression(
@@ -304,7 +304,7 @@ async def enrich_query(
 
         elif isinstance(spec, MixedArithmeticField):
             for mname in spec.measure_names:
-                _ensure_measure_from_spec(mname, spec.agg_refs)
+                await _ensure_measure_from_spec(mname, spec.agg_refs)
             for placeholder, sub_transform in spec.sub_transforms:
                 await _flatten_spec(sub_transform, placeholder)
             alias = f"{model_name_str}.{field_name}"
@@ -394,7 +394,7 @@ async def enrich_query(
                 cross_model_measures.append(cm)
                 continue
 
-            _ensure_aggregated_measure(
+            await _ensure_aggregated_measure(
                 alias_key=canonical_name,
                 measure_name=spec.measure_name,
                 aggregation_name=spec.aggregation_name,
