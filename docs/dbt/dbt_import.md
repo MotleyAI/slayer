@@ -121,7 +121,7 @@ These can be executed via the SLayer API/MCP or used as templates for building q
 
 dbt uses Jinja templates for filter references:
 
-```
+```jinja
 {{ Dimension('claim_amount__has_loss_payment') }} = 1
 {{ TimeDimension('metric_time', 'day') }} >= '2024-01-01'
 {{ Entity('customer_id') }} IS NOT NULL
@@ -208,7 +208,7 @@ This lets you promote a silently imported table to first-class visibility once y
 
 ## CLI Reference
 
-```
+```text
 slayer import-dbt <dbt_project_path> [options]
 
 Arguments:

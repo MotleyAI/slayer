@@ -74,7 +74,7 @@ class TestBasicConversion:
     def test_model_fields(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
-        orders = result.models[0]
+        orders = next(m for m in result.models if m.name == "orders")
         assert orders.name == "orders"
         assert orders.sql_table == "orders"
         assert orders.data_source == "test_db"
@@ -84,7 +84,7 @@ class TestBasicConversion:
     def test_dimensions(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
-        orders = result.models[0]
+        orders = next(m for m in result.models if m.name == "orders")
         dim_names = [d.name for d in orders.dimensions]
         assert "status" in dim_names
         assert "order_date" in dim_names
@@ -92,7 +92,7 @@ class TestBasicConversion:
     def test_dimension_types(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
-        orders = result.models[0]
+        orders = next(m for m in result.models if m.name == "orders")
         status = next(d for d in orders.dimensions if d.name == "status")
         order_date = next(d for d in orders.dimensions if d.name == "order_date")
         assert status.type == DataType.STRING
@@ -101,7 +101,7 @@ class TestBasicConversion:
     def test_measures(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
-        orders = result.models[0]
+        orders = next(m for m in result.models if m.name == "orders")
         assert len(orders.measures) == 2
         amount = next(m for m in orders.measures if m.name == "total_amount")
         assert amount.sql == "amount"
@@ -110,7 +110,7 @@ class TestBasicConversion:
     def test_primary_key_dimension(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
-        orders = result.models[0]
+        orders = next(m for m in result.models if m.name == "orders")
         pk_dims = [d for d in orders.dimensions if d.primary_key]
         assert len(pk_dims) >= 1
         assert any(d.name == "id" for d in pk_dims)
@@ -118,7 +118,7 @@ class TestBasicConversion:
     def test_joins_from_entities(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
-        orders = result.models[0]
+        orders = next(m for m in result.models if m.name == "orders")
         assert len(orders.joins) == 1
         assert orders.joins[0].target_model == "customers"
         assert orders.joins[0].join_pairs == [["customer_id", "id"]]
