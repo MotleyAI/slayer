@@ -59,7 +59,7 @@ def generator() -> SQLGenerator:
 
 
 class TestBasicQueries:
-    def test_numeric_literal_measure(self, generator: SQLGenerator) -> None:
+    async def test_numeric_literal_measure(self, generator: SQLGenerator) -> None:
         """Measures with numeric SQL expressions (e.g. dbt `expr: 1`) should generate
         SUM(1), not SUM(model."1")."""
         model = SlayerModel(
@@ -74,7 +74,7 @@ class TestBasicQueries:
             ],
         )
         query = SlayerQuery(source_model="policy", fields=[Field(formula="num_policies:sum")])
-        sql = _generate(generator, query, model)
+        sql = await _generate(generator, query, model)
         assert "SUM(1)" in sql
         assert '"1"' not in sql
 
@@ -1412,6 +1412,38 @@ class TestFilteredMeasures:
         # Should have both the shared _last_rn and the filtered _last_rn_f0
         assert "_last_rn" in sql
         assert "_last_rn_f0" in sql
+
+    async def test_filtered_measure_uses_source_alias_not_model_name(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Regression for CodeRabbit #7 — filter columns must be qualified with the
+        source alias (model_name_str) and not the underlying model.name when the
+        query's source_model string differs from model.name (e.g., named queries
+        / sub-query sources)."""
+        from slayer.engine.enrichment import enrich_query
+
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        # Underlying model loaded under a different name than the query references.
+        underlying = orders_model.model_copy(update={"name": "orders_underlying"})
+        query = SlayerQuery(
+            source_model="orders_alias",
+            fields=[Field(formula="active_revenue:sum")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=underlying,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        measure = next(
+            m for m in enriched.measures if m.source_measure_name == "active_revenue"
+        )
+        assert measure.filter_sql is not None
+        assert "orders_alias.status" in measure.filter_sql
+        assert "orders_underlying" not in measure.filter_sql
 
 
 class TestMeasureFilterInjection:

@@ -72,7 +72,10 @@ class EntityRegistry:
         is the same as the current model (self-joins are not useful).
         """
         joins: List[ModelJoin] = []
-        seen_targets: set = set()
+        # Dedupe by full join signature (target + FK columns) so distinct FKs
+        # to the same target — e.g. buyer_id -> users.id AND seller_id -> users.id —
+        # each get their own ModelJoin instead of silently collapsing.
+        seen_signatures: set = set()
 
         for entity in model.entities:
             if entity.type != "foreign":
@@ -90,12 +93,12 @@ class EntityRegistry:
             if target_model_name == model.name:
                 continue  # Skip self-joins
 
-            # Avoid duplicate joins to the same target
-            if target_model_name in seen_targets:
-                continue
-            seen_targets.add(target_model_name)
-
             foreign_expr = entity.expr or entity.name
+            signature = (target_model_name, foreign_expr, primary_expr)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+
             joins.append(ModelJoin(
                 target_model=target_model_name,
                 join_pairs=[[foreign_expr, primary_expr]],

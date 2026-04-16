@@ -136,8 +136,10 @@ def _convert_measures(
                 if m.description:
                     descriptions.append(m.description)
 
-            # Use the expr as the measure name (it's the common SQL expression)
-            measure_name = expr_key
+            # Use the first dbt measure's name as the SLayer measure name;
+            # fall back to expr_key if no name is available. Keep the SQL
+            # expression whenever it differs from the chosen name.
+            measure_name = measures_in_group[0].name or expr_key
             sql = expr_key if expr_key != measure_name else None
 
             desc = f"dbt measures: {', '.join(name_agg_pairs)}"

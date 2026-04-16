@@ -76,11 +76,12 @@ class TestJoinResolution:
         joins = reg.resolve_joins_for_model(orders)
         assert len(joins) == 0
 
-    def test_no_duplicate_joins(self) -> None:
-        """Multiple foreign entities to the same target should produce one join."""
+    def test_truly_duplicate_signature_deduped(self) -> None:
+        """Two foreign entities with identical (target, fk_expr, pk_expr) signature
+        produce one join — protects against truly redundant YAML entries."""
         orders = _make_model("orders", [
             DbtEntity(name="customer_id", type="foreign", expr="cust_id"),
-            DbtEntity(name="customer_id", type="foreign", expr="alt_cust_id"),
+            DbtEntity(name="customer_id", type="foreign", expr="cust_id"),
         ])
         customers = _make_model("customers", [
             DbtEntity(name="customer_id", type="primary", expr="id"),
@@ -90,6 +91,30 @@ class TestJoinResolution:
 
         joins = reg.resolve_joins_for_model(orders)
         assert len(joins) == 1
+
+    def test_distinct_fks_to_same_target_kept_separate(self) -> None:
+        """Regression for CodeRabbit #4 — distinct FK columns pointing at the same
+        target model (e.g., buyer_id / seller_id both → users.id) must each get
+        their own ModelJoin so neither relationship silently disappears."""
+        transactions = _make_model("transactions", [
+            DbtEntity(name="transaction_id", type="primary", expr="id"),
+            DbtEntity(name="user_id", type="foreign", expr="buyer_id"),
+            DbtEntity(name="user_id", type="foreign", expr="seller_id"),
+        ])
+        users = _make_model("users", [
+            DbtEntity(name="user_id", type="primary", expr="id"),
+        ])
+        reg = EntityRegistry()
+        reg.build([transactions, users])
+
+        joins = reg.resolve_joins_for_model(transactions)
+        assert len(joins) == 2
+        # Both joins point at users but via different FK columns
+        assert all(j.target_model == "users" for j in joins)
+        fk_columns = sorted(j.join_pairs[0][0] for j in joins)
+        assert fk_columns == ["buyer_id", "seller_id"]
+        # Both target the same primary key on users
+        assert all(j.join_pairs[0][1] == "id" for j in joins)
 
     def test_multiple_foreign_entities(self) -> None:
         orders = _make_model("orders", [

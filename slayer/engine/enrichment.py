@@ -177,7 +177,7 @@ async def enrich_query(
             resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
-                model_name=model.name,
+                model_name=model_name_str,
                 resolve_join_target=resolve_join_target,
                 named_queries=named_queries,
             )

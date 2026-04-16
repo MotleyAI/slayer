@@ -144,7 +144,8 @@ class TestMeasureConsolidation:
         # Should be consolidated into one measure
         assert len(orders.measures) == 1
         m = orders.measures[0]
-        assert m.sql == "amount" or m.name == "amount"
+        assert m.sql == "amount"
+        assert m.name == "revenue_sum"
         assert "sum" in m.allowed_aggregations
         assert "avg" in m.allowed_aggregations
         assert "revenue_sum" in m.description
