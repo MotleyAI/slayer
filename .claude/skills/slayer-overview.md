@@ -23,10 +23,10 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 
 ## MCP Tools
 
-Discovery: `datasource_summary`, `inspect_model` (with sample data)
+Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data)
 Querying: `query`
 Model editing: `create_model`, `edit_model`, `delete_model`
-Datasources: `create_datasource`, `list_datasources`, `describe_datasource`, `list_tables`, `edit_datasource`, `delete_datasource`
+Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`
 Ingestion: `ingest_datasource_models`
 
 ## Package Structure

@@ -58,7 +58,7 @@ default_time_dimension: created_at
 ## hidden models
 
 `hidden: true` removes the model from discovery endpoints (like
-`datasource_summary`) but it remains queryable by name — useful for internal
+`models_summary`) but it remains queryable by name — useful for internal
 building blocks that shouldn't clutter an agent's picture of the schema.
 
 ## Result column naming

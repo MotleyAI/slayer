@@ -76,6 +76,27 @@ def _friendly_db_error(exc: Exception) -> str:
     return result
 
 
+def _fetch_tables(
+    ds: DatasourceConfig, schema_name: Optional[str] = None,
+) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Inspect a datasource's table names.
+
+    Returns ``(tables, None)`` on success or ``(None, friendly_error_message)``
+    on failure. ``schema_name=None`` uses the dialect's default schema.
+    """
+    try:
+        conn_str = ds.resolve_env_vars().get_connection_string()
+        sa_engine = sa.create_engine(conn_str)
+        inspector = sa.inspect(sa_engine)
+        tables = inspector.get_table_names(schema=schema_name)
+        sa_engine.dispose()
+        return sorted(tables), None
+    except Exception as e:
+        if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            return None, _friendly_db_error(e)
+        return None, str(e)
+
+
 def _escape_md_cell(value: Any) -> str:
     """Escape a value for inclusion in a markdown table cell.
 
@@ -89,18 +110,51 @@ def _escape_md_cell(value: Any) -> str:
     return s if s else "—"
 
 
+def _cell_is_present(value: Any) -> bool:
+    """A cell is 'present' when it carries information: not None, and not an
+    empty (or whitespace-only) string. Every other value counts as present."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
 def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
     """Render a list of row dicts as a GitHub-flavored markdown table.
 
-    Returns ``"_(none)_"`` for empty ``rows`` so a section header never sits
-    directly above the next one in the rendered output.
+    Columns with no present cell across every row are dropped automatically so
+    uninformative all-empty columns don't clutter the output. The degenerate
+    cases collapse:
+
+    - ``rows`` is empty, or every column gets pruned → ``"_(none)_"``.
+    - Exactly one column survives pruning → a comma-separated, backtick-wrapped
+      list of its values, much denser than a one-column table.
+
+    Otherwise a normal markdown table is produced over the surviving columns.
     """
     if not rows:
         return "_(none)_"
-    header = "| " + " | ".join(columns) + " |"
-    sep = "| " + " | ".join("---" for _ in columns) + " |"
+
+    kept = [c for c in columns if any(_cell_is_present(r.get(c)) for r in rows)]
+    if not kept:
+        return "_(none)_"
+
+    if len(kept) == 1:
+        col = kept[0]
+        rendered = []
+        for r in rows:
+            v = r.get(col)
+            if not _cell_is_present(v):
+                continue
+            text = str(v).replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
+            rendered.append(f"`{text}`")
+        return ", ".join(rendered)
+
+    header = "| " + " | ".join(kept) + " |"
+    sep = "| " + " | ".join("---" for _ in kept) + " |"
     body = [
-        "| " + " | ".join(_escape_md_cell(r.get(c)) for c in columns) + " |"
+        "| " + " | ".join(_escape_md_cell(r.get(c)) for c in kept) + " |"
         for r in rows
     ]
     return "\n".join([header, sep] + body)
@@ -222,6 +276,25 @@ class _DimProfileEntry(NamedTuple):
     values: Optional[List[Any]]
     min_value: Optional[Any]
     max_value: Optional[Any]
+
+
+def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
+    """Render a profile entry as a single-cell string for the Dimensions table.
+
+    - Enumerated categorical → ```a`, `b`, `c`` (backticked, comma-separated).
+    - Overflowed categorical → ``> 20 distinct``.
+    - Numeric/temporal range → ``<min> .. <max>``.
+    """
+    if entry.values is not None:
+        return ", ".join(f"`{v}`" for v in entry.values)
+    if (
+        entry.distinct_count is None
+        and entry.values is None
+        and entry.min_value is None
+        and entry.max_value is None
+    ):
+        return "> 20 distinct"
+    return f"{entry.min_value} .. {entry.max_value}"
 
 
 async def _collect_dim_profile(
@@ -418,8 +491,8 @@ def create_mcp_server(storage: StorageBackend):
             "SLayer is a semantic layer for querying databases. "
             "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
             "Call help() for an overview of SLayer concepts, and help(topic='...') for deep dives on specific topics. "
-            "Typical workflow: datasource_summary → inspect_model → query. "
-            "To connect a new database: create_datasource → describe_datasource (to verify) → ingest_datasource_models → datasource_summary."
+            "Typical workflow: list_datasources → models_summary → inspect_model → query. "
+            "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
     engine = SlayerQueryEngine(storage=storage)
@@ -455,7 +528,7 @@ def create_mcp_server(storage: StorageBackend):
         """Query data from a semantic model. Call inspect_model first to see available fields and dimensions.
 
         Args:
-            source_model: Name of the model to query (from datasource_summary).
+            source_model: Name of the model to query (from models_summary).
             fields: Data columns to return. Each is a formula: {"formula": "count"} (measure),
                 {"formula": "revenue / count", "name": "aov"} (arithmetic),
                 {"formula": "cumsum(revenue)"} (cumulative sum), {"formula": "change(revenue)"} (diff from previous row),
@@ -531,44 +604,82 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    async def datasource_summary() -> str:
-        """List all datasources and their models with schemas (dimensions, measures). Does not include sample data — use inspect_model for that."""
-        # Datasources
-        ds_names = await storage.list_datasources()
-        datasources = []
-        for name in ds_names:
-            try:
-                ds = await storage.get_datasource(name)
-                if ds:
-                    entry: Dict[str, Any] = {"name": name, "type": ds.type}
-                    if ds.description:
-                        entry["description"] = ds.description
-                    datasources.append(entry)
-            except Exception as exc:
-                logger.warning("Failed to load datasource '%s': %s", name, exc)
-                datasources.append({"name": name, "error": "invalid datasource config"})
+    async def models_summary(datasource_name: str) -> str:
+        """Brief markdown summary of all (non-hidden) models in a datasource.
 
-        # Models
-        model_names = await storage.list_models()
-        models = []
-        for name in model_names:
+        For each model: name, description, a markdown table of its dimensions
+        (just name + description), a markdown table of its measures (just name
+        + description), and a comma-separated list of the model names it joins
+        to. No field types, no distinct values, no sample data, and no
+        expansion of joined models' fields — call inspect_model for any of
+        that.
+
+        Args:
+            datasource_name: Name of the datasource (from list_datasources).
+        """
+        try:
+            ds = await storage.get_datasource(datasource_name)
+        except Exception as exc:
+            logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
+            return f"Datasource '{datasource_name}' has an invalid config."
+        if ds is None:
+            return f"Datasource '{datasource_name}' not found."
+
+        all_names = await storage.list_models()
+        matched: List[SlayerModel] = []
+        for n in all_names:
             try:
-                model = await storage.get_model(name)
-                if model and not model.hidden:
-                    models.append(_model_to_summary(model))
+                m = await storage.get_model(n)
             except Exception:
-                logger.warning("Failed to load model '%s', skipping", name, exc_info=True)
+                logger.warning("Failed to load model '%s', skipping", n, exc_info=True)
+                continue
+            if m is not None and not m.hidden and m.data_source == datasource_name:
+                matched.append(m)
+        matched.sort(key=lambda m: m.name)
 
-        if not datasources and not models:
-            return json.dumps({"datasources": [], "models": [], "model_count": 0})
+        if not matched:
+            return f"Datasource '{datasource_name}' has no models."
 
-        result = {
-            "datasources": datasources,
-            "models": models,
-            "model_count": len(models),
-        }
+        sections: List[str] = [
+            f"# Datasource: `{datasource_name}` — {len(matched)} model(s)"
+        ]
+        for m in matched:
+            model_lines: List[str] = [f"## `{m.name}`"]
+            if m.description:
+                model_lines.append(m.description)
 
-        return json.dumps(result, indent=2, default=str)
+            dim_rows = [
+                {"name": d.name, "description": d.description}
+                for d in m.dimensions if not d.hidden
+            ]
+            model_lines.append(f"**Dimensions ({len(dim_rows)}):**")
+            model_lines.append("")
+            model_lines.append(
+                _markdown_table(rows=dim_rows, columns=["name", "description"])
+            )
+            model_lines.append("")
+
+            measure_rows = [
+                {"name": meas.name, "description": meas.description}
+                for meas in m.measures if not meas.hidden
+            ]
+            model_lines.append(f"**Measures ({len(measure_rows)}):**")
+            model_lines.append("")
+            model_lines.append(
+                _markdown_table(rows=measure_rows, columns=["name", "description"])
+            )
+            model_lines.append("")
+
+            if m.joins:
+                targets = sorted({j.target_model for j in m.joins})
+                rendered = ", ".join(f"`{t}`" for t in targets)
+                model_lines.append(f"**Joins to:** {rendered}")
+            else:
+                model_lines.append("**Joins to:** _(none)_")
+
+            sections.append("\n".join(model_lines))
+
+        return "\n\n".join(sections)
 
     @mcp.tool()
     async def inspect_model(model_name: str, num_rows: int = 3) -> str:
@@ -577,11 +688,16 @@ def create_mcp_server(storage: StorageBackend):
         Sections always emitted (when non-empty): model header + description,
         metadata bullets (data_source, sql_table, default_time_dimension,
         hidden, row_count), custom SQL block, model-level filters, dimensions
-        table, measures table, custom aggregations, joins, reachable fields
-        via joins up to depth 5, per-dimension data profile (distinct values
-        for string/boolean, min/max for number/date/time), and a sample-data
-        table with ``COUNT(*)`` plus one aggregation per measure (``avg`` when
-        permitted, else the first allowed aggregation).
+        table (includes a ``sampled`` column — distinct values for
+        string/boolean dims, ``min .. max`` for number/date/time dims, or
+        ``> 20 distinct`` for high-cardinality categoricals), measures table,
+        custom aggregations, joins, reachable fields via joins up to depth 5,
+        and a sample-data table with ``COUNT(*)`` plus one aggregation per
+        measure (``avg`` when permitted, else the first allowed aggregation).
+
+        Every markdown table in the response auto-prunes columns whose cells
+        are entirely empty, and collapses to a comma-separated backticked list
+        when only one column survives pruning.
 
         Args:
             model_name: Name of the model to inspect.
@@ -627,6 +743,15 @@ def create_mcp_server(storage: StorageBackend):
             filter_lines = "\n".join(f"- `{f}`" for f in model.filters)
             sections.append(f"## Filters (model-level)\n\n{filter_lines}")
 
+        # Dimension profile (distinct values / min-max) — folded into the
+        # Dimensions table as a ``sampled`` column so there's one table per
+        # dimension rather than a separate section the LLM has to cross-join by
+        # name.
+        profile_entries = await _collect_dim_profile(model=model, engine=engine)
+        profile_by_name: Dict[str, str] = {
+            e.name: _format_dim_profile_value(e) for e in profile_entries
+        }
+
         # Dimensions table
         dim_rows: List[Dict[str, Any]] = []
         for d in model.dimensions:
@@ -639,12 +764,16 @@ def create_mcp_server(storage: StorageBackend):
                 "sql": d.sql if d.sql else d.name,
                 "label": d.label,
                 "description": d.description,
+                "sampled": profile_by_name.get(d.name),
             })
         sections.append(
             f"## Dimensions ({len(dim_rows)})\n\n"
             + _markdown_table(
                 rows=dim_rows,
-                columns=["name", "type", "primary_key", "sql", "label", "description"],
+                columns=[
+                    "name", "type", "primary_key", "sql",
+                    "label", "description", "sampled",
+                ],
             )
         )
 
@@ -721,29 +850,6 @@ def create_mcp_server(storage: StorageBackend):
             if reach_measures:
                 rendered = ", ".join(f"`{m}`" for m in reach_measures)
                 lines.append(f"**Measures ({len(reach_measures)}):** {rendered}")
-            sections.append("\n".join(lines))
-
-        # Dimension profile (distinct values + min/max; section omitted when empty)
-        profile = await _collect_dim_profile(model=model, engine=engine)
-        if profile:
-            lines = ["## Dimension profile (sampled)", ""]
-            for e in profile:
-                if e.values is not None:  # categorical, enumerated
-                    rendered = ", ".join(f"`{v}`" for v in e.values)
-                    lines.append(
-                        f"- `{e.name}` _({e.type_str}, {e.distinct_count} distinct)_: {rendered}"
-                    )
-                elif e.distinct_count is None and e.min_value is None and e.max_value is None:
-                    # cardinality overflow for a string/boolean
-                    lines.append(
-                        f"- `{e.name}` _({e.type_str})_: high cardinality — "
-                        "more than 20 distinct values, samples omitted"
-                    )
-                else:  # numeric/temporal range
-                    lines.append(
-                        f"- `{e.name}` _({e.type_str})_: "
-                        f"min = `{e.min_value}`, max = `{e.max_value}`"
-                    )
             sections.append("\n".join(lines))
 
         # Sample data via a regular SlayerQuery (same path the `query` MCP tool takes)
@@ -1155,7 +1261,7 @@ def create_mcp_server(storage: StorageBackend):
             for m in models:
                 lines.append(f"- {m.name} ({len(m.dimensions)} dims, {len(m.measures)} measures)")
             lines.append("")
-            lines.append("Use datasource_summary and inspect_model to explore, then query to fetch data.")
+            lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
 
         return "\n".join(lines)
 
@@ -1177,11 +1283,23 @@ def create_mcp_server(storage: StorageBackend):
         return "\n".join(lines)
 
     @mcp.tool()
-    async def describe_datasource(name: str) -> str:
-        """Show datasource details including connection status and available schemas. Use this to verify a datasource works before ingesting.
+    async def describe_datasource(
+        name: str,
+        list_tables: bool = True,
+        schema_name: str = "",
+    ) -> str:
+        """Show datasource details: connection status, available schemas, and (by default) the tables in the given or default schema.
+
+        Use this after create_datasource to verify the connection and explore
+        what's queryable before calling ingest_datasource_models.
 
         Args:
             name: Datasource name (from list_datasources).
+            list_tables: If True (default), append a list of tables from the
+                schema named by ``schema_name`` (or the dialect's default
+                schema when empty).
+            schema_name: Database schema to list tables from (e.g. "public").
+                Empty uses the dialect default. Ignored when list_tables=False.
         """
         try:
             ds = await storage.get_datasource(name)
@@ -1215,47 +1333,21 @@ def create_mcp_server(storage: StorageBackend):
         if schemas:
             lines.append(f"Available schemas: {', '.join(schemas)}")
 
-        return "\n".join(lines)
-
-    @mcp.tool()
-    async def list_tables(datasource_name: str, schema_name: str = "") -> str:
-        """List tables in a database. Use this to explore what's available before ingesting.
-
-        Args:
-            datasource_name: Name of an existing datasource (from list_datasources).
-            schema_name: Database schema (e.g. "public"). If empty, uses the default schema.
-        """
-        try:
-            ds = await storage.get_datasource(datasource_name)
-        except Exception as exc:
-            logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
-            return f"Datasource '{datasource_name}' has an invalid config."
-        if ds is None:
-            return f"Datasource '{datasource_name}' not found."
-        try:
-            conn_str = ds.get_connection_string()
-            sa_engine = sa.create_engine(conn_str)
-            inspector = sa.inspect(sa_engine)
-            schema = schema_name or None
-            tables = inspector.get_table_names(schema=schema)
-            sa_engine.dispose()
-        except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
-                return _friendly_db_error(e)
-            raise
-
-        if not tables:
+        if list_tables:
+            tables, err = _fetch_tables(ds=ds, schema_name=schema_name or None)
             schema_label = f" in schema '{schema_name}'" if schema_name else ""
-            lines = [f"No tables found{schema_label}."]
-            schemas = _get_schemas(ds)
-            if schemas:
-                lines.append(f"Available schemas: {', '.join(schemas)}")
-            return "\n".join(lines)
+            if err is not None:
+                lines.append(f"\nTables{schema_label}: (error — {err})")
+            elif tables:
+                lines.append(f"\nTables ({len(tables)}){schema_label}:")
+                for t in tables:
+                    lines.append(f"  - {t}")
+                lines.append(
+                    "\nUse ingest_datasource_models to create models from these tables."
+                )
+            else:
+                lines.append(f"\nNo tables found{schema_label}.")
 
-        lines = [f"Tables ({len(tables)}):"]
-        for t in sorted(tables):
-            lines.append(f"  - {t}")
-        lines.append("\nUse ingest_datasource_models to create models from these tables.")
         return "\n".join(lines)
 
     @mcp.tool()
@@ -1348,7 +1440,7 @@ def create_mcp_server(storage: StorageBackend):
         for m in models:
             lines.append(f"- {m.name} ({len(m.dimensions)} dims, {len(m.measures)} measures)")
         lines.append("")
-        lines.append("Use datasource_summary and inspect_model to explore, then query to fetch data.")
+        lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
         return "\n".join(lines)
 
     return mcp

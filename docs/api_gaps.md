@@ -9,7 +9,7 @@ Features available in at least one API but missing in at least one other.
 | Output format: table (ASCII) | — | Y | — | |
 | Output format: markdown | — | — | Y | |
 | Output format: csv | — | — | Y | |
-| List models (standalone) | Y | Y | — | MCP bundles model list into `datasource_summary` |
+| List models in a datasource | Y | Y | Y | MCP uses `models_summary(datasource_name=...)` |
 | Create model from query | — | — | Y | Saves a query's generated SQL as a reusable model |
 | Update/replace model (full) | Y | — | — | `PUT /models/{name}` |
 | Edit model (partial) | — | — | Y | Add/remove fields, update metadata |
@@ -17,7 +17,7 @@ Features available in at least one API but missing in at least one other.
 | Create datasource | Y | — | Y | |
 | Edit datasource | — | — | Y | Update description only |
 | Delete datasource | Y | — | Y | |
-| List database tables | — | — | Y | Browse tables before ingesting |
+| List database tables | — | — | Y | Included in `describe_datasource` (default: `list_tables=true`) |
 | Test datasource connection | — | — | Y | Included in `describe_datasource` |
 | Auto-ingest on datasource creation | — | — | Y | `auto_ingest` param on `create_datasource` |
 | Ingest: include specific tables | Y | — | Y | |

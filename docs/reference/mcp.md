@@ -69,18 +69,17 @@ claude mcp list
 |------|-------------|
 | `create_datasource` | Create a DB connection, test it, and auto-ingest models (set `auto_ingest=false` to skip). |
 | `list_datasources` | List configured datasources (no credentials shown). |
-| `describe_datasource` | Show details, test connection, list available schemas. |
-| `list_tables` | List tables in a database before ingesting. |
+| `describe_datasource` | Show details, test connection, list available schemas, and (by default) list tables in the given or default schema. Params: `name`, `list_tables` (default `true`), `schema_name` (empty = dialect default). |
 | `edit_datasource` | Edit an existing datasource config. |
 | `delete_datasource` | Remove a datasource config. |
-| `datasource_summary` | List all datasources and their models with schemas (dimensions, measures). Returns JSON. |
 | `ingest_datasource_models` | Auto-generate models from DB schema with rollup joins. Params: `datasource_name`, `include_tables`, `schema_name`. |
 
 ### Model Management
 
 | Tool | Description |
 |------|-------------|
-| `inspect_model` | Complete markdown view of a model: metadata with row count, any model-level or measure-level filters, dimensions table, measures table (with `allowed_aggregations`, `filter`, `label`, `description`, `sql`), custom aggregations, joins (direct/multi-hop), all fields reachable via joins up to depth 5, a per-dimension data profile (distinct values for string/boolean, min/max for number/date/time), and a sample-data table. Params: `model_name`, `num_rows` (default 3). |
+| `models_summary` | Brief markdown summary of all non-hidden models in a datasource: each model's name, description, a `name`+`description` table of its dimensions and measures, and the list of models it joins to. No types, values, or joined-model field expansion — call `inspect_model` for those. Params: `datasource_name`. |
+| `inspect_model` | Complete markdown view of a single model: metadata with row count, any model-level or measure-level filters, dimensions table (with a `sampled` column — distinct values for string/boolean dims, `min .. max` for number/date/time dims), measures table (with `allowed_aggregations`, `filter`, `label`, `description`, `sql`), custom aggregations, joins (direct/multi-hop), all fields reachable via joins up to depth 5, and a sample-data table. Every table auto-prunes all-empty columns and collapses to a comma-separated backticked list when only one column remains. Params: `model_name`, `num_rows` (default 3). |
 | `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `dimensions`/`measures` for table-based, or pass `query` (a SLayer query dict) to auto-introspect dimensions and measures from the query result. |
 | `edit_model` | Edit an existing model in one call. Supports upsert for dimensions, measures, aggregations, and joins (create if new, update if existing). Also manages scalar metadata and filters. See params below. |
 | `delete_model` | Delete a model entirely. |
@@ -116,7 +115,7 @@ claude mcp list
 ```
 1. create_datasource(name="mydb", type="postgres", host="localhost", database="app", username="user", password="pass")
    # auto_ingest=true by default — models are generated automatically
-2. datasource_summary()                            # see what was generated
+2. models_summary(datasource_name="mydb")      # see what was generated
 3. inspect_model(model_name="orders")          # see schema + sample data
 ```
 
@@ -124,18 +123,18 @@ To explore first without auto-ingesting:
 
 ```
 1. create_datasource(name="mydb", type="postgres", host="localhost", database="app", username="user", password="pass", auto_ingest=false)
-2. describe_datasource(name="mydb")           # verify connection, see schemas
-3. list_tables(datasource_name="mydb", schema_name="public")  # explore tables
-4. ingest_datasource_models(datasource_name="mydb", schema_name="public")
-5. datasource_summary()                            # see what was generated
+2. describe_datasource(name="mydb", schema_name="public")  # verify connection + list tables
+3. ingest_datasource_models(datasource_name="mydb", schema_name="public")
+4. models_summary(datasource_name="mydb")      # see what was generated
 ```
 
 ### Query data
 
 ```
-1. datasource_summary()                            # discover models
-2. inspect_model(model_name="orders")          # see schema + sample data
-3. query(source_model="orders", fields=["count"], dimensions=["status"], limit=10)
+1. list_datasources()                              # pick a datasource
+2. models_summary(datasource_name="mydb")      # discover its models
+3. inspect_model(model_name="orders")          # see schema + sample data
+4. query(source_model="orders", fields=["count"], dimensions=["status"], limit=10)
 ```
 
 ### Customize a model

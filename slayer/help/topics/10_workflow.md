@@ -6,9 +6,14 @@ tool-by-tool documentation, which covers what each one does in isolation.
 ## Discovery — "what data is here?"
 
 ```
-1. datasource_summary()                # list datasources + models with schemas
-2. inspect_model(model_name="orders")  # dimensions, measures, sample rows, SQL
+1. list_datasources()                       # pick a datasource
+2. models_summary(datasource_name="mydb")   # brief list of its models
+3. inspect_model(model_name="orders")       # dimensions, measures, sample rows, SQL
 ```
+
+`models_summary` gives one line per model with just names + descriptions of
+its fields and the list of joined models — pick the right one without the
+weight of a full `inspect_model` call.
 
 `inspect_model` with `num_rows` returns live sample data — helpful for guessing
 what values a column actually holds before writing a filter.
@@ -31,17 +36,16 @@ Two paths.
 
 ```
 1. create_datasource(name="mydb", type="postgres", ..., auto_ingest=true)
-2. datasource_summary()                # see what ingestion produced
+2. models_summary(datasource_name="mydb")              # see what ingestion produced
 ```
 
 **Cautious — inspect first:**
 
 ```
 1. create_datasource(..., auto_ingest=false)
-2. describe_datasource(name="mydb")                        # verify connection, list schemas
-3. list_tables(datasource_name="mydb", schema_name="public")
-4. ingest_datasource_models(datasource_name="mydb", schema_name="public")
-5. datasource_summary()
+2. describe_datasource(name="mydb", schema_name="public")  # verify connection + list schemas + list tables (all in one call)
+3. ingest_datasource_models(datasource_name="mydb", schema_name="public")
+4. models_summary(datasource_name="mydb")
 ```
 
 ## Iterating on a model
@@ -61,7 +65,7 @@ Two paths.
 | "Aggregation Y not allowed on measure X" | `allowed_aggregations` whitelist — see `help(topic='aggregations')`. |
 | "Unresolvable dot path" | Missing `joins` entry or a typo in the target_model. |
 | "Time dimension required" | Transform needs a time dim — set `time_dimensions` or `main_time_dimension`. |
-| "Datasource 'X' not found" | `list_datasources` / `datasource_summary`. |
+| "Datasource 'X' not found" | `list_datasources`. |
 | Database connection errors | `describe_datasource(name=...)` runs a test query and surfaces the error. |
 
 ## When to reach for help()

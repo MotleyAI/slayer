@@ -46,49 +46,84 @@ async def _call(mcp_server, *, name: str, arguments: Optional[dict[str, Any]] = 
     return content_blocks[0].text
 
 
-class TestDatasourceSummary:
-    async def test_empty(self, mcp_server) -> None:
-        result = await _call(mcp_server, name="datasource_summary")
-        data = json.loads(result)
-        assert data["datasources"] == []
-        assert data["models"] == []
-        assert data["model_count"] == 0
+class TestModelsSummary:
+    async def test_datasource_not_found(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "nope"})
+        assert "not found" in result
 
-    async def test_with_models(self, mcp_server, storage: YAMLStorage) -> None:
+    async def test_empty_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert "has no models" in result
+
+    async def test_filters_by_datasource(self, mcp_server, storage: YAMLStorage) -> None:
+        """Only models whose ``data_source`` matches the arg appear in the output."""
+        await storage.save_datasource(DatasourceConfig(name="ds_a", type="postgres", host="h"))
+        await storage.save_datasource(DatasourceConfig(name="ds_b", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(name="orders_a", sql_table="t", data_source="ds_a"))
+        await storage.save_model(SlayerModel(name="orders_b", sql_table="t", data_source="ds_b"))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "ds_a"})
+        assert "orders_a" in result
+        assert "orders_b" not in result
+
+    async def test_markdown_structure(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         await storage.save_model(SlayerModel(
             name="orders",
             sql_table="t",
-            data_source="test",
-            dimensions=[Dimension(name="status", type=DataType.STRING)],
-            measures=[Measure(name="revenue", sql="amount")],
+            data_source="mydb",
+            description="Orders fact table.",
+            dimensions=[Dimension(name="status", type=DataType.STRING, description="Order state")],
+            measures=[Measure(name="revenue", sql="amount", description="USD")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
-        result = await _call(mcp_server, name="datasource_summary")
-        parsed = json.loads(result)
-        assert parsed["model_count"] == 1
-        assert parsed["models"][0]["name"] == "orders"
-        assert len(parsed["models"][0]["dimensions"]) == 1
-        assert len(parsed["models"][0]["measures"]) == 1
-        # Envelope is always stable — datasources key present even when empty
-        assert "datasources" in parsed
-        assert parsed["datasources"] == []
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert "## `orders`" in result
+        assert "Orders fact table." in result
+        assert "**Dimensions (1):**" in result
+        assert "| status |" in result
+        assert "Order state" in result
+        assert "**Measures (1):**" in result
+        assert "| revenue |" in result
+        assert "USD" in result
+        assert "**Joins to:** `customers`" in result
 
     async def test_hidden_models_excluded(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="visible", sql_table="t", data_source="test"))
-        await storage.save_model(SlayerModel(name="hidden", sql_table="t", data_source="test", hidden=True))
-        result = await _call(mcp_server, name="datasource_summary")
-        parsed = json.loads(result)
-        assert parsed["model_count"] == 1
-        assert parsed["models"][0]["name"] == "visible"
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(name="visible", sql_table="t", data_source="mydb"))
+        await storage.save_model(SlayerModel(name="hidden_m", sql_table="t", data_source="mydb", hidden=True))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert "visible" in result
+        assert "hidden_m" not in result
 
-    async def test_includes_datasource(self, mcp_server, storage: YAMLStorage) -> None:
-        from slayer.core.models import DatasourceConfig
-        await storage.save_datasource(DatasourceConfig(
-            name="mydb", type="postgres", host="localhost", description="Production DB",
+    async def test_joins_none_marker(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(name="solo", sql_table="t", data_source="mydb"))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert "**Joins to:** _(none)_" in result
+
+    async def test_single_surviving_column_collapses_to_comma_list(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """When a model has no descriptions at all, the Dimensions table — which
+        would otherwise be just the ``name`` column — auto-collapses into a
+        comma-separated backticked list rather than a degenerate one-column
+        table. Same applies to Measures."""
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="mydb",
+            dimensions=[
+                Dimension(name="x", type=DataType.STRING),
+                Dimension(name="y", type=DataType.STRING),
+            ],
         ))
-        result = await _call(mcp_server, name="datasource_summary")
-        parsed = json.loads(result)
-        assert parsed["datasources"][0]["name"] == "mydb"
-        assert parsed["datasources"][0]["description"] == "Production DB"
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        dim_section = result.split("**Dimensions")[1].split("**Measures")[0]
+        assert "`x`, `y`" in dim_section
+        # And no markdown-table scaffolding made it in:
+        assert "| x |" not in dim_section
+        assert "| --- |" not in dim_section
 
 
 class TestInspectModel:
@@ -293,6 +328,43 @@ class TestMarkdownHelpers:
             "| 1 | hi |",
             "| 2 | — |",
         ]
+
+    def test_table_prunes_all_empty_columns(self) -> None:
+        """A column where every row is None/empty is dropped from the output."""
+        out = _markdown_table(
+            rows=[
+                {"name": "a", "label": None, "desc": "foo"},
+                {"name": "b", "label": "", "desc": "bar"},
+            ],
+            columns=["name", "label", "desc"],
+        )
+        assert "label" not in out
+        assert out.splitlines() == [
+            "| name | desc |",
+            "| --- | --- |",
+            "| a | foo |",
+            "| b | bar |",
+        ]
+
+    def test_table_single_column_collapses_to_comma_list(self) -> None:
+        """After pruning, a lone remaining column renders as ``\\`a\\`, \\`b\\`
+        ... — no table scaffolding."""
+        out = _markdown_table(
+            rows=[
+                {"name": "x", "desc": None},
+                {"name": "y", "desc": ""},
+                {"name": "z", "desc": None},
+            ],
+            columns=["name", "desc"],
+        )
+        assert out == "`x`, `y`, `z`"
+
+    def test_table_all_columns_pruned_returns_none_marker(self) -> None:
+        out = _markdown_table(
+            rows=[{"a": None, "b": ""}, {"a": "", "b": None}],
+            columns=["a", "b"],
+        )
+        assert out == "_(none)_"
 
     def test_strip_model_prefix(self) -> None:
         cols, data = _strip_model_prefix(
@@ -935,18 +1007,14 @@ class TestDatasources:
         assert "bad" in result
         assert "ERROR" in result
 
-    async def test_summary_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_datasource(DatasourceConfig(name="good", type="sqlite", database=":memory:"))
+    async def test_models_summary_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
+        """Asking for a datasource whose YAML config is broken surfaces the
+        invalid-config error rather than raising."""
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
-        result = await _call(mcp_server, name="datasource_summary")
-        data = json.loads(result)
-        names = [d["name"] for d in data["datasources"]]
-        assert "good" in names
-        assert "bad" in names
-        bad_entry = next(d for d in data["datasources"] if d["name"] == "bad")
-        assert "error" in bad_entry
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "bad"})
+        assert "invalid" in result.lower()
 
     async def test_describe_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         path = os.path.join(storage.datasources_dir, "bad.yaml")

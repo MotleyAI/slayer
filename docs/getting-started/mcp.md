@@ -74,7 +74,7 @@ Once the datasource file is in place, ask your agent:
 
 > "Ingest models from the mydb datasource and show me what's available"
 
-The agent will call `ingest_datasource_models` to generate models from the database schema, then `datasource_summary` to list them.
+The agent will call `ingest_datasource_models` to generate models from the database schema, then `models_summary(datasource_name="mydb")` to list them.
 
 You can also create datasources conversationally via the `create_datasource` MCP tool — see the [MCP Reference](../reference/mcp.md#datasource-management) for details.
 
@@ -84,7 +84,7 @@ Ask your agent:
 
 > "List the available SLayer models"
 
-The agent should call `datasource_summary` and return a list of your tables/models. If it says "no models found", check that:
+The agent should call `list_datasources` and then `models_summary(datasource_name="mydb")` and return a list of your tables/models. If it says "no models found", check that:
 
 1. The `--storage` path matches where your datasource YAML files are
 2. Models have been ingested (via `ingest_datasource_models` or `create_datasource` with auto-ingest)

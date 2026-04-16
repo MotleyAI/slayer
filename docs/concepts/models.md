@@ -66,7 +66,7 @@ Measures are named row-level SQL expressions. They define *what* to compute, not
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Unique measure name |
-| `description` | string | No | — | Explains what this measure computes, shown in datasource_summary and inspect_model |
+| `description` | string | No | — | Explains what this measure computes, shown in models_summary and inspect_model |
 | `label` | string | No | — | Human-readable display name (e.g., "Total Revenue"). Propagated to query results and MCP summaries. |
 | `sql` | string | Yes | — | SQL expression (bare column name or expression) |
 | `allowed_aggregations` | list[str] | No | — | Whitelist of allowed aggregation types (validated at model creation and query time) |

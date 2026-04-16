@@ -90,6 +90,43 @@ async def env(tmp_path):
     return {"storage": storage, "engine": engine, "model": model}
 
 
+class TestDescribeDatasourceTables:
+    """Integration-level tests for the table-listing behaviour that's now part
+    of describe_datasource (was formerly the separate list_tables tool)."""
+
+    async def _call_describe(
+        self, server, *, name: str, list_tables: bool = True, schema_name: str = "",
+    ) -> str:
+        content, _ = await server.call_tool(
+            name="describe_datasource",
+            arguments={"name": name, "list_tables": list_tables, "schema_name": schema_name},
+        )
+        return content[0].text
+
+    async def test_tables_appear_by_default(self, env) -> None:
+        server = create_mcp_server(storage=env["storage"])
+        out = await self._call_describe(server, name="test_sqlite")
+        assert "Tables (1):" in out
+        assert "  - orders" in out
+
+    async def test_list_tables_false_suppresses_section(self, env) -> None:
+        server = create_mcp_server(storage=env["storage"])
+        out = await self._call_describe(server, name="test_sqlite", list_tables=False)
+        assert "Tables" not in out.split("Connection:")[1]
+
+    async def test_schema_name_is_forwarded(self, env) -> None:
+        """An unknown schema name is tolerated — error surfaces inline, rest of
+        the response still renders."""
+        server = create_mcp_server(storage=env["storage"])
+        out = await self._call_describe(server, name="test_sqlite", schema_name="nope")
+        # Still got the connection header
+        assert "Datasource: test_sqlite" in out
+        assert "Connection: OK" in out
+        # And something table-related — either "No tables found in schema 'nope'"
+        # or a DB-specific error; both are acceptable outcomes of the probe.
+        assert "nope" in out
+
+
 class TestGetRowCount:
     async def test_non_empty_table(self, env) -> None:
         count = await _get_row_count(model=env["model"], engine=env["engine"])
@@ -232,9 +269,27 @@ class TestInspectModelEndToEnd:
         assert "**sql_table:** `orders`" in result
         assert "**row_count:** 6" in result
 
-        # Dimensions table (7 dims declared; pk excluded from sample but still listed)
+        # Dimensions table (7 dims declared; pk excluded from sample but still listed).
+        # The `sampled` column is folded in, so the same section now carries the
+        # enumerated values for string/boolean dims and `min .. max` for numeric
+        # and temporal dims.
         assert "## Dimensions (7)" in result
         assert "| status |" in result
+
+        dim_section = result.split("## Dimensions")[1].split("## Measures")[0]
+        # The sampled column carries the profile data inline now.
+        # status (string, 3 distinct) enumerates its values
+        assert "completed" in dim_section
+        assert "pending" in dim_section
+        assert "cancelled" in dim_section
+        # is_paid (boolean) is in the dim table; sample values render
+        assert "| is_paid |" in dim_section
+        # amount (number) shows as "<min> .. <max>"
+        assert " .. " in dim_section
+        # ordered_at (timestamp) is present in the dimensions section
+        assert "ordered_at" in dim_section
+        # The sampled column header appears
+        assert "| sampled |" in dim_section
 
         # Measures table
         assert "## Measures (2)" in result
@@ -243,12 +298,8 @@ class TestInspectModelEndToEnd:
         # Joins table (empty model has no joins but header always rendered)
         assert "## Joins (0)" in result
 
-        # Dimension profile — enumerates categoricals and min/max for numerics/times
-        assert "## Dimension profile (sampled)" in result
-        assert "`status`" in result and "completed" in result
-        assert "`is_paid`" in result
-        assert "`amount`" in result and "min =" in result and "max =" in result
-        assert "`ordered_at`" in result
+        # No standalone dim-profile section anymore
+        assert "## Dimension profile" not in result
 
         # Sample data table: count + amount_avg + quantity_avg + 2 dim columns
         # SLayer names the *:count output '_count' when grouped by dimensions.
