@@ -12,7 +12,8 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `dimensions` | list[ColumnRef] | No | Dimensions to group by. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
-| `filters` | list[str] | No | Conditions as formula strings. See [Filters](#filters). |
+| `filters` | list[str] | No | Conditions as formula strings. Supports `{variable}` placeholders. See [Filters](#filters). |
+| `variables` | dict[str, Any] | No | Variable values for filter substitution. See [Filter Variables](#filter-variables). |
 | `order` | list[OrderItem] | No | Sort specifications |
 | `limit` | int | No | Maximum rows to return |
 | `offset` | int | No | Number of rows to skip |
@@ -155,6 +156,26 @@ Post-filters can be combined with regular filters — base filters (on dimension
   "filters": ["status = 'completed'", "change(revenue:sum) > 0"]
 }
 ```
+
+### Filter Variables
+
+Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.
+
+```json
+{
+  "source_model": "orders",
+  "fields": ["*:count"],
+  "filters": ["status = '{status}' AND amount > {min_amount}"],
+  "variables": {"status": "completed", "min_amount": 100}
+}
+```
+
+This produces the filter `status = 'completed' AND amount > 100`.
+
+- Variable names must be alphanumeric + underscore (`[a-zA-Z_][a-zA-Z0-9_]*`)
+- Values must be strings or numbers (inserted as-is — strings should be quoted in the filter template)
+- `{{` and `}}` produce literal `{` and `}`
+- Undefined variables raise an error
 
 ---
 

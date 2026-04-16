@@ -8,13 +8,59 @@ from __future__ import annotations
 
 import datetime
 import re
-from typing import Annotated, Any, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import BaseModel, BeforeValidator, field_validator, model_validator
 
 from slayer.core.enums import TimeGranularity
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([^}]*)\}")
+
+
+def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
+    """Substitute {variable} placeholders in a filter string.
+
+    - {var_name} is replaced with the variable's value (str or number, inserted as-is).
+    - {{ and }} are escaped to literal { and }.
+    - Variable names must be alphanumeric + underscore.
+    - Raises ValueError for undefined variables or invalid variable names.
+
+    Example:
+        substitute_variables("status = '{status_val}'", {"status_val": "active"})
+        → "status = 'active'"
+
+        substitute_variables("amount > {min_amount}", {"min_amount": 100})
+        → "amount > 100"
+    """
+    def _replace(match: re.Match) -> str:
+        full = match.group(0)
+        if full == "{{":
+            return "{"
+        if full == "}}":
+            return "}"
+        # Group 1: valid variable name
+        valid_name = match.group(1)
+        if valid_name is not None:
+            if valid_name not in variables:
+                raise ValueError(
+                    f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
+                    f"Available variables: {sorted(variables.keys())}"
+                )
+            value = variables[valid_name]
+            if not isinstance(value, (str, int, float)):
+                raise ValueError(
+                    f"Variable '{valid_name}' must be a string or number, got {type(value).__name__}"
+                )
+            return str(value)
+        # Group 2: invalid variable name (matched {something} but name was invalid)
+        bad_name = match.group(2)
+        raise ValueError(
+            f"Invalid variable name '{bad_name}' in filter: {filter_str!r}. "
+            f"Variable names must contain only letters, digits, and underscores."
+        )
+
+    return _VAR_PATTERN.sub(_replace, filter_str)
 
 
 class ColumnRef(BaseModel):
@@ -176,6 +222,7 @@ class SlayerQuery(BaseModel):
     time_dimensions: Optional[List[TimeDimension]] = None
     main_time_dimension: Optional[str] = None  # Explicit time dimension for transforms (overrides auto-detection)
     filters: Optional[List[str]] = None
+    variables: Optional[Dict[str, Any]] = None  # Variable values for filter substitution
     order: Optional[List[OrderItem]] = None
     limit: Optional[int] = None
     offset: Optional[int] = None
