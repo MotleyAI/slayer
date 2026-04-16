@@ -430,3 +430,57 @@ class TestAggregationValidation:
     def test_custom_without_formula_raises(self) -> None:
         with pytest.raises(ValueError, match="not a built-in aggregation"):
             Aggregation(name="my_agg")
+
+
+class TestDimensionLabel:
+    def test_label_optional(self) -> None:
+        d = Dimension(name="status", sql="status")
+        assert d.label is None
+
+    def test_label_set(self) -> None:
+        d = Dimension(name="status", sql="status", label="Order Status")
+        assert d.label == "Order Status"
+
+    def test_label_in_model_dump(self) -> None:
+        d = Dimension(name="status", label="Order Status")
+        data = d.model_dump(exclude_none=True)
+        assert data["label"] == "Order Status"
+
+    def test_label_excluded_when_none(self) -> None:
+        d = Dimension(name="status")
+        data = d.model_dump(exclude_none=True)
+        assert "label" not in data
+
+
+class TestMeasureLabel:
+    def test_label_optional(self) -> None:
+        m = Measure(name="revenue", sql="amount")
+        assert m.label is None
+
+    def test_label_set(self) -> None:
+        m = Measure(name="revenue", sql="amount", label="Total Revenue")
+        assert m.label == "Total Revenue"
+
+
+class TestMeasureFilter:
+    def test_filter_optional(self) -> None:
+        m = Measure(name="revenue", sql="amount")
+        assert m.filter is None
+
+    def test_filter_set(self) -> None:
+        m = Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        assert m.filter == "status = 'active'"
+
+    def test_filter_multidot_autoconvert(self) -> None:
+        m = Measure(name="x", sql="amount", filter="a.b.c = 1")
+        assert "a__b.c" in m.filter
+
+    def test_filter_in_model_dump(self) -> None:
+        m = Measure(name="x", sql="amount", filter="status = 'active'")
+        data = m.model_dump(exclude_none=True)
+        assert data["filter"] == "status = 'active'"
+
+    def test_filter_excluded_when_none(self) -> None:
+        m = Measure(name="x", sql="amount")
+        data = m.model_dump(exclude_none=True)
+        assert "filter" not in data

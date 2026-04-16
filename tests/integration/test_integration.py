@@ -1509,3 +1509,190 @@ async def test_diamond_joins_single_path(diamond_env):
     by_region = {r["shipments.customers.regions.name"]: r["shipments._count"] for r in result.data}
     assert by_region["US"] == 2  # Alice: 2 shipments
     assert by_region["EU"] == 2  # Bob: 2 shipments
+
+
+# ---------------------------------------------------------------------------
+# Filtered measures
+# ---------------------------------------------------------------------------
+
+
+def test_filtered_measure_sum(integration_env):
+    """Measure with filter produces CASE WHEN — only matching rows aggregated."""
+    engine = integration_env
+    storage = engine.storage
+
+    # Add a filtered measure: only sum completed orders' amounts
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[
+            Field(formula="total_amount:sum"),
+            Field(formula="completed_revenue:sum"),
+        ],
+    ))
+    assert result.row_count == 1
+    row = result.data[0]
+    total = row["orders.total_amount_sum"]
+    completed = row["orders.completed_revenue_sum"]
+    assert total == pytest.approx(750.0)
+    assert completed == pytest.approx(600.0)
+
+
+def test_filtered_measure_count(integration_env):
+    """Filtered count measure counts only matching rows."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_count", sql="id", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[
+            Field(formula="*:count"),
+            Field(formula="completed_count:count"),
+        ],
+    ))
+    row = result.data[0]
+    total = row["orders._count"]
+    completed = row["orders.completed_count_count"]
+    assert total == 6
+    assert completed == 3
+
+
+def test_filtered_measure_with_dimensions(integration_env):
+    """Filtered measure works with GROUP BY dimensions."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_revenue", sql="amount", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[Field(formula="completed_revenue:sum")],
+        dimensions=[ColumnRef(name="status")],
+    ))
+    # Completed status row should have a value; others should be NULL
+    for row in result.data:
+        if row["orders.status"] == "completed":
+            assert row["orders.completed_revenue_sum"] is not None
+            assert row["orders.completed_revenue_sum"] > 0
+        else:
+            # Non-completed rows: the CASE WHEN produces NULL, SUM of NULLs is NULL
+            assert row["orders.completed_revenue_sum"] is None
+
+
+def test_filtered_last_picks_correct_row(integration_env):
+    """Filtered last measure picks the latest row that matches the filter,
+    not the globally latest row.
+
+    Fixture: orders (1..6), Order 6 (pending, Mar-20) is globally latest,
+    Order 5 (completed, 300.0, Mar-5) is the latest completed.
+    """
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    orders.measures.append(
+        Measure(name="completed_latest", sql="amount", filter="status = 'completed'")
+    )
+    storage.save_model(orders)
+
+    # Query with monthly granularity so we get per-month last values
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        time_dimensions=[
+            TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            ),
+        ],
+        fields=[
+            Field(formula="completed_latest:last"),
+            Field(formula="latest_amount:last"),
+        ],
+    ))
+    rows_by_month = {row["orders.created_at"]: row for row in result.data}
+    # March: globally latest is Order 6 (pending, 25.0), but the latest
+    # completed is Order 5 (completed, 300.0). The filter must participate
+    # in ranking so the correct row is picked.
+    mar = rows_by_month["2025-03-01"]
+    assert mar["orders.completed_latest_last"] == pytest.approx(300.0)
+    assert mar["orders.latest_amount_last"] == pytest.approx(25.0)  # unfiltered picks Order 6
+
+    # January: latest is Order 2 (completed, 200.0) — passes filter
+    jan = rows_by_month["2025-01-01"]
+    assert jan["orders.completed_latest_last"] == pytest.approx(200.0)
+
+    # February: no completed orders — should be NULL
+    feb = rows_by_month["2025-02-01"]
+    assert feb["orders.completed_latest_last"] is None
+
+
+def test_time_dimension_label_fallback(integration_env):
+    """Time dimension inherits label from model dimension definition."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    for d in orders.dimensions:
+        if d.name == "created_at":
+            d.label = "Order Date"
+    storage.save_model(orders)
+
+    # Query with time dimension but no explicit label on TimeDimension
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        time_dimensions=[
+            TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            ),
+        ],
+        fields=[Field(formula="total_amount:sum")],
+    ))
+    # The model-level label should propagate through
+    td_meta = result.meta.get("orders.created_at")
+    assert td_meta is not None
+    assert td_meta.label == "Order Date"
+
+
+def test_label_propagation_enrichment(integration_env):
+    """Model-level labels propagate through enrichment to query results."""
+    engine = integration_env
+    storage = engine.storage
+
+    orders = storage.get_model("orders")
+    # Add labels to a dimension and measure
+    for d in orders.dimensions:
+        if d.name == "status":
+            d.label = "Order Status"
+    orders.measures.append(
+        Measure(name="labeled_rev", sql="amount", label="Total Revenue")
+    )
+    storage.save_model(orders)
+
+    result = engine.execute(query=SlayerQuery(
+        source_model="orders",
+        fields=[Field(formula="labeled_rev:sum")],
+        dimensions=[ColumnRef(name="status")],
+    ))
+    # Labels should appear in result meta
+    status_meta = result.meta.get("orders.status")
+    assert status_meta is not None
+    assert status_meta.label == "Order Status"
+    rev_meta = result.meta.get("orders.labeled_rev_sum")
+    assert rev_meta is not None
+    assert rev_meta.label == "Total Revenue"

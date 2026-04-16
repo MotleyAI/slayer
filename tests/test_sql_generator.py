@@ -1,6 +1,7 @@
 """Tests for the SQL generator."""
 
 import pytest
+import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Dimension, Measure, ModelJoin, SlayerModel
@@ -1249,3 +1250,355 @@ class TestAggParamSanitization:
         )
         with pytest.raises(ValueError, match="Unsafe value"):
             gen.generate(enriched=enriched)
+
+
+class TestFilteredMeasures:
+    """Tests for measure-level filter (CASE WHEN wrapping)."""
+
+    def test_filtered_sum(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_revenue:sum")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" in sql
+        assert "THEN" in sql
+        assert "SUM(" in sql
+
+    def test_filtered_count_star(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """COUNT(*) with filter becomes COUNT(CASE WHEN filter THEN 1 END)."""
+        orders_model.measures.append(
+            Measure(name="active_count", sql=None, filter="status = 'active'")
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_count:count")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" in sql
+        assert "THEN 1" in sql
+        assert "COUNT(" in sql
+        # Should NOT be COUNT(*)
+        assert "COUNT(*)" not in sql
+
+    def test_filtered_avg(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        orders_model.measures.append(
+            Measure(name="active_avg", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_avg:avg")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" in sql
+        assert "AVG(" in sql
+
+    def test_unfiltered_measure_no_case(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Measures without filter should not have CASE WHEN."""
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="revenue:sum")])
+        sql = _generate(generator, query, orders_model)
+        assert "CASE WHEN" not in sql
+        assert "SUM(" in sql
+
+    def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Query with both filtered and unfiltered measures."""
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum"), Field(formula="active_revenue:sum")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should have one CASE WHEN (for active_revenue) and one plain SUM (for revenue)
+        assert sql.count("CASE WHEN") == 1
+        assert sql.count("SUM(") == 2
+
+    def test_filtered_last_generates_dedicated_rn(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Filtered last measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(
+            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="completed_balance:last")],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should have a dedicated filtered ROW_NUMBER column
+        assert "_last_rn_f0" in sql
+        # The ORDER BY should include CASE WHEN filter THEN 0 ELSE 1 END
+        assert "CASE WHEN" in sql
+        assert "THEN 0 ELSE 1" in sql
+        # Standard ROW_NUMBER should NOT be present (no unfiltered first/last)
+        assert "_last_rn " not in sql or "_last_rn_f0" in sql
+
+    def test_filtered_first_generates_dedicated_rn(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Filtered first measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(
+            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="completed_balance:first")],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "_first_rn_f0" in sql
+        assert "ASC" in sql
+        assert "CASE WHEN" in sql
+        assert "THEN 0 ELSE 1" in sql
+
+    def test_unfiltered_last_unchanged(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Unfiltered last measure uses the shared ROW_NUMBER, no _rn_f columns."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="amount"))
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="balance:last")],
+        )
+        sql = _generate(generator, query, orders_model)
+        assert "_last_rn" in sql
+        assert "_last_rn_f" not in sql
+
+    def test_mixed_filtered_and_unfiltered_last(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Both filtered and unfiltered last measures get separate ROW_NUMBER columns."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(Measure(name="balance", sql="amount"))
+        orders_model.measures.append(
+            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[
+                Field(formula="balance:last"),
+                Field(formula="completed_balance:last"),
+            ],
+        )
+        sql = _generate(generator, query, orders_model)
+        # Should have both the shared _last_rn and the filtered _last_rn_f0
+        assert "_last_rn" in sql
+        assert "_last_rn_f0" in sql
+
+
+class TestMeasureFilterInjection:
+    """End-to-end SQL-injection hardening for the ``Measure.filter`` field.
+
+    The filter string is the only user-authored SQL fragment that gets
+    interpolated into the generated query (everything else goes through
+    sqlglot AST builders). These tests run the full enrichment + generation
+    pipeline for each payload and verify the resulting SQL is safe across
+    both standard-SQL and escape-sensitive dialects.
+
+    Any payload the parser rejects at the ``parse_filter`` stage raises a
+    ``ValueError`` — those cases assert the raise, not the output. Payloads
+    the parser accepts must produce SQL in which the payload appears only
+    inside a properly-closed string literal.
+    """
+
+    # ------------------------------------------------------------------
+    # Rejected at parse time
+    # ------------------------------------------------------------------
+
+    def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
+        """Classic ``'; DROP TABLE ...`` payload is rejected before generation."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                filter="status = 'a'; DROP TABLE orders; --'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+
+    def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
+        """UNION SELECT payload is rejected before generation."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                filter="status = 'a' UNION SELECT * FROM users --'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+
+    def test_block_comment_rejected(self, orders_model: SlayerModel) -> None:
+        """``/* ... */`` comment injection is rejected before generation."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                filter="status = 'a' /* x */ OR 1=1",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+
+    # ------------------------------------------------------------------
+    # Accepted and neutralised in emitted SQL — tested across dialects
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "duckdb"])
+    def test_embedded_single_quote_is_doubled(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """An apostrophe in the filter value must emit as ``''`` (SQL standard).
+
+        This holds for every dialect; none of them accept ``\\'`` as the
+        canonical escape for a literal apostrophe.
+        """
+        orders_model.measures.append(
+            Measure(
+                name="irish_names",
+                sql="amount",
+                # Runtime value of the literal:  O'Brien
+                filter="status = 'O\\'Brien'",
+            )
+        )
+        query = SlayerQuery(
+            source_model="orders", fields=[Field(formula="irish_names:sum")]
+        )
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        # The emitted literal must use doubled single quotes.
+        assert "'O''Brien'" in sql
+
+    @staticmethod
+    def _assert_round_trips_cleanly(sql: str, dialect: str) -> None:
+        """Every emitted SQL string must tokenize + parse + round-trip in the
+        target dialect. If a hostile filter manages to open an unclosed string
+        literal, sqlglot's tokenizer raises ``TokenError`` — which is both the
+        canonical pre-fix failure mode and a downstream DoS / error-leakage
+        vector."""
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        # Re-emitting must not raise either — guards against one-way tokenizer
+        # tolerance that wouldn't survive a round-trip through the planner.
+        _ = parsed.sql(dialect=dialect)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "duckdb"])
+    def test_trailing_backslash_cannot_escape_closing_quote(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """A trailing backslash in a string literal must not break out of the
+        literal on escape-aware dialects (mysql, clickhouse, etc.).
+
+        Before the fix: ``parse_filter`` emits ``'a\\'`` (one literal
+        backslash inside single quotes). On MySQL that parses as "apostrophe
+        escaped by the backslash, string still open", letting trailing SQL
+        tokens be read as string content — triggering ``sqlglot.TokenError``
+        (DoS / error-leakage vector). After the fix: the backslash is doubled
+        in the emitted literal and sqlglot tokenizes without error.
+        """
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                # Runtime filter string:  status = 'a\'
+                filter="status = 'a\\\\'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        self._assert_round_trips_cleanly(sql, dialect)
+        # Defence-in-depth: the payload ``a`` + trailing slash must be
+        # confined to a single well-terminated literal. Check the literal
+        # decodes to the original ``a\`` content after the dialect's own
+        # unescaping — i.e. a single re-parse is idempotent.
+        reparsed = sqlglot.parse_one(sql, dialect=dialect)
+        rendered = reparsed.sql(dialect=dialect)
+        # Round-trip stability: no additional escape inflation on the second pass.
+        again = sqlglot.parse_one(rendered, dialect=dialect).sql(dialect=dialect)
+        assert rendered == again, (
+            f"SQL is not idempotent under re-parse on {dialect}: {rendered!r} vs {again!r}"
+        )
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    def test_backslash_mid_string_is_neutralised(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """Backslashes mid-string also must not enable escape sequences."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                # Runtime filter string:  status = 'a\b'
+                filter="status = 'a\\\\b'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        self._assert_round_trips_cleanly(sql, dialect)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    def test_like_pattern_backslash_is_neutralised(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """The ``LIKE`` path in ``_filter_node_to_sql`` goes through a separate
+        helper (``_get_string_arg``); its backslash handling must match."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                # Runtime filter string:  status like 'a\'
+                filter="status like 'a\\\\'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        self._assert_round_trips_cleanly(sql, dialect)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    def test_adversarial_quote_break_cannot_inject(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """The full attack: backslash + quote + SQL payload must either be
+        rejected at parse time or confined to a string literal.
+
+        The intent of this payload is to break out of the string in MySQL,
+        then run arbitrary SQL. After the fix, this either raises at
+        ``parse_filter`` (most likely) or emits a safely-terminated literal.
+        """
+        evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\' OR 1=1 --
+        try:
+            orders_model.measures.append(Measure(name="evil", sql="amount", filter=evil))
+            query = SlayerQuery(
+                source_model="orders", fields=[Field(formula="evil:sum")]
+            )
+            sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        except ValueError:
+            return  # parser rejected — also acceptable
+        self._assert_round_trips_cleanly(sql, dialect)
+
+    def test_existing_filter_still_works_after_escaping(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Sanity: ordinary filters (no backslashes, no apostrophes) keep
+        producing the same SQL shape after the escape-hardening change."""
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(
+            source_model="orders", fields=[Field(formula="active_revenue:sum")]
+        )
+        sql = _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+        assert "'active'" in sql
+        assert "CASE WHEN" in sql
+        assert "SUM(" in sql

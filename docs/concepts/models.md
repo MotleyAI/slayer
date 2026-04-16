@@ -43,6 +43,7 @@ Dimensions are the columns you group by and filter on.
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Unique dimension name |
 | `description` | string | No | — | Clarifies meaning for agents and users, especially for technical column names |
+| `label` | string | No | — | Human-readable display name (e.g., "Order Date"). Distinct from `name` (technical) and `description` (explanatory). Propagated to query results and MCP summaries. |
 | `sql` | string | No | — | SQL expression |
 | `type` | string | No | `string` | Data type |
 | `primary_key` | bool | No | `false` | Is this a primary key? |
@@ -66,9 +67,47 @@ Measures are named row-level SQL expressions. They define *what* to compute, not
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Unique measure name |
 | `description` | string | No | — | Explains what this measure computes, shown in datasource_summary and inspect_model |
+| `label` | string | No | — | Human-readable display name (e.g., "Total Revenue"). Propagated to query results and MCP summaries. |
 | `sql` | string | Yes | — | SQL expression (bare column name or expression) |
 | `allowed_aggregations` | list[str] | No | — | Whitelist of allowed aggregation types (validated at model creation and query time) |
+| `filter` | string | No | — | SQL condition applied before aggregation. See [Filtered Measures](#filtered-measures) below. |
 | `hidden` | bool | No | `false` | Hide from listings |
+
+### Filtered Measures
+
+A measure can have a `filter` — a SQL condition that restricts which rows are included when aggregating. This is useful for defining business metrics that apply to a subset of data:
+
+```yaml
+measures:
+  - name: active_revenue
+    sql: amount
+    filter: "status = 'active'"
+  - name: completed_count
+    sql: id
+    filter: "status = 'completed'"
+```
+
+When queried, the filter is applied via `CASE WHEN` inside the aggregation:
+- `active_revenue:sum` generates `SUM(CASE WHEN status = 'active' THEN amount END)`
+- `completed_count:count` generates `COUNT(CASE WHEN status = 'completed' THEN id END)`
+
+Filters can reference dimensions from joined models using dot syntax:
+
+```yaml
+joins:
+  - target_model: categories
+    join_pairs: [["category_id", "id"]]
+measures:
+  - name: electronics_revenue
+    sql: amount
+    filter: "categories.type = 'electronics'"
+```
+
+Multiple filtered and unfiltered measures can coexist in the same query. Filtered measures can be combined in arithmetic formulas:
+
+```json
+{"formula": "active_revenue:sum / total_revenue:sum", "name": "active_share"}
+```
 
 ### Built-in Aggregations
 

@@ -454,8 +454,10 @@ class SlayerQueryEngine:
         # has clean column names that work naturally in JOINs and references.
         virtual_name = override_name or inner_query.name or f"_subquery_{inner_model.name}"
 
-        # Build lookup for labels/descriptions from the source model
+        # Build lookups for labels/descriptions from the source model
+        source_dim_label = {d.name: d.label for d in inner_model.dimensions if d.label}
         source_dim_desc = {d.name: d.description for d in inner_model.dimensions if d.description}
+        source_measure_label = {m.name: m.label for m in inner_model.measures if m.label}
         source_measure_desc = {m.name: m.description for m in inner_model.measures if m.description}
 
         # Collect all inner aliases and their short names.
@@ -477,49 +479,54 @@ class SlayerQueryEngine:
             # Replace remaining dots with __ to encode the original join path
             return stripped.replace(".", "__")
 
-        column_map = []  # (inner_alias, short_name, data_type, is_measure, label, format)
+        # (inner_alias, short_name, data_type, is_measure, label, description, format)
+        column_map = []
         for d in enriched.dimensions:
             short = _alias_to_short(d.alias)
-            label = d.label or source_dim_desc.get(d.name)
-            column_map.append((d.alias, short, d.type, False, label, d.format))
+            label = d.label or source_dim_label.get(d.name)
+            desc = source_dim_desc.get(d.name)
+            column_map.append((d.alias, short, d.type, False, label, desc, d.format))
         for td in enriched.time_dimensions:
             short = _alias_to_short(td.alias)
-            label = td.label or source_dim_desc.get(td.name)
-            column_map.append((td.alias, short, DataType.TIMESTAMP, False, label, None))
+            label = td.label or source_dim_label.get(td.name)
+            desc = source_dim_desc.get(td.name)
+            column_map.append((td.alias, short, DataType.TIMESTAMP, False, label, desc, None))
         for m in enriched.measures:
-            label = m.label or source_measure_desc.get(m.name)
+            src_name = m.source_measure_name or m.name
+            label = m.label or source_measure_label.get(src_name)
+            desc = source_measure_desc.get(src_name)
             fmt = _infer_aggregated_format(
                 model=inner_model,
-                measure_name=m.source_measure_name or m.name,
+                measure_name=src_name,
                 aggregation=m.aggregation,
             )
-            column_map.append((m.alias, m.name, DataType.NUMBER, True, label, fmt))
+            column_map.append((m.alias, m.name, DataType.NUMBER, True, label, desc, fmt))
         for t in enriched.transforms:
             column_map.append(
-                (t.alias, t.name, DataType.NUMBER, True, t.label, NumberFormat(type=NumberFormatType.FLOAT))
+                (t.alias, t.name, DataType.NUMBER, True, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for e in enriched.expressions:
             column_map.append(
-                (e.alias, e.name, DataType.NUMBER, True, e.label, NumberFormat(type=NumberFormatType.FLOAT))
+                (e.alias, e.name, DataType.NUMBER, True, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for cm in enriched.cross_model_measures:
             short = _alias_to_short(cm.alias)
-            column_map.append((cm.alias, short, DataType.NUMBER, True, cm.label, cm.format))
+            column_map.append((cm.alias, short, DataType.NUMBER, True, cm.label, None, cm.format))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
-        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]
+        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _, _ in column_map]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
 
         dims = []
-        for alias, short, dtype, is_measure, label, fmt in column_map:
-            dims.append(Dimension(name=short, sql=short, type=dtype, description=label, format=fmt))
+        for _, short, dtype, _, label, desc, fmt in column_map:
+            dims.append(Dimension(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
 
         # One measure per column. Aggregation is specified at query time
         # using colon syntax (e.g., "order_total_sum:avg"). *:count is always
         # available for COUNT(*) without a measure definition.
         measures = []
-        for alias, short, dtype, is_measure, label, fmt in column_map:
-            measures.append(Measure(name=short, sql=short, format=fmt))
+        for _, short, _, _, label, desc, fmt in column_map:
+            measures.append(Measure(name=short, sql=short, label=label, description=desc, format=fmt))
 
         return SlayerModel(
             name=virtual_name,

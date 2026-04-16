@@ -92,6 +92,7 @@ class Dimension(BaseModel):
     type: DataType = DataType.STRING
     primary_key: bool = False
     description: Optional[str] = None
+    label: Optional[str] = None
     hidden: bool = False
     format: Optional[NumberFormat] = None
 
@@ -141,8 +142,10 @@ class Measure(BaseModel):
     name: str
     sql: Optional[str] = None
     description: Optional[str] = None
+    label: Optional[str] = None
     hidden: bool = False
     allowed_aggregations: Optional[List[str]] = None
+    filter: Optional[str] = None
     format: Optional[NumberFormat] = None
 
     @field_validator("name")
@@ -155,6 +158,13 @@ class Measure(BaseModel):
     def _fix_multidot_sql(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
             v = _fix_multidot_sql(v, context="Measure sql")
+        return v
+
+    @field_validator("filter")
+    @classmethod
+    def _fix_multidot_filter(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = _fix_multidot_sql(v, context="Measure filter")
         return v
 
 
