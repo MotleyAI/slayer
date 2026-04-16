@@ -48,7 +48,7 @@ Or to add the MCP server:
 claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp
 ```
 
-Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#configuration) or ask your agent to help you do it.
+Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#datasource-setup) or ask your agent to help you do it.
 
 Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
 
