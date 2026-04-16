@@ -3,12 +3,17 @@
 Walks a dbt project directory, finds all .yaml/.yml files, and extracts
 semantic_models and metrics definitions. Handles dbt-core's plural list
 format (semantic_models: [...]) by iterating each item and calling parse_obj.
+
+Also scans .sql files and attaches their raw bodies to DbtRegularModel
+entries, so the converter can inline regular-model SQL into SlayerModel.sql
+for semantic models that sit over a query rather than a physical table.
 """
 
 import logging
 import os
 import re
-from typing import List
+from pathlib import Path
+from typing import Dict, List
 
 import yaml
 
@@ -64,6 +69,30 @@ def _collect_yaml_paths(directory: str) -> List[str]:
     return paths
 
 
+def _collect_sql_files(directory: str) -> Dict[str, str]:
+    """Recursively collect .sql file bodies keyed by filename stem.
+
+    dbt models are named after their `.sql` filename (without the extension),
+    so the stem is the canonical key used by ``ref('model_name')``. Skips
+    hidden dirs/files and any target/build directories dbt may have left
+    behind.
+    """
+    result: Dict[str, str] = {}
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "target"]
+        for filename in sorted(files):
+            if filename.startswith(".") or not filename.endswith(".sql"):
+                continue
+            path = os.path.join(root, filename)
+            stem = Path(filename).stem
+            try:
+                with open(path, encoding="utf-8") as f:
+                    result[stem] = f.read()
+            except OSError as exc:
+                logger.warning("Failed to read SQL file %s: %s", path, exc)
+    return result
+
+
 def parse_dbt_project(
     project_path: str,
     *,
@@ -78,10 +107,19 @@ def parse_dbt_project(
     Args:
         project_path: Path to the dbt project root or models directory.
         include_regular_models: When True, also discover regular (non-semantic)
-            dbt models via the dbt manifest. This invokes ``dbt parse`` if the
-            manifest is missing, which is slow and fails noisily without
-            dbt-core installed — so the default is False, matching the
-            ``--include-hidden-models`` opt-in flag on the CLI.
+            dbt models via the dbt manifest (``manifest.json``), populating
+            metadata like ``database``/``schema_name``/``columns``. This
+            invokes ``dbt parse`` if the manifest is missing, which is slow
+            and fails noisily without dbt-core installed — so the default is
+            False, matching the ``--include-hidden-models`` opt-in flag on
+            the CLI.
+
+            Regardless of this flag, ``.sql`` files in the project are always
+            scanned and their bodies attached as ``raw_code`` on
+            ``DbtRegularModel`` entries. That raw SQL is used by the converter
+            to inline regular-model SQL into ``SlayerModel.sql`` for semantic
+            models whose underlying dbt model is a query rather than a
+            physical table.
     """
     all_semantic_models: List[DbtSemanticModel] = []
     all_metrics: List[DbtMetric] = []
@@ -89,7 +127,6 @@ def parse_dbt_project(
     yaml_paths = _collect_yaml_paths(project_path)
     if not yaml_paths:
         logger.warning("No YAML files found in %s", project_path)
-        return DbtProject()
 
     for path in yaml_paths:
         with open(path, encoding="utf-8") as f:
@@ -134,11 +171,29 @@ def parse_dbt_project(
             except Exception as e:
                 logger.warning("Failed to parse metric in %s: %s", path, e)
 
-    # Only load the dbt manifest when the caller actually needs the regular
-    # (non-semantic) models. Manifest loading can invoke `dbt parse`, which
-    # is slow and fails when dbt-core isn't installed — keeping it gated on
-    # opt-in preserves the YAML-only fast path.
-    regular_models = _parse_regular_models(project_path) if include_regular_models else []
+    # Always scan .sql files on disk — cheap (just file reads), no dbt-core
+    # dependency, and required so the converter can inline regular-model SQL
+    # into semantic models whose underlying dbt model is a query. Manifest
+    # loading remains gated behind `include_regular_models` because it can
+    # invoke `dbt parse` which is slow and fails without dbt-core installed.
+    sql_by_name = _collect_sql_files(project_path)
+
+    if include_regular_models:
+        manifest_models = _parse_regular_models(project_path)
+        by_name = {rm.name: rm for rm in manifest_models}
+        # Overlay raw_code onto manifest-derived entries; add pure-from-disk
+        # entries for any .sql files with no corresponding manifest node.
+        for name, raw_code in sql_by_name.items():
+            if name in by_name:
+                by_name[name].raw_code = raw_code
+            else:
+                by_name[name] = DbtRegularModel(name=name, raw_code=raw_code)
+        regular_models = list(by_name.values())
+    else:
+        regular_models = [
+            DbtRegularModel(name=name, raw_code=raw_code)
+            for name, raw_code in sql_by_name.items()
+        ]
 
     logger.info(
         "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",

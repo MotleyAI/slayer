@@ -249,10 +249,55 @@ class TestParseDbtProject:
         assert isinstance(m.expr, str)
 
 
+class TestParseDbtProjectSqlFiles:
+    """.sql file scanning is always on — populates DbtRegularModel.raw_code
+    so the converter can inline regular-model SQL into SlayerModel.sql.
+    """
+
+    def test_populates_raw_code_from_sql_files(self, tmp_path) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "orders.sql").write_text(
+            "select id, amount from {{ ref('raw_orders') }}"
+        )
+        project = parse_dbt_project(str(tmp_path))
+        assert len(project.regular_models) == 1
+        rm = project.regular_models[0]
+        assert rm.name == "orders"
+        assert rm.raw_code is not None
+        assert "{{ ref('raw_orders') }}" in rm.raw_code
+
+    def test_scans_sql_files_even_without_include_regular_models(self, tmp_path) -> None:
+        # Default include_regular_models=False must not block SQL scanning.
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "orders.sql").write_text("select 1")
+        project = parse_dbt_project(str(tmp_path))
+        names = [rm.name for rm in project.regular_models]
+        assert "orders" in names
+
+    def test_skips_target_directory(self, tmp_path) -> None:
+        # Compiled dbt output lives under target/; must not be ingested.
+        target = tmp_path / "target" / "compiled" / "proj"
+        target.mkdir(parents=True)
+        (target / "orders.sql").write_text("-- do not ingest this")
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "orders.sql").write_text("select real_content")
+        project = parse_dbt_project(str(tmp_path))
+        # We get the models/ version, not the target/ version
+        orders = next(rm for rm in project.regular_models if rm.name == "orders")
+        assert orders.raw_code is not None
+        assert "real_content" in orders.raw_code
+        assert "do not ingest" not in orders.raw_code
+
+
 class TestParseDbtProjectRegularModels:
     def test_no_manifest_yields_empty_regular_models(self, dbt_project_dir) -> None:
         # Pass include_regular_models=True to actually exercise the manifest
         # code path; without it, the manifest isn't loaded at all (B6-2).
+        # The dbt_project_dir fixture writes YAMLs only — no .sql files — so
+        # regular_models stays empty.
         project = parse_dbt_project(str(dbt_project_dir), include_regular_models=True)
         assert project.regular_models == []
 

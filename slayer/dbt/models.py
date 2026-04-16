@@ -121,11 +121,20 @@ class DbtColumnMeta(BaseModel):
 
 
 class DbtRegularModel(BaseModel):
-    """A regular dbt model (not wrapped by a semantic_model).
+    """A regular dbt model — a ``.sql`` file in the dbt project.
 
-    Extracted from ``manifest.json`` nodes of ``resource_type == "model"`` that
-    are not referenced by any ``semantic_model``. Carries just enough metadata
-    to introspect the materialized table and overlay dbt-documented descriptions.
+    Populated from two sources, which may be used together:
+
+    * ``manifest.json`` (via ``slayer.dbt.manifest``) — provides
+      ``database``/``schema_name``/``alias``/``description``/``tags``/``columns``
+      for orphan models (those not wrapped by a ``semantic_model``) so they can
+      be introspected and surfaced as hidden SLayer models.
+    * The project directory itself (via ``slayer.dbt.parser``) — provides
+      ``raw_code``, the SQL body of the ``.sql`` file. That body may contain
+      unresolved dbt Jinja (e.g. ``{{ ref('X') }}``, ``{{ source('s','t') }}``,
+      ``{{ config(...) }}``); it is resolved by
+      ``slayer.dbt.sql_resolver.resolve_refs`` when the converter inlines a
+      regular model's SQL into a semantic-model-derived ``SlayerModel``.
     """
     name: str
     database: Optional[str] = None
@@ -134,6 +143,7 @@ class DbtRegularModel(BaseModel):
     description: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     columns: List[DbtColumnMeta] = Field(default_factory=list)
+    raw_code: Optional[str] = None  # SQL body from the .sql file on disk, Jinja unresolved
 
 
 class DbtProject(BaseModel):

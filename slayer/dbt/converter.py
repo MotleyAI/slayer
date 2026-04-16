@@ -24,6 +24,7 @@ from slayer.dbt.models import (
     DbtRegularModel,
     DbtSemanticModel,
 )
+from slayer.dbt.sql_resolver import resolve_refs
 from slayer.engine.ingestion import introspect_table_to_model
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,13 @@ class DbtToSlayerConverter:
         self._models_by_name: Dict[str, SlayerModel] = {}
         # {model_name: DbtSemanticModel} for looking up entities
         self._dbt_models_by_name: Dict[str, DbtSemanticModel] = {}
+        # {regular_model_name: raw_code} — used to inline SQL into semantic
+        # models whose underlying dbt model is a query rather than a table.
+        self._regular_models_sql: Dict[str, str] = {
+            rm.name: rm.raw_code
+            for rm in project.regular_models
+            if rm.raw_code
+        }
 
     def convert(self) -> ConversionResult:
         """Full conversion pipeline."""
@@ -289,9 +297,31 @@ class DbtToSlayerConverter:
         return model
 
     def _convert_semantic_model(self, sm: DbtSemanticModel) -> SlayerModel:
-        """Convert a single dbt semantic model to a SlayerModel."""
-        # Resolve table name from model ref
-        sql_table = sm.model or sm.name
+        """Convert a single dbt semantic model to a SlayerModel.
+
+        If the referenced dbt model is a regular model with a ``.sql`` body
+        on disk (i.e. a query, not a physical source table), inline the
+        resolved SQL into ``SlayerModel.sql`` so SLayer can query it directly
+        without requiring ``dbt run`` to have materialised it. Otherwise the
+        ref name is used as ``sql_table``.
+        """
+        ref_name = sm.model or sm.name
+
+        sql_source: Optional[str] = None
+        sql_table: Optional[str] = None
+        if ref_name in self._regular_models_sql:
+            resolved, warnings = resolve_refs(
+                self._regular_models_sql[ref_name],
+                self._regular_models_sql,
+            )
+            sql_source = resolved
+            for message in warnings:
+                self._warnings.append(ConversionWarning(
+                    model_name=sm.name,
+                    message=message,
+                ))
+        else:
+            sql_table = ref_name
 
         # Default time dimension
         default_time_dim = None
@@ -347,6 +377,7 @@ class DbtToSlayerConverter:
         return SlayerModel(
             name=sm.name,
             sql_table=sql_table,
+            sql=sql_source,
             data_source=self.data_source,
             description=sm.description,
             default_time_dimension=default_time_dim,
