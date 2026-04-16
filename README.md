@@ -290,22 +290,6 @@ SLayer includes Claude Code skills in `.claude/skills/` to help Claude understan
 - **slayer-models** — model definitions, datasource configs, auto-ingestion, incremental editing
 
 
-## Development
-
-```bash
-# Install with all extras
-poetry install -E all
-
-# Run tests
-poetry run pytest
-
-# Lint
-poetry run ruff check slayer/ tests/
-
-# Start dev server
-poetry run slayer serve
-```
-
 ## Known limitations
 
 SLayer currently has no caching or pre-aggregation engine.
