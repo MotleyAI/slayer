@@ -47,6 +47,7 @@ poetry run ruff check slayer/ tests/
 - Imports at the top of files
 - SQL generation uses sqlglot AST building (not string concatenation)
 - Dimension/measure SQL uses bare column names (e.g., `"amount"`); use `model_name.column_name` for complex expressions (e.g., `"orders.amount * orders.quantity"`)
+- Models, dimensions, and measures have an optional `extra: Dict[str, Any]` field for arbitrary user-defined JSON metadata. Persisted in storage, editable via MCP (`edit_model`), HTTP API, and CLI.
 - **Measures and aggregations are separate concepts**: Measures are named row-level SQL expressions (e.g., `{name: "revenue", sql: "amount"}`). Aggregations (sum, avg, count, etc.) are specified at query time using **colon syntax**: `"revenue:sum"`, `"*:count"`, `"price:weighted_avg(weight=quantity)"`. Built-in aggregations: sum, avg, min, max, count, count_distinct, first, last, weighted_avg, median. Custom aggregations can be defined at model level in the `aggregations` list.
 - **`*:count`** for COUNT(*) — `*` means "all rows", `count` is just a regular aggregation. `col:count` = COUNT(col) for non-nulls. No magic "count" keyword.
 - Measures can have `allowed_aggregations` whitelist — validated at model creation and query time

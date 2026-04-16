@@ -21,6 +21,7 @@ from slayer.storage.base import StorageBackend
 logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
+_UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
@@ -448,6 +449,7 @@ def create_mcp_server(storage: StorageBackend):
         add_filters: Optional[List[str]] = None,
         remove_filters: Optional[List[str]] = None,
         remove: Optional[Dict[str, List[str]]] = None,
+        extra: Optional[Dict[str, Any]] = _UNSET,
     ) -> str:
         """Edit an existing model in a single call — update metadata, upsert dimensions/measures/aggregations/joins,
         manage filters, and remove entities.
@@ -460,6 +462,7 @@ def create_mcp_server(storage: StorageBackend):
             sql_table: Database table name.
             sql: Custom SQL expression for the model source.
             hidden: Whether this model is hidden from discovery.
+            extra: Arbitrary JSON metadata for the model (replaces existing extra). Pass null/None to clear.
             dimensions: Dimensions to create or update (upsert by name). Each dict: {"name": "col", "type": "string", "sql": "col", "description": "...", "primary_key": false, "hidden": false}.
                 If a dimension with this name exists, only the provided fields are updated; omitted fields keep current values.
                 Types: string, number, time, date, boolean.
@@ -509,6 +512,9 @@ def create_mcp_server(storage: StorageBackend):
         if hidden is not None:
             model.hidden = hidden
             changes.append(f"set hidden to {hidden}")
+        if extra is not _UNSET:
+            model.extra = extra
+            changes.append("updated extra" if extra is not None else "cleared extra")
 
         # --- Phase 2: Removals ---
         if remove:

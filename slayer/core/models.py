@@ -3,7 +3,7 @@
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -95,6 +95,7 @@ class Dimension(BaseModel):
     label: Optional[str] = None
     hidden: bool = False
     format: Optional[NumberFormat] = None
+    extra: Optional[Dict[str, Any]] = None
 
     @field_validator("name")
     @classmethod
@@ -147,6 +148,7 @@ class Measure(BaseModel):
     allowed_aggregations: Optional[List[str]] = None
     filter: Optional[str] = None
     format: Optional[NumberFormat] = None
+    extra: Optional[Dict[str, Any]] = None
 
     @field_validator("name")
     @classmethod
@@ -205,6 +207,7 @@ class SlayerModel(BaseModel):
     default_time_dimension: Optional[str] = None
     description: Optional[str] = None
     hidden: bool = False
+    extra: Optional[Dict[str, Any]] = None
 
     @field_validator("filters")
     @classmethod
