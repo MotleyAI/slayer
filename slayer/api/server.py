@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from slayer.mcp.server import create_mcp_server
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
@@ -55,7 +56,6 @@ def create_app(storage: StorageBackend) -> FastAPI:
     engine = SlayerQueryEngine(storage=storage)
 
     # Mount MCP server over SSE at /mcp
-    from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage)
     mcp_app = mcp.sse_app()
     app.mount("/mcp", mcp_app)
@@ -67,10 +67,24 @@ def create_app(storage: StorageBackend) -> FastAPI:
     @app.post("/query")
     async def query(request: QueryRequest) -> QueryResponse:
         try:
-            slayer_query = SlayerQuery.model_validate(request.model_dump(exclude_none=True))
+            slayer_query = SlayerQuery.model_validate(
+                request.model_dump(exclude_none=True)
+            )
             result = await engine.execute(query=slayer_query)
-            meta = {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in result.meta.items()} if result.meta else None
-            response = QueryResponse(data=result.data, row_count=result.row_count, columns=result.columns, meta=meta)
+            meta = (
+                {
+                    k: FieldMetadataResponse(label=v.label, format=v.format)
+                    for k, v in result.meta.items()
+                }
+                if result.meta
+                else None
+            )
+            response = QueryResponse(
+                data=result.data,
+                row_count=result.row_count,
+                columns=result.columns,
+                meta=meta,
+            )
             if slayer_query.dry_run or slayer_query.explain:
                 response.sql = result.sql
             return response
@@ -110,7 +124,10 @@ def create_app(storage: StorageBackend) -> FastAPI:
     @app.put("/models/{name}")
     async def update_model(name: str, model: SlayerModel) -> Dict[str, str]:
         if model.name != name:
-            raise HTTPException(status_code=400, detail=f"Path name '{name}' does not match body name '{model.name}'")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Path name '{name}' does not match body name '{model.name}'",
+            )
         await storage.save_model(model)
         return {"status": "updated", "name": name}
 
@@ -136,7 +153,9 @@ def create_app(storage: StorageBackend) -> FastAPI:
     async def get_datasource(name: str) -> Dict[str, Any]:
         ds = await storage.get_datasource(name)
         if ds is None:
-            raise HTTPException(status_code=404, detail=f"Datasource '{name}' not found")
+            raise HTTPException(
+                status_code=404, detail=f"Datasource '{name}' not found"
+            )
         # Mask credentials
         data = ds.model_dump(exclude_none=True)
         for secret_field in ("password", "connection_string"):
@@ -153,14 +172,18 @@ def create_app(storage: StorageBackend) -> FastAPI:
     async def delete_datasource(name: str) -> Dict[str, Any]:
         deleted = await storage.delete_datasource(name)
         if not deleted:
-            raise HTTPException(status_code=404, detail=f"Datasource '{name}' not found")
+            raise HTTPException(
+                status_code=404, detail=f"Datasource '{name}' not found"
+            )
         return {"status": "deleted", "name": name}
 
     @app.post("/ingest")
     async def ingest(request: IngestRequest) -> Dict[str, Any]:
         ds = await storage.get_datasource(request.datasource)
         if ds is None:
-            raise HTTPException(status_code=404, detail=f"Datasource '{request.datasource}' not found")
+            raise HTTPException(
+                status_code=404, detail=f"Datasource '{request.datasource}' not found"
+            )
         models = ingest_datasource(
             datasource=ds,
             include_tables=request.include_tables,
