@@ -81,10 +81,12 @@ def create_app(storage: StorageBackend) -> FastAPI:
             def _convert_meta(d: dict) -> Dict[str, FieldMetadataResponse]:
                 return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
 
-            attributes = AttributesResponse(
-                dimensions=_convert_meta(attrs.dimensions),
-                measures=_convert_meta(attrs.measures),
-            ) if attrs.dimensions or attrs.measures else None
+            attributes = None
+            if attrs and (attrs.dimensions or attrs.measures):
+                attributes = AttributesResponse(
+                    dimensions=_convert_meta(attrs.dimensions),
+                    measures=_convert_meta(attrs.measures),
+                )
             response = QueryResponse(
                 data=result.data,
                 row_count=result.row_count,

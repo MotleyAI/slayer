@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import FieldMetadata, SlayerResponse
+from slayer.engine.query_engine import FieldMetadata, ResponseAttributes, SlayerResponse
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,16 @@ class SlayerClient:
     @staticmethod
     def _parse_response(result: dict) -> SlayerResponse:
         """Parse an API JSON response into a SlayerResponse."""
-        from slayer.engine.query_engine import ResponseAttributes
+        from slayer.core.format import NumberFormat
 
         def _parse_meta_dict(d: dict) -> Dict[str, FieldMetadata]:
-            return {k: FieldMetadata(label=v.get("label")) for k, v in (d or {}).items()}
+            out = {}
+            for k, v in (d or {}).items():
+                fmt = None
+                if v.get("format"):
+                    fmt = NumberFormat.model_validate(v["format"])
+                out[k] = FieldMetadata(label=v.get("label"), format=fmt)
+            return out
 
         attrs_raw = result.get("attributes") or {}
         attributes = ResponseAttributes(
