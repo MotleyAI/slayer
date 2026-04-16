@@ -136,6 +136,7 @@ def enrich_query(
             return
 
         # Resolve measure SQL
+        measure_def = None
         if measure_name == "*":
             if aggregation_name != "count":
                 raise ValueError(
@@ -169,6 +170,19 @@ def enrich_query(
             if "." not in explicit_time_col:
                 explicit_time_col = f"{model.name}.{explicit_time_col}"
 
+        # Resolve measure-level filter
+        filter_sql = None
+        if measure_def and measure_def.filter:
+            parsed = parse_filter(measure_def.filter)
+            resolved = resolve_filter_columns(
+                parsed_filters=[parsed],
+                model=model,
+                model_name=model.name,
+                resolve_join_target=resolve_join_target,
+                named_queries=named_queries,
+            )
+            filter_sql = resolved[0].sql
+
         measures.append(
             EnrichedMeasure(
                 name=canonical_name,
@@ -178,8 +192,10 @@ def enrich_query(
                 model_name=model.name,
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs,
+                label=measure_def.label if measure_def else None,
                 time_column=explicit_time_col,
                 source_measure_name=measure_name,
+                filter_sql=filter_sql,
             )
         )
         known_aliases[alias_key] = alias
@@ -509,7 +525,7 @@ def _resolve_dimensions(
                 type=dim_def.type if dim_def else DataType.STRING,
                 alias=f"{model_name_str}.{dim_ref.full_name}",
                 model_name=effective_model,
-                label=dim_ref.label,
+                label=dim_ref.label or (dim_def.label if dim_def else None),
                 format=dim_def.format if dim_def else None,
             )
         )
@@ -544,7 +560,7 @@ def _resolve_time_dimensions(
                 date_range=td.date_range,
                 alias=f"{model_name_str}.{td.dimension.full_name}",
                 model_name=td_model_name,
-                label=td.label,
+                label=td.label or (dim_def.label if dim_def else None),
             )
         )
     return time_dimensions
@@ -640,6 +656,11 @@ def _resolve_joins(
                 parts = col.split(".")
                 for part in parts[:-1]:
                     needed_tables.add(part)
+    # Scan measure filters for dotted column references
+    for m in measures:
+        if m.filter_sql and "." in m.filter_sql:
+            for match in _TABLE_COL_RE.finditer(m.filter_sql):
+                needed_tables.update(match.group(1).split("__"))
 
     # BFS transitive expansion
     expanded = set(needed_tables)
