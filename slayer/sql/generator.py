@@ -305,8 +305,11 @@ class SQLGenerator:
 
         sql = select.sql(dialect=self.dialect, pretty=True)
 
-        # Append LEFT JOINs from resolved joins (string-level, after sqlglot rendering)
-        if enriched.resolved_joins:
+        # Append LEFT JOINs from resolved joins (string-level, after sqlglot rendering).
+        # When has_first_or_last is true, the joins were already injected inside the
+        # ranked subquery by _build_last_ranked_from — skip here to avoid duplicating
+        # them (and string-replace would otherwise re-match the inner FROM marker).
+        if enriched.resolved_joins and not has_first_or_last:
             join_parts = []
             for target_table, target_alias, join_cond in enriched.resolved_joins:
                 join_parts.append(f"LEFT JOIN {target_table} AS {target_alias} ON {join_cond}")
@@ -907,12 +910,15 @@ class SQLGenerator:
 
         partition_clause = f"PARTITION BY {', '.join(partition_parts)}" if partition_parts else ""
 
-        # Collect distinct effective time columns from first/last measures
+        # Collect distinct effective time columns from UNFILTERED first/last
+        # measures only — filtered ones get their own dedicated ROW_NUMBER
+        # columns later (so we'd otherwise emit a redundant _last_rn that
+        # nothing references).
         # default_time_col is guaranteed non-None here (checked at call site)
         assert default_time_col is not None
         time_col_agg_types: dict[str, set[str]] = {}
         for m in enriched.measures:
-            if m.aggregation in ("first", "last"):
+            if m.aggregation in ("first", "last") and not m.filter_sql:
                 effective = m.time_column or default_time_col
                 if effective not in time_col_agg_types:
                     time_col_agg_types[effective] = set()
@@ -960,12 +966,25 @@ class SQLGenerator:
                     )
                     seen_filters[cache_key] = alias
                     filter_idx += 1
-                measure_key = f"{m.source_measure_name or m.name}:{m.aggregation}"
-                filtered_rn_map[measure_key] = alias
+                # Key by alias (unique per enriched measure) so two filtered
+                # measures that share source/agg but differ in filter or time
+                # column don't clobber each other.
+                filtered_rn_map[m.alias] = alias
 
         select_sql = ", ".join(parts)
         from_sql = base_from.sql(dialect=self.dialect)
         ranked_sql = f"SELECT {select_sql} FROM {from_sql}"
+
+        # Apply LEFT JOINs from resolved_joins INSIDE the subquery so that
+        # filter expressions (and ORDER BY columns) referencing joined
+        # tables resolve. The outer query's join injection only matches
+        # `FROM <table> AS <model>` and would miss this subquery wrapper.
+        if enriched.resolved_joins:
+            join_sql_parts = [
+                f"LEFT JOIN {target_table} AS {target_alias} ON {join_cond}"
+                for target_table, target_alias, join_cond in enriched.resolved_joins
+            ]
+            ranked_sql += " " + " ".join(join_sql_parts)
 
         # Apply WHERE filters to the subquery (they filter raw data before ranking)
         where_clause, _ = self._build_where_and_having(enriched=enriched)
@@ -1016,10 +1035,12 @@ class SQLGenerator:
                 suffix = rn_suffix_map.get(effective_tc, "")
             rn_col = f"_first_rn{suffix}" if agg_name == "first" else f"_last_rn{suffix}"
             # For filtered first/last, use the dedicated ROW_NUMBER column
-            # that pushes non-matching rows to the bottom of the ranking
+            # that pushes non-matching rows to the bottom of the ranking.
+            # Look up by alias (unique per enriched measure) so two filtered
+            # measures sharing source/agg but with different filters map to
+            # their own respective rank columns.
             if measure.filter_sql and filtered_rn_map:
-                measure_key = f"{measure.source_measure_name or measure.name}:{agg_name}"
-                filtered_rn = filtered_rn_map.get(measure_key, rn_col)
+                filtered_rn = filtered_rn_map.get(measure.alias, rn_col)
                 case_sql = (
                     f"MAX(CASE WHEN {filtered_rn} = 1 AND {measure.filter_sql} "
                     f"THEN {measure.model_name}.{col} END)"
@@ -1109,10 +1130,19 @@ class SQLGenerator:
                     f"(e.g., 'measure:{agg_name}({req}=column)')."
                 )
 
-        # Resolve {value} and {param_name} in formula
+        # Resolve {value} and {param_name} in formula. When the measure is
+        # filtered we must wrap *every* row-level reference (the value AND
+        # every parameter) in a CASE WHEN so non-matching rows contribute
+        # NULL to all terms. Otherwise formulas like weighted_avg
+        # ("SUM({value}*{weight}) / SUM({weight})") filter the numerator
+        # only and leave the denominator summing all weights.
         col_expr = measure.sql or measure.name
         if measure.filter_sql:
-            col_expr = f"CASE WHEN {measure.filter_sql} THEN {col_expr} END"
+            col_expr = f"(CASE WHEN {measure.filter_sql} THEN {col_expr} END)"
+            params = {
+                name: f"(CASE WHEN {measure.filter_sql} THEN {val} END)"
+                for name, val in params.items()
+            }
         substituted = formula.replace("{value}", col_expr)
         for param_name, param_val in params.items():
             substituted = substituted.replace(f"{{{param_name}}}", param_val)

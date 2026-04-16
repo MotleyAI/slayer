@@ -1313,6 +1313,33 @@ class TestFilteredMeasures:
         assert "CASE WHEN" not in sql
         assert "SUM(" in sql
 
+    async def test_filtered_weighted_avg_filters_both_terms(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Regression for CodeRabbit #10 — weighted_avg on a filtered measure must
+        filter BOTH the numerator and the denominator. Otherwise SUM({weight})
+        in the denominator sums all weights regardless of filter, producing a
+        wrong (under-weighted) result."""
+        orders_model.dimensions.append(
+            Dimension(name="quantity", sql="quantity", type=DataType.NUMBER)
+        )
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="active_revenue:weighted_avg(weight=quantity)")],
+        )
+        sql = await _generate(generator, query, orders_model)
+        # Both the value (amount) and the weight (quantity) must be inside CASE WHEN.
+        # Two SUM calls; both should reference the filter.
+        assert sql.count("CASE WHEN") >= 2, f"Expected >=2 CASE WHEN, got: {sql}"
+        # Denominator must NOT be a bare SUM(quantity) — that would be the bug.
+        # Check that quantity appears inside a CASE WHEN context, not as a bare SUM arg.
+        assert "SUM(quantity)" not in sql, (
+            f"Bare SUM(quantity) leaks unfiltered weights into denominator: {sql}"
+        )
+
     async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Query with both filtered and unfiltered measures."""
         orders_model.measures.append(
@@ -1348,8 +1375,13 @@ class TestFilteredMeasures:
         # The ORDER BY should include CASE WHEN filter THEN 0 ELSE 1 END
         assert "CASE WHEN" in sql
         assert "THEN 0 ELSE 1" in sql
-        # Standard ROW_NUMBER should NOT be present (no unfiltered first/last)
-        assert "_last_rn " not in sql or "_last_rn_f0" in sql
+        # Standard ROW_NUMBER should NOT be present (no unfiltered first/last).
+        # Use regex word-boundary to avoid the obvious overlap with "_last_rn_f0".
+        import re as _re
+        assert _re.search(r"_last_rn(?!_f)", sql) is None, (
+            f"Bare _last_rn alias should not leak into SQL when only filtered "
+            f"first/last is requested: {sql}"
+        )
 
     async def test_filtered_first_generates_dedicated_rn(
         self, generator: SQLGenerator, orders_model: SlayerModel,
@@ -1412,6 +1444,117 @@ class TestFilteredMeasures:
         # Should have both the shared _last_rn and the filtered _last_rn_f0
         assert "_last_rn" in sql
         assert "_last_rn_f0" in sql
+
+    async def test_filtered_last_with_cross_model_filter_carries_join(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Regression for CodeRabbit #8 — when a filtered last measure's filter
+        references a column on a JOINED model, the LEFT JOIN must be applied
+        INSIDE the ranked subquery so the filter columns resolve. Previously
+        _build_last_ranked_from() built the subquery from base_from only and
+        the outer string-level join injection never matched the subquery wrapper."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="public.customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+            measures=[
+                Measure(
+                    name="active_balance",
+                    sql="amount",
+                    filter="customers.status = 'active'",
+                ),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            default_time_dimension="created_at",
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("public.customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[Field(formula="active_balance:last")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        # The customers LEFT JOIN must be inside the ranked subquery so the
+        # filter customers.status = 'active' resolves. Extract the subquery
+        # by matching balanced parens after `FROM (`.
+        sub_start = sql.find("FROM (") + len("FROM (")
+        depth = 1
+        pos = sub_start
+        while pos < len(sql) and depth > 0:
+            if sql[pos] == "(":
+                depth += 1
+            elif sql[pos] == ")":
+                depth -= 1
+            pos += 1
+        subquery_chunk = sql[sub_start:pos]
+        assert "LEFT JOIN public.customers" in subquery_chunk, (
+            f"Expected LEFT JOIN inside ranked subquery; got: {sql}"
+        )
+        # And the outer query should NOT also add a LEFT JOIN at the top level
+        # (would double-join). Count: only one occurrence of the join clause.
+        assert sql.count("LEFT JOIN public.customers") == 1
+
+    async def test_two_filtered_lasts_same_source_different_filters_dont_collide(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """Regression for CodeRabbit #9 — two filtered last measures backed by the
+        same source measure+agg but with different filters must each get their own
+        ROW_NUMBER column. Previously the map was keyed by source_measure:agg so
+        the second one clobbered the first and both pointed at the same _rn alias."""
+        orders_model.default_time_dimension = "created_at"
+        orders_model.measures.append(
+            Measure(name="active_balance", sql="amount", filter="status = 'active'")
+        )
+        orders_model.measures.append(
+            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+            fields=[
+                Field(formula="active_balance:last"),
+                Field(formula="completed_balance:last"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        # Two distinct filtered ROW_NUMBER columns must exist in the ranked CTE.
+        assert "_last_rn_f0" in sql
+        assert "_last_rn_f1" in sql
+        # Both filter conditions must appear inside their CASE WHEN ORDER BY.
+        assert "status = 'active'" in sql
+        assert "status = 'completed'" in sql
 
     async def test_filtered_measure_uses_source_alias_not_model_name(
         self, orders_model: SlayerModel,
