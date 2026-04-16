@@ -80,7 +80,7 @@ claude mcp list
 
 | Tool | Description |
 |------|-------------|
-| `inspect_model` | Detailed model info with sample data. Params: `model_name`, `num_rows` (default 3), `show_sql` (default false). |
+| `inspect_model` | Complete markdown view of a model: metadata with row count, any model-level or measure-level filters, dimensions table, measures table (with `allowed_aggregations`, `filter`, `label`, `description`, `sql`), custom aggregations, joins (direct/multi-hop), all fields reachable via joins up to depth 5, a per-dimension data profile (distinct values for string/boolean, min/max for number/date/time), and a sample-data table. Params: `model_name`, `num_rows` (default 3). |
 | `create_model` | Create a model from a table/SQL definition or from a query. Pass `sql_table`/`sql` with `dimensions`/`measures` for table-based, or pass `query` (a SLayer query dict) to auto-introspect dimensions and measures from the query result. |
 | `edit_model` | Edit an existing model in one call. Supports upsert for dimensions, measures, aggregations, and joins (create if new, update if existing). Also manages scalar metadata and filters. See params below. |
 | `delete_model` | Delete a model entirely. |
