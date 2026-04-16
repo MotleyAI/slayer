@@ -6,6 +6,7 @@ from slayer.core.formula import (
     AggregatedMeasureRef,
     ArithmeticField,
     TransformField,
+    parse_filter,
     parse_formula,
 )
 from slayer.engine.enrichment import extract_filter_transforms
@@ -160,3 +161,129 @@ class TestExtractFilterTransforms:
         )
         assert len(transforms) == 1
         assert "price:weighted_avg(col1, weight=quantity)" in transforms[0][1]
+
+
+class TestParseFilterInjection:
+    """SQL-injection hardening for ``parse_filter``.
+
+    ``parse_filter`` is the single choke-point for all user-supplied filter
+    expressions (measure-level ``filter``, model-level ``filters``, and
+    query-level filters). These tests assert each injection payload is either
+    rejected at parse time (``ValueError``) or neutralised — i.e. the payload
+    appears in the output SQL only as a properly-quoted string literal, never
+    as executable SQL tokens.
+    """
+
+    # --- Payloads rejected outright by ast.parse ---------------------------
+
+    def test_rejects_statement_terminator_dropout(self) -> None:
+        """Classic "break out of string, run DROP, comment rest" payload.
+
+        Trailing ``--`` terminates with a single-quoted ``D`` followed by an
+        unclosed apostrophe, which cannot parse as a Python expression.
+        """
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            parse_filter("status = 'a'; DROP TABLE orders; --'")
+
+    def test_rejects_block_comment(self) -> None:
+        """SQL block-comment tokens must not survive — ``/`` without a RHS
+        operand yields a Python SyntaxError."""
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            parse_filter("status = 'a' /* foo */ OR 1=1")
+
+    def test_rejects_union_select(self) -> None:
+        """Stacked UNION SELECT payload — ``SELECT`` is not a Python operand."""
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            parse_filter("status = 'a' UNION SELECT * FROM users --'")
+
+    def test_rejects_stacked_semicolon(self) -> None:
+        """A bare semicolon separates Python statements; ``eval`` mode rejects."""
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            parse_filter("status = 'a'; SELECT 1")
+
+    def test_rejects_unknown_function_call(self) -> None:
+        """Only the internal ``__like__`` / ``__notlike__`` helpers are allowed."""
+        with pytest.raises(ValueError, match="Unknown filter function"):
+            parse_filter("pg_sleep(10)")
+
+    # --- Payloads that are legitimate expressions ---------------------------
+
+    def test_allows_tautology_with_literal(self) -> None:
+        """``1 = 1`` is a legal, user-authored tautology — not injection per se.
+
+        A measure filter written by the model author is by design trusted to
+        express arbitrary boolean logic; this test pins the intended semantics
+        so we don't accidentally over-restrict the grammar.
+        """
+        result = parse_filter("status = 'a' or 1 = 1")
+        assert "OR" in result.sql
+        assert "1 = 1" in result.sql
+
+    # --- Payloads that must be neutralised in the emitted SQL --------------
+
+    def test_embedded_quote_is_doubled(self) -> None:
+        """Single quote inside a string literal must emit as ``''`` (SQL standard)."""
+        # The runtime filter value here contains an embedded apostrophe.
+        result = parse_filter("name = 'O\\'Brien'")
+        # Emitted literal must have a doubled quote, never a bare ``'``.
+        assert "'O''Brien'" in result.sql
+
+    def test_backslash_in_string_literal_is_escaped(self) -> None:
+        """A backslash inside a string literal must not be able to escape the
+        closing quote in MySQL-family dialects.
+
+        Before the fix: ``parse_filter`` emits ``'a\\'`` (single backslash
+        inside single quotes). In MySQL default mode, ``\\'`` is a literal
+        apostrophe and the string remains open, letting trailing tokens be
+        read as string content. After the fix: the backslash is doubled so
+        the emitted literal is ``'a\\\\'`` (two backslashes = one literal
+        backslash in MySQL's escape-aware string parsing).
+        """
+        # Runtime filter string is:  name = 'a\'       (six chars)
+        # Python source:              "name = 'a\\\\'"  (escape both backslashes)
+        result = parse_filter("name = 'a\\\\'")
+        # The emitted SQL must not contain an unescaped trailing ``\'`` that
+        # MySQL would read as a literal quote.
+        assert "'a\\\\'" in result.sql, (
+            f"Expected backslash-escaped literal, got {result.sql!r}"
+        )
+
+    def test_backslash_mid_string_is_escaped(self) -> None:
+        """Backslash anywhere inside a string literal must be doubled so that
+        subsequent characters can't be (mis)interpreted as escape sequences.
+        """
+        # Runtime string:  name = 'a\b' and x = 1
+        result = parse_filter("name = 'a\\\\b' and x = 1")
+        assert "'a\\\\b'" in result.sql
+        # Sanity: the surrounding AND clause is preserved intact.
+        assert "x = 1" in result.sql
+
+    def test_backslash_in_like_pattern_is_escaped(self) -> None:
+        """The ``LIKE`` pattern path runs through ``_get_string_arg`` — make
+        sure it applies the same backslash protection as ``_filter_node_to_sql``.
+        """
+        # Runtime string:  name like 'a\'
+        result = parse_filter("name like 'a\\\\'")
+        assert "LIKE" in result.sql
+        assert "'a\\\\'" in result.sql
+
+    def test_identifier_cannot_inject_sql(self) -> None:
+        """Bare column names are constrained to valid Python identifiers.
+
+        A name containing a space / punctuation can't even reach the AST as
+        an ``ast.Name``, so there's no way to sneak ``DROP`` in via a name.
+        """
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            parse_filter("status; DROP TABLE users; --")
+
+    def test_deeply_nested_boolean_does_not_crash(self) -> None:
+        """A very deep boolean expression must either parse bounded or raise
+        cleanly — never crash the interpreter / exhaust the stack."""
+        payload = " or ".join(["x = 1"] * 200)
+        # Either accepted (returns SQL containing many ORs) or rejected with
+        # a normal ValueError; both are acceptable outcomes.
+        try:
+            result = parse_filter(payload)
+        except ValueError:
+            return
+        assert result.sql.count("OR") >= 100

@@ -1,6 +1,7 @@
 """Tests for the SQL generator."""
 
 import pytest
+import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Aggregation, AggregationParam, Dimension, Measure, ModelJoin, SlayerModel
@@ -1388,3 +1389,212 @@ class TestFilteredMeasures:
         # Should have both the shared _last_rn and the filtered _last_rn_f0
         assert "_last_rn" in sql
         assert "_last_rn_f0" in sql
+
+
+class TestMeasureFilterInjection:
+    """End-to-end SQL-injection hardening for the ``Measure.filter`` field.
+
+    The filter string is the only user-authored SQL fragment that gets
+    interpolated into the generated query (everything else goes through
+    sqlglot AST builders). These tests run the full enrichment + generation
+    pipeline for each payload and verify the resulting SQL is safe across
+    both standard-SQL and escape-sensitive dialects.
+
+    Any payload the parser rejects at the ``parse_filter`` stage raises a
+    ``ValueError`` — those cases assert the raise, not the output. Payloads
+    the parser accepts must produce SQL in which the payload appears only
+    inside a properly-closed string literal.
+    """
+
+    # ------------------------------------------------------------------
+    # Rejected at parse time
+    # ------------------------------------------------------------------
+
+    def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
+        """Classic ``'; DROP TABLE ...`` payload is rejected before generation."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                filter="status = 'a'; DROP TABLE orders; --'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+
+    def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
+        """UNION SELECT payload is rejected before generation."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                filter="status = 'a' UNION SELECT * FROM users --'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+
+    def test_block_comment_rejected(self, orders_model: SlayerModel) -> None:
+        """``/* ... */`` comment injection is rejected before generation."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                filter="status = 'a' /* x */ OR 1=1",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+
+    # ------------------------------------------------------------------
+    # Accepted and neutralised in emitted SQL — tested across dialects
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "duckdb"])
+    def test_embedded_single_quote_is_doubled(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """An apostrophe in the filter value must emit as ``''`` (SQL standard).
+
+        This holds for every dialect; none of them accept ``\\'`` as the
+        canonical escape for a literal apostrophe.
+        """
+        orders_model.measures.append(
+            Measure(
+                name="irish_names",
+                sql="amount",
+                # Runtime value of the literal:  O'Brien
+                filter="status = 'O\\'Brien'",
+            )
+        )
+        query = SlayerQuery(
+            source_model="orders", fields=[Field(formula="irish_names:sum")]
+        )
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        # The emitted literal must use doubled single quotes.
+        assert "'O''Brien'" in sql
+
+    @staticmethod
+    def _assert_round_trips_cleanly(sql: str, dialect: str) -> None:
+        """Every emitted SQL string must tokenize + parse + round-trip in the
+        target dialect. If a hostile filter manages to open an unclosed string
+        literal, sqlglot's tokenizer raises ``TokenError`` — which is both the
+        canonical pre-fix failure mode and a downstream DoS / error-leakage
+        vector."""
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
+        # Re-emitting must not raise either — guards against one-way tokenizer
+        # tolerance that wouldn't survive a round-trip through the planner.
+        _ = parsed.sql(dialect=dialect)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "duckdb"])
+    def test_trailing_backslash_cannot_escape_closing_quote(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """A trailing backslash in a string literal must not break out of the
+        literal on escape-aware dialects (mysql, clickhouse, etc.).
+
+        Before the fix: ``parse_filter`` emits ``'a\\'`` (one literal
+        backslash inside single quotes). On MySQL that parses as "apostrophe
+        escaped by the backslash, string still open", letting trailing SQL
+        tokens be read as string content — triggering ``sqlglot.TokenError``
+        (DoS / error-leakage vector). After the fix: the backslash is doubled
+        in the emitted literal and sqlglot tokenizes without error.
+        """
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                # Runtime filter string:  status = 'a\'
+                filter="status = 'a\\\\'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        self._assert_round_trips_cleanly(sql, dialect)
+        # Defence-in-depth: the payload ``a`` + trailing slash must be
+        # confined to a single well-terminated literal. Check the literal
+        # decodes to the original ``a\`` content after the dialect's own
+        # unescaping — i.e. a single re-parse is idempotent.
+        reparsed = sqlglot.parse_one(sql, dialect=dialect)
+        rendered = reparsed.sql(dialect=dialect)
+        # Round-trip stability: no additional escape inflation on the second pass.
+        again = sqlglot.parse_one(rendered, dialect=dialect).sql(dialect=dialect)
+        assert rendered == again, (
+            f"SQL is not idempotent under re-parse on {dialect}: {rendered!r} vs {again!r}"
+        )
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    def test_backslash_mid_string_is_neutralised(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """Backslashes mid-string also must not enable escape sequences."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                # Runtime filter string:  status = 'a\b'
+                filter="status = 'a\\\\b'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        self._assert_round_trips_cleanly(sql, dialect)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    def test_like_pattern_backslash_is_neutralised(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """The ``LIKE`` path in ``_filter_node_to_sql`` goes through a separate
+        helper (``_get_string_arg``); its backslash handling must match."""
+        orders_model.measures.append(
+            Measure(
+                name="evil",
+                sql="amount",
+                # Runtime filter string:  status like 'a\'
+                filter="status like 'a\\\\'",
+            )
+        )
+        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        self._assert_round_trips_cleanly(sql, dialect)
+
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
+    def test_adversarial_quote_break_cannot_inject(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        """The full attack: backslash + quote + SQL payload must either be
+        rejected at parse time or confined to a string literal.
+
+        The intent of this payload is to break out of the string in MySQL,
+        then run arbitrary SQL. After the fix, this either raises at
+        ``parse_filter`` (most likely) or emits a safely-terminated literal.
+        """
+        evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\' OR 1=1 --
+        try:
+            orders_model.measures.append(Measure(name="evil", sql="amount", filter=evil))
+            query = SlayerQuery(
+                source_model="orders", fields=[Field(formula="evil:sum")]
+            )
+            sql = _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        except ValueError:
+            return  # parser rejected — also acceptable
+        self._assert_round_trips_cleanly(sql, dialect)
+
+    def test_existing_filter_still_works_after_escaping(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Sanity: ordinary filters (no backslashes, no apostrophes) keep
+        producing the same SQL shape after the escape-hardening change."""
+        orders_model.measures.append(
+            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        )
+        query = SlayerQuery(
+            source_model="orders", fields=[Field(formula="active_revenue:sum")]
+        )
+        sql = _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+        assert "'active'" in sql
+        assert "CASE WHEN" in sql
+        assert "SUM(" in sql
