@@ -253,6 +253,32 @@ class TestMdCodeSpan:
         assert _md_code_span(42) == "`42`"
 
 
+    async def test_reachable_fields_no_bounce_back(self, mcp_server, storage: YAMLStorage) -> None:
+        """Peer joins should not cause inspect_model to list the root model's own
+        fields as 'reachable via joins'."""
+        await storage.save_model(SlayerModel(
+            name="claim", sql_table="t", data_source="test",
+            dimensions=[
+                Dimension(name="claim_id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", type=DataType.STRING),
+            ],
+            joins=[ModelJoin(target_model="claim_detail", join_pairs=[["claim_id", "claim_id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="claim_detail", sql_table="t2", data_source="test",
+            dimensions=[
+                Dimension(name="claim_id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="detail_notes", type=DataType.STRING),
+            ],
+            joins=[ModelJoin(target_model="claim", join_pairs=[["claim_id", "claim_id"]])],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "claim", "num_rows": 0})
+        # claim_detail.detail_notes should be reachable
+        assert "claim_detail.detail_notes" in result
+        # But claim_detail.claim.status (bounce-back to root) should NOT appear
+        assert "claim_detail.claim.status" not in result
+
+
 class TestInspectModelJsonFormat:
     async def test_json_format_includes_sample_data(self, mcp_server, storage: YAMLStorage) -> None:
         """inspect_model(format='json') must include sample_data and sample_data_error keys."""

@@ -124,6 +124,119 @@ class TestBasicConversion:
         assert orders.joins[0].join_pairs == [["customer_id", "id"]]
 
 
+    def test_peer_joins_from_shared_primary_entity(self) -> None:
+        """Two models with the same primary entity get bidirectional joins."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="claim",
+                model="claim",
+                entities=[DbtEntity(name="claim_identifier", type="primary")],
+                dimensions=[DbtDimension(name="status", type="categorical")],
+                measures=[DbtMeasure(name="count", agg="count", expr="1")],
+            ),
+            DbtSemanticModel(
+                name="claim_coverage",
+                model="claim_coverage",
+                entities=[
+                    DbtEntity(name="claim_identifier", type="primary"),
+                    DbtEntity(name="policy_coverage_detail", type="foreign", expr="policy_coverage_detail_identifier"),
+                ],
+                dimensions=[],
+                measures=[],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        claim = next(m for m in result.models if m.name == "claim")
+        claim_cov = next(m for m in result.models if m.name == "claim_coverage")
+
+        # claim should join to claim_coverage
+        assert any(j.target_model == "claim_coverage" for j in claim.joins)
+        # claim_coverage should join to claim
+        assert any(j.target_model == "claim" for j in claim_cov.joins)
+        # Join key should be claim_identifier on both sides
+        claim_to_cov = next(j for j in claim.joins if j.target_model == "claim_coverage")
+        assert claim_to_cov.join_pairs == [["claim_identifier", "claim_identifier"]]
+
+    def test_peer_join_with_aliased_entity(self) -> None:
+        """Peer join works when entity expr differs from name."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="agreement_party_role",
+                model="agreement_party_role",
+                entities=[DbtEntity(name="policy", type="primary", expr="agreement_identifier")],
+                dimensions=[DbtDimension(name="party_role_code", type="categorical")],
+                measures=[],
+            ),
+            DbtSemanticModel(
+                name="policy",
+                model="policy",
+                entities=[DbtEntity(name="policy", type="primary", expr="Policy_Identifier")],
+                dimensions=[DbtDimension(name="policy_number", type="categorical")],
+                measures=[DbtMeasure(name="number_of_policies", agg="sum", expr="1")],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        apr = next(m for m in result.models if m.name == "agreement_party_role")
+        policy = next(m for m in result.models if m.name == "policy")
+
+        apr_to_policy = next(j for j in apr.joins if j.target_model == "policy")
+        assert apr_to_policy.join_pairs == [["agreement_identifier", "Policy_Identifier"]]
+        assert any(j.target_model == "agreement_party_role" for j in policy.joins)
+
+    def test_peer_join_not_duplicated_with_foreign(self) -> None:
+        """Foreign entity join is not duplicated by the peer pass."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[
+                    DbtEntity(name="order_id", type="primary"),
+                    DbtEntity(name="customer_id", type="foreign"),
+                ],
+                dimensions=[],
+                measures=[],
+            ),
+            DbtSemanticModel(
+                name="customers",
+                model="customers",
+                entities=[DbtEntity(name="customer_id", type="primary", expr="id")],
+                dimensions=[],
+                measures=[],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        customer_joins = [j for j in orders.joins if j.target_model == "customers"]
+        assert len(customer_joins) == 1
+
+    def test_three_model_peer_group(self) -> None:
+        """Three models sharing the same primary entity all get peer joins."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="a", model="a",
+                entities=[DbtEntity(name="shared_id", type="primary")],
+                dimensions=[], measures=[],
+            ),
+            DbtSemanticModel(
+                name="b", model="b",
+                entities=[DbtEntity(name="shared_id", type="primary")],
+                dimensions=[], measures=[],
+            ),
+            DbtSemanticModel(
+                name="c", model="c",
+                entities=[DbtEntity(name="shared_id", type="primary")],
+                dimensions=[], measures=[],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        a = next(m for m in result.models if m.name == "a")
+        b = next(m for m in result.models if m.name == "b")
+        c = next(m for m in result.models if m.name == "c")
+        assert {j.target_model for j in a.joins} == {"b", "c"}
+        assert {j.target_model for j in b.joins} == {"a", "c"}
+        assert {j.target_model for j in c.joins} == {"a", "b"}
+
+
 class TestMeasureConsolidation:
     def test_same_expr_consolidated(self) -> None:
         """Measures with same expr but different aggs become one SLayer measure."""

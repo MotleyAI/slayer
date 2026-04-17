@@ -18,8 +18,8 @@ class EntityRegistry:
     """Maps entity names to their primary/unique owning models."""
 
     def __init__(self) -> None:
-        # {entity_name: (model_name, expr)}
-        self._primaries: Dict[str, Tuple[str, str]] = {}
+        # {entity_name: [(model_name, expr), ...]}
+        self._primaries: Dict[str, List[Tuple[str, str]]] = {}
 
     def build(self, models: List[DbtSemanticModel]) -> None:
         """First pass: register all primary and unique entities."""
@@ -47,23 +47,29 @@ class EntityRegistry:
                     )
 
     def _register(self, entity_name: str, model_name: str, expr: str) -> None:
-        if entity_name in self._primaries:
-            existing_model, _ = self._primaries[entity_name]
-            if existing_model != model_name:
-                # Multiple models claim same primary entity — last one wins
-                # (this is valid in dbt for shared-grain models like loss_payment/claim_amount)
-                logger.debug(
-                    "Entity '%s' claimed by both '%s' and '%s'; keeping '%s'",
-                    entity_name, existing_model, model_name, model_name,
-                )
-        self._primaries[entity_name] = (model_name, expr)
+        if entity_name not in self._primaries:
+            self._primaries[entity_name] = []
+        # Deduplicate by model_name
+        if any(m == model_name for m, _ in self._primaries[entity_name]):
+            return
+        if self._primaries[entity_name]:
+            existing_model, _ = self._primaries[entity_name][0]
+            logger.debug(
+                "Entity '%s' shared by '%s' and '%s' (peer join will be created)",
+                entity_name, existing_model, model_name,
+            )
+        self._primaries[entity_name].append((model_name, expr))
 
     def get_primary_model(self, entity_name: str) -> Optional[Tuple[str, str]]:
         """Look up which model owns this entity as primary.
 
-        Returns (model_name, expr) or None.
+        Returns (model_name, expr) or None.  When multiple models share the
+        same primary entity, the first registered one is returned.
         """
-        return self._primaries.get(entity_name)
+        entries = self._primaries.get(entity_name)
+        if not entries:
+            return None
+        return entries[0]
 
     def resolve_joins_for_model(self, model: DbtSemanticModel) -> List[ModelJoin]:
         """For each foreign entity in the model, generate a ModelJoin to the primary model.
@@ -104,18 +110,36 @@ class EntityRegistry:
                 join_pairs=[[foreign_expr, primary_expr]],
             ))
 
+        # Peer joins: models sharing the same primary/unique entity are joinable
+        already_targeted = {j.target_model for j in joins}
+        for entity in model.entities:
+            if entity.type not in ("primary", "unique"):
+                continue
+            peers = self._primaries.get(entity.name, [])
+            local_expr = entity.expr or entity.name
+            for peer_model_name, peer_expr in peers:
+                if peer_model_name == model.name:
+                    continue
+                if peer_model_name in already_targeted:
+                    continue
+                already_targeted.add(peer_model_name)
+                joins.append(ModelJoin(
+                    target_model=peer_model_name,
+                    join_pairs=[[local_expr, peer_expr]],
+                ))
+
         return joins
 
     def resolve_entity_to_model(self, entity_name: str) -> Optional[str]:
-        """Given an entity name, return the model that owns it as primary."""
-        primary = self.get_primary_model(entity_name)
-        if primary is None:
+        """Given an entity name, return the first model that owns it as primary."""
+        entry = self.get_primary_model(entity_name)
+        if entry is None:
             return None
-        return primary[0]
+        return entry[0]
 
     def get_entity_expr(self, entity_name: str) -> Optional[str]:
         """Get the SQL expression for an entity's primary key column."""
-        primary = self.get_primary_model(entity_name)
-        if primary is None:
+        entry = self.get_primary_model(entity_name)
+        if entry is None:
             return None
-        return primary[1]
+        return entry[1]

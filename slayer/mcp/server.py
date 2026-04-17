@@ -464,7 +464,12 @@ async def _collect_reachable_fields(
                 reachable_measures.add(f"{path}.{m.name}")
         for j in target.joins:
             sub_path = _derive_path(path, j)
-            if sub_path not in visited:
+            # Per-path cycle check: don't revisit any model already on this
+            # path (prevents bounce-backs from peer joins while preserving
+            # diamond joins where the same model is reached via independent paths).
+            path_models = set(path.split("."))
+            path_models.add(model.name)  # include root
+            if sub_path not in visited and j.target_model not in path_models:
                 queue.append((sub_path, j.target_model))
 
     return sorted(reachable_dims), sorted(reachable_measures)
