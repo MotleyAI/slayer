@@ -14,14 +14,14 @@ Features available in at least one API but missing in at least one other.
 | Update/replace model (full) | Y | — | — | `PUT /models/{name}` |
 | Edit model (partial) | — | — | Y | Add/remove fields, update metadata |
 | Sample data from model | — | — | Y | `inspect_model` with `num_rows` |
-| Create datasource | Y | — | Y | |
+| Create datasource | Y | Y | Y | |
 | Edit datasource | — | — | Y | Update description only |
-| Delete datasource | Y | — | Y | |
+| Delete datasource | Y | Y | Y | |
 | List database tables | — | — | Y | Included in `describe_datasource` (default: `list_tables=true`) |
-| Test datasource connection | — | — | Y | Included in `describe_datasource` |
+| Test datasource connection | — | Y | Y | Included in `describe_datasource` |
 | Auto-ingest on datasource creation | — | — | Y | `auto_ingest` param on `create_datasource` |
 | Ingest: include specific tables | Y | — | Y | |
-| Ingest: exclude specific tables | Y | — | — | REST-only `exclude_tables` param |
+| Ingest: exclude specific tables | Y | Y | — | |
 | Ingest: filter by schema | Y | Y | Y | All three support this (included for completeness of ingest row) |
 | Health check endpoint | Y | — | — | `GET /health` |
 | Start REST server | — | Y | — | `slayer serve` |

@@ -56,9 +56,11 @@ show "this month is half-done, the bar looks tiny":
 
 When a transform needs "the" time dimension:
 
-1. Query's `main_time_dimension` (highest priority).
-2. The single entry in `time_dimensions`, if only one.
-3. Model's `default_time_dimension`, if it is among the query's time dims.
+1. Single `time_dimensions` entry — used directly.
+2. Two or more time dimensions — `main_time_dimension` disambiguates
+   (or the model's `default_time_dimension`, if it is among the query's
+   time dims).
+3. No time dimensions — falls back to the model's `default_time_dimension`.
 
 Set `main_time_dimension` whenever you have two or more time dimensions.
 

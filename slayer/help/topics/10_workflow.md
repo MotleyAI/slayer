@@ -5,7 +5,7 @@ tool-by-tool documentation, which covers what each one does in isolation.
 
 ## Discovery — "what data is here?"
 
-```
+```text
 1. list_datasources()                       # pick a datasource
 2. models_summary(datasource_name="mydb")   # brief list of its models
 3. inspect_model(model_name="orders")       # dimensions, measures, sample rows, SQL
@@ -34,14 +34,14 @@ Two paths.
 
 **Fast — auto-ingest:**
 
-```
+```text
 1. create_datasource(name="mydb", type="postgres", ..., auto_ingest=true)
 2. models_summary(datasource_name="mydb")              # see what ingestion produced
 ```
 
 **Cautious — inspect first:**
 
-```
+```text
 1. create_datasource(..., auto_ingest=false)
 2. describe_datasource(name="mydb", schema_name="public")  # verify connection + list schemas + list tables (all in one call)
 3. ingest_datasource_models(datasource_name="mydb", schema_name="public")

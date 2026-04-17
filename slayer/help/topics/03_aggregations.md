@@ -61,7 +61,7 @@ options. Validated at both model creation and query time.
 
 ## Custom aggregations
 
-Defined at model level. `{expr}` is the measure's SQL; named placeholders are
+Defined at model level. `{value}` is the measure's SQL; named placeholders are
 kwargs:
 
 ```yaml

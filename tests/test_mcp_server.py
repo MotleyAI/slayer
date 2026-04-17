@@ -251,6 +251,27 @@ class TestBuildSampleQueryArgs:
         args = _build_sample_query_args(model=model, num_rows=3)
         assert [f["formula"] for f in args["fields"]] == ["*:count", "rev:sum"]
 
+    def test_prefers_safe_agg_over_first_allowed(self) -> None:
+        """When the allowed list starts with a non-safe aggregation (e.g. first,
+        last), _build_sample_query_args should skip it and pick the first safe
+        zero-arg aggregation from the list."""
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            measures=[Measure(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"])],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == ["*:count", "rev:min"]
+
+    def test_falls_back_to_first_allowed_when_no_safe_agg(self) -> None:
+        """When the allowed list contains no safe aggregation, fall back to the
+        first entry (even if it requires extra context like a time column)."""
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            measures=[Measure(name="rev", sql="amt", allowed_aggregations=["last", "first"])],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == ["*:count", "rev:last"]
+
     def test_skip_when_allowed_is_empty(self) -> None:
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
@@ -358,6 +379,18 @@ class TestMarkdownHelpers:
             columns=["name", "desc"],
         )
         assert out == "`x`, `y`, `z`"
+
+    def test_single_column_escapes_backticks(self) -> None:
+        """Backticks inside values must be escaped when the single-column branch
+        wraps them in backtick delimiters, otherwise malformed markdown results."""
+        out = _markdown_table(
+            rows=[
+                {"name": "no`ticks", "desc": None},
+                {"name": "plain", "desc": None},
+            ],
+            columns=["name", "desc"],
+        )
+        assert out == r"`no\`ticks`, `plain`"
 
     def test_table_all_columns_pruned_returns_none_marker(self) -> None:
         out = _markdown_table(

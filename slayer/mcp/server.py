@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
 
+# Aggregations that are safe for sample-data extraction: zero extra args,
+# no time-column context needed.
+_SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_distinct", "median"})
+
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
@@ -147,7 +151,7 @@ def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
             v = r.get(col)
             if not _cell_is_present(v):
                 continue
-            text = str(v).replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
+            text = str(v).replace("|", "\\|").replace("\r", " ").replace("\n", " ").replace("`", "\\`").strip()
             rendered.append(f"`{text}`")
         return ", ".join(rendered)
 
@@ -185,7 +189,8 @@ def _build_sample_query_args(model: SlayerModel, num_rows: int) -> Dict[str, Any
         if allowed is not None and "avg" not in allowed:
             if not allowed:
                 continue
-            agg = allowed[0]
+            safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
+            agg = safe if safe else allowed[0]
         else:
             # avg is permitted; drop to count_distinct when the backing column
             # is non-numeric so AVG(VARCHAR) / AVG(BOOL) don't blow up.
