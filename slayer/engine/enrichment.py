@@ -186,16 +186,18 @@ async def enrich_query(
 
         # Resolve measure-level filter
         filter_sql = None
+        filter_columns: List[str] = []
         if measure_def and measure_def.filter:
             parsed = parse_filter(measure_def.filter)
             resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
-                model_name=model.name,
+                model_name=model_name_str,
                 resolve_join_target=resolve_join_target,
                 named_queries=named_queries,
             )
             filter_sql = resolved[0].sql
+            filter_columns = list(resolved[0].columns)
 
         measures.append(
             EnrichedMeasure(
@@ -203,13 +205,14 @@ async def enrich_query(
                 sql=sql,
                 aggregation=aggregation_name,
                 alias=alias,
-                model_name=model.name,
+                model_name=model_name_str,
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs,
                 label=measure_def.label if measure_def else None,
                 time_column=explicit_time_col,
                 source_measure_name=measure_name,
                 filter_sql=filter_sql,
+                filter_columns=filter_columns,
             )
         )
         known_aliases[alias_key] = alias
@@ -487,7 +490,7 @@ async def enrich_query(
     )
 
     return EnrichedQuery(
-        model_name=model.name,
+        model_name=model_name_str,
         sql_table=model.sql_table,
         sql=model.sql,
         resolved_joins=resolved_joins,
@@ -532,7 +535,7 @@ async def _resolve_dimensions(
     for dim_ref in query.dimensions or []:
         if dim_ref.model is None:
             dim_def = model.get_dimension(dim_ref.name)
-            effective_model = model.name
+            effective_model = model_name_str
         else:
             parts = dim_ref.model.split(".") + [dim_ref.name]
             dim_def = await resolve_dimension_via_joins(
@@ -566,7 +569,7 @@ async def _resolve_time_dimensions(
     for td in query.time_dimensions or []:
         if td.dimension.model is None:
             dim_def = model.get_dimension(td.dimension.name)
-            td_model_name = model.name
+            td_model_name = model_name_str
         else:
             parts = td.dimension.model.split(".") + [td.dimension.name]
             dim_def = await resolve_dimension_via_joins(
@@ -679,11 +682,16 @@ async def _resolve_joins(
                 parts = col.split(".")
                 for part in parts[:-1]:
                     needed_tables.add(part)
-    # Scan measure filters for dotted column references
+    # Scan measure filters for dotted column references — use the structured
+    # filter_columns from ParsedFilter rather than regexing rendered SQL.
+    # The regex approach can mis-fire on dotted literals (e.g. inside string
+    # literals like "description LIKE '%foo.bar%'") and pull in spurious joins.
     for m in measures:
-        if m.filter_sql and "." in m.filter_sql:
-            for match in _TABLE_COL_RE.finditer(m.filter_sql):
-                needed_tables.update(match.group(1).split("__"))
+        for col in m.filter_columns:
+            if "." in col:
+                parts = col.split(".")
+                for part in parts[:-1]:
+                    needed_tables.update(part.split("__"))
 
     # BFS transitive expansion
     expanded = set(needed_tables)

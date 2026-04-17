@@ -2,6 +2,12 @@
 
 SLayer can introspect a database schema and automatically generate models with dimensions, measures, and **rollup-style denormalized joins**.
 
+SLayer has three ingestion paths:
+
+1. **Auto-ingest** (this page) — introspect a live database and generate visible models with FK-based rollup joins.
+2. **dbt semantic layer import** — convert `semantic_models` and `metrics` from a dbt project into visible SLayer models. See [dbt Import](../dbt/dbt_import.md).
+3. **Hidden dbt-model import** — the `--include-hidden-models` variant of `import-dbt` adds every regular dbt model that isn't wrapped by a `semantic_model` as a **hidden** SlayerModel built via SQL introspection. Hidden models stay out of discovery/listing endpoints but remain queryable by name. See [Regular dbt Models (Hidden Import)](../dbt/dbt_import.md#regular-dbt-models-hidden-import).
+
 ## How It Works
 
 Ingestion runs in three steps:

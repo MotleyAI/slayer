@@ -566,6 +566,38 @@ def _columns_to_model(
     )
 
 
+def introspect_table_to_model(
+    *,
+    sa_engine: sa.Engine,
+    inspector: sa.engine.Inspector,
+    table_name: str,
+    schema: Optional[str],
+    data_source: str,
+    model_name: Optional[str] = None,
+) -> SlayerModel:
+    """Introspect a single table (no FK rollup) and return a SlayerModel.
+
+    This is the building block shared between the auto-ingest path and the
+    dbt hidden-model import. It never builds joins or traverses the FK graph.
+    """
+    columns = _introspect_query_columns_via_inspector(
+        sa_engine=sa_engine,
+        inspector=inspector,
+        table_name=table_name,
+        schema=schema,
+        rollup_sql=None,
+        referenced_tables=set(),
+        fk_columns_by_table={},
+    )
+    sql_table = f"{schema}.{table_name}" if schema else table_name
+    return _columns_to_model(
+        name=model_name or table_name,
+        columns=columns,
+        data_source=data_source,
+        sql_table=sql_table,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main ingestion
 # ---------------------------------------------------------------------------

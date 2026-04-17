@@ -56,6 +56,10 @@ class EnrichedMeasure:
     time_column: Optional[str] = None  # Explicit time col for first/last (overrides query default)
     source_measure_name: Optional[str] = None  # Original measure name before canonicalization
     filter_sql: Optional[str] = None  # Resolved SQL condition for filtered measures (CASE WHEN)
+    # Resolved (qualified) column names referenced by the filter. Populated alongside
+    # filter_sql so downstream join planning can use structured data instead of
+    # regexing rendered SQL (which can mistake dotted literals for table refs).
+    filter_columns: List[str] = field(default_factory=list)
 
 
 @dataclass
