@@ -2013,3 +2013,100 @@ class TestMeasureFilterInjection:
         assert "'active'" in sql
         assert "CASE WHEN" in sql
         assert "SUM(" in sql
+
+
+class TestAutoMoveDimensions:
+    """Test _auto_move_fields_to_dimensions preprocessing in the query engine."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        return YAMLStorage(base_dir=str(tmp_path))
+
+    @pytest.fixture
+    async def engine_and_model(self, storage):
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+                Dimension(name="region", sql="region", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+        await storage.save_model(orders)
+        await storage.save_model(customers)
+        engine = SlayerQueryEngine(storage=storage)
+        return engine, orders
+
+    async def test_bare_local_dimension_moved(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["status", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert len(result.fields) == 1
+        assert result.fields[0].formula == "revenue:sum"
+        assert any(d.name == "status" for d in result.dimensions)
+
+    async def test_cross_model_dimension_moved(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["customers.name", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert len(result.fields) == 1
+        assert any(d.full_name == "customers.name" for d in result.dimensions)
+
+    async def test_colon_fields_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["revenue:sum", "*:count"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert len(result.fields) == 2
+        assert not result.dimensions
+
+    async def test_arithmetic_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["revenue:sum / *:count"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert len(result.fields) == 1
+
+    async def test_bare_measure_name_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["revenue", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        # "revenue" is a measure, not a dimension — stays in fields
+        assert len(result.fields) == 2
+
+    async def test_unknown_bare_name_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["nonexistent", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert len(result.fields) == 2
+
+    async def test_invalid_cross_model_path_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["customers.nonexistent", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert len(result.fields) == 2
+
+    async def test_no_fields_noop(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert result.fields is None
+
+    async def test_appends_to_existing_dimensions(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["customer_id", "revenue:sum"], dimensions=["status"])
+        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        assert len(result.fields) == 1
+        dim_names = [d.name for d in result.dimensions]
+        assert "status" in dim_names
+        assert "customer_id" in dim_names

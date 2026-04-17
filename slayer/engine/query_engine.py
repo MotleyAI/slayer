@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
@@ -187,6 +187,9 @@ class SlayerQueryEngine:
             named_queries=named_queries,
             _resolving=resolving,
         )
+
+        # Auto-correct: move bare field names to dimensions if they match
+        query = await self._auto_move_fields_to_dimensions(query, model, named_queries)
 
         datasource = await self._resolve_datasource(model=model)
 
@@ -590,6 +593,77 @@ class SlayerQueryEngine:
         # Look up the final dimension on the terminal model
         dim_name = parts[-1]
         return current_model.get_dimension(dim_name)
+
+    async def _auto_move_fields_to_dimensions(
+        self,
+        query: SlayerQuery,
+        model: SlayerModel,
+        named_queries: dict,
+    ) -> SlayerQuery:
+        """Move bare (no-colon) field names to dimensions if they're valid dimensions but not measures.
+
+        LLMs frequently place dimension names in ``fields`` instead of
+        ``dimensions``.  When a field has no colon (no aggregation) and
+        resolves as a dimension (local or via the full join path) but
+        NOT as a measure, silently move it to ``dimensions`` with a
+        warning.
+        """
+        if not query.fields:
+            return query
+
+        kept_fields = []
+        extra_dims = list(query.dimensions or [])
+        moved = False
+
+        for f in query.fields:
+            formula = f.formula.strip()
+            # Only consider bare names (no colon, no operators, no parens)
+            if ":" not in formula and not any(c in formula for c in "+-*/()"):
+                if "." not in formula:
+                    # Local reference
+                    is_dim = model.get_dimension(formula) is not None
+                    is_measure = model.get_measure(formula) is not None
+                    if is_dim and not is_measure:
+                        logger.warning(
+                            "Auto-moved '%s' from fields to dimensions (not a measure formula)",
+                            formula,
+                        )
+                        extra_dims.append(ColumnRef(name=formula))
+                        moved = True
+                        continue
+                else:
+                    # Cross-model reference — walk the full join path
+                    parts = formula.split(".")
+                    try:
+                        dim_def = await self._resolve_dimension_via_joins(
+                            model=model, parts=parts, named_queries=named_queries,
+                        )
+                    except ValueError:
+                        dim_def = None  # Circular join — leave in fields
+                    if dim_def is not None:
+                        # Also check it's not a measure on the terminal model
+                        terminal_model_name = parts[-2]
+                        terminal_model = (
+                            await self.storage.get_model(terminal_model_name)
+                            if self.storage else None
+                        )
+                        is_measure = (
+                            terminal_model.get_measure(parts[-1]) is not None
+                            if terminal_model else False
+                        )
+                        if not is_measure:
+                            logger.warning(
+                                "Auto-moved '%s' from fields to dimensions (not a measure formula)",
+                                formula,
+                            )
+                            extra_dims.append(ColumnRef(name=formula))
+                            moved = True
+                            continue
+            kept_fields.append(f)
+
+        if not moved:
+            return query
+        return query.model_copy(update={"fields": kept_fields or None, "dimensions": extra_dims})
 
     async def _resolve_cross_model_measure(
         self,
