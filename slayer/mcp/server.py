@@ -609,11 +609,11 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    async def models_summary(datasource_name: str) -> str:
-        """Brief markdown summary of all (non-hidden) models in a datasource.
+    async def models_summary(datasource_name: str, format: str = "markdown") -> str:
+        """Brief summary of all (non-hidden) models in a datasource.
 
-        For each model: name, description, a markdown table of its dimensions
-        (just name + description), a markdown table of its measures (just name
+        For each model: name, description, a table of its dimensions
+        (just name + description), a table of its measures (just name
         + description), and a comma-separated list of the model names it joins
         to. No field types, no distinct values, no sample data, and no
         expansion of joined models' fields — call inspect_model for any of
@@ -621,7 +621,16 @@ def create_mcp_server(storage: StorageBackend):
 
         Args:
             datasource_name: Name of the datasource (from list_datasources).
+            format: Output format — "markdown" (default, compact and
+                LLM-friendly) or "json" (structured array of model summaries).
+                Case-insensitive.
         """
+        fmt = format.lower().strip()
+        if fmt not in ("markdown", "json"):
+            raise ValueError(
+                f"Invalid format '{format}' for models_summary. Must be 'markdown' or 'json'."
+            )
+
         try:
             ds = await storage.get_datasource(datasource_name)
         except Exception as exc:
@@ -644,6 +653,31 @@ def create_mcp_server(storage: StorageBackend):
 
         if not matched:
             return f"Datasource '{datasource_name}' has no models."
+
+        if fmt == "json":
+            return json.dumps(
+                {
+                    "datasource_name": datasource_name,
+                    "model_count": len(matched),
+                    "models": [
+                        {
+                            "name": m.name,
+                            "description": m.description,
+                            "dimensions": [
+                                {"name": d.name, "description": d.description}
+                                for d in m.dimensions if not d.hidden
+                            ],
+                            "measures": [
+                                {"name": meas.name, "description": meas.description}
+                                for meas in m.measures if not meas.hidden
+                            ],
+                            "joins_to": sorted({j.target_model for j in m.joins}),
+                        }
+                        for m in matched
+                    ],
+                },
+                indent=2,
+            )
 
         sections: List[str] = [
             f"# Datasource: `{datasource_name}` — {len(matched)} model(s)"
@@ -687,8 +721,13 @@ def create_mcp_server(storage: StorageBackend):
         return "\n\n".join(sections)
 
     @mcp.tool()
-    async def inspect_model(model_name: str, num_rows: int = 3) -> str:
-        """Return a complete-yet-compact markdown view of a semantic model.
+    async def inspect_model(
+        model_name: str,
+        num_rows: int = 3,
+        show_sql: bool = False,
+        format: str = "markdown",
+    ) -> str:
+        """Return a complete-yet-compact view of a semantic model.
 
         Sections always emitted (when non-empty): model header + description,
         metadata bullets (data_source, sql_table, default_time_dimension,
@@ -707,7 +746,19 @@ def create_mcp_server(storage: StorageBackend):
         Args:
             model_name: Name of the model to inspect.
             num_rows: Max sample-data rows (default: 3).
+            show_sql: When true, include the generated SQL for the sample-data
+                query in the response (useful for debugging or understanding
+                how SLayer translates the model to SQL).
+            format: Output format — "markdown" (default, rich structured
+                document), or "json" (structured JSON with all model metadata
+                and sample data). Case-insensitive.
         """
+        fmt = format.lower().strip()
+        if fmt not in ("markdown", "json"):
+            raise ValueError(
+                f"Invalid format '{format}' for inspect_model. Must be 'markdown' or 'json'."
+            )
+
         model = await storage.get_model(model_name)
         if model is None:
             all_names = await storage.list_models()
@@ -859,9 +910,11 @@ def create_mcp_server(storage: StorageBackend):
 
         # Sample data via a regular SlayerQuery (same path the `query` MCP tool takes)
         query_args = _build_sample_query_args(model=model, num_rows=num_rows)
+        sample_sql: Optional[str] = None
         try:
             sample_query = SlayerQuery.model_validate(query_args)
             sample_result = await engine.execute(query=sample_query)
+            sample_sql = sample_result.sql
             cols, data = _strip_model_prefix(
                 columns=sample_result.columns,
                 data=sample_result.data,
@@ -869,13 +922,87 @@ def create_mcp_server(storage: StorageBackend):
             )
             sample_result.columns = cols
             sample_result.data = data
-            sections.append(f"## Sample Data\n\n{sample_result.to_markdown()}")
+            sample_section = f"## Sample Data\n\n{sample_result.to_markdown()}"
+            if show_sql and sample_sql:
+                sample_section = (
+                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    + sample_section
+                )
+            sections.append(sample_section)
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                 err = _friendly_db_error(e)
             else:
                 err = str(e)
-            sections.append(f"## Sample Data\n\n_Error fetching sample data: {err}_")
+            sample_section = f"## Sample Data\n\n_Error fetching sample data: {err}_"
+            if show_sql and sample_sql:
+                sample_section = (
+                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    + sample_section
+                )
+            sections.append(sample_section)
+
+        if fmt == "json":
+            # Return a structured JSON representation instead of the markdown document
+            return json.dumps(
+                {
+                    "model_name": model.name,
+                    "description": model.description,
+                    "data_source": model.data_source,
+                    "sql_table": model.sql_table,
+                    "sql": model.sql,
+                    "default_time_dimension": model.default_time_dimension,
+                    "hidden": model.hidden,
+                    "row_count": row_count,
+                    "filters": model.filters,
+                    "dimensions": [
+                        {
+                            "name": d.name,
+                            "type": str(d.type),
+                            "primary_key": d.primary_key,
+                            "sql": d.sql,
+                            "label": d.label,
+                            "description": d.description,
+                            "sampled": profile_by_name.get(d.name),
+                        }
+                        for d in model.dimensions if not d.hidden
+                    ],
+                    "measures": [
+                        {
+                            "name": m.name,
+                            "sql": m.sql,
+                            "allowed_aggregations": m.allowed_aggregations,
+                            "filter": m.filter,
+                            "label": m.label,
+                            "description": m.description,
+                        }
+                        for m in model.measures if not m.hidden
+                    ],
+                    "aggregations": [
+                        {
+                            "name": a.name,
+                            "formula": a.formula,
+                            "params": [
+                                {"name": p.name, "sql": p.sql} for p in (a.params or [])
+                            ],
+                            "description": a.description,
+                        }
+                        for a in model.aggregations
+                    ],
+                    "joins": [
+                        {
+                            "target_model": j.target_model,
+                            "join_pairs": j.join_pairs,
+                            "kind": "multi-hop" if any("." in src for src, _ in j.join_pairs) else "direct",
+                        }
+                        for j in model.joins
+                    ],
+                    "reachable_dimensions": reach_dims,
+                    "reachable_measures": reach_measures,
+                },
+                indent=2,
+                default=str,
+            )
 
         return "\n\n".join(sections)
 
