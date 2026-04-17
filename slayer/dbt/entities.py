@@ -87,28 +87,28 @@ class EntityRegistry:
             if entity.type != "foreign":
                 continue
 
-            primary = self.get_primary_model(entity.name)
-            if primary is None:
+            primaries = self._primaries.get(entity.name, [])
+            if not primaries:
                 logger.warning(
                     "Model '%s': foreign entity '%s' has no matching primary entity",
                     model.name, entity.name,
                 )
                 continue
 
-            target_model_name, primary_expr = primary
-            if target_model_name == model.name:
-                continue  # Skip self-joins
-
             foreign_expr = entity.expr or entity.name
-            signature = (target_model_name, foreign_expr, primary_expr)
-            if signature in seen_signatures:
-                continue
-            seen_signatures.add(signature)
+            for target_model_name, primary_expr in primaries:
+                if target_model_name == model.name:
+                    continue  # Skip self-joins
 
-            joins.append(ModelJoin(
-                target_model=target_model_name,
-                join_pairs=[[foreign_expr, primary_expr]],
-            ))
+                signature = (target_model_name, foreign_expr, primary_expr)
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+
+                joins.append(ModelJoin(
+                    target_model=target_model_name,
+                    join_pairs=[[foreign_expr, primary_expr]],
+                ))
 
         # Peer joins: models sharing the same primary/unique entity are joinable
         already_targeted = {j.target_model for j in joins}

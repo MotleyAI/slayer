@@ -449,11 +449,13 @@ class DbtToSlayerConverter:
         model_entities = {e.name: e.type for e in source_sm.entities}
 
         # Convert the filter
+        sm_by_name = {sm.name: sm for sm in self.project.semantic_models}
         slayer_filter = convert_dbt_filter(
             filter_str=metric.filter,
             source_model_name=source_sm.name,
             entity_registry=self.entity_registry,
             model_entity_names=model_entities,
+            all_semantic_models=sm_by_name,
         )
 
         # Create a filtered measure and add to the SLayer model
