@@ -163,7 +163,7 @@ class TestInspectModel:
         assert "USD total" in result
         assert "## Joins (1)" in result
         assert "customers" in result
-        assert "direct" in result
+        assert "customer_id = id" in result
 
         # No longer JSON
         with pytest.raises(json.JSONDecodeError):
@@ -205,23 +205,19 @@ class TestInspectModel:
         assert "wavg" in result
         assert "Weighted average" in result
 
-    async def test_joins_kind_labels(self, mcp_server, storage: YAMLStorage) -> None:
-        """Joins table marks direct vs multi-hop joins."""
+    async def test_joins_table_rendered(self, mcp_server, storage: YAMLStorage) -> None:
+        """Joins table renders direct joins without kind labels."""
         await storage.save_model(SlayerModel(
             name="order_items", sql_table="order_items", data_source="test",
             joins=[
                 ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
-                ModelJoin(target_model="customers", join_pairs=[["orders.customer_id", "id"]]),
+                ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
             ],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "order_items"})
         assert "| orders |" in result
-        assert "| customers |" in result
-        # The "direct" label should appear on the orders row, "multi-hop" on the customers row.
-        orders_line = next(line for line in result.splitlines() if "| orders |" in line)
-        customers_line = next(line for line in result.splitlines() if "| customers |" in line)
-        assert "direct" in orders_line
-        assert "multi-hop" in customers_line
+        assert "| products |" in result
+        assert "kind" not in result
 
 
 class TestMdCodeSpan:
@@ -491,9 +487,8 @@ class TestReachableFields:
         assert dims == ["customers.name", "customers.region"]
         assert measures == ["customers.lifetime_value"]
 
-    async def test_auto_ingested_multi_hop_path(self, storage: YAMLStorage) -> None:
-        """A baked-in multi-hop join (source col 'orders.customer_id') should
-        produce the path 'orders.customers.<field>' from the root."""
+    async def test_multi_hop_via_graph_walk(self, storage: YAMLStorage) -> None:
+        """Multi-hop reachability via direct joins: order_items → orders → customers."""
         await storage.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="ds",
             dimensions=[Dimension(name="id", primary_key=True), Dimension(name="name")],
@@ -501,12 +496,12 @@ class TestReachableFields:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="ds",
             dimensions=[Dimension(name="id", primary_key=True), Dimension(name="customer_id")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
         root = SlayerModel(
             name="order_items", sql_table="order_items", data_source="ds",
             joins=[
                 ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
-                ModelJoin(target_model="customers", join_pairs=[["orders.customer_id", "id"]]),
             ],
         )
         await storage.save_model(root)

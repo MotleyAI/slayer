@@ -8,32 +8,26 @@ Given a datasource configuration, `ingest_datasource()` introspects the database
 
 - **Dimensions** for every column
 - **Measures** generated from column types (see rules below)
-- **Joins** derived from foreign key constraints, including multi-hop transitive joins
+- **Joins** derived from the table's own foreign key constraints (one `ModelJoin` per FK)
 
-No join-related SQL is baked into the models — joins are resolved dynamically at query time via the join graph.
+No join-related SQL is baked into the models — joins are resolved dynamically at query time via the [join graph](../05_joins/joins.md).
 
 ## FK graph discovery
 
 The first step is building a directed graph from FK constraints: each edge means "this table has a foreign key pointing to that table." SLayer validates that the graph is acyclic (cycles would create infinite join chains) and raises a `RollupGraphError` if any are found.
 
-For each table, SLayer then computes the **transitive closure** via BFS — the set of all tables reachable by following FK chains. For example, if `order_items` references `orders`, and `orders` references `customers`, then `order_items` can transitively reach `customers` even though it has no direct FK to it.
-
 ## Join generation
 
-FK relationships become `ModelJoin` objects via BFS traversal from each table. Each join specifies a target model and the column pairs to join on.
+Each table's own FK relationships become `ModelJoin` objects — one per FK. For example, `order_items` gets these joins:
 
-For multi-hop joins, the source column is **path-qualified** to indicate which already-joined table the FK comes from. For example, `order_items` gets these joins:
+| Target | Source column | Target column |
+|--------|--------------|---------------|
+| orders | `order_id` | `id` |
+| products | `sku` | `sku` |
 
-| Target | Source column | Target column | Type |
-|--------|--------------|---------------|------|
-| orders | `order_id` | `id` | direct |
-| products | `sku` | `sku` | direct |
-| customers | `orders.customer_id` | `id` | multi-hop |
-| stores | `orders.store_id` | `id` | multi-hop |
+That's it — only the table's own FKs. Tables reachable via multiple hops (e.g. `order_items → orders → customers`) are **not** stored in the joins list. Instead, SLayer walks the join graph at query time: each intermediate model declares its own direct joins, so the path `orders → customers → regions` is resolved by following `orders.joins` to `customers`, then `customers.joins` to `regions`.
 
-The path-qualified source column `orders.customer_id` means "the `customer_id` column in the already-joined `orders` table."
-
-Diamond joins — where the same table is reachable via multiple FK paths — are handled automatically. Each path produces a separate `ModelJoin` with a unique path-based alias, so `customers.regions.name` and `warehouses.regions.name` refer to independent copies of the `regions` table. See the [joins post](../05_joins/joins.md) for details on diamond joins and how to recombine them.
+Diamond joins — where the same table is reachable via multiple FK paths — are disambiguated by the path notation in the query. `customers.regions.name` and `warehouses.regions.name` each walk a different chain and produce distinct table aliases (`customers__regions` vs `warehouses__regions`). See the [joins post](../05_joins/joins.md) for details on diamond joins and how to recombine them.
 
 ## Dimension and measure generation
 

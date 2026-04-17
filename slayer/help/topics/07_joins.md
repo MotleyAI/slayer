@@ -15,8 +15,10 @@ joins:
     join_pairs: [["product_id", "id"]]
 ```
 
-Auto-ingestion creates these from foreign keys automatically, including
-transitive joins (`orders → customers → regions`).
+Auto-ingestion creates direct joins from foreign keys automatically (one join
+per FK on the source table). Multi-hop paths like `orders → customers →
+regions` are resolved at query time by walking each intermediate model's own
+joins — no transitive joins are baked in at ingestion.
 
 ## Referencing joined data
 

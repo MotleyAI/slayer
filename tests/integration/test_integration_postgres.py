@@ -697,7 +697,7 @@ class TestRollupIngestion:
         assert "regions" in result.sql
 
     def test_orders_has_joins_metadata(self, pg_ingest_env) -> None:
-        """Ingested models should have explicit join metadata."""
+        """Ingested models should have only direct join metadata."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
@@ -705,8 +705,8 @@ class TestRollupIngestion:
         join_targets = [j.target_model for j in orders.joins]
         assert "customers" in join_targets
 
-        # customers → regions (transitive, discovered via BFS)
-        assert "regions" in join_targets
+        # Multi-hop targets (regions) are NOT baked in — resolved at query time
+        assert "regions" not in join_targets
 
         # Each join has at least one join pair
         for j in orders.joins:

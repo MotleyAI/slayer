@@ -239,54 +239,33 @@ def _generate_joins(
     schema: Optional[str],
     table_set: Set[str],
 ) -> List[ModelJoin]:
-    """Generate ModelJoin objects from FK relationships via BFS traversal.
+    """Generate direct ModelJoin objects from the source table's own FK relationships.
 
-    Supports diamond joins: the same table can be reached via multiple paths
-    (e.g., orders → customers → regions AND orders → warehouses → regions).
-    Each path produces a separate ModelJoin with path-qualified source columns.
+    Only emits joins for FKs defined on ``source_table`` itself — multi-hop
+    reachability (e.g. orders → customers → regions) is resolved at query time
+    by walking the join graph through each intermediate model.
     """
+    fk_rels = _get_fk_relationships(
+        inspector=inspector,
+        table_name=source_table,
+        schema=schema,
+        table_set=table_set,
+    )
+
     joins = []
-    # Track (referencing_table, target_table) edges already processed
-    processed_edges: Set[tuple] = set()
-    # BFS queue entries: table name
-    queue = deque([source_table])
-    visited_for_expansion = {source_table}
-
-    while queue:
-        current = queue.popleft()
-        current_fk_rels = _get_fk_relationships(
-            inspector=inspector,
-            table_name=current,
-            schema=schema,
-            table_set=table_set,
-        )
-
-        for src_col, ref_table, tgt_col in current_fk_rels:
-            if ref_table not in referenced_tables:
-                continue
-            edge = (current, ref_table)
-            if edge in processed_edges:
-                continue
-            processed_edges.add(edge)
-
-            # Build join pair: qualify source column with table name for non-root
-            if current == source_table:
-                source_dim = src_col
-            else:
-                source_dim = f"{current}.{src_col}"
-            join_pairs = [[source_dim, tgt_col]]
-
-            joins.append(
-                ModelJoin(
-                    target_model=ref_table,
-                    join_pairs=join_pairs,
-                )
+    seen_targets: Set[str] = set()
+    for src_col, ref_table, tgt_col in fk_rels:
+        if ref_table not in referenced_tables:
+            continue
+        if ref_table in seen_targets:
+            continue
+        seen_targets.add(ref_table)
+        joins.append(
+            ModelJoin(
+                target_model=ref_table,
+                join_pairs=[[src_col, tgt_col]],
             )
-
-            # Continue BFS from the referenced table (but only expand once)
-            if ref_table not in visited_for_expansion:
-                visited_for_expansion.add(ref_table)
-                queue.append(ref_table)
+        )
 
     return joins
 

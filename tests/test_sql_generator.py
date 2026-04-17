@@ -1061,11 +1061,33 @@ class TestMultiDialectGeneration:
 
 
 class TestPathAliasJoinInference:
-    """Test that __-delimited path aliases in inline SQL are split for join inference."""
+    """Test that __-delimited path aliases in inline SQL cause multi-hop join inference via graph walk."""
+
+    @pytest.fixture
+    async def storage(self, tmp_path):
+        from slayer.storage.yaml_storage import YAMLStorage
+        s = YAMLStorage(base_dir=str(tmp_path))
+        await s.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+                Dimension(name="population", sql="population", type=DataType.NUMBER),
+            ],
+        ))
+        await s.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="region_id", sql="region_id", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        return s
 
     @pytest.fixture
     def chained_model(self) -> SlayerModel:
-        """Model with orders → customers → regions join chain."""
+        """Model with orders → customers (direct) and customers → regions (on customers)."""
         return SlayerModel(
             name="orders",
             sql_table="orders",
@@ -1074,7 +1096,6 @@ class TestPathAliasJoinInference:
                 Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
                 Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
                 Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                # Inline dimension referencing a path-aliased joined table
                 Dimension(
                     name="is_us",
                     sql="CASE WHEN customers__regions.name = 'US' THEN 1 ELSE 0 END",
@@ -1084,13 +1105,12 @@ class TestPathAliasJoinInference:
             measures=[],
             joins=[
                 ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-                ModelJoin(target_model="regions", join_pairs=[["customers.region_id", "id"]]),
             ],
         )
 
     @pytest.fixture
-    def engine(self) -> SlayerQueryEngine:
-        return SlayerQueryEngine(storage=None)
+    def engine(self, storage) -> SlayerQueryEngine:
+        return SlayerQueryEngine(storage=storage)
 
     async def test_dimension_sql_with_path_alias_infers_joins(
         self, engine: SlayerQueryEngine, chained_model: SlayerModel
@@ -1106,8 +1126,23 @@ class TestPathAliasJoinInference:
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
 
-    async def test_time_dimension_sql_with_path_alias_infers_joins(self, engine: SlayerQueryEngine) -> None:
+    async def test_time_dimension_sql_with_path_alias_infers_joins(self, storage) -> None:
         """Inline time dimension SQL referencing path alias should also trigger join inference."""
+        await storage.save_model(SlayerModel(
+            name="orgs", sql_table="orgs", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="signup_date", sql="signup_date", type=DataType.TIMESTAMP),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="users", sql_table="users", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="org_id", sql="org_id", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="orgs", join_pairs=[["org_id", "id"]])],
+        ))
         model = SlayerModel(
             name="events",
             sql_table="events",
@@ -1115,7 +1150,6 @@ class TestPathAliasJoinInference:
             dimensions=[
                 Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
                 Dimension(name="user_id", sql="user_id", type=DataType.NUMBER),
-                # Time dimension with SQL referencing a path alias
                 Dimension(
                     name="user_signup_date",
                     sql="users__orgs.signup_date",
@@ -1125,9 +1159,9 @@ class TestPathAliasJoinInference:
             measures=[],
             joins=[
                 ModelJoin(target_model="users", join_pairs=[["user_id", "id"]]),
-                ModelJoin(target_model="orgs", join_pairs=[["users.org_id", "id"]]),
             ],
         )
+        engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             source_model="events",
             time_dimensions=[
@@ -1147,7 +1181,6 @@ class TestPathAliasJoinInference:
         self, engine: SlayerQueryEngine, chained_model: SlayerModel
     ) -> None:
         """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
-        # Add a measure referencing a path-aliased joined table
         chained_model.measures.append(
             Measure(name="region_pop_sum", sql="customers__regions.population")
         )

@@ -287,7 +287,7 @@ The `docs/examples/` directory contains Jupyter notebooks that walk through SLay
 | [SQL vs DSL](docs/examples/02_sql_vs_dsl/)                 | How model SQL and query DSL stay cleanly separated                                       |
 | [Auto-Ingestion](docs/examples/03_auto_ingest/)            | Schema introspection, FK graph discovery, automatic model generation                     |
 | [Time Operations](docs/examples/04_time/)                  | `change`, `change_pct`, `time_shift`, `lag`, `lead`, `last` — composable time transforms |
-| [Joins](docs/examples/05_joins/)                           | Dot syntax, multi-hop joins, diamond join disambiguation                                 |
+| [Joins](docs/examples/05_joins/)                           | Dot syntax, multi-hop dimensions, diamond join disambiguation                            |
 | [Joined Measures](docs/examples/05_joined_measures/)       | Cross-model measures with sub-query isolation                                            |
 | [Multistage Queries](docs/examples/06_multistage_queries/) | Query chaining, queries-as-models, `ModelExtension`                                      |
 

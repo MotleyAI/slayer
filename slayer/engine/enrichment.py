@@ -9,7 +9,7 @@ transformation step in the query pipeline.
 """
 
 import re
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, NUMERIC_ONLY_AGGREGATIONS
 from slayer.core.formula import (
@@ -645,6 +645,65 @@ def _resolve_last_agg_time(
 # ---------------------------------------------------------------------------
 
 
+def _collect_needed_paths(
+    model: SlayerModel,
+    dimensions: List[EnrichedDimension],
+    time_dimensions: List[EnrichedTimeDimension],
+    measures: List[EnrichedMeasure],
+    cross_model_measures: list,
+    processed_filters: List[str],
+) -> Set[Tuple[str, ...]]:
+    """Extract ordered join-path tuples the query needs (including all prefixes)."""
+
+    def _add_with_prefixes(segments: List[str], paths: Set[Tuple[str, ...]]) -> None:
+        for i in range(1, len(segments) + 1):
+            paths.add(tuple(segments[:i]))
+
+    paths: Set[Tuple[str, ...]] = set()
+
+    for d in dimensions:
+        if d.model_name != model.name:
+            _add_with_prefixes(d.model_name.split("__"), paths)
+    for td in time_dimensions:
+        if td.model_name != model.name:
+            _add_with_prefixes(td.model_name.split("__"), paths)
+    for cm in cross_model_measures:
+        paths.add((cm.target_model_name,))
+
+    # Scan SQL expressions for __-delimited table references
+    sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions] + [m.sql for m in measures]
+    for sql_expr in sql_refs:
+        if sql_expr and "." in sql_expr:
+            for match in _TABLE_COL_RE.finditer(sql_expr):
+                _add_with_prefixes(match.group(1).split("__"), paths)
+
+    # Scan filters for dotted column references (e.g. customers.regions.name)
+    for f_str in processed_filters:
+        parsed_f = parse_filter(f_str)
+        for col in parsed_f.columns:
+            if "." in col:
+                parts = col.split(".")
+                # Expand any __ within segments (model filters convert dots to __)
+                expanded = []
+                for part in parts[:-1]:
+                    expanded.extend(part.split("__"))
+                if expanded:
+                    _add_with_prefixes(expanded, paths)
+
+    # Scan measure filter columns
+    for m in measures:
+        for col in m.filter_columns:
+            if "." in col:
+                parts = col.split(".")
+                expanded = []
+                for part in parts[:-1]:
+                    expanded.extend(part.split("__"))
+                if expanded:
+                    _add_with_prefixes(expanded, paths)
+
+    return paths
+
+
 async def _resolve_joins(
     model: SlayerModel,
     model_name_str: str,
@@ -656,87 +715,82 @@ async def _resolve_joins(
     named_queries: dict,
     resolve_join_target,
 ) -> List[tuple]:
-    """Resolve only the JOINs the query actually needs."""
-    needed_tables: Set[str] = set()
-    for d in dimensions:
-        if d.model_name != model.name:
-            for part in d.model_name.split("__"):
-                needed_tables.add(part)
-    for td in time_dimensions:
-        if td.model_name != model.name:
-            for part in td.model_name.split("__"):
-                needed_tables.add(part)
-    for cm in cross_model_measures:
-        needed_tables.add(cm.target_model_name)
-    # Scan SQL expressions for table references
-    sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions] + [m.sql for m in measures]
-    for sql_expr in sql_refs:
-        if sql_expr and "." in sql_expr:
-            for match in _TABLE_COL_RE.finditer(sql_expr):
-                needed_tables.update(match.group(1).split("__"))
-    # Scan filters for dotted column references
-    for f_str in processed_filters:
-        parsed_f = parse_filter(f_str)
-        for col in parsed_f.columns:
-            if "." in col:
-                parts = col.split(".")
-                for part in parts[:-1]:
-                    needed_tables.add(part)
-    # Scan measure filters for dotted column references — use the structured
-    # filter_columns from ParsedFilter rather than regexing rendered SQL.
-    # The regex approach can mis-fire on dotted literals (e.g. inside string
-    # literals like "description LIKE '%foo.bar%'") and pull in spurious joins.
-    for m in measures:
-        for col in m.filter_columns:
-            if "." in col:
-                parts = col.split(".")
-                for part in parts[:-1]:
-                    needed_tables.update(part.split("__"))
+    """Resolve only the JOINs the query actually needs by walking the join graph.
 
-    # BFS transitive expansion
-    expanded = set(needed_tables)
-    queue = list(needed_tables)
-    while queue:
-        table = queue.pop()
-        for mj in model.joins:
-            if mj.target_model == table:
-                for src_col, _ in mj.join_pairs:
-                    if "." in src_col:
-                        intermediate = src_col.split(".")[0]
-                        if intermediate not in expanded:
-                            expanded.add(intermediate)
-                            queue.append(intermediate)
-    needed_tables = expanded
+    Instead of relying on baked-in multi-hop joins, this walks each intermediate
+    model's own direct joins hop-by-hop to build the complete chain.
+    """
+    needed_paths = _collect_needed_paths(
+        model=model,
+        dimensions=dimensions,
+        time_dimensions=time_dimensions,
+        measures=measures,
+        cross_model_measures=cross_model_measures,
+        processed_filters=processed_filters,
+    )
+    if not needed_paths:
+        return []
 
-    # Build resolved joins
-    resolved_joins = []
-    for mj in model.joins:
-        if mj.target_model not in needed_tables:
+    # Sort shorter paths first so prefixes are resolved before extensions
+    sorted_paths = sorted(needed_paths, key=len)
+
+    resolved_joins: Dict[str, tuple] = {}  # alias -> (table_sql, alias, condition)
+    resolved_models: Dict[str, SlayerModel] = {}  # model_name -> SlayerModel
+
+    for path in sorted_paths:
+        alias = "__".join(path)
+        if alias in resolved_joins:
             continue
-        target_info = await resolve_join_target(
-            target_model_name=mj.target_model,
-            named_queries=named_queries,
-        )
-        if target_info:
-            target_table, _ = target_info
-        else:
-            target_table = mj.target_model
 
-        join_conds = []
-        path_prefix = ""
-        for src_col, tgt_col in mj.join_pairs:
-            if "." in src_col:
-                src_parts = src_col.rsplit(".", 1)
-                src_table = src_parts[0]
-                src_raw = src_parts[1]
-                path_prefix = src_table + "__"
-                join_conds.append(f"{src_table}.{src_raw} = {path_prefix}{mj.target_model}.{tgt_col}")
+        current_model = model
+        current_alias = model_name_str
+
+        for i, segment in enumerate(path):
+            hop_alias = "__".join(path[: i + 1])
+            if hop_alias in resolved_joins:
+                # Already resolved from a previous path prefix — advance
+                if segment in resolved_models:
+                    current_model = resolved_models[segment]
+                current_alias = hop_alias
+                continue
+
+            # Find a direct join on the current model
+            join = None
+            for j in current_model.joins:
+                if j.target_model == segment:
+                    join = j
+                    break
+
+            if join is None:
+                break  # No join found — remaining hops unresolvable
+
+            # Resolve the target model
+            target_info = await resolve_join_target(
+                target_model_name=segment,
+                named_queries=named_queries,
+            )
+            if target_info:
+                target_table, target_model_obj = target_info
             else:
-                join_conds.append(f"{model_name_str}.{src_col} = {mj.target_model}.{tgt_col}")
-        table_alias = f"{path_prefix}{mj.target_model}"
-        resolved_joins.append((target_table, table_alias, " AND ".join(join_conds)))
+                target_table = segment
+                target_model_obj = None
 
-    return resolved_joins
+            if target_model_obj:
+                resolved_models[segment] = target_model_obj
+
+            # Build join condition
+            join_conds = []
+            for src_col, tgt_col in join.join_pairs:
+                join_conds.append(f"{current_alias}.{src_col} = {hop_alias}.{tgt_col}")
+
+            resolved_joins[hop_alias] = (target_table, hop_alias, " AND ".join(join_conds))
+
+            # Advance to the resolved model for the next hop
+            if target_model_obj:
+                current_model = target_model_obj
+            current_alias = hop_alias
+
+    return list(resolved_joins.values())
 
 
 # ---------------------------------------------------------------------------

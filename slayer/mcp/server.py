@@ -429,13 +429,7 @@ async def _collect_reachable_fields(
     paths for every reachable non-hidden, non-pk dimension and non-hidden
     measure (excluding the root model's own fields — those live in the main
     Dimensions/Measures tables). Depth is measured in path segments and capped
-    at ``max_depth``.
-
-    Path derivation from a ``ModelJoin``: if ``join_pairs[0][0]`` has no dot the
-    join is direct and the path gets one new segment; if it has dots (a
-    multi-hop join baked in by auto-ingestion, e.g. ``orders.customer_id``),
-    every segment except the last is merged into the prefix. Cycles are broken
-    by a visited-path set.
+    at ``max_depth``. Cycles are broken by a visited-path set.
     """
     reachable_dims: set[str] = set()
     reachable_measures: set[str] = set()
@@ -443,11 +437,9 @@ async def _collect_reachable_fields(
     queue: List[Tuple[str, str]] = []  # (full_path, target_model_name)
 
     def _derive_path(base: str, join: ModelJoin) -> str:
-        source_col = join.join_pairs[0][0]
-        sub_prefix = source_col.rsplit(".", 1)[0] + "." if "." in source_col else ""
         if base:
-            return f"{base}.{sub_prefix}{join.target_model}"
-        return f"{sub_prefix}{join.target_model}"
+            return f"{base}.{join.target_model}"
+        return join.target_model
 
     for j in model.joins:
         path = _derive_path("", j)
@@ -908,17 +900,15 @@ def create_mcp_server(storage: StorageBackend):
         join_rows: List[Dict[str, Any]] = []
         for j in model.joins:
             pairs = "; ".join(f"{src} = {tgt}" for src, tgt in j.join_pairs)
-            kind = "multi-hop" if any("." in src for src, _ in j.join_pairs) else "direct"
             join_rows.append({
                 "target_model": j.target_model,
                 "join_pairs": pairs,
-                "kind": kind,
             })
         sections.append(
             f"## Joins ({len(join_rows)})\n\n"
             + _markdown_table(
                 rows=join_rows,
-                columns=["target_model", "join_pairs", "kind"],
+                columns=["target_model", "join_pairs"],
             )
         )
 
@@ -1025,7 +1015,6 @@ def create_mcp_server(storage: StorageBackend):
                         {
                             "target_model": j.target_model,
                             "join_pairs": j.join_pairs,
-                            "kind": "multi-hop" if any("." in src for src, _ in j.join_pairs) else "direct",
                         }
                         for j in model.joins
                     ],
