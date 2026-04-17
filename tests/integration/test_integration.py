@@ -1663,7 +1663,7 @@ async def test_time_dimension_label_fallback(integration_env):
         fields=[Field(formula="total_amount:sum")],
     ))
     # The model-level label should propagate through
-    td_meta = result.meta.get("orders.created_at")
+    td_meta = result.attributes.dimensions.get("orders.created_at")
     assert td_meta is not None
     assert td_meta.label == "Order Date"
 
@@ -1689,9 +1689,9 @@ async def test_label_propagation_enrichment(integration_env):
         dimensions=[ColumnRef(name="status")],
     ))
     # Labels should appear in result meta
-    status_meta = result.meta.get("orders.status")
+    status_meta = result.attributes.dimensions.get("orders.status")
     assert status_meta is not None
     assert status_meta.label == "Order Status"
-    rev_meta = result.meta.get("orders.labeled_rev_sum")
+    rev_meta = result.attributes.measures.get("orders.labeled_rev_sum")
     assert rev_meta is not None
     assert rev_meta.label == "Total Revenue"

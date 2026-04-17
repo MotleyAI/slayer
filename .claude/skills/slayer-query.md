@@ -66,7 +66,7 @@ filters=[
 
 ```python
 engine = SlayerQueryEngine(storage=storage)
-result = engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .meta
+result = engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes
 ```
 
 ## Cross-Model Measures
@@ -109,4 +109,4 @@ engine.execute(query=[inner, outer])
 
 ## Result Format
 
-Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Response includes `meta` dict mapping column aliases to `FieldMetadata` objects (currently has `label` field).
+Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Response includes `attributes` with nested `dimensions` and `measures` dicts, each mapping column aliases to `FieldMetadata` objects (label, format).

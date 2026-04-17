@@ -103,31 +103,37 @@ class TestFieldMetadata:
 
 
 class TestMcpFormatMeta:
-    """Tests for _format_meta in MCP server."""
+    """Tests for _format_attributes in MCP server."""
 
     def test_format_meta_includes_precision_and_symbol(self):
-        from slayer.mcp.server import _format_meta
+        from slayer.engine.query_engine import ResponseAttributes
+        from slayer.mcp.server import _format_attributes
 
-        meta = {
-            "orders.revenue_sum": FieldMetadata(
-                label="Revenue",
-                format=NumberFormat(type=NumberFormatType.CURRENCY, precision=2, symbol="€"),
-            ),
-        }
-        result = _format_meta(meta=meta)
+        attrs = ResponseAttributes(
+            measures={
+                "orders.revenue_sum": FieldMetadata(
+                    label="Revenue",
+                    format=NumberFormat(type=NumberFormatType.CURRENCY, precision=2, symbol="€"),
+                ),
+            },
+        )
+        result = _format_attributes(attributes=attrs)
         assert "type=currency" in result
         assert "precision=2" in result
         assert "symbol=€" in result
 
     def test_format_meta_omits_none_fields(self):
-        from slayer.mcp.server import _format_meta
+        from slayer.engine.query_engine import ResponseAttributes
+        from slayer.mcp.server import _format_attributes
 
-        meta = {
-            "orders.count": FieldMetadata(
-                format=NumberFormat(type=NumberFormatType.INTEGER),
-            ),
-        }
-        result = _format_meta(meta=meta)
+        attrs = ResponseAttributes(
+            measures={
+                "orders.count": FieldMetadata(
+                    format=NumberFormat(type=NumberFormatType.INTEGER),
+                ),
+            },
+        )
+        result = _format_attributes(attributes=attrs)
         assert "type=integer" in result
         assert "precision" not in result
         assert "symbol" not in result

@@ -68,13 +68,25 @@ class FieldMetadata:
 
 
 @dataclass
+class ResponseAttributes:
+    """Field metadata for a query response, split by type."""
+
+    dimensions: Dict[str, FieldMetadata] = field(default_factory=dict)
+    measures: Dict[str, FieldMetadata] = field(default_factory=dict)
+
+    def get(self, column: str) -> Optional[FieldMetadata]:
+        """Look up metadata for a column across both dicts."""
+        return self.dimensions.get(column) or self.measures.get(column)
+
+
+@dataclass
 class SlayerResponse:
     """Response from a SLayer query."""
 
     data: List[Dict[str, Any]]
     columns: List[str] = field(default_factory=list)
     sql: Optional[str] = None
-    meta: Dict[str, FieldMetadata] = field(default_factory=dict)
+    attributes: ResponseAttributes = field(default_factory=ResponseAttributes)
 
     def __post_init__(self):
         if not self.columns and self.data:
@@ -88,7 +100,7 @@ class SlayerResponse:
         """Format a single cell value using column format metadata if available."""
         if value is None:
             return ""
-        fm = self.meta.get(column)
+        fm = self.attributes.get(column)
         if fm and fm.format and isinstance(value, (int, float, decimal.Decimal)):
             return format_number(value=value, format_spec=fm.format)
         return str(value)
@@ -187,14 +199,15 @@ class SlayerQueryEngine:
         sql = generator.generate(enriched=enriched)
         logger.debug("Generated SQL:\n%s", sql)
 
-        # Collect field metadata from enriched query
-        meta: Dict[str, FieldMetadata] = {}
+        # Collect field metadata from enriched query, split by type
+        dim_meta: Dict[str, FieldMetadata] = {}
+        measure_meta: Dict[str, FieldMetadata] = {}
         for d in enriched.dimensions:
             if d.label or d.format:
-                meta[d.alias] = FieldMetadata(label=d.label, format=d.format)
+                dim_meta[d.alias] = FieldMetadata(label=d.label, format=d.format)
         for td in enriched.time_dimensions:
             if td.label:
-                meta[td.alias] = FieldMetadata(label=td.label)
+                dim_meta[td.alias] = FieldMetadata(label=td.label)
         for m in enriched.measures:
             measure_fmt = _infer_aggregated_format(
                 model=model,
@@ -202,20 +215,21 @@ class SlayerQueryEngine:
                 aggregation=m.aggregation,
             )
             if m.label or measure_fmt:
-                meta[m.alias] = FieldMetadata(label=m.label, format=measure_fmt)
+                measure_meta[m.alias] = FieldMetadata(label=m.label, format=measure_fmt)
         for e in enriched.expressions:
-            meta[e.alias] = FieldMetadata(
+            measure_meta[e.alias] = FieldMetadata(
                 label=e.label,
                 format=NumberFormat(type=NumberFormatType.FLOAT),
             )
         for t in enriched.transforms:
-            meta[t.alias] = FieldMetadata(
+            measure_meta[t.alias] = FieldMetadata(
                 label=t.label,
                 format=NumberFormat(type=NumberFormatType.FLOAT),
             )
         for cm in enriched.cross_model_measures:
             if cm.label or cm.format:
-                meta[cm.alias] = FieldMetadata(label=cm.label, format=cm.format)
+                measure_meta[cm.alias] = FieldMetadata(label=cm.label, format=cm.format)
+        attributes = ResponseAttributes(dimensions=dim_meta, measures=measure_meta)
 
         # Derive expected column names from the enriched query, excluding internal aliases
         # (_inner_* from nested transforms, _ft* from filter transform extraction)
@@ -230,7 +244,7 @@ class SlayerQueryEngine:
 
         # dry_run: return SQL without executing
         if query.dry_run:
-            return SlayerResponse(data=[], columns=expected_columns, sql=sql, meta=meta)
+            return SlayerResponse(data=[], columns=expected_columns, sql=sql, attributes=attributes)
 
         # Execute — reuse SQL client (and its connection pool) per datasource
         ds_key = datasource.get_connection_string()
@@ -242,11 +256,11 @@ class SlayerQueryEngine:
         if query.explain:
             explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
             rows = await client.execute(sql=explain_sql)
-            return SlayerResponse(data=rows, sql=sql, meta=meta)
+            return SlayerResponse(data=rows, sql=sql, attributes=attributes)
 
         rows = await client.execute(sql=sql)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
-        return SlayerResponse(data=rows, columns=columns, sql=sql, meta=meta)
+        return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
     def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
