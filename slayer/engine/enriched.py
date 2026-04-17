@@ -144,6 +144,9 @@ class EnrichedQuery:
     limit: Optional[int] = None
     offset: Optional[int] = None
 
+    # Custom field name → enriched alias mapping (for ORDER BY resolution)
+    field_name_aliases: Dict[str, str] = field(default_factory=dict)
+
 
 @dataclass
 class CrossModelMeasure:

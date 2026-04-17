@@ -2508,3 +2508,55 @@ class TestDimensionAggregation:
         # Should use the measure's SQL, not the dimension's
         assert "measure_revenue_col" in sql
         assert "dim_revenue_col" not in sql
+
+
+class TestOrderByCustomFieldName:
+    """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
+
+    async def test_order_by_custom_name(self, generator: SQLGenerator) -> None:
+        """Field with custom name 'num_customers' should be resolvable in ORDER BY."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customer_id:count_distinct", name="num_customers")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        # The ORDER BY should reference the count_distinct column, not "orders.num_customers"
+        assert "orders.num_customers" not in sql, f"Custom name not resolved: {sql}"
+        assert "COUNT(DISTINCT" in sql
+
+    async def test_order_by_canonical_name_still_works(self, generator: SQLGenerator) -> None:
+        """ORDER BY with the canonical name (customer_id_count_distinct) still works."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customer_id:count_distinct")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column=ColumnRef(name="customer_id_count_distinct"), direction="asc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "ASC" in sql

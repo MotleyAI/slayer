@@ -103,6 +103,7 @@ async def enrich_query(
     enriched_transforms: List[EnrichedTransform] = []
     cross_model_measures: List[CrossModelMeasure] = []
     known_aliases: Dict[str, str] = {}
+    field_name_aliases: Dict[str, str] = {}
 
     async def _ensure_aggregated_measure(
         alias_key: str,
@@ -432,6 +433,9 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
+            # Register custom field name so ORDER BY can resolve it
+            if field_name != canonical_name and canonical_name in known_aliases:
+                field_name_aliases[field_name] = known_aliases[canonical_name]
 
             if spec.aggregation_name in ("first", "last") and last_agg_time_column is None:
                 raise ValueError(
@@ -530,6 +534,7 @@ async def enrich_query(
         order=query.order,
         limit=query.limit,
         offset=query.offset,
+        field_name_aliases=field_name_aliases,
     )
 
 

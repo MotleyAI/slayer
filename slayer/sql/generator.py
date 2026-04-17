@@ -845,6 +845,8 @@ class SQLGenerator:
             alias_lookup[t.name] = t.alias
         for cm in enriched.cross_model_measures:
             alias_lookup[cm.name] = cm.alias
+        # Custom field names (e.g., {"formula": "x:count_distinct", "name": "my_name"})
+        alias_lookup.update(enriched.field_name_aliases)
 
         # Direct match on the user-provided name
         if user_name in alias_lookup:
