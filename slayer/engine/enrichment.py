@@ -11,7 +11,7 @@ transformation step in the query pipeline.
 import re
 from typing import Dict, List, Optional, Set
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, NUMERIC_ONLY_AGGREGATIONS
 from slayer.core.formula import (
     ALL_TRANSFORMS,
     AggregatedMeasureRef,
@@ -152,6 +152,20 @@ async def enrich_query(
                     raise ValueError(
                         f"Aggregation '{aggregation_name}' not allowed for measure "
                         f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                    )
+            # Type-compatibility check: reject numeric-only aggregations
+            # (sum/avg/median/weighted_avg/percentile) on measures backed by a
+            # non-numeric column. Type is inferred from a same-named dimension,
+            # which covers the common auto-ingestion case (one measure per
+            # column, both sharing the column name).
+            if aggregation_name in NUMERIC_ONLY_AGGREGATIONS:
+                matching_dim = model.get_dimension(measure_name)
+                if matching_dim is not None and str(matching_dim.type) == "string":
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' is not applicable to "
+                        f"string measure '{measure_name}' in model '{model.name}'. "
+                        f"Valid aggregations for string columns: count, "
+                        f"count_distinct, min, max, first, last."
                     )
             sql = measure_def.sql
 

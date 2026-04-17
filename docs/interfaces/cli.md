@@ -137,3 +137,25 @@ Manage datasources.
 slayer datasources list
 slayer datasources show my_postgres   # credentials masked
 ```
+
+### `slayer help`
+
+Show SLayer's conceptual help — the same content the MCP `help()` tool returns.
+Intended to complement the schema/reference pages: it covers how concepts
+compose (query evaluation order, transform trade-offs, cross-model measures,
+the three meanings of "last") rather than restating field-by-field schemas.
+
+```bash
+slayer help                  # intro (core entities, query shape, key invariants)
+slayer help queries          # deep dive on query anatomy
+slayer help transforms       # cumsum, time_shift, lag/lead trade-offs
+slayer help --help           # argparse-level help lists every topic
+```
+
+Topics: `queries`, `formulas`, `aggregations`, `transforms`, `time`, `filters`,
+`joins`, `models`, `extending`, `workflow`. Content lives in
+`slayer/help/topics/*.md` and is discovered dynamically — dropping a new `.md`
+in that directory adds a topic with no Python changes. See the corresponding
+concept docs for full treatments: [queries](../concepts/queries.md),
+[formulas](../concepts/formulas.md), [models](../concepts/models.md),
+[ingestion](../concepts/ingestion.md).

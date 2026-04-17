@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 import sqlalchemy as sa
 
@@ -16,11 +16,16 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.help import TOPIC_SUMMARY_LINE, render_help
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
+
+# Aggregations that are safe for sample-data extraction: zero extra args,
+# no time-column context needed.
+_SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_distinct", "median"})
 
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
@@ -75,6 +80,376 @@ def _friendly_db_error(exc: Exception) -> str:
     return result
 
 
+def _fetch_tables(
+    ds: DatasourceConfig, schema_name: Optional[str] = None,
+) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Inspect a datasource's table names.
+
+    Returns ``(tables, None)`` on success or ``(None, friendly_error_message)``
+    on failure. ``schema_name=None`` uses the dialect's default schema.
+    """
+    try:
+        conn_str = ds.resolve_env_vars().get_connection_string()
+        sa_engine = sa.create_engine(conn_str)
+        inspector = sa.inspect(sa_engine)
+        tables = inspector.get_table_names(schema=schema_name)
+        sa_engine.dispose()
+        return sorted(tables), None
+    except Exception as e:
+        if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+            return None, _friendly_db_error(e)
+        return None, str(e)
+
+
+def _escape_md_cell(value: Any) -> str:
+    """Escape a value for inclusion in a markdown table cell.
+
+    Pipes become ``\\|``, carriage returns and newlines collapse to a single
+    space, and ``None``/empty renders as an em-dash so empty columns stay
+    aligned in the rendered table.
+    """
+    if value is None:
+        return "—"
+    s = str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
+    return s if s else "—"
+
+
+def _cell_is_present(value: Any) -> bool:
+    """A cell is 'present' when it carries information: not None, and not an
+    empty (or whitespace-only) string. Every other value counts as present."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
+    """Render a list of row dicts as a GitHub-flavored markdown table.
+
+    Columns with no present cell across every row are dropped automatically so
+    uninformative all-empty columns don't clutter the output. The degenerate
+    cases collapse:
+
+    - ``rows`` is empty, or every column gets pruned → ``"_(none)_"``.
+    - Exactly one column survives pruning → a comma-separated, backtick-wrapped
+      list of its values, much denser than a one-column table.
+
+    Otherwise a normal markdown table is produced over the surviving columns.
+    """
+    if not rows:
+        return "_(none)_"
+
+    kept = [c for c in columns if any(_cell_is_present(r.get(c)) for r in rows)]
+    if not kept:
+        return "_(none)_"
+
+    if len(kept) == 1:
+        col = kept[0]
+        rendered = []
+        for r in rows:
+            v = r.get(col)
+            if not _cell_is_present(v):
+                continue
+            text = str(v).replace("|", "\\|").replace("\r", " ").replace("\n", " ").replace("`", "\\`").strip()
+            rendered.append(f"`{text}`")
+        return ", ".join(rendered)
+
+    header = "| " + " | ".join(kept) + " |"
+    sep = "| " + " | ".join("---" for _ in kept) + " |"
+    body = [
+        "| " + " | ".join(_escape_md_cell(r.get(c)) for c in kept) + " |"
+        for r in rows
+    ]
+    return "\n".join([header, sep] + body)
+
+
+def _build_sample_query_args(model: SlayerModel, num_rows: int) -> Dict[str, Any]:
+    """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
+
+    - First field is always ``*:count``.
+    - For each non-hidden measure:
+      - If ``allowed_aggregations`` is restricted and doesn't include ``avg``,
+        use the first entry of ``allowed_aggregations``. Empty list → skip.
+      - Else (avg is permitted): prefer ``avg``, but if the measure shares its
+        name with a non-numeric dimension (string/boolean/date/time), fall back
+        to ``count_distinct`` so the generated SQL is valid for that column
+        type. Auto-ingested string measures (e.g. ``sku``) can't be averaged.
+    - Groups by up to two non-primary-key, non-hidden dimensions so the sample
+      shows variation without exploding table width.
+    """
+    # dim type lookup by name (for same-named measures created by auto-ingestion)
+    dim_types = {d.name: str(d.type) for d in model.dimensions}
+
+    fields: List[Dict[str, str]] = [{"formula": "*:count"}]
+    for m in model.measures:
+        if m.hidden:
+            continue
+        allowed = m.allowed_aggregations
+        if allowed is not None and "avg" not in allowed:
+            if not allowed:
+                continue
+            safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
+            agg = safe if safe else allowed[0]
+        else:
+            # avg is permitted; drop to count_distinct when the backing column
+            # is non-numeric so AVG(VARCHAR) / AVG(BOOL) don't blow up.
+            if dim_types.get(m.name) in ("string", "boolean", "date", "time"):
+                agg = "count_distinct"
+            else:
+                agg = "avg"
+        fields.append({"formula": f"{m.name}:{agg}"})
+
+    dims: List[Dict[str, str]] = []
+    for d in model.dimensions:
+        if d.hidden or d.primary_key:
+            continue
+        dims.append({"name": d.name})
+        if len(dims) >= 2:
+            break
+
+    return {
+        "source_model": model.name,
+        "fields": fields,
+        "dimensions": dims,
+        "limit": num_rows,
+    }
+
+
+def _strip_model_prefix(
+    columns: List[str],
+    data: List[Dict[str, Any]],
+    model_name: str,
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Drop the redundant ``{model_name}.`` prefix from sample-data column keys.
+
+    Keeps the markdown table compact (the model name already appears in the
+    ``# Model: X`` heading above the sample).
+    """
+    prefix = f"{model_name}."
+
+    def _strip(key: str) -> str:
+        return key[len(prefix):] if key.startswith(prefix) else key
+
+    new_cols = [_strip(c) for c in columns]
+    new_data = [{_strip(k): v for k, v in row.items()} for row in data]
+    return new_cols, new_data
+
+
+async def _get_row_count(
+    model: SlayerModel, engine: SlayerQueryEngine,
+) -> Optional[int]:
+    """Return the total row count of ``model``'s underlying table, or ``None``
+    on any failure. Uses a bare ``*:count`` query — the same aggregation a user
+    would run to ask for the count.
+
+    The result column is read positionally (the query has exactly one field)
+    rather than by name, because SLayer's column-naming convention for the
+    bare-count-no-dimensions case is ``{model}._count`` rather than the
+    with-dimensions ``{model}.count``.
+    """
+    try:
+        q = SlayerQuery.model_validate({
+            "source_model": model.name,
+            "fields": [{"formula": "*:count"}],
+        })
+        r = await engine.execute(query=q)
+    except Exception:
+        return None
+    if not r.data or not r.columns:
+        return None
+    val = r.data[0].get(r.columns[0])
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+class _DimProfileEntry(NamedTuple):
+    """One row of dimension-profile output.
+
+    Exactly one of two population modes is used:
+    - Categorical (string/boolean): ``distinct_count`` and ``values`` are set.
+      When cardinality exceeds the cap, both are ``None`` to signal overflow.
+    - Numeric/temporal: ``min_value`` and ``max_value`` are set.
+    """
+    name: str
+    type_str: str
+    distinct_count: Optional[int]
+    values: Optional[List[Any]]
+    min_value: Optional[Any]
+    max_value: Optional[Any]
+
+
+def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
+    """Render a profile entry as a single-cell string for the Dimensions table.
+
+    - Enumerated categorical → ```a`, `b`, `c`` (backticked, comma-separated).
+    - Overflowed categorical → ``> 20 distinct``.
+    - Numeric/temporal range → ``<min> .. <max>``.
+    """
+    if entry.values is not None:
+        return ", ".join(f"`{v}`" for v in entry.values)
+    if (
+        entry.distinct_count is None
+        and entry.values is None
+        and entry.min_value is None
+        and entry.max_value is None
+    ):
+        return "> 20 distinct"
+    return f"{entry.min_value} .. {entry.max_value}"
+
+
+async def _collect_dim_profile(
+    model: SlayerModel,
+    engine: SlayerQueryEngine,
+    *,
+    max_values: int = 20,
+    max_dims: int = 10,
+) -> List[_DimProfileEntry]:
+    """Produce one profile entry per eligible dimension (non-hidden, non-pk).
+
+    - string/boolean dims: distinct values (or overflow marker) via one query
+      per dim.
+    - number/date/time dims: min and max via one batched query across all such
+      dims, using a ``ModelExtension`` with transient inline measures.
+
+    Caps the total number of eligible dims at ``max_dims``. Individual failures
+    are swallowed — that dim is simply omitted from the result.
+    """
+    eligible = [
+        d for d in model.dimensions
+        if not d.hidden and not d.primary_key
+    ][:max_dims]
+    categorical = [d for d in eligible if str(d.type) in ("string", "boolean")]
+    numeric_temporal = [d for d in eligible if str(d.type) in ("number", "date", "time")]
+
+    entries: Dict[str, _DimProfileEntry] = {}
+
+    # --- categorical dims: one query per dim
+    for d in categorical:
+        try:
+            q = SlayerQuery.model_validate({
+                "source_model": model.name,
+                "dimensions": [{"name": d.name}],
+                "fields": [{"formula": "*:count"}],
+                "limit": max_values + 1,
+            })
+            r = await engine.execute(query=q)
+        except Exception:
+            continue
+        value_key = f"{model.name}.{d.name}"
+        values = [row.get(value_key) for row in r.data]
+        overflow = len(values) > max_values
+        entries[d.name] = _DimProfileEntry(
+            name=d.name,
+            type_str=str(d.type),
+            distinct_count=None if overflow else len(values),
+            values=None if overflow else values,
+            min_value=None,
+            max_value=None,
+        )
+
+    # --- numeric/temporal dims: ONE batched query for all mins and maxes
+    if numeric_temporal:
+        ext_measures = [
+            {"name": f"_slayer_range_{d.name}", "sql": d.sql if d.sql else d.name}
+            for d in numeric_temporal
+        ]
+        fields: List[Dict[str, str]] = []
+        for d in numeric_temporal:
+            fields.append({"formula": f"_slayer_range_{d.name}:min"})
+            fields.append({"formula": f"_slayer_range_{d.name}:max"})
+        row: Dict[str, Any] = {}
+        try:
+            q = SlayerQuery.model_validate({
+                "source_model": {"source_name": model.name, "measures": ext_measures},
+                "fields": fields,
+            })
+            r = await engine.execute(query=q)
+            if r.data:
+                row = r.data[0]
+        except Exception:
+            row = {}
+        for d in numeric_temporal:
+            mn = row.get(f"{model.name}._slayer_range_{d.name}_min")
+            mx = row.get(f"{model.name}._slayer_range_{d.name}_max")
+            if mn is None and mx is None:
+                continue  # query failed or empty table
+            entries[d.name] = _DimProfileEntry(
+                name=d.name,
+                type_str=str(d.type),
+                distinct_count=None,
+                values=None,
+                min_value=mn,
+                max_value=mx,
+            )
+
+    # Preserve declaration order in the rendered output
+    return [entries[d.name] for d in eligible if d.name in entries]
+
+
+async def _collect_reachable_fields(
+    model: SlayerModel,
+    storage: StorageBackend,
+    *,
+    max_depth: int = 5,
+) -> Tuple[List[str], List[str]]:
+    """BFS the join graph from ``model``; return sorted fully-qualified dotted
+    paths for every reachable non-hidden, non-pk dimension and non-hidden
+    measure (excluding the root model's own fields — those live in the main
+    Dimensions/Measures tables). Depth is measured in path segments and capped
+    at ``max_depth``.
+
+    Path derivation from a ``ModelJoin``: if ``join_pairs[0][0]`` has no dot the
+    join is direct and the path gets one new segment; if it has dots (a
+    multi-hop join baked in by auto-ingestion, e.g. ``orders.customer_id``),
+    every segment except the last is merged into the prefix. Cycles are broken
+    by a visited-path set.
+    """
+    reachable_dims: set[str] = set()
+    reachable_measures: set[str] = set()
+    visited: set[str] = set()
+    queue: List[Tuple[str, str]] = []  # (full_path, target_model_name)
+
+    def _derive_path(base: str, join: ModelJoin) -> str:
+        source_col = join.join_pairs[0][0]
+        sub_prefix = source_col.rsplit(".", 1)[0] + "." if "." in source_col else ""
+        if base:
+            return f"{base}.{sub_prefix}{join.target_model}"
+        return f"{sub_prefix}{join.target_model}"
+
+    for j in model.joins:
+        path = _derive_path("", j)
+        if path not in visited:
+            queue.append((path, j.target_model))
+
+    while queue:
+        path, target_name = queue.pop(0)
+        if path in visited:
+            continue
+        visited.add(path)
+        if path.count(".") + 1 > max_depth:
+            continue
+        target = await storage.get_model(target_name)
+        if target is None:
+            continue
+        for d in target.dimensions:
+            if not d.hidden and not d.primary_key:
+                reachable_dims.add(f"{path}.{d.name}")
+        for m in target.measures:
+            if not m.hidden:
+                reachable_measures.add(f"{path}.{m.name}")
+        for j in target.joins:
+            sub_path = _derive_path(path, j)
+            if sub_path not in visited:
+                queue.append((sub_path, j.target_model))
+
+    return sorted(reachable_dims), sorted(reachable_measures)
+
+
 def _model_to_summary(model: SlayerModel) -> dict:
     """Convert a SlayerModel to a summary dict."""
     dims = []
@@ -120,11 +495,24 @@ def create_mcp_server(storage: StorageBackend):
         instructions=(
             "SLayer is a semantic layer for querying databases. "
             "Instead of writing SQL, describe what data you want using models, measures, dimensions, and filters. "
-            "Typical workflow: datasource_summary → inspect_model → query. "
-            "To connect a new database: create_datasource → describe_datasource (to verify) → ingest_datasource_models → datasource_summary."
+            "Call help() for an overview of SLayer concepts, and help(topic='...') for deep dives on specific topics. "
+            "Typical workflow: list_datasources → models_summary → inspect_model → query. "
+            "To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."
         ),
     )
     engine = SlayerQueryEngine(storage=storage)
+
+    _help_description = (
+        "Return conceptual help on SLayer. "
+        "Call without a topic for the intro (what SLayer is, core entities, the query shape). "
+        "Pass a topic name for a deep dive. "
+        f"{TOPIC_SUMMARY_LINE} "
+        "Args: topic (optional) — the topic name. Unknown topics return a friendly error listing the valid ones."
+    )
+
+    @mcp.tool(description=_help_description)
+    async def help(topic: Optional[str] = None) -> str:  # noqa: A001 — intentional shadow of builtin inside factory
+        return render_help(topic=topic)
 
     @mcp.tool()
     async def query(
@@ -145,7 +533,7 @@ def create_mcp_server(storage: StorageBackend):
         """Query data from a semantic model. Call inspect_model first to see available fields and dimensions.
 
         Args:
-            source_model: Name of the model to query (from datasource_summary).
+            source_model: Name of the model to query (from models_summary).
             fields: Data columns to return. Each is a formula: {"formula": "count"} (measure),
                 {"formula": "revenue / count", "name": "aov"} (arithmetic),
                 {"formula": "cumsum(revenue)"} (cumulative sum), {"formula": "change(revenue)"} (diff from previous row),
@@ -221,58 +609,156 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    async def datasource_summary() -> str:
-        """List all datasources and their models with schemas (dimensions, measures). Does not include sample data — use inspect_model for that."""
-        # Datasources
-        ds_names = await storage.list_datasources()
-        datasources = []
-        for name in ds_names:
-            try:
-                ds = await storage.get_datasource(name)
-                if ds:
-                    entry: Dict[str, Any] = {"name": name, "type": ds.type}
-                    if ds.description:
-                        entry["description"] = ds.description
-                    datasources.append(entry)
-            except Exception as exc:
-                logger.warning("Failed to load datasource '%s': %s", name, exc)
-                datasources.append({"name": name, "error": "invalid datasource config"})
+    async def models_summary(datasource_name: str, format: str = "markdown") -> str:
+        """Brief summary of all (non-hidden) models in a datasource.
 
-        # Models
-        model_names = await storage.list_models()
-        models = []
-        for name in model_names:
+        For each model: name, description, a table of its dimensions
+        (just name + description), a table of its measures (just name
+        + description), and a comma-separated list of the model names it joins
+        to. No field types, no distinct values, no sample data, and no
+        expansion of joined models' fields — call inspect_model for any of
+        that.
+
+        Args:
+            datasource_name: Name of the datasource (from list_datasources).
+            format: Output format — "markdown" (default, compact and
+                LLM-friendly) or "json" (structured array of model summaries).
+                Case-insensitive.
+        """
+        fmt = format.lower().strip()
+        if fmt not in ("markdown", "json"):
+            raise ValueError(
+                f"Invalid format '{format}' for models_summary. Must be 'markdown' or 'json'."
+            )
+
+        try:
+            ds = await storage.get_datasource(datasource_name)
+        except Exception as exc:
+            logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
+            return f"Datasource '{datasource_name}' has an invalid config."
+        if ds is None:
+            return f"Datasource '{datasource_name}' not found."
+
+        all_names = await storage.list_models()
+        matched: List[SlayerModel] = []
+        for n in all_names:
             try:
-                model = await storage.get_model(name)
-                if model and not model.hidden:
-                    models.append(_model_to_summary(model))
+                m = await storage.get_model(n)
             except Exception:
-                logger.warning("Failed to load model '%s', skipping", name, exc_info=True)
+                logger.warning("Failed to load model '%s', skipping", n, exc_info=True)
+                continue
+            if m is not None and not m.hidden and m.data_source == datasource_name:
+                matched.append(m)
+        matched.sort(key=lambda m: m.name)
 
-        if not datasources and not models:
-            return json.dumps({"datasources": [], "models": [], "model_count": 0})
+        if not matched:
+            return f"Datasource '{datasource_name}' has no models."
 
-        result = {
-            "datasources": datasources,
-            "models": models,
-            "model_count": len(models),
-        }
+        if fmt == "json":
+            return json.dumps(
+                {
+                    "datasource_name": datasource_name,
+                    "model_count": len(matched),
+                    "models": [
+                        {
+                            "name": m.name,
+                            "description": m.description,
+                            "dimensions": [
+                                {"name": d.name, "description": d.description}
+                                for d in m.dimensions if not d.hidden
+                            ],
+                            "measures": [
+                                {"name": meas.name, "description": meas.description}
+                                for meas in m.measures if not meas.hidden
+                            ],
+                            "joins_to": sorted({j.target_model for j in m.joins}),
+                        }
+                        for m in matched
+                    ],
+                },
+                indent=2,
+            )
 
-        return json.dumps(result, indent=2, default=str)
+        sections: List[str] = [
+            f"# Datasource: `{datasource_name}` — {len(matched)} model(s)"
+        ]
+        for m in matched:
+            model_lines: List[str] = [f"## `{m.name}`"]
+            if m.description:
+                model_lines.append(m.description)
+
+            dim_rows = [
+                {"name": d.name, "description": d.description}
+                for d in m.dimensions if not d.hidden
+            ]
+            model_lines.append(f"**Dimensions ({len(dim_rows)}):**")
+            model_lines.append("")
+            model_lines.append(
+                _markdown_table(rows=dim_rows, columns=["name", "description"])
+            )
+            model_lines.append("")
+
+            measure_rows = [
+                {"name": meas.name, "description": meas.description}
+                for meas in m.measures if not meas.hidden
+            ]
+            model_lines.append(f"**Measures ({len(measure_rows)}):**")
+            model_lines.append("")
+            model_lines.append(
+                _markdown_table(rows=measure_rows, columns=["name", "description"])
+            )
+            model_lines.append("")
+
+            if m.joins:
+                targets = sorted({j.target_model for j in m.joins})
+                rendered = ", ".join(f"`{t}`" for t in targets)
+                model_lines.append(f"**Joins to:** {rendered}")
+            else:
+                model_lines.append("**Joins to:** _(none)_")
+
+            sections.append("\n".join(model_lines))
+
+        return "\n\n".join(sections)
 
     @mcp.tool()
     async def inspect_model(
         model_name: str,
         num_rows: int = 3,
         show_sql: bool = False,
+        format: str = "markdown",
     ) -> str:
-        """Get detailed information about a specific model including sample data.
+        """Return a complete-yet-compact view of a semantic model.
+
+        Sections always emitted (when non-empty): model header + description,
+        metadata bullets (data_source, sql_table, default_time_dimension,
+        hidden, row_count), custom SQL block, model-level filters, dimensions
+        table (includes a ``sampled`` column — distinct values for
+        string/boolean dims, ``min .. max`` for number/date/time dims, or
+        ``> 20 distinct`` for high-cardinality categoricals), measures table,
+        custom aggregations, joins, reachable fields via joins up to depth 5,
+        and a sample-data table with ``COUNT(*)`` plus one aggregation per
+        measure (``avg`` when permitted, else the first allowed aggregation).
+
+        Every markdown table in the response auto-prunes columns whose cells
+        are entirely empty, and collapses to a comma-separated backticked list
+        when only one column survives pruning.
 
         Args:
             model_name: Name of the model to inspect.
-            num_rows: Number of sample rows to include (default: 3).
-            show_sql: Whether to include the SQL query/table definition in the response.
+            num_rows: Max sample-data rows (default: 3).
+            show_sql: When true, include the generated SQL for the sample-data
+                query in the response (useful for debugging or understanding
+                how SLayer translates the model to SQL).
+            format: Output format — "markdown" (default, rich structured
+                document), or "json" (structured JSON with all model metadata
+                and sample data). Case-insensitive.
         """
+        fmt = format.lower().strip()
+        if fmt not in ("markdown", "json"):
+            raise ValueError(
+                f"Invalid format '{format}' for inspect_model. Must be 'markdown' or 'json'."
+            )
+
         model = await storage.get_model(model_name)
         if model is None:
             all_names = await storage.list_models()
@@ -284,29 +770,241 @@ def create_mcp_server(storage: StorageBackend):
             available.sort()
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
 
-        result = _model_to_summary(model)
+        sections: List[str] = [f"# Model: `{model.name}`"]
+        if model.description:
+            sections.append(model.description)
 
-        if show_sql:
-            result["sql"] = model.sql
-            result["sql_table"] = model.sql_table
+        # Metadata bullets (incl. row_count from a cheap *:count query)
+        meta: List[str] = []
+        if model.data_source:
+            meta.append(f"- **data_source:** `{model.data_source}`")
+        if model.sql_table:
+            meta.append(f"- **sql_table:** `{model.sql_table}`")
+        if model.default_time_dimension:
+            meta.append(
+                f"- **default_time_dimension:** `{model.default_time_dimension}`"
+            )
+        if model.hidden:
+            meta.append("- **hidden:** true")
+        row_count = await _get_row_count(model=model, engine=engine)
+        if row_count is not None:
+            meta.append(f"- **row_count:** {row_count:,}")
+        if meta:
+            sections.append("\n".join(meta))
 
-        # Include sample data
+        if model.sql:
+            sections.append(f"## SQL\n\n```sql\n{model.sql}\n```")
+
+        if model.filters:
+            filter_lines = "\n".join(f"- `{f}`" for f in model.filters)
+            sections.append(f"## Filters (model-level)\n\n{filter_lines}")
+
+        # Dimension profile (distinct values / min-max) — folded into the
+        # Dimensions table as a ``sampled`` column so there's one table per
+        # dimension rather than a separate section the LLM has to cross-join by
+        # name.
+        profile_entries = await _collect_dim_profile(model=model, engine=engine)
+        profile_by_name: Dict[str, str] = {
+            e.name: _format_dim_profile_value(e) for e in profile_entries
+        }
+
+        # Dimensions table
+        dim_rows: List[Dict[str, Any]] = []
+        for d in model.dimensions:
+            if d.hidden:
+                continue
+            dim_rows.append({
+                "name": d.name,
+                "type": str(d.type),
+                "primary_key": "yes" if d.primary_key else "",
+                "sql": d.sql if d.sql else d.name,
+                "label": d.label,
+                "description": d.description,
+                "sampled": profile_by_name.get(d.name),
+            })
+        sections.append(
+            f"## Dimensions ({len(dim_rows)})\n\n"
+            + _markdown_table(
+                rows=dim_rows,
+                columns=[
+                    "name", "type", "primary_key", "sql",
+                    "label", "description", "sampled",
+                ],
+            )
+        )
+
+        # Measures table
+        measure_rows: List[Dict[str, Any]] = []
+        for m in model.measures:
+            if m.hidden:
+                continue
+            aggs = ", ".join(m.allowed_aggregations) if m.allowed_aggregations else "all"
+            measure_rows.append({
+                "name": m.name,
+                "sql": m.sql if m.sql else m.name,
+                "allowed_aggregations": aggs,
+                "filter": m.filter,
+                "label": m.label,
+                "description": m.description,
+            })
+        sections.append(
+            f"## Measures ({len(measure_rows)})\n\n"
+            + _markdown_table(
+                rows=measure_rows,
+                columns=["name", "sql", "allowed_aggregations", "filter", "label", "description"],
+            )
+        )
+
+        # Custom aggregations (if any)
+        if model.aggregations:
+            agg_rows: List[Dict[str, Any]] = []
+            for a in model.aggregations:
+                params = (
+                    "; ".join(f"{p.name}={p.sql}" for p in a.params) if a.params else None
+                )
+                agg_rows.append({
+                    "name": a.name,
+                    "formula": a.formula or "(built-in override)",
+                    "params": params,
+                    "description": a.description,
+                })
+            sections.append(
+                f"## Aggregations ({len(agg_rows)})\n\n"
+                + _markdown_table(
+                    rows=agg_rows,
+                    columns=["name", "formula", "params", "description"],
+                )
+            )
+
+        # Joins table (always rendered, even when empty, to keep structure predictable)
+        join_rows: List[Dict[str, Any]] = []
+        for j in model.joins:
+            pairs = "; ".join(f"{src} = {tgt}" for src, tgt in j.join_pairs)
+            kind = "multi-hop" if any("." in src for src, _ in j.join_pairs) else "direct"
+            join_rows.append({
+                "target_model": j.target_model,
+                "join_pairs": pairs,
+                "kind": kind,
+            })
+        sections.append(
+            f"## Joins ({len(join_rows)})\n\n"
+            + _markdown_table(
+                rows=join_rows,
+                columns=["target_model", "join_pairs", "kind"],
+            )
+        )
+
+        # Reachable via joins (omitted when empty)
+        reach_dims, reach_measures = await _collect_reachable_fields(
+            model=model, storage=storage,
+        )
+        if reach_dims or reach_measures:
+            lines = ["## Reachable via joins (max depth: 5)", ""]
+            if reach_dims:
+                rendered = ", ".join(f"`{d}`" for d in reach_dims)
+                lines.append(f"**Dimensions ({len(reach_dims)}):** {rendered}")
+            if reach_measures:
+                rendered = ", ".join(f"`{m}`" for m in reach_measures)
+                lines.append(f"**Measures ({len(reach_measures)}):** {rendered}")
+            sections.append("\n".join(lines))
+
+        # Sample data via a regular SlayerQuery (same path the `query` MCP tool takes)
+        query_args = _build_sample_query_args(model=model, num_rows=num_rows)
+        sample_sql: Optional[str] = None
         try:
-            sample_query = SlayerQuery(
-                source_model=model_name,
-                fields=[{"formula": m.name} for m in model.measures if not m.hidden][:3],
-                dimensions=[{"name": d.name} for d in model.dimensions if not d.hidden and not d.primary_key][:2],
-                limit=num_rows,
-            )
+            sample_query = SlayerQuery.model_validate(query_args)
             sample_result = await engine.execute(query=sample_query)
-            result["sample_data"] = _format_table(
-                data=sample_result.data,
+            sample_sql = sample_result.sql
+            cols, data = _strip_model_prefix(
                 columns=sample_result.columns,
+                data=sample_result.data,
+                model_name=model.name,
             )
+            sample_result.columns = cols
+            sample_result.data = data
+            sample_section = f"## Sample Data\n\n{sample_result.to_markdown()}"
+            if show_sql and sample_sql:
+                sample_section = (
+                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    + sample_section
+                )
+            sections.append(sample_section)
         except Exception as e:
-            result["sample_data_error"] = str(e)
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                err = _friendly_db_error(e)
+            else:
+                err = str(e)
+            sample_section = f"## Sample Data\n\n_Error fetching sample data: {err}_"
+            if show_sql and sample_sql:
+                sample_section = (
+                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                    + sample_section
+                )
+            sections.append(sample_section)
 
-        return json.dumps(result, indent=2, default=str)
+        if fmt == "json":
+            # Return a structured JSON representation instead of the markdown document
+            return json.dumps(
+                {
+                    "model_name": model.name,
+                    "description": model.description,
+                    "data_source": model.data_source,
+                    "sql_table": model.sql_table,
+                    "sql": model.sql,
+                    "default_time_dimension": model.default_time_dimension,
+                    "hidden": model.hidden,
+                    "row_count": row_count,
+                    "filters": model.filters,
+                    "dimensions": [
+                        {
+                            "name": d.name,
+                            "type": str(d.type),
+                            "primary_key": d.primary_key,
+                            "sql": d.sql,
+                            "label": d.label,
+                            "description": d.description,
+                            "sampled": profile_by_name.get(d.name),
+                        }
+                        for d in model.dimensions if not d.hidden
+                    ],
+                    "measures": [
+                        {
+                            "name": m.name,
+                            "sql": m.sql,
+                            "allowed_aggregations": m.allowed_aggregations,
+                            "filter": m.filter,
+                            "label": m.label,
+                            "description": m.description,
+                        }
+                        for m in model.measures if not m.hidden
+                    ],
+                    "aggregations": [
+                        {
+                            "name": a.name,
+                            "formula": a.formula,
+                            "params": [
+                                {"name": p.name, "sql": p.sql} for p in (a.params or [])
+                            ],
+                            "description": a.description,
+                        }
+                        for a in model.aggregations
+                    ],
+                    "joins": [
+                        {
+                            "target_model": j.target_model,
+                            "join_pairs": j.join_pairs,
+                            "kind": "multi-hop" if any("." in src for src, _ in j.join_pairs) else "direct",
+                        }
+                        for j in model.joins
+                    ],
+                    "reachable_dimensions": reach_dims,
+                    "reachable_measures": reach_measures,
+                },
+                indent=2,
+                default=str,
+            )
+
+        return "\n\n".join(sections)
 
     # -----------------------------------------------------------------------
     # Model creation and editing
@@ -695,7 +1393,7 @@ def create_mcp_server(storage: StorageBackend):
             for m in models:
                 lines.append(f"- {m.name} ({len(m.dimensions)} dims, {len(m.measures)} measures)")
             lines.append("")
-            lines.append("Use datasource_summary and inspect_model to explore, then query to fetch data.")
+            lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
 
         return "\n".join(lines)
 
@@ -717,11 +1415,23 @@ def create_mcp_server(storage: StorageBackend):
         return "\n".join(lines)
 
     @mcp.tool()
-    async def describe_datasource(name: str) -> str:
-        """Show datasource details including connection status and available schemas. Use this to verify a datasource works before ingesting.
+    async def describe_datasource(
+        name: str,
+        list_tables: bool = True,
+        schema_name: str = "",
+    ) -> str:
+        """Show datasource details: connection status, available schemas, and (by default) the tables in the given or default schema.
+
+        Use this after create_datasource to verify the connection and explore
+        what's queryable before calling ingest_datasource_models.
 
         Args:
             name: Datasource name (from list_datasources).
+            list_tables: If True (default), append a list of tables from the
+                schema named by ``schema_name`` (or the dialect's default
+                schema when empty).
+            schema_name: Database schema to list tables from (e.g. "public").
+                Empty uses the dialect default. Ignored when list_tables=False.
         """
         try:
             ds = await storage.get_datasource(name)
@@ -755,47 +1465,21 @@ def create_mcp_server(storage: StorageBackend):
         if schemas:
             lines.append(f"Available schemas: {', '.join(schemas)}")
 
-        return "\n".join(lines)
-
-    @mcp.tool()
-    async def list_tables(datasource_name: str, schema_name: str = "") -> str:
-        """List tables in a database. Use this to explore what's available before ingesting.
-
-        Args:
-            datasource_name: Name of an existing datasource (from list_datasources).
-            schema_name: Database schema (e.g. "public"). If empty, uses the default schema.
-        """
-        try:
-            ds = await storage.get_datasource(datasource_name)
-        except Exception as exc:
-            logger.warning("Failed to load datasource '%s': %s", datasource_name, exc)
-            return f"Datasource '{datasource_name}' has an invalid config."
-        if ds is None:
-            return f"Datasource '{datasource_name}' not found."
-        try:
-            conn_str = ds.get_connection_string()
-            sa_engine = sa.create_engine(conn_str)
-            inspector = sa.inspect(sa_engine)
-            schema = schema_name or None
-            tables = inspector.get_table_names(schema=schema)
-            sa_engine.dispose()
-        except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
-                return _friendly_db_error(e)
-            raise
-
-        if not tables:
+        if list_tables:
+            tables, err = _fetch_tables(ds=ds, schema_name=schema_name or None)
             schema_label = f" in schema '{schema_name}'" if schema_name else ""
-            lines = [f"No tables found{schema_label}."]
-            schemas = _get_schemas(ds)
-            if schemas:
-                lines.append(f"Available schemas: {', '.join(schemas)}")
-            return "\n".join(lines)
+            if err is not None:
+                lines.append(f"\nTables{schema_label}: (error — {err})")
+            elif tables:
+                lines.append(f"\nTables ({len(tables)}){schema_label}:")
+                for t in tables:
+                    lines.append(f"  - {t}")
+                lines.append(
+                    "\nUse ingest_datasource_models to create models from these tables."
+                )
+            else:
+                lines.append(f"\nNo tables found{schema_label}.")
 
-        lines = [f"Tables ({len(tables)}):"]
-        for t in sorted(tables):
-            lines.append(f"  - {t}")
-        lines.append("\nUse ingest_datasource_models to create models from these tables.")
         return "\n".join(lines)
 
     @mcp.tool()
@@ -888,7 +1572,7 @@ def create_mcp_server(storage: StorageBackend):
         for m in models:
             lines.append(f"- {m.name} ({len(m.dimensions)} dims, {len(m.measures)} measures)")
         lines.append("")
-        lines.append("Use datasource_summary and inspect_model to explore, then query to fetch data.")
+        lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
         return "\n".join(lines)
 
     return mcp

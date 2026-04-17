@@ -149,7 +149,7 @@ MCP tools:
 
 | Tool | Description |
 |------|-------------|
-| `datasource_summary` | List all datasources and their models with schemas (dimensions, measures) |
+| `models_summary` | Brief summary of all models in a single datasource (name, description, measures, dimensions, joins to). Params: `datasource_name` |
 | `inspect_model` | Detailed model info with sample data |
 | `query` | Execute semantic queries |
 | `create_model` | Create a new model from table/SQL |
@@ -158,15 +158,14 @@ MCP tools:
 | `delete_model` | Delete a model |
 | `create_datasource` | Configure a database connection (with connection test and auto-ingestion; set `auto_ingest=false` to skip) |
 | `list_datasources` | List configured datasources |
-| `describe_datasource` | Show datasource details, test connection, list schemas |
-| `list_tables` | Explore tables in a database |
+| `describe_datasource` | Show datasource details, test connection, list schemas, and list tables (default on; disable with `list_tables=false`; narrow with `schema_name`) |
 | `edit_datasource` | Edit an existing datasource config |
 | `delete_datasource` | Remove a datasource |
 | `ingest_datasource_models` | Auto-generate models from DB schema |
 
 Typical agent workflow:
-1. `create_datasource` (auto-ingests models by default) → `datasource_summary` → `inspect_model` → `query`
-2. Or with `auto_ingest=false`: `create_datasource` → `describe_datasource` → `ingest_datasource_models` → `datasource_summary` → `query`
+1. `create_datasource` (auto-ingests models by default) → `models_summary(datasource_name=...)` → `inspect_model` → `query`
+2. Or with `auto_ingest=false`: `create_datasource` → `describe_datasource` (verify + list tables in one call) → `ingest_datasource_models` → `models_summary` → `query`
 
 ### Python Client
 
@@ -314,7 +313,7 @@ curl -X POST http://localhost:5143/ingest \
 Via MCP, agents can do this conversationally:
 1. `create_datasource(name="mydb", type="postgres", host="localhost", database="app", username="user", password="pass")`
 2. `ingest_datasource_models(datasource_name="mydb", schema_name="public")`
-3. `datasource_summary()` → `inspect_model(model_name="orders")` → `query(...)`
+3. `models_summary(datasource_name="mydb")` → `inspect_model(model_name="orders")` → `query(...)`
 
 
 ## Configuration
