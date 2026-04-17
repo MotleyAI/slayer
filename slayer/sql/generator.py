@@ -310,20 +310,24 @@ class SQLGenerator:
         if not enriched.expressions and not enriched.transforms:
             select = self._apply_order_limit(select=select, enriched=enriched)
 
-        sql = select.sql(dialect=self.dialect, pretty=True)
-
-        # Append LEFT JOINs from resolved joins (string-level, after sqlglot rendering).
+        # Append LEFT JOINs from resolved joins via sqlglot AST (works for both
+        # sql_table and inline-SQL models).
         # When has_first_or_last is true, the joins were already injected inside the
-        # ranked subquery by _build_last_ranked_from — skip here to avoid duplicating
-        # them (and string-replace would otherwise re-match the inner FROM marker).
+        # ranked subquery by _build_last_ranked_from — skip here to avoid duplicating.
         if enriched.resolved_joins and not has_first_or_last:
-            join_parts = []
             for target_table, target_alias, join_cond in enriched.resolved_joins:
-                join_parts.append(f"LEFT JOIN {target_table} AS {target_alias} ON {join_cond}")
-            # Insert joins after the FROM clause line
-            from_marker = f"FROM {enriched.sql_table} AS {enriched.model_name}"
-            if from_marker in sql:
-                sql = sql.replace(from_marker, from_marker + "\n" + "\n".join(join_parts))
+                if target_table.startswith("("):
+                    # Inline-SQL target: parse as subquery
+                    parsed_target = sqlglot.parse_one(target_table, dialect=self.dialect)
+                    join_target = exp.Subquery(
+                        this=parsed_target, alias=exp.to_identifier(target_alias),
+                    )
+                else:
+                    join_target = exp.to_table(target_table, alias=target_alias)
+                join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+                select = select.join(join_target, on=join_on, join_type="LEFT")
+
+        sql = select.sql(dialect=self.dialect, pretty=True)
 
         return sql
 

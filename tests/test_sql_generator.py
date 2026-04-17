@@ -2110,3 +2110,138 @@ class TestAutoMoveDimensions:
         dim_names = [d.name for d in result.dimensions]
         assert "status" in dim_names
         assert "customer_id" in dim_names
+
+
+class TestInlineSQLJoins:
+    """Cross-model dimensions must emit LEFT JOINs even when source model uses inline SQL.
+
+    Regression tests from benchmark failures: the SQL generator used string-level
+    FROM marker replacement to inject LEFT JOINs, which silently failed for models
+    with inline SQL (sql field) because sqlglot's pretty-printed subquery didn't
+    match the raw string.
+    """
+
+    @pytest.fixture
+    def inline_orders(self):
+        return SlayerModel(
+            name="orders_inline",
+            sql="SELECT id, customer_id, amount FROM raw_orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+    @pytest.fixture
+    def table_orders(self):
+        return SlayerModel(
+            name="orders_table",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+    async def test_sql_table_baseline(self, generator: SQLGenerator, table_orders) -> None:
+        """Sanity check: sql_table models emit LEFT JOIN correctly."""
+        query = SlayerQuery(
+            source_model="orders_table",
+            fields=["amount:sum"],
+            dimensions=["customers.name"],
+        )
+        sql = await _generate(generator, query, table_orders)
+        assert "LEFT JOIN" in sql
+        assert "customers" in sql
+
+    async def test_inline_sql_cross_model_dimension(self, generator: SQLGenerator, inline_orders) -> None:
+        """Mirrors benchmark Q2/Q5: inline-SQL source with a cross-model dimension."""
+        query = SlayerQuery(
+            source_model="orders_inline",
+            fields=["amount:sum"],
+            dimensions=["customers.name"],
+        )
+        sql = await _generate(generator, query, inline_orders)
+        assert "LEFT JOIN" in sql, f"LEFT JOIN missing from inline-SQL model query:\n{sql}"
+        assert "customers" in sql
+
+    async def test_inline_sql_cross_model_dim_plus_local_measure(self, generator: SQLGenerator, inline_orders) -> None:
+        """Mirrors benchmark Q1: inline-SQL source with both cross-model dim and local measure."""
+        query = SlayerQuery(
+            source_model="orders_inline",
+            fields=["amount:avg"],
+            dimensions=["customers.name"],
+        )
+        sql = await _generate(generator, query, inline_orders)
+        assert "LEFT JOIN" in sql, f"LEFT JOIN missing:\n{sql}"
+        assert "AVG(" in sql.upper()
+
+
+class TestSelfReferencingPaths:
+    """LLMs sometimes prefix cross-model paths with the source model name.
+
+    e.g. on source_model='orders', writing 'orders.customers.name' instead of
+    'customers.name'. The leading self-reference should be stripped with a warning.
+    """
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        return YAMLStorage(base_dir=str(tmp_path))
+
+    @pytest.fixture
+    async def engine_and_models(self, storage):
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="score", sql="score")],
+        )
+        await storage.save_model(orders)
+        await storage.save_model(customers)
+        engine = SlayerQueryEngine(storage=storage)
+        return engine, orders
+
+    async def test_self_ref_dimension_trimmed(self, engine_and_models) -> None:
+        """'orders.customers.name' on source_model=orders should resolve as 'customers.name'."""
+        engine, model = engine_and_models
+        parts = ["orders", "customers", "name"]
+        dim = await engine._resolve_dimension_via_joins(model=model, parts=parts)
+        assert dim is not None
+        assert dim.name == "name"
+
+    async def test_self_ref_measure_trimmed(self, engine_and_models) -> None:
+        """'orders.customers.score:sum' on source_model=orders should resolve as 'customers.score:sum'."""
+        engine, model = engine_and_models
+        # _resolve_cross_model_measure expects "target.measure" after stripping
+        try:
+            result = await engine._resolve_cross_model_measure(
+                spec_name="orders.customers.score",
+                field_name="score",
+                model=model,
+                query=SlayerQuery(source_model="orders", fields=["orders.customers.score:sum"]),
+                dimensions=[], time_dimensions=[],
+                aggregation_name="sum",
+            )
+            assert result.target_model_name == "customers"
+        except ValueError as e:
+            # Before the fix, this raises "no join to 'orders'"
+            pytest.fail(f"Self-referencing path not trimmed: {e}")
