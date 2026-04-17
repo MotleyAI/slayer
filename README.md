@@ -221,7 +221,7 @@ Via MCP, agents can do this conversationally:
 
 1. `create_datasource(name="mydb", type="postgres", host="localhost", database="app", username="user", password="pass")`
 2. `ingest_datasource_models(datasource_name="mydb", schema_name="public")`
-3. `datasource_summary()` → `inspect_model(model_name="orders")` → `query(...)`
+3. `models_summary(datasource_name="mydb")` → `inspect_model(model_name="orders")` → `query(...)`
 
 ## Datasource Setup
 

@@ -17,8 +17,14 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.mcp.server import (
+    _build_sample_query_args,
+    _collect_reachable_fields,
+    _escape_md_cell,
     _format_table,
     _friendly_db_error,
+    _markdown_table,
+    _md_code_span,
+    _strip_model_prefix,
     create_mcp_server,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -41,49 +47,84 @@ async def _call(mcp_server, *, name: str, arguments: Optional[dict[str, Any]] = 
     return content_blocks[0].text
 
 
-class TestDatasourceSummary:
-    async def test_empty(self, mcp_server) -> None:
-        result = await _call(mcp_server, name="datasource_summary")
-        data = json.loads(result)
-        assert data["datasources"] == []
-        assert data["models"] == []
-        assert data["model_count"] == 0
+class TestModelsSummary:
+    async def test_datasource_not_found(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "nope"})
+        assert "not found" in result
 
-    async def test_with_models(self, mcp_server, storage: YAMLStorage) -> None:
+    async def test_empty_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert "has no models" in result
+
+    async def test_filters_by_datasource(self, mcp_server, storage: YAMLStorage) -> None:
+        """Only models whose ``data_source`` matches the arg appear in the output."""
+        await storage.save_datasource(DatasourceConfig(name="ds_a", type="postgres", host="h"))
+        await storage.save_datasource(DatasourceConfig(name="ds_b", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(name="orders_a", sql_table="t", data_source="ds_a"))
+        await storage.save_model(SlayerModel(name="orders_b", sql_table="t", data_source="ds_b"))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "ds_a"})
+        assert "orders_a" in result
+        assert "orders_b" not in result
+
+    async def test_markdown_structure(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         await storage.save_model(SlayerModel(
             name="orders",
             sql_table="t",
-            data_source="test",
-            dimensions=[Dimension(name="status", type=DataType.STRING)],
-            measures=[Measure(name="revenue", sql="amount")],
+            data_source="mydb",
+            description="Orders fact table.",
+            dimensions=[Dimension(name="status", type=DataType.STRING, description="Order state")],
+            measures=[Measure(name="revenue", sql="amount", description="USD")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
-        result = await _call(mcp_server, name="datasource_summary")
-        parsed = json.loads(result)
-        assert parsed["model_count"] == 1
-        assert parsed["models"][0]["name"] == "orders"
-        assert len(parsed["models"][0]["dimensions"]) == 1
-        assert len(parsed["models"][0]["measures"]) == 1
-        # Envelope is always stable — datasources key present even when empty
-        assert "datasources" in parsed
-        assert parsed["datasources"] == []
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert "## `orders`" in result
+        assert "Orders fact table." in result
+        assert "**Dimensions (1):**" in result
+        assert "| status |" in result
+        assert "Order state" in result
+        assert "**Measures (1):**" in result
+        assert "| revenue |" in result
+        assert "USD" in result
+        assert "**Joins to:** `customers`" in result
 
     async def test_hidden_models_excluded(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="visible", sql_table="t", data_source="test"))
-        await storage.save_model(SlayerModel(name="hidden", sql_table="t", data_source="test", hidden=True))
-        result = await _call(mcp_server, name="datasource_summary")
-        parsed = json.loads(result)
-        assert parsed["model_count"] == 1
-        assert parsed["models"][0]["name"] == "visible"
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(name="visible", sql_table="t", data_source="mydb"))
+        await storage.save_model(SlayerModel(name="hidden_m", sql_table="t", data_source="mydb", hidden=True))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert "visible" in result
+        assert "hidden_m" not in result
 
-    async def test_includes_datasource(self, mcp_server, storage: YAMLStorage) -> None:
-        from slayer.core.models import DatasourceConfig
-        await storage.save_datasource(DatasourceConfig(
-            name="mydb", type="postgres", host="localhost", description="Production DB",
+    async def test_joins_none_marker(self, mcp_server, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(name="solo", sql_table="t", data_source="mydb"))
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        assert "**Joins to:** _(none)_" in result
+
+    async def test_single_surviving_column_collapses_to_comma_list(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """When a model has no descriptions at all, the Dimensions table — which
+        would otherwise be just the ``name`` column — auto-collapses into a
+        comma-separated backticked list rather than a degenerate one-column
+        table. Same applies to Measures."""
+        await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="mydb",
+            dimensions=[
+                Dimension(name="x", type=DataType.STRING),
+                Dimension(name="y", type=DataType.STRING),
+            ],
         ))
-        result = await _call(mcp_server, name="datasource_summary")
-        parsed = json.loads(result)
-        assert parsed["datasources"][0]["name"] == "mydb"
-        assert parsed["datasources"][0]["description"] == "Production DB"
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
+        dim_section = result.split("**Dimensions")[1].split("**Measures")[0]
+        assert "`x`, `y`" in dim_section
+        # And no markdown-table scaffolding made it in:
+        assert "| x |" not in dim_section
+        assert "| --- |" not in dim_section
 
 
 class TestInspectModel:
@@ -91,28 +132,458 @@ class TestInspectModel:
         result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "nonexistent"})
         assert "not found" in result
 
-    async def test_found_with_schema(self, mcp_server, storage: YAMLStorage) -> None:
+    async def test_markdown_structure(self, mcp_server, storage: YAMLStorage) -> None:
+        """Every expected section header appears and the response is no longer JSON."""
         await storage.save_model(SlayerModel(
             name="test",
-            sql_table="t",
+            sql_table="public.t",
             data_source="test",
-            description="Test model",
-            dimensions=[Dimension(name="x", type=DataType.STRING)],
-            measures=[Measure(name="revenue", sql="amount")],
+            description="A test model used in unit tests.",
+            dimensions=[
+                Dimension(name="status", type=DataType.STRING, label="Status", description="Order state"),
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[Measure(name="revenue", sql="amount", label="Revenue", description="USD total")],
+            filters=["deleted_at IS NULL"],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test"})
-        parsed = json.loads(result)
-        assert parsed["name"] == "test"
-        assert parsed["description"] == "Test model"
-        assert len(parsed["dimensions"]) == 1
-        assert parsed["dimensions"][0]["type"] == "string"
-        assert len(parsed["measures"]) == 1
 
-    async def test_show_sql(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="test", sql_table="public.test", data_source="test"))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test", "show_sql": True})
+        assert result.startswith("# Model: `test`")
+        assert "A test model used in unit tests." in result
+        assert "**data_source:** `test`" in result
+        assert "**sql_table:** `public.t`" in result
+        assert "## Filters (model-level)" in result
+        assert "`deleted_at IS NULL`" in result
+        assert "## Dimensions (2)" in result
+        assert "| status |" in result
+        assert "Order state" in result
+        assert "## Measures (1)" in result
+        assert "Revenue" in result
+        assert "USD total" in result
+        assert "## Joins (1)" in result
+        assert "customers" in result
+        assert "direct" in result
+
+        # No longer JSON
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(result)
+
+    async def test_custom_sql_section_only_when_sql_is_set(self, mcp_server, storage: YAMLStorage) -> None:
+        """## SQL fenced block appears only when model.sql is populated."""
+        await storage.save_model(SlayerModel(name="plain", sql_table="t", data_source="test"))
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "plain"})
+        assert "## SQL" not in result
+
+        await storage.save_model(SlayerModel(
+            name="querybacked", sql="SELECT 1 AS x", data_source="test",
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "querybacked"})
+        assert "## SQL" in result
+        assert "```sql" in result
+        assert "SELECT 1 AS x" in result
+
+    async def test_measure_filter_and_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
+        """Measure.filter and custom Aggregation entries both surface."""
+        await storage.save_model(SlayerModel(
+            name="t", sql_table="t", data_source="test",
+            measures=[Measure(
+                name="completed_rev", sql="amount",
+                filter="status = 'completed'",
+                allowed_aggregations=["sum", "avg"],
+            )],
+            aggregations=[Aggregation(
+                name="wavg",
+                formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
+                description="Weighted average",
+            )],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "t"})
+        assert "status = 'completed'" in result  # measure filter surfaces
+        assert "sum, avg" in result              # allowed_aggregations rendered
+        assert "## Aggregations (1)" in result
+        assert "wavg" in result
+        assert "Weighted average" in result
+
+    async def test_joins_kind_labels(self, mcp_server, storage: YAMLStorage) -> None:
+        """Joins table marks direct vs multi-hop joins."""
+        await storage.save_model(SlayerModel(
+            name="order_items", sql_table="order_items", data_source="test",
+            joins=[
+                ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
+                ModelJoin(target_model="customers", join_pairs=[["orders.customer_id", "id"]]),
+            ],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "order_items"})
+        assert "| orders |" in result
+        assert "| customers |" in result
+        # The "direct" label should appear on the orders row, "multi-hop" on the customers row.
+        orders_line = next(line for line in result.splitlines() if "| orders |" in line)
+        customers_line = next(line for line in result.splitlines() if "| customers |" in line)
+        assert "direct" in orders_line
+        assert "multi-hop" in customers_line
+
+
+class TestMdCodeSpan:
+    def test_plain_value(self) -> None:
+        assert _md_code_span("hello") == "`hello`"
+
+    def test_value_with_single_backtick(self) -> None:
+        result = _md_code_span("no`ticks")
+        assert result == "``no`ticks``"
+
+    def test_value_with_double_backticks(self) -> None:
+        result = _md_code_span("a``b")
+        assert result == "```a``b```"
+
+    def test_value_starting_with_backtick(self) -> None:
+        result = _md_code_span("`start")
+        assert result == "`` `start ``"
+
+    def test_value_ending_with_backtick(self) -> None:
+        result = _md_code_span("end`")
+        assert result == "`` end` ``"
+
+    def test_pipe_is_escaped(self) -> None:
+        assert _md_code_span("a|b") == r"`a\|b`"
+
+    def test_newlines_collapsed(self) -> None:
+        assert _md_code_span("a\nb\rc\r\nd") == "`a b c d`"
+
+    def test_empty_string(self) -> None:
+        assert _md_code_span("") == "` `"
+
+    def test_non_string_value(self) -> None:
+        assert _md_code_span(42) == "`42`"
+
+
+class TestInspectModelJsonFormat:
+    async def test_json_format_includes_sample_data(self, mcp_server, storage: YAMLStorage) -> None:
+        """inspect_model(format='json') must include sample_data and sample_data_error keys."""
+        await storage.save_model(SlayerModel(
+            name="jtest",
+            sql_table="t",
+            data_source="test",
+            dimensions=[Dimension(name="x")],
+            measures=[Measure(name="m", sql="val")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "jtest", "format": "json",
+        })
         parsed = json.loads(result)
-        assert parsed["sql_table"] == "public.test"
+        assert "sample_data" in parsed
+        assert "sample_data_error" in parsed
+        assert parsed["model_name"] == "jtest"
+        # sample_sql should NOT appear when show_sql is not requested
+        assert "sample_sql" not in parsed
+
+
+class TestBuildSampleQueryArgs:
+    def test_avg_when_allowed(self) -> None:
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            dimensions=[
+                Dimension(name="status"),
+                Dimension(name="region"),
+                Dimension(name="id", primary_key=True),
+            ],
+            measures=[
+                Measure(name="rev", sql="amt"),
+                Measure(name="qty", sql="quantity"),
+            ],
+        )
+        args = _build_sample_query_args(model=model, num_rows=7)
+        assert [f["formula"] for f in args["fields"]] == ["*:count", "rev:avg", "qty:avg"]
+        assert [d["name"] for d in args["dimensions"]] == ["status", "region"]
+        assert args["limit"] == 7
+        assert args["source_model"] == "t"
+
+    def test_fallback_to_first_allowed_when_avg_not_permitted(self) -> None:
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            measures=[Measure(name="rev", sql="amt", allowed_aggregations=["sum", "max"])],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == ["*:count", "rev:sum"]
+
+    def test_prefers_safe_agg_over_first_allowed(self) -> None:
+        """When the allowed list starts with a non-safe aggregation (e.g. first,
+        last), _build_sample_query_args should skip it and pick the first safe
+        zero-arg aggregation from the list."""
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            measures=[Measure(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"])],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == ["*:count", "rev:min"]
+
+    def test_falls_back_to_first_allowed_when_no_safe_agg(self) -> None:
+        """When the allowed list contains no safe aggregation, fall back to the
+        first entry (even if it requires extra context like a time column)."""
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            measures=[Measure(name="rev", sql="amt", allowed_aggregations=["last", "first"])],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == ["*:count", "rev:last"]
+
+    def test_skip_when_allowed_is_empty(self) -> None:
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            measures=[Measure(name="rev", sql="amt", allowed_aggregations=[])],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == ["*:count"]
+
+    def test_dims_cap_at_two_and_exclude_pk_and_hidden(self) -> None:
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            dimensions=[
+                Dimension(name="id", primary_key=True),
+                Dimension(name="hidden_d", hidden=True),
+                Dimension(name="a"),
+                Dimension(name="b"),
+                Dimension(name="c"),
+            ],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [d["name"] for d in args["dimensions"]] == ["a", "b"]
+
+    def test_hidden_measure_skipped(self) -> None:
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="ds",
+            measures=[Measure(name="rev", sql="amt", hidden=True), Measure(name="qty", sql="quantity")],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == ["*:count", "qty:avg"]
+
+    def test_count_distinct_fallback_for_non_numeric_same_named_dim(self) -> None:
+        """Auto-ingestion generates a measure for every non-ID column — including
+        string columns like `sku`. AVG(VARCHAR) is invalid SQL, so when a measure
+        shares its name with a non-numeric dimension and avg is permitted, we
+        fall back to count_distinct."""
+        model = SlayerModel(
+            name="order_items", sql_table="order_items", data_source="ds",
+            dimensions=[
+                Dimension(name="id", type=DataType.STRING, primary_key=True),
+                Dimension(name="sku", type=DataType.STRING),
+                Dimension(name="is_flagged", type=DataType.BOOLEAN),
+                Dimension(name="quantity", type=DataType.NUMBER),
+            ],
+            measures=[
+                Measure(name="sku", sql="sku"),                 # string — use count_distinct
+                Measure(name="is_flagged", sql="is_flagged"),   # boolean — use count_distinct
+                Measure(name="quantity", sql="quantity"),       # numeric — use avg
+            ],
+        )
+        args = _build_sample_query_args(model=model, num_rows=3)
+        assert [f["formula"] for f in args["fields"]] == [
+            "*:count", "sku:count_distinct", "is_flagged:count_distinct", "quantity:avg",
+        ]
+
+
+class TestMarkdownHelpers:
+    def test_escape_none_and_empty(self) -> None:
+        assert _escape_md_cell(None) == "—"
+        assert _escape_md_cell("") == "—"
+        assert _escape_md_cell("   ") == "—"
+
+    def test_escape_pipes_and_newlines(self) -> None:
+        assert _escape_md_cell("a|b") == "a\\|b"
+        assert _escape_md_cell("line1\nline2") == "line1 line2"
+        assert _escape_md_cell("line1\r\nline2") == "line1 line2"
+
+    def test_table_empty(self) -> None:
+        assert _markdown_table(rows=[], columns=["x"]) == "_(none)_"
+
+    def test_table_renders(self) -> None:
+        out = _markdown_table(rows=[{"x": 1, "y": "hi"}, {"x": 2, "y": None}], columns=["x", "y"])
+        assert out.splitlines() == [
+            "| x | y |",
+            "| --- | --- |",
+            "| 1 | hi |",
+            "| 2 | — |",
+        ]
+
+    def test_table_prunes_all_empty_columns(self) -> None:
+        """A column where every row is None/empty is dropped from the output."""
+        out = _markdown_table(
+            rows=[
+                {"name": "a", "label": None, "desc": "foo"},
+                {"name": "b", "label": "", "desc": "bar"},
+            ],
+            columns=["name", "label", "desc"],
+        )
+        assert "label" not in out
+        assert out.splitlines() == [
+            "| name | desc |",
+            "| --- | --- |",
+            "| a | foo |",
+            "| b | bar |",
+        ]
+
+    def test_table_single_column_collapses_to_comma_list(self) -> None:
+        """After pruning, a lone remaining column renders as ``\\`a\\`, \\`b\\`
+        ... — no table scaffolding."""
+        out = _markdown_table(
+            rows=[
+                {"name": "x", "desc": None},
+                {"name": "y", "desc": ""},
+                {"name": "z", "desc": None},
+            ],
+            columns=["name", "desc"],
+        )
+        assert out == "`x`, `y`, `z`"
+
+    def test_single_column_escapes_backticks(self) -> None:
+        """Backticks inside values use a longer fence instead of backslash escaping,
+        per CommonMark inline code span rules."""
+        out = _markdown_table(
+            rows=[
+                {"name": "no`ticks", "desc": None},
+                {"name": "plain", "desc": None},
+            ],
+            columns=["name", "desc"],
+        )
+        assert out == "``no`ticks``, `plain`"
+
+    def test_table_all_columns_pruned_returns_none_marker(self) -> None:
+        out = _markdown_table(
+            rows=[{"a": None, "b": ""}, {"a": "", "b": None}],
+            columns=["a", "b"],
+        )
+        assert out == "_(none)_"
+
+    def test_strip_model_prefix(self) -> None:
+        cols, data = _strip_model_prefix(
+            columns=["orders.count", "orders.revenue_avg", "other.field"],
+            data=[{"orders.count": 5, "orders.revenue_avg": 12.5, "other.field": "x"}],
+            model_name="orders",
+        )
+        assert cols == ["count", "revenue_avg", "other.field"]
+        assert data == [{"count": 5, "revenue_avg": 12.5, "other.field": "x"}]
+
+
+class TestReachableFields:
+    async def test_empty_when_no_joins(self, storage: YAMLStorage) -> None:
+        model = SlayerModel(name="solo", sql_table="t", data_source="ds")
+        await storage.save_model(model)
+        dims, measures = await _collect_reachable_fields(model=model, storage=storage)
+        assert dims == []
+        assert measures == []
+
+    async def test_direct_join_exposes_target_fields(self, storage: YAMLStorage) -> None:
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="ds",
+            dimensions=[
+                Dimension(name="id", primary_key=True),
+                Dimension(name="name"),
+                Dimension(name="region"),
+            ],
+            measures=[Measure(name="lifetime_value", sql="ltv")],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="ds",
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        dims, measures = await _collect_reachable_fields(model=orders, storage=storage)
+        assert dims == ["customers.name", "customers.region"]
+        assert measures == ["customers.lifetime_value"]
+
+    async def test_auto_ingested_multi_hop_path(self, storage: YAMLStorage) -> None:
+        """A baked-in multi-hop join (source col 'orders.customer_id') should
+        produce the path 'orders.customers.<field>' from the root."""
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="name")],
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="customer_id")],
+        ))
+        root = SlayerModel(
+            name="order_items", sql_table="order_items", data_source="ds",
+            joins=[
+                ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
+                ModelJoin(target_model="customers", join_pairs=[["orders.customer_id", "id"]]),
+            ],
+        )
+        await storage.save_model(root)
+        dims, _ = await _collect_reachable_fields(model=root, storage=storage)
+        assert "orders.customer_id" in dims
+        assert "orders.customers.name" in dims
+
+    async def test_recursive_walk_via_targets_joins(self, storage: YAMLStorage) -> None:
+        """Hand-built shallow joins (root -> A -> B): recursion reaches B via A."""
+        await storage.save_model(SlayerModel(
+            name="b", sql_table="b", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="code")],
+        ))
+        await storage.save_model(SlayerModel(
+            name="a", sql_table="a", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="x")],
+            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        ))
+        root = SlayerModel(
+            name="root", sql_table="root", data_source="ds",
+            joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
+        )
+        await storage.save_model(root)
+        dims, _ = await _collect_reachable_fields(model=root, storage=storage)
+        assert "a.x" in dims
+        assert "a.b.code" in dims
+
+    async def test_depth_cap(self, storage: YAMLStorage) -> None:
+        """Paths with more than max_depth segments are excluded."""
+        # Build a chain root -> a -> b -> c -> d
+        await storage.save_model(SlayerModel(
+            name="d", sql_table="d", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="val")],
+        ))
+        await storage.save_model(SlayerModel(
+            name="c", sql_table="c", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="val")],
+            joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="b", sql_table="b", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="val")],
+            joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="a", sql_table="a", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="val")],
+            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        ))
+        root = SlayerModel(
+            name="root", sql_table="root", data_source="ds",
+            joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
+        )
+        await storage.save_model(root)
+        dims, _ = await _collect_reachable_fields(model=root, storage=storage, max_depth=2)
+        # max_depth caps the model-path length (segments), so max_depth=2 admits
+        # paths "a" (1 segment → field `a.val`) and "a.b" (2 segments → field
+        # `a.b.val`). Paths of 3+ segments ("a.b.c" etc.) are excluded.
+        assert "a.val" in dims
+        assert "a.b.val" in dims
+        assert not any(d.startswith("a.b.c.") for d in dims)
+
+    async def test_cycles_dont_infinite_loop(self, storage: YAMLStorage) -> None:
+        await storage.save_model(SlayerModel(
+            name="b", sql_table="b", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="val")],
+            joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
+        ))
+        a = SlayerModel(
+            name="a", sql_table="a", data_source="ds",
+            dimensions=[Dimension(name="id", primary_key=True), Dimension(name="val")],
+            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        )
+        await storage.save_model(a)
+        dims, _ = await _collect_reachable_fields(model=a, storage=storage)
+        # Should complete without hanging; a.b.val and a.b.a.val are distinct paths
+        assert "b.val" in dims
 
 
 class TestCreateModel:
@@ -624,18 +1095,14 @@ class TestDatasources:
         assert "bad" in result
         assert "ERROR" in result
 
-    async def test_summary_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_datasource(DatasourceConfig(name="good", type="sqlite", database=":memory:"))
+    async def test_models_summary_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
+        """Asking for a datasource whose YAML config is broken surfaces the
+        invalid-config error rather than raising."""
         path = os.path.join(storage.datasources_dir, "bad.yaml")
         with open(path, "w") as f:
             f.write("name: bad\ntype: [unclosed\n")
-        result = await _call(mcp_server, name="datasource_summary")
-        data = json.loads(result)
-        names = [d["name"] for d in data["datasources"]]
-        assert "good" in names
-        assert "bad" in names
-        bad_entry = next(d for d in data["datasources"] if d["name"] == "bad")
-        assert "error" in bad_entry
+        result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "bad"})
+        assert "invalid" in result.lower()
 
     async def test_describe_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         path = os.path.join(storage.datasources_dir, "bad.yaml")
@@ -733,3 +1200,41 @@ class TestFormatTable:
         result = _format_table(data=data, columns=["x"], max_rows=10)
         assert "100 total rows" in result
         assert "showing first 10" in result
+
+
+class TestHelp:
+    async def test_no_arg_returns_intro(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="help")
+        assert "SLayer" in result
+        # At least one of the landing-page invariants should be present
+        assert any(
+            phrase in result
+            for phrase in (
+                "Measures are not aggregates",
+                "Joined data is reached",
+                "Filters on measures",
+            )
+        )
+
+    async def test_valid_topic_returns_body(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="help", arguments={"topic": "transforms"})
+        # The transforms topic should mention the key transform names
+        assert "cumsum" in result
+        assert "change" in result
+        assert "time_shift" in result
+
+    async def test_invalid_topic_returns_friendly_error(self, mcp_server) -> None:
+        result = await _call(mcp_server, name="help", arguments={"topic": "bogus"})
+        assert "Unknown help topic" in result
+        assert "bogus" in result
+        # The error should list every valid topic
+        for name in ("queries", "formulas", "transforms", "workflow"):
+            assert name in result
+
+    async def test_tool_description_carries_topic_list(self, mcp_server) -> None:
+        tools = await mcp_server.list_tools()
+        help_tool = next(t for t in tools if t.name == "help")
+        assert help_tool.description is not None
+        assert "Available help topics:" in help_tool.description
+        for name in ("queries", "formulas", "transforms", "workflow"):
+            assert name in help_tool.description

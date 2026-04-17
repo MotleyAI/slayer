@@ -133,3 +133,12 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "weighted_avg": ["weight"],
     "percentile": ["p"],
 }
+
+# Aggregations that only make sense on numeric-valued measures. Applying them
+# to a non-numeric measure (e.g. AVG on a VARCHAR column) is always invalid
+# and is rejected during query enrichment rather than at SQL execution time.
+# min, max, count, count_distinct, first, last work on any type and are NOT
+# in this set.
+NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
+    "sum", "avg", "median", "weighted_avg", "percentile",
+})

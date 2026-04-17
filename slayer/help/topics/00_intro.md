@@ -1,0 +1,58 @@
+# SLayer — conceptual help
+
+SLayer is a lightweight semantic layer for AI agents. Instead of writing raw SQL,
+you describe what data you want — **measures**, **dimensions**, **filters** — and
+SLayer generates and executes the query against your database.
+
+## Core entities
+
+- **datasource** — a database connection (postgres, mysql, sqlite, duckdb, …).
+- **model** — a named mapping from a table (or SQL subquery) to queryable fields.
+- **dimension** — a column to group/filter by (e.g. `status`, `created_at`).
+- **measure** — a named row-level SQL expression on a model (e.g. `{name: "revenue", sql: "amount"}`).
+  Not an aggregate — aggregation is chosen at query time.
+- **aggregation** — how a measure is rolled up: `sum`, `avg`, `count`, `weighted_avg`, …
+  Applied via colon syntax: `revenue:sum`.
+- **field** — one output column of a query. A formula over measures and aggregations.
+- **filter** — a condition that restricts rows (WHERE or HAVING, routed automatically).
+- **join** — a LEFT-JOIN relationship between two models. Joins let you reach
+  another model's dimensions/measures via dotted paths like `customers.regions.name`.
+- **time dimension** — a time column queried with a granularity
+  (`day`/`week`/`month`/…), producing one row per time bucket.
+
+## The query shape
+
+```json
+{
+  "source_model": "orders",
+  "fields": ["*:count", "revenue:sum"],
+  "dimensions": ["status"],
+  "filters": ["status <> 'cancelled'"],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+  "order": [{"column": "revenue_sum", "direction": "desc"}],
+  "limit": 10
+}
+```
+
+## Three things that are easy to get wrong
+
+1. **Measures are not aggregates.** A measure is just a named SQL expression.
+   Pick the aggregation at query time with colon syntax: `revenue:sum`,
+   `revenue:avg`, `price:weighted_avg(weight=quantity)`. `*:count` is
+   `COUNT(*)` and is always available without a measure definition.
+
+2. **Joined data is reached via dotted paths, not by JOINing manually.**
+   `customers.regions.name` on a query of `orders` auto-walks the join graph
+   (`orders → customers → regions`). Don't try to add SQL joins yourself.
+
+3. **Filters on measures or computed fields route themselves.** `"amount > 100"`
+   becomes WHERE; `"revenue:sum > 1000"` becomes HAVING; `"change(revenue:sum) > 0"`
+   becomes a post-filter on an outer wrapper query. Write the condition; SLayer
+   decides where it lands.
+
+## Deep dives
+
+Call `help(topic='...')` (or `slayer help <topic>` from the CLI) for the detail
+pages. See the tool description (or `slayer help --help`) for the full topic list.
+Recommended starting order for an unfamiliar agent: `help(topic='workflow')` for
+tool-chaining, then `help(topic='queries')` for the query model.
