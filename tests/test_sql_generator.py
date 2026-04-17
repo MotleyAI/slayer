@@ -2245,3 +2245,266 @@ class TestSelfReferencingPaths:
         except ValueError as e:
             # Before the fix, this raises "no join to 'orders'"
             pytest.fail(f"Self-referencing path not trimmed: {e}")
+
+
+class TestConstantSQLFilters:
+    """Filters on dimensions with constant/expression SQL must not be broken by table-qualifying."""
+
+    async def test_local_filter_on_constant_dimension(self, generator: SQLGenerator) -> None:
+        """Dimension with sql='1' should produce WHERE 1 = '1', not WHERE model.1 = '1'."""
+        model = SlayerModel(
+            name="premium",
+            sql_table="Premium",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_premium", sql="1", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="premium",
+            fields=[Field(formula="amount:sum")],
+            filters=["has_premium = '1'"],
+        )
+        sql = await _generate(generator, query, model)
+        assert "premium.1" not in sql, f"Constant SQL '1' was table-qualified: {sql}"
+        # The constant should appear as a bare literal in WHERE
+        assert "1 = '1'" in sql or "1 = 1" in sql
+
+    async def test_cross_model_filter_on_constant_dimension(self, generator: SQLGenerator) -> None:
+        """Cross-model filter premium.has_premium where has_premium sql='1' must not produce premium.1."""
+        from slayer.engine.enrichment import enrich_query
+
+        premium_model = SlayerModel(
+            name="premium",
+            sql_table="Premium",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_premium", sql="1", type=DataType.NUMBER),
+            ],
+        )
+        policy_amount = SlayerModel(
+            name="policy_amount",
+            sql_table="Policy_Amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="premium_id", sql="premium_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="total", sql="amount")],
+            joins=[ModelJoin(target_model="premium", join_pairs=[["premium_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "premium":
+                return ("Premium", premium_model)
+            return None
+
+        query = SlayerQuery(
+            source_model="policy_amount",
+            fields=[Field(formula="total:sum")],
+            filters=["premium.has_premium = '1'"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=policy_amount,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        assert "premium.1" not in sql, f"Constant SQL '1' was table-qualified: {sql}"
+        assert "1 = '1'" in sql or "1 = 1" in sql
+
+    async def test_local_filter_on_expression_dimension(self, generator: SQLGenerator) -> None:
+        """Dimension with sql='COALESCE(x, 0)' should not be table-qualified."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            filters=["safe_amount > 0"],
+        )
+        sql = await _generate(generator, query, model)
+        assert "orders.COALESCE" not in sql, f"Expression SQL was table-qualified: {sql}"
+        assert "COALESCE" in sql
+
+    async def test_cross_model_filter_on_normal_dimension(self, generator: SQLGenerator) -> None:
+        """Normal column-name dimensions must still be table-qualified (regression guard)."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            filters=["customers.status = 'active'"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        # Normal dimension should be qualified with the table alias
+        assert "customers.status" in sql
+
+
+class TestDimensionAggregation:
+    """Dimensions can be aggregated with colon syntax (e.g., pk:count_distinct)."""
+
+    async def test_count_distinct_on_pk_dimension(self, generator: SQLGenerator) -> None:
+        """Primary key dimension with count_distinct should produce COUNT(DISTINCT col)."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="order_id", sql="order_id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="order_id:count_distinct")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "COUNT(DISTINCT" in sql
+        assert "order_id" in sql
+
+    async def test_count_on_dimension(self, generator: SQLGenerator) -> None:
+        """count on a dimension produces COUNT(col) for non-null counting."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customer_id:count")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "COUNT(" in sql
+        assert "customer_id" in sql
+
+    async def test_min_max_on_string_dimension(self, generator: SQLGenerator) -> None:
+        """min/max on string dimensions is allowed."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="status:min")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "MIN(" in sql
+
+    async def test_sum_on_string_dimension_rejected(self, generator: SQLGenerator) -> None:
+        """sum on a string dimension must be rejected."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="status:sum")],
+        )
+        with pytest.raises(ValueError, match="not applicable to string dimension"):
+            await _generate(generator, query, model)
+
+    async def test_sum_on_number_dimension_allowed(self, generator: SQLGenerator) -> None:
+        """sum on a numeric dimension is allowed."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="quantity", sql="qty", type=DataType.NUMBER),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="quantity:sum")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "SUM(" in sql
+        assert "qty" in sql
+
+    async def test_measure_takes_precedence_over_dimension(self, generator: SQLGenerator) -> None:
+        """When measure and dimension share a name, the measure is used."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="revenue", sql="dim_revenue_col", type=DataType.NUMBER),
+            ],
+            measures=[
+                Measure(name="revenue", sql="measure_revenue_col"),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+        )
+        sql = await _generate(generator, query, model)
+        # Should use the measure's SQL, not the dimension's
+        assert "measure_revenue_col" in sql
+        assert "dim_revenue_col" not in sql

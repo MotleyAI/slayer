@@ -1265,7 +1265,7 @@ class SQLGenerator:
                     if "." in col_name:
                         # Already qualified (e.g., "customers.name") — keep as-is
                         pass
-                    else:
+                    elif col_name.isidentifier():
                         qualified_sql = re.sub(
                             rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
                             f"{model}.{col_name}",

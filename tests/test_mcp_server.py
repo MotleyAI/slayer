@@ -147,7 +147,7 @@ class TestInspectModel:
             filters=["deleted_at IS NULL"],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test"})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test", "show_sql": True})
 
         assert result.startswith("# Model: `test`")
         assert "A test model used in unit tests." in result
@@ -178,7 +178,7 @@ class TestInspectModel:
         await storage.save_model(SlayerModel(
             name="querybacked", sql="SELECT 1 AS x", data_source="test",
         ))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "querybacked"})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "querybacked", "show_sql": True})
         assert "## SQL" in result
         assert "```sql" in result
         assert "SELECT 1 AS x" in result
@@ -198,7 +198,7 @@ class TestInspectModel:
                 description="Weighted average",
             )],
         ))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "t"})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "t", "show_sql": True})
         assert "status = 'completed'" in result  # measure filter surfaces
         assert "sum, avg" in result              # allowed_aggregations rendered
         assert "## Aggregations (1)" in result
@@ -298,6 +298,87 @@ class TestInspectModelJsonFormat:
         assert parsed["model_name"] == "jtest"
         # sample_sql should NOT appear when show_sql is not requested
         assert "sample_sql" not in parsed
+
+
+class TestInspectModelShowSQL:
+    """show_sql parameter must control visibility of all SQL in inspect_model output."""
+
+    async def test_hides_sql_by_default_markdown(self, mcp_server, storage: YAMLStorage) -> None:
+        """Without show_sql, markdown output has no ## SQL section and no sql column."""
+        await storage.save_model(SlayerModel(
+            name="sqlt",
+            sql="SELECT id, val FROM raw_table",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "sqlt", "num_rows": 0,
+        })
+        assert "## SQL" not in result
+        # Dimension table should not have an "sql" column header
+        assert "| sql " not in result and "| sql|" not in result
+
+    async def test_shows_sql_when_requested_markdown(self, mcp_server, storage: YAMLStorage) -> None:
+        """With show_sql=True, markdown output includes ## SQL section and sql columns."""
+        await storage.save_model(SlayerModel(
+            name="sqlshow",
+            sql="SELECT id, val FROM raw_table",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "sqlshow", "num_rows": 0, "show_sql": True,
+        })
+        assert "## SQL" in result
+        assert "SELECT id, val FROM raw_table" in result
+
+    async def test_hides_sql_by_default_json(self, mcp_server, storage: YAMLStorage) -> None:
+        """JSON format without show_sql excludes sql keys from dimensions and measures."""
+        await storage.save_model(SlayerModel(
+            name="jsqlt",
+            sql="SELECT id, val FROM raw_table",
+            sql_table=None,
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val", filter="val > 0")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "jsqlt", "format": "json", "num_rows": 0,
+        })
+        parsed = json.loads(result)
+        # Model-level sql and sql_table should be absent
+        assert "sql" not in parsed
+        assert "sql_table" not in parsed
+        # Dimension and measure dicts should not have sql keys
+        for d in parsed["dimensions"]:
+            assert "sql" not in d
+        for m in parsed["measures"]:
+            assert "sql" not in m
+            assert "filter" not in m
+
+    async def test_shows_sql_when_requested_json(self, mcp_server, storage: YAMLStorage) -> None:
+        """JSON format with show_sql=True includes sql keys everywhere."""
+        await storage.save_model(SlayerModel(
+            name="jsqlshow",
+            sql="SELECT id, val FROM raw_table",
+            sql_table=None,
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val", filter="val > 0")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "jsqlshow", "format": "json", "num_rows": 0, "show_sql": True,
+        })
+        parsed = json.loads(result)
+        assert "sql" in parsed
+        assert parsed["sql"] == "SELECT id, val FROM raw_table"
+        for d in parsed["dimensions"]:
+            assert "sql" in d
+        for m in parsed["measures"]:
+            assert "sql" in m
+            assert "filter" in m
 
 
 class TestBuildSampleQueryArgs:

@@ -34,18 +34,22 @@ SLayer generates and executes the query against your database.
 }
 ```
 
-## Three things that are easy to get wrong
+## Four things that are easy to get wrong
 
 1. **Measures are not aggregates.** A measure is just a named SQL expression.
    Pick the aggregation at query time with colon syntax: `revenue:sum`,
-   `revenue:avg`, `price:weighted_avg(weight=quantity)`. `*:count` is
-   `COUNT(*)` and is always available without a measure definition.
+   `revenue:avg`, `price:weighted_avg(weight=quantity)`.
 
-2. **Joined data is reached via dotted paths, not by JOINing manually.**
+2. **Use `*:count` for counting rows.** `*:count` is `COUNT(*)` and is always
+   available without a measure definition. When you just need to count records,
+   use `*:count` — not a primary-key column. You can also aggregate dimensions
+   directly: `customer_id:count_distinct` for `COUNT(DISTINCT customer_id)`.
+
+3. **Joined data is reached via dotted paths, not by JOINing manually.**
    `customers.regions.name` on a query of `orders` auto-walks the join graph
    (`orders → customers → regions`). Don't try to add SQL joins yourself.
 
-3. **Filters on measures or computed fields route themselves.** `"amount > 100"`
+4. **Filters on measures or computed fields route themselves.** `"amount > 100"`
    becomes WHERE; `"revenue:sum > 1000"` becomes HAVING; `"change(revenue:sum) > 0"`
    becomes a post-filter on an outer wrapper query. Write the condition; SLayer
    decides where it lands.

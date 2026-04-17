@@ -145,29 +145,43 @@ async def enrich_query(
             sql = None
         else:
             measure_def = model.get_measure(measure_name)
-            if measure_def is None:
-                raise ValueError(f"Measure '{measure_name}' not found in model '{model.name}'")
-            if measure_def.allowed_aggregations is not None:
-                if aggregation_name not in measure_def.allowed_aggregations:
+            if measure_def is not None:
+                if measure_def.allowed_aggregations is not None:
+                    if aggregation_name not in measure_def.allowed_aggregations:
+                        raise ValueError(
+                            f"Aggregation '{aggregation_name}' not allowed for measure "
+                            f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                        )
+                # Type-compatibility check: reject numeric-only aggregations
+                # (sum/avg/median/weighted_avg/percentile) on measures backed by a
+                # non-numeric column. Type is inferred from a same-named dimension,
+                # which covers the common auto-ingestion case (one measure per
+                # column, both sharing the column name).
+                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS:
+                    matching_dim = model.get_dimension(measure_name)
+                    if matching_dim is not None and str(matching_dim.type) == "string":
+                        raise ValueError(
+                            f"Aggregation '{aggregation_name}' is not applicable to "
+                            f"string measure '{measure_name}' in model '{model.name}'. "
+                            f"Valid aggregations for string columns: count, "
+                            f"count_distinct, min, max, first, last."
+                        )
+                sql = measure_def.sql
+            else:
+                # Fall back: allow aggregating a dimension (e.g. pk:count_distinct)
+                dim_def = model.get_dimension(measure_name)
+                if dim_def is None:
                     raise ValueError(
-                        f"Aggregation '{aggregation_name}' not allowed for measure "
-                        f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                        f"Measure or dimension '{measure_name}' not found in model '{model.name}'"
                     )
-            # Type-compatibility check: reject numeric-only aggregations
-            # (sum/avg/median/weighted_avg/percentile) on measures backed by a
-            # non-numeric column. Type is inferred from a same-named dimension,
-            # which covers the common auto-ingestion case (one measure per
-            # column, both sharing the column name).
-            if aggregation_name in NUMERIC_ONLY_AGGREGATIONS:
-                matching_dim = model.get_dimension(measure_name)
-                if matching_dim is not None and str(matching_dim.type) == "string":
+                sql = dim_def.sql or measure_name
+                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS and str(dim_def.type) == "string":
                     raise ValueError(
                         f"Aggregation '{aggregation_name}' is not applicable to "
-                        f"string measure '{measure_name}' in model '{model.name}'. "
+                        f"string dimension '{measure_name}' in model '{model.name}'. "
                         f"Valid aggregations for string columns: count, "
                         f"count_distinct, min, max, first, last."
                     )
-            sql = measure_def.sql
 
         # Validate aggregation exists
         aggregation_def = model.get_aggregation(aggregation_name)
@@ -883,7 +897,7 @@ async def resolve_filter_columns(
                 dim = model.get_dimension(col_name)
                 if dim:
                     sql_expr = dim.sql or col_name
-                    qualified = f"{model_name}.{sql_expr}"
+                    qualified = f"{model_name}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
                         qualified,
@@ -925,7 +939,7 @@ async def resolve_filter_columns(
                     if dim:
                         sql_expr = dim.sql or dim_name
                         table_alias = "__".join(path_parts)
-                        qualified = f"{table_alias}.{sql_expr}"
+                        qualified = f"{table_alias}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
                         resolved_sql = _re.sub(
                             rf"(?<!\w)\b{_re.escape(col_name)}\b",
                             qualified,

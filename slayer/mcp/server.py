@@ -817,10 +817,10 @@ def create_mcp_server(storage: StorageBackend):
         if meta:
             sections.append("\n".join(meta))
 
-        if model.sql:
+        if show_sql and model.sql:
             sections.append(f"## SQL\n\n```sql\n{model.sql}\n```")
 
-        if model.filters:
+        if show_sql and model.filters:
             filter_lines = "\n".join(f"- `{f}`" for f in model.filters)
             sections.append(f"## Filters (model-level)\n\n{filter_lines}")
 
@@ -847,15 +847,12 @@ def create_mcp_server(storage: StorageBackend):
                 "description": d.description,
                 "sampled": profile_by_name.get(d.name),
             })
+        dim_columns = ["name", "type", "primary_key", "sql", "label", "description", "sampled"]
+        if not show_sql:
+            dim_columns.remove("sql")
         sections.append(
             f"## Dimensions ({len(dim_rows)})\n\n"
-            + _markdown_table(
-                rows=dim_rows,
-                columns=[
-                    "name", "type", "primary_key", "sql",
-                    "label", "description", "sampled",
-                ],
-            )
+            + _markdown_table(rows=dim_rows, columns=dim_columns)
         )
 
         # Measures table
@@ -872,12 +869,12 @@ def create_mcp_server(storage: StorageBackend):
                 "label": m.label,
                 "description": m.description,
             })
+        meas_columns = ["name", "sql", "allowed_aggregations", "filter", "label", "description"]
+        if not show_sql:
+            meas_columns = [c for c in meas_columns if c not in ("sql", "filter")]
         sections.append(
             f"## Measures ({len(measure_rows)})\n\n"
-            + _markdown_table(
-                rows=measure_rows,
-                columns=["name", "sql", "allowed_aggregations", "filter", "label", "description"],
-            )
+            + _markdown_table(rows=measure_rows, columns=meas_columns)
         )
 
         # Custom aggregations (if any)
@@ -976,18 +973,18 @@ def create_mcp_server(storage: StorageBackend):
                     "model_name": model.name,
                     "description": model.description,
                     "data_source": model.data_source,
-                    "sql_table": model.sql_table,
-                    "sql": model.sql,
+                    **({"sql_table": model.sql_table} if show_sql else {}),
+                    **({"sql": model.sql} if show_sql else {}),
                     "default_time_dimension": model.default_time_dimension,
                     "hidden": model.hidden,
                     "row_count": row_count,
-                    "filters": model.filters,
+                    **({"filters": model.filters} if show_sql else {}),
                     "dimensions": [
                         {
                             "name": d.name,
                             "type": str(d.type),
                             "primary_key": d.primary_key,
-                            "sql": d.sql,
+                            **({"sql": d.sql} if show_sql else {}),
                             "label": d.label,
                             "description": d.description,
                             "sampled": profile_by_name.get(d.name),
@@ -997,9 +994,9 @@ def create_mcp_server(storage: StorageBackend):
                     "measures": [
                         {
                             "name": m.name,
-                            "sql": m.sql,
+                            **({"sql": m.sql} if show_sql else {}),
                             "allowed_aggregations": m.allowed_aggregations,
-                            "filter": m.filter,
+                            **({"filter": m.filter} if show_sql else {}),
                             "label": m.label,
                             "description": m.description,
                         }
