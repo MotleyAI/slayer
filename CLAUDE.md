@@ -30,10 +30,10 @@ poetry run pytest tests/integration/test_integration_duckdb.py -m integration
 poetry run pytest tests/test_sql_generator.py -v
 
 # Start API server
-poetry run slayer serve --models-dir ./slayer_data
+poetry run slayer serve --storage ./slayer_data
 
 # Start MCP server
-poetry run slayer mcp --models-dir ./slayer_data
+poetry run slayer mcp --storage ./slayer_data
 
 # Lint
 poetry run ruff check slayer/ tests/
@@ -55,8 +55,10 @@ poetry run ruff check slayer/ tests/
 - **Backward compat**: old `type` field on measures (e.g., `type: sum`) is still accepted (deprecated). Bare measure names in formulas (e.g., `"revenue"`) work when the measure has a deprecated `type` — emits `DeprecationWarning`.
 - Queries support `fields` — list of `{"formula": "...", "name": "...", "label": "..."}` parsed by `slayer/core/formula.py`. `label` is an optional human-readable display name (also supported on `ColumnRef` and `TimeDimension`)
 - **Result column naming**: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders.count` (star-colon prefix stripped). When converting queries to models (`create_model_from_query`), the same colon-to-underscore mapping applies.
+- **Response attributes**: `SlayerResponse.attributes` is a `ResponseAttributes` with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata(label, format)`. Split by type so consumers can distinguish dimension metadata from measure metadata.
 - Available formula transforms: cumsum, time_shift, change, change_pct, rank, last (FIRST_VALUE window), lag, lead. time_shift, change, and change_pct always use self-join CTEs (no edge NULLs, gap-safe). time_shift uses row-number-based join without granularity, date-arithmetic-based with granularity. lag/lead use LAG/LEAD window functions directly (more efficient but produce NULLs at edges)
 - Filters can reference computed field names or contain inline transform expressions (e.g., `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`). These are auto-extracted as hidden fields and applied as post-filters on the outer query
+- Filters support `{variable}` placeholders substituted from `query.variables: Dict[str, Any]`. Values must be str/number, inserted as-is. `{{`/`}}` for literal braces. Undefined variables raise errors.
 - Models can have explicit `joins` to other models (LEFT JOINs). Cross-model measures use dotted syntax with colon aggregation (`customers.revenue:sum`) and multi-hop (`customers.regions.name`). Joins are auto-resolved by walking the join graph. Transforms work on cross-model measures (`cumsum(customers.revenue:sum)`)
 - **Path-based table aliases**: Joined tables use `__`-delimited path aliases in SQL to disambiguate diamond joins. In queries, dots denote paths (`customers.regions.name`); in model SQL definitions, `__` denotes the table alias (`customers__regions.name`). For diamond joins (same table reached via different paths, e.g., `orders → customers → regions` AND `orders → warehouses → regions`), each path gets a unique alias (`customers__regions` vs `warehouses__regions`). Ingestion auto-detects diamond joins via FK graph BFS
 - `SlayerQuery.source_model` accepts a model name, inline `SlayerModel`, or `ModelExtension` (extends a model with extra dims/measures/joins). `create_model_from_query()` saves a query as a permanent model
@@ -69,6 +71,22 @@ poetry run ruff check slayer/ tests/
 - Result column keys use `model_name.column_name` format (e.g., `"orders.count"`). For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`
 - Datasource configs support `${ENV_VAR}` references resolved at read time
 - Integration tests are marked with `@pytest.mark.integration` and skip when DB is unavailable
+
+## Async Architecture
+
+- **Engine is async-first**: `SlayerQueryEngine.execute()` is `async`. Use `execute_sync()` for CLI/notebooks/scripts.
+- **Storage backends are async**: All `StorageBackend` methods are `async def`. YAMLStorage uses sync I/O inside async (fast local files). SQLiteStorage uses `asyncio.to_thread`. Future Postgres storage can use true async (asyncpg).
+- **SQL client**: Uses native async drivers for Postgres (`asyncpg`) and MySQL (`aiomysql`). Falls back to `asyncio.to_thread` for SQLite, DuckDB, ClickHouse. Connection pools are cached per `SlayerSQLClient` instance.
+- **Tests use `pytest-asyncio`** with `asyncio_mode = "auto"` — test functions can be `async def` and `await` directly.
+- **Sync wrappers**: `run_sync()` in `async_utils.py` bridges async→sync for CLI and MCP tools. Handles both "no event loop" and "inside Jupyter" cases.
+
+## CLI
+
+- All commands accept `--storage` (directory for YAML, `.db` file for SQLite). Legacy `--models-dir` still works.
+- `slayer query` supports `--dry-run` (preview SQL) and `--explain` (execution plan, dialect-aware).
+- `slayer datasources create-inline` supports `--password-stdin` for secure credential input.
+- `slayer datasources test` verifies connectivity.
+- MCP `query()` tool has a `format` parameter: `"markdown"` (default), `"json"`, or `"csv"`.
 
 ## Database Support
 
@@ -84,7 +102,7 @@ SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at
 **Tier 2 — code-covered** (unit tests for SQL generation, no live instance verification):
 - Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, Oracle
 
-Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_offset_expr` (date arithmetic for shifted CTEs). Calendar-based time shifts use timestamp offset inside DATE_TRUNC with simple equality joins (no per-dialect join logic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_offset_expr` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrized tests in `TestMultiDialectGeneration`.
+Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_offset_expr` (date arithmetic for shifted CTEs). Calendar-based time shifts use timestamp offset inside DATE_TRUNC with simple equality joins (no per-dialect join logic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_offset_expr` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrised tests in `TestMultiDialectGeneration`.
 
 ## Testing
 
@@ -124,3 +142,14 @@ To auto-fix fixable issues:
 ```bash
 poetry run ruff check --fix slayer/ tests/
 ```
+
+## Documentation Requirements
+
+**ALWAYS update documentation when making API or user-facing changes.** Check and update ALL of these locations:
+
+1. **`CLAUDE.md`** — Key Conventions, Async Architecture, CLI, Database Support sections
+2. **`docs/`** — concept docs (`models.md`, `queries.md`, `formulas.md`, `ingestion.md`), getting-started guides, reference docs
+3. **`.claude/skills/`** — `slayer-query.md`, `slayer-models.md`, `slayer-overview.md`
+4. **`docs/configuration/`** — datasources, storage backends
+
+When renaming a field, adding a parameter, or changing response structure, **grep all docs and skills** for the old name and update every occurrence.

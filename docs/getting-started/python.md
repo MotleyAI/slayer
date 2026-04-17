@@ -72,7 +72,7 @@ result.data        # list of row dicts
 result.columns     # list of column names
 result.row_count   # number of rows
 result.sql         # generated SQL (when dry_run or explain is set)
-result.meta        # dict of column name → FieldMetadata (labels, etc.)
+result.attributes  # ResponseAttributes with .dimensions and .measures dicts
 ```
 
 ## Remote mode (client → server)
