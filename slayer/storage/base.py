@@ -1,7 +1,6 @@
 """Abstract storage protocol and factory."""
 
 import os
-import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -25,10 +24,10 @@ def default_storage_path() -> str:
         return env
 
     if os.name == "nt":
+        # Windows
         base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
     else:
+        # MacOS, Linux, etc.
         base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 
     return str(base / "slayer")
