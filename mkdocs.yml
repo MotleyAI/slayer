@@ -3,6 +3,7 @@ site_description: A lightweight semantic layer for AI agents
 site_url: https://motley-slayer.readthedocs.io
 repo_url: https://github.com/motleyai/slayer
 repo_name: motleyai/slayer
+edit_uri: edit/main/docs/
 
 theme:
   name: readthedocs
