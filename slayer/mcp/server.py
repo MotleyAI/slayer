@@ -114,6 +114,34 @@ def _escape_md_cell(value: Any) -> str:
     return s if s else "—"
 
 
+def _md_code_span(value: Any) -> str:
+    """Wrap *value* in a CommonMark inline code span, safe for any content.
+
+    The fence is chosen to be one backtick longer than the longest contiguous
+    run of backticks inside the value, so embedded backticks never break the
+    span.  Per the CommonMark spec, a space is added inside the fence when the
+    content starts or ends with a backtick.
+    """
+    text = str(value).replace("|", "\\|").replace("\r\n", " ").replace("\r", " ").replace("\n", " ").strip()
+    if not text:
+        return "` `"
+    # Find the longest run of consecutive backticks
+    max_run = 0
+    run = 0
+    for ch in text:
+        if ch == "`":
+            run += 1
+            if run > max_run:
+                max_run = run
+        else:
+            run = 0
+    fence = "`" * (max_run + 1)
+    # CommonMark: space padding needed when content starts or ends with backtick
+    if text.startswith("`") or text.endswith("`"):
+        return f"{fence} {text} {fence}"
+    return f"{fence}{text}{fence}"
+
+
 def _cell_is_present(value: Any) -> bool:
     """A cell is 'present' when it carries information: not None, and not an
     empty (or whitespace-only) string. Every other value counts as present."""
@@ -151,8 +179,7 @@ def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
             v = r.get(col)
             if not _cell_is_present(v):
                 continue
-            text = str(v).replace("|", "\\|").replace("\r", " ").replace("\n", " ").replace("`", "\\`").strip()
-            rendered.append(f"`{text}`")
+            rendered.append(_md_code_span(v))
         return ", ".join(rendered)
 
     header = "| " + " | ".join(kept) + " |"
@@ -291,7 +318,7 @@ def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
     - Numeric/temporal range → ``<min> .. <max>``.
     """
     if entry.values is not None:
-        return ", ".join(f"`{v}`" for v in entry.values)
+        return ", ".join(_md_code_span(v) for v in entry.values)
     if (
         entry.distinct_count is None
         and entry.values is None
@@ -911,6 +938,8 @@ def create_mcp_server(storage: StorageBackend):
         # Sample data via a regular SlayerQuery (same path the `query` MCP tool takes)
         query_args = _build_sample_query_args(model=model, num_rows=num_rows)
         sample_sql: Optional[str] = None
+        sample_data: Optional[Dict[str, Any]] = None
+        sample_error: Optional[str] = None
         try:
             sample_query = SlayerQuery.model_validate(query_args)
             sample_result = await engine.execute(query=sample_query)
@@ -920,6 +949,7 @@ def create_mcp_server(storage: StorageBackend):
                 data=sample_result.data,
                 model_name=model.name,
             )
+            sample_data = {"columns": cols, "rows": data}
             sample_result.columns = cols
             sample_result.data = data
             sample_section = f"## Sample Data\n\n{sample_result.to_markdown()}"
@@ -934,6 +964,7 @@ def create_mcp_server(storage: StorageBackend):
                 err = _friendly_db_error(e)
             else:
                 err = str(e)
+            sample_error = err
             sample_section = f"## Sample Data\n\n_Error fetching sample data: {err}_"
             if show_sql and sample_sql:
                 sample_section = (
@@ -999,6 +1030,9 @@ def create_mcp_server(storage: StorageBackend):
                     ],
                     "reachable_dimensions": reach_dims,
                     "reachable_measures": reach_measures,
+                    "sample_data": sample_data,
+                    "sample_data_error": sample_error,
+                    **({"sample_sql": sample_sql} if show_sql and sample_sql else {}),
                 },
                 indent=2,
                 default=str,
