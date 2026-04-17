@@ -2,6 +2,18 @@
 
 SLayer uses a storage backend to persist model and datasource configurations.
 
+## Default Location
+
+When no `--storage` flag or `$SLAYER_STORAGE` env var is set, SLayer uses a platform-appropriate default:
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.local/share/slayer` (or `$XDG_DATA_HOME/slayer`) |
+| macOS | `~/Library/Application Support/slayer` |
+| Windows | `%LOCALAPPDATA%\slayer` |
+
+This means `slayer serve` works out of the box with no flags. Override with `--storage` or `$SLAYER_STORAGE`.
+
 ## Available Backends
 
 ### YAMLStorage (default)

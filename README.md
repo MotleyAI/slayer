@@ -261,8 +261,8 @@ See the [documentation page for storage backends](https://motley-slayer.readthed
 |   2   | Multi-stage queries                             |   ✅    |
 |   3   | Cross-model measures                            |   ✅    |
 |   4   | Aggregation at query time                       |   ✅    |
-|   5   | Unpivoting                                      |   ❌    |
-|   6   | Smart output formatting (currency, percentages) |   ❌    |
+|   5   | Smart output formatting (currency, percentages) |   ✅    |
+|   6   | Unpivoting                                      |   ❌    |
 |   7   | Auto-propagating filters                        |   ❌    |
 |   8   | Asof joins                                      |   ❌    |
 |   9   | Chart generation (eCharts)                      |   ❌    |

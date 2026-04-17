@@ -29,11 +29,11 @@ poetry run pytest tests/integration/test_integration_duckdb.py -m integration
 # Run a specific test file
 poetry run pytest tests/test_sql_generator.py -v
 
-# Start API server
-poetry run slayer serve --storage ./slayer_data
+# Start API server (uses platform default storage path, override with --storage)
+poetry run slayer serve
 
 # Start MCP server
-poetry run slayer mcp --storage ./slayer_data
+poetry run slayer mcp
 
 # Lint
 poetry run ruff check slayer/ tests/
@@ -82,7 +82,7 @@ poetry run ruff check slayer/ tests/
 
 ## CLI
 
-- All commands accept `--storage` (directory for YAML, `.db` file for SQLite). Legacy `--models-dir` still works.
+- All commands accept `--storage` (directory for YAML, `.db` file for SQLite). Defaults to platform-appropriate path (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS). Override with `$SLAYER_STORAGE` env var. Legacy `--models-dir` still works.
 - `slayer query` supports `--dry-run` (preview SQL) and `--explain` (execution plan, dialect-aware).
 - `slayer datasources create-inline` supports `--password-stdin` for secure credential input.
 - `slayer datasources test` verifies connectivity.
