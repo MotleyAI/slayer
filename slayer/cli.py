@@ -1,15 +1,15 @@
 """CLI entry point for SLayer."""
 
 import argparse
-import os
 import sys
 
 from slayer.async_utils import run_sync
+from slayer.storage.base import default_storage_path
 
-_STORAGE_DEFAULT = os.environ.get("SLAYER_STORAGE", os.environ.get("SLAYER_MODELS_DIR", "./slayer_data"))
+_STORAGE_DEFAULT = default_storage_path()
 _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
-    "(default: $SLAYER_STORAGE or $SLAYER_MODELS_DIR or ./slayer_data)"
+    f"(default: {_STORAGE_DEFAULT})"
 )
 
 

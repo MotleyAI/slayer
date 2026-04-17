@@ -23,6 +23,7 @@ from slayer.mcp.server import (
     _format_table,
     _friendly_db_error,
     _markdown_table,
+    _md_code_span,
     _strip_model_prefix,
     create_mcp_server,
 )
@@ -223,6 +224,60 @@ class TestInspectModel:
         assert "multi-hop" in customers_line
 
 
+class TestMdCodeSpan:
+    def test_plain_value(self) -> None:
+        assert _md_code_span("hello") == "`hello`"
+
+    def test_value_with_single_backtick(self) -> None:
+        result = _md_code_span("no`ticks")
+        assert result == "``no`ticks``"
+
+    def test_value_with_double_backticks(self) -> None:
+        result = _md_code_span("a``b")
+        assert result == "```a``b```"
+
+    def test_value_starting_with_backtick(self) -> None:
+        result = _md_code_span("`start")
+        assert result == "`` `start ``"
+
+    def test_value_ending_with_backtick(self) -> None:
+        result = _md_code_span("end`")
+        assert result == "`` end` ``"
+
+    def test_pipe_is_escaped(self) -> None:
+        assert _md_code_span("a|b") == r"`a\|b`"
+
+    def test_newlines_collapsed(self) -> None:
+        assert _md_code_span("a\nb\rc\r\nd") == "`a b c d`"
+
+    def test_empty_string(self) -> None:
+        assert _md_code_span("") == "` `"
+
+    def test_non_string_value(self) -> None:
+        assert _md_code_span(42) == "`42`"
+
+
+class TestInspectModelJsonFormat:
+    async def test_json_format_includes_sample_data(self, mcp_server, storage: YAMLStorage) -> None:
+        """inspect_model(format='json') must include sample_data and sample_data_error keys."""
+        await storage.save_model(SlayerModel(
+            name="jtest",
+            sql_table="t",
+            data_source="test",
+            dimensions=[Dimension(name="x")],
+            measures=[Measure(name="m", sql="val")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "jtest", "format": "json",
+        })
+        parsed = json.loads(result)
+        assert "sample_data" in parsed
+        assert "sample_data_error" in parsed
+        assert parsed["model_name"] == "jtest"
+        # sample_sql should NOT appear when show_sql is not requested
+        assert "sample_sql" not in parsed
+
+
 class TestBuildSampleQueryArgs:
     def test_avg_when_allowed(self) -> None:
         model = SlayerModel(
@@ -336,7 +391,7 @@ class TestMarkdownHelpers:
     def test_escape_pipes_and_newlines(self) -> None:
         assert _escape_md_cell("a|b") == "a\\|b"
         assert _escape_md_cell("line1\nline2") == "line1 line2"
-        assert _escape_md_cell("line1\r\nline2") == "line1  line2"
+        assert _escape_md_cell("line1\r\nline2") == "line1 line2"
 
     def test_table_empty(self) -> None:
         assert _markdown_table(rows=[], columns=["x"]) == "_(none)_"
@@ -381,8 +436,8 @@ class TestMarkdownHelpers:
         assert out == "`x`, `y`, `z`"
 
     def test_single_column_escapes_backticks(self) -> None:
-        """Backticks inside values must be escaped when the single-column branch
-        wraps them in backtick delimiters, otherwise malformed markdown results."""
+        """Backticks inside values use a longer fence instead of backslash escaping,
+        per CommonMark inline code span rules."""
         out = _markdown_table(
             rows=[
                 {"name": "no`ticks", "desc": None},
@@ -390,7 +445,7 @@ class TestMarkdownHelpers:
             ],
             columns=["name", "desc"],
         )
-        assert out == r"`no\`ticks`, `plain`"
+        assert out == "``no`ticks``, `plain`"
 
     def test_table_all_columns_pruned_returns_none_marker(self) -> None:
         out = _markdown_table(

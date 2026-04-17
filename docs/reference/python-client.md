@@ -81,7 +81,7 @@ engine = SlayerQueryEngine(storage=storage)
 result = engine.execute(query=query)
 # result.data      — list of row dicts
 # result.columns   — list of column names
-# result.meta      — dict mapping column names to FieldMetadata (label, and more coming soon)
+# result.attributes — ResponseAttributes with .dimensions and .measures dicts (column → FieldMetadata)
 #
 # client.query() returns SlayerResponse with all fields above
 # client.sql(query) returns just the generated SQL string

@@ -1,9 +1,36 @@
 """Abstract storage protocol and factory."""
 
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+
+
+def default_storage_path() -> str:
+    """Return the platform-appropriate default storage directory.
+
+    Resolution order:
+    1. $SLAYER_STORAGE environment variable (if set)
+    2. $SLAYER_MODELS_DIR environment variable (legacy, if set)
+    3. Platform default:
+       - Linux: $XDG_DATA_HOME/slayer (defaults to ~/.local/share/slayer)
+       - macOS: ~/Library/Application Support/slayer
+       - Windows: %LOCALAPPDATA%/slayer
+    """
+    env = os.environ.get("SLAYER_STORAGE") or os.environ.get("SLAYER_MODELS_DIR")
+    if env:
+        return env
+
+    if os.name == "nt":
+        # Windows
+        base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        # MacOS, Linux, etc.
+        base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+
+    return str(base / "slayer")
 
 
 class StorageBackend(ABC):

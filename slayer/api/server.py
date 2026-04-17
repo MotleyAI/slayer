@@ -36,12 +36,17 @@ class FieldMetadataResponse(BaseModel):
     format: Optional[NumberFormat] = None
 
 
+class AttributesResponse(BaseModel):
+    dimensions: Dict[str, FieldMetadataResponse] = {}
+    measures: Dict[str, FieldMetadataResponse] = {}
+
+
 class QueryResponse(BaseModel):
     data: List[Dict[str, Any]]
     row_count: int
     columns: List[str]
     sql: Optional[str] = None
-    meta: Optional[Dict[str, FieldMetadataResponse]] = None
+    attributes: Optional[AttributesResponse] = None
 
 
 class IngestRequest(BaseModel):
@@ -71,19 +76,22 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 request.model_dump(exclude_none=True)
             )
             result = await engine.execute(query=slayer_query)
-            meta = (
-                {
-                    k: FieldMetadataResponse(label=v.label, format=v.format)
-                    for k, v in result.meta.items()
-                }
-                if result.meta
-                else None
-            )
+            attrs = result.attributes
+
+            def _convert_meta(d: dict) -> Dict[str, FieldMetadataResponse]:
+                return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
+
+            attributes = None
+            if attrs and (attrs.dimensions or attrs.measures):
+                attributes = AttributesResponse(
+                    dimensions=_convert_meta(attrs.dimensions),
+                    measures=_convert_meta(attrs.measures),
+                )
             response = QueryResponse(
                 data=result.data,
                 row_count=result.row_count,
                 columns=result.columns,
-                meta=meta,
+                attributes=attributes,
             )
             if slayer_query.dry_run or slayer_query.explain:
                 response.sql = result.sql
