@@ -79,7 +79,7 @@ class TestSemanticOverRegularModel:
     def test_inlines_transitive_regular_refs(self) -> None:
         # bridge refs 'claim' which is itself a regular model wrapping raw 'Claim' source
         claim_sql = "select * from {{ ref('Claim') }}"
-        bridge_sql = "select * from {{ ref('claim') }}"
+        bridge_sql = "select * from {{ ref('claim') }} c"
         project = DbtProject(
             semantic_models=[_semantic_model("bridge", "bridge")],
             metrics=[],
@@ -91,8 +91,10 @@ class TestSemanticOverRegularModel:
         result = DbtToSlayerConverter(project=project, data_source="db").convert()
         m = next(m for m in result.models if m.name == "bridge")
         assert m.sql is not None
-        assert "claim_ref_sub" in m.sql
+        # Caller alias ``c`` directly follows the inlined ``claim`` subquery;
+        # the innermost ``Claim`` (source) is a bare table reference.
         assert "from Claim" in m.sql
+        assert m.sql.strip() == "select * from (select * from Claim) c"
 
 
 class TestEndToEndFromDisk:

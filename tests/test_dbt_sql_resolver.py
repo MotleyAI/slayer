@@ -14,31 +14,29 @@ class TestRefResolution:
 
     def test_ref_to_regular_model_inlines_subquery(self) -> None:
         inner = "select id, amount from raw_orders"
-        sql = "select count(*) from {{ ref('orders') }}"
+        sql = "select count(*) from {{ ref('orders') }} o"
         resolved, warnings = resolve_refs(
             sql,
             regular_models_sql={"orders": inner},
         )
         assert warnings == []
-        assert resolved == (
-            "select count(*) from (select id, amount from raw_orders) AS orders_ref_sub"
-        )
+        # The caller's alias ``o`` sits directly after the inlined subquery.
+        assert resolved == "select count(*) from (select id, amount from raw_orders) o"
 
     def test_transitive_refs(self) -> None:
         # C is a source table; B refs C; A refs B.
         b = "select * from {{ ref('C') }}"
         a = "select * from {{ ref('B') }}"
-        outer = "select * from {{ ref('A') }}"
+        outer = "select * from {{ ref('A') }} a"
         resolved, warnings = resolve_refs(
             outer,
             regular_models_sql={"A": a, "B": b},
         )
         assert warnings == []
-        assert "C" in resolved
-        assert "A_ref_sub" in resolved
-        assert "B_ref_sub" in resolved
-        # Transitive inlining: the outer wraps A, which wraps B, which references bare C.
-        assert "(select * from (select * from C) AS B_ref_sub) AS A_ref_sub" in resolved
+        # Transitive inlining: the outer wraps A, which wraps B, which
+        # references bare C. No AS-aliases are injected by the resolver —
+        # the outer ``a`` is the only alias, supplied by the caller.
+        assert resolved == "select * from (select * from (select * from C)) a"
 
     def test_cycle_detection(self) -> None:
         # A refs B; B refs A. The resolver must stop at the cycle and warn.

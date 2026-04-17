@@ -130,7 +130,15 @@ def resolve_refs(
                 _visited=_visited | {model_name},
             )
             warnings.extend(inner_warnings)
-            return f"({inner_sql}) AS {model_name}_ref_sub"
+            # Emit the subquery without an AS-alias: in dbt, ``{{ ref('X') }}``
+            # is a table reference whose alias (if any) is supplied by the
+            # caller. Emitting ``AS X_ref_sub`` here would collide with that
+            # caller alias and produce invalid SQL (``(...) AS a b`` is not a
+            # valid FROM clause in any dialect we target). Callers that
+            # relied on dbt's default table-name-as-alias semantic and
+            # referenced columns via ``X.col`` must supply an explicit alias
+            # at the call site.
+            return f"({inner_sql})"
         # Not a known regular model → treat as source table.
         return model_name
 
