@@ -1,6 +1,7 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import os
 import sys
 
 from slayer.async_utils import run_sync
