@@ -110,7 +110,7 @@ def _escape_md_cell(value: Any) -> str:
     """
     if value is None:
         return "—"
-    s = str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ").strip()
+    s = str(value).replace("|", "\\|").replace("\r\n", " ").replace("\r", " ").replace("\n", " ").strip()
     return s if s else "—"
 
 

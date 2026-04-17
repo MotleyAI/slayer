@@ -336,7 +336,7 @@ class TestMarkdownHelpers:
     def test_escape_pipes_and_newlines(self) -> None:
         assert _escape_md_cell("a|b") == "a\\|b"
         assert _escape_md_cell("line1\nline2") == "line1 line2"
-        assert _escape_md_cell("line1\r\nline2") == "line1  line2"
+        assert _escape_md_cell("line1\r\nline2") == "line1 line2"
 
     def test_table_empty(self) -> None:
         assert _markdown_table(rows=[], columns=["x"]) == "_(none)_"
