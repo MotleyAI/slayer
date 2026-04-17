@@ -48,6 +48,7 @@ Dimensions are the columns you group by and filter on.
 | `type` | string | No | `string` | Data type |
 | `primary_key` | bool | No | `false` | Is this a primary key? |
 | `hidden` | bool | No | `false` | Hide from listings |
+| `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"source": "CRM", "team": "analytics"}`) |
 
 ### Dimension Types
 
@@ -72,6 +73,7 @@ Measures are named row-level SQL expressions. They define *what* to compute, not
 | `allowed_aggregations` | list[str] | No | — | Whitelist of allowed aggregation types (validated at model creation and query time) |
 | `filter` | string | No | — | SQL condition applied before aggregation. See [Filtered Measures](#filtered-measures) below. |
 | `hidden` | bool | No | `false` | Hide from listings |
+| `meta` | dict | No | — | Arbitrary JSON metadata |
 
 ### Filtered Measures
 
@@ -259,6 +261,7 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 | `description` | string | No | — | Helps agents and users understand the model |
 | `hidden` | bool | No | `false` | Hide from model listings |
 | `default_time_dimension` | string | No | — | Default time dimension name for time-dependent formulas (e.g. `"created_at"`) |
+| `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"owner": "analytics", "version": 2}`) |
 
 ## Result Column Format
 

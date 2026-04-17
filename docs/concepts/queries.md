@@ -74,7 +74,7 @@ Query results are returned as a `SlayerResponse`:
 | `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders.count"`, `"orders.customers.regions.name"` for multi-hop) |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
-| `meta` | dict[str, FieldMetadata] | Column alias → field metadata (currently contains `label`; more fields coming soon) |
+| `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
 
 ```json
 {

@@ -22,6 +22,7 @@ from slayer.storage.base import StorageBackend
 logger = logging.getLogger(__name__)
 
 VALID_DIMENSION_TYPES = {"string", "time", "date", "boolean", "number"}
+_UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set to None"
 
 # Aggregations that are safe for sample-data extraction: zero extra args,
 # no time-column context needed.
@@ -623,8 +624,8 @@ def create_mcp_server(storage: StorageBackend):
             output = _format_output(result=result, fmt=fmt)
             if show_sql and result.sql:
                 output = f"SQL:\n{result.sql}\n\n{output}"
-            if result.meta:
-                output += "\n\n" + _format_meta(meta=result.meta)
+            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
+                output += "\n\n" + _format_attributes(attributes=result.attributes)
             return output
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -1180,6 +1181,7 @@ def create_mcp_server(storage: StorageBackend):
         add_filters: Optional[List[str]] = None,
         remove_filters: Optional[List[str]] = None,
         remove: Optional[Dict[str, List[str]]] = None,
+        meta: Optional[Dict[str, Any]] = _UNSET,
     ) -> str:
         """Edit an existing model in a single call — update metadata, upsert dimensions/measures/aggregations/joins,
         manage filters, and remove entities.
@@ -1192,6 +1194,7 @@ def create_mcp_server(storage: StorageBackend):
             sql_table: Database table name.
             sql: Custom SQL expression for the model source.
             hidden: Whether this model is hidden from discovery.
+            meta: Arbitrary JSON metadata for the model (replaces existing meta). Pass null/None to clear.
             dimensions: Dimensions to create or update (upsert by name). Each dict: {"name": "col", "type": "string", "sql": "col", "description": "...", "primary_key": false, "hidden": false}.
                 If a dimension with this name exists, only the provided fields are updated; omitted fields keep current values.
                 Types: string, number, time, date, boolean.
@@ -1241,6 +1244,9 @@ def create_mcp_server(storage: StorageBackend):
         if hidden is not None:
             model.hidden = hidden
             changes.append(f"set hidden to {hidden}")
+        if meta is not _UNSET:
+            model.meta = meta
+            changes.append("updated meta" if meta is not None else "cleared meta")
 
         # --- Phase 2: Removals ---
         if remove:
@@ -1669,10 +1675,10 @@ def _format_output(result: SlayerResponse, fmt: str) -> str:
     return _format_json(data=result.data, columns=result.columns)
 
 
-def _format_meta(meta: Dict[str, Any]) -> str:
-    """Format field metadata as a compact section."""
-    lines = ["Column metadata:"]
-    for col, fm in meta.items():
+def _format_field_meta(entries: Dict[str, Any]) -> List[str]:
+    """Format a dict of field metadata entries into lines."""
+    lines = []
+    for col, fm in entries.items():
         parts = []
         if fm.label:
             parts.append(f"label={fm.label}")
@@ -1685,6 +1691,18 @@ def _format_meta(meta: Dict[str, Any]) -> str:
             parts.append(f"format=({', '.join(fmt_parts)})")
         if parts:
             lines.append(f"  {col}: {', '.join(parts)}")
-    if len(lines) == 1:
-        return ""  # No metadata to show
-    return "\n".join(lines)
+    return lines
+
+
+def _format_attributes(attributes) -> str:
+    """Format response attributes as a compact section."""
+    lines = []
+    dim_lines = _format_field_meta(attributes.dimensions)
+    if dim_lines:
+        lines.append("Dimension attributes:")
+        lines.extend(dim_lines)
+    measure_lines = _format_field_meta(attributes.measures)
+    if measure_lines:
+        lines.append("Measure attributes:")
+        lines.extend(measure_lines)
+    return "\n".join(lines)if lines else ""
