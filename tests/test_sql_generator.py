@@ -2870,3 +2870,66 @@ class TestIsolatedFilteredMeasureCTEs:
         # The base should have GROUP BY for deduplication
         base_cte = sql.split("_fm_")[0]
         assert "GROUP BY" in base_cte
+
+    async def test_combined_uses_cross_join_when_no_dimensions(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """When no dimensions exist, measure CTEs are CROSS JOINed to base (Bug Q6)."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum"), Field(formula="loss_reserve_amt:sum")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # Both isolated CTEs should be present
+        assert "_fm_loss_payment_amt" in sql
+        assert "_fm_loss_reserve_amt" in sql
+        # With no dimensions, CROSS JOIN is needed (not LEFT JOIN with no ON)
+        assert "CROSS JOIN" in sql
+
+    async def test_filter_join_preserved_when_skip_isolated(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Cross-model filter joins survive skip_isolated join stripping (Bug Q9).
+
+        When an isolated measure triggers skip_isolated, the base query strips
+        non-dimension joins. But query-level filters that reference cross-model
+        paths still need their joins.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            # No dimensions on claim — only the filter references the claim join
+            filters=["claim.claim_number = '12345'"],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # The base query WHERE clause references claim.claim_number
+        assert "claim_number" in sql
+        # The claim join must be present in the base query for the WHERE to work
+        base_section = sql.split("_fm_")[0]
+        assert "Claim" in base_section and "JOIN" in base_section
+
+    async def test_isolated_cte_qualifies_cross_model_dim_correctly(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Isolated CTEs qualify cross-model dimensions with dim.model_name (Bug Q11).
+
+        The dimension claim.claim_number is on the 'claim' model. The isolated
+        CTE must reference claim.claim_number, not claim_amount.claim_number.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # Extract the _fm CTE body (between _fm_ name and the next CTE/combined)
+        fm_start = sql.index("_fm_loss_payment_amt")
+        fm_body = sql[fm_start:sql.index("\n)", fm_start)]
+        # The dimension should use claim.claim_number, not claim_amount.claim_number
+        assert "claim.claim_number" in fm_body, f"Expected claim.claim_number in CTE:\n{fm_body}"
+        assert "claim_amount.claim_number" not in fm_body, (
+            f"Found wrong table qualification claim_amount.claim_number in CTE:\n{fm_body}"
+        )

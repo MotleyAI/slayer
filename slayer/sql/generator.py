@@ -241,12 +241,12 @@ class SQLGenerator:
             select_parts = []
             group_parts = []
             for dim in enriched.dimensions:
-                col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=enriched.model_name)
+                col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
                 col_sql = col_expr.sql(dialect=self.dialect)
                 select_parts.append(f'{col_sql} AS "{dim.alias}"')
                 group_parts.append(col_sql)
             for td in enriched.time_dimensions:
-                col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=enriched.model_name)
+                col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
                 td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
                 td_sql = td_expr.sql(dialect=self.dialect)
                 select_parts.append(f'{td_sql} AS "{td.alias}"')
@@ -304,6 +304,8 @@ class SQLGenerator:
                 join_on_parts.append(f'_base."{a}" = {cte_name}."{a}"')
             if join_on_parts:
                 from_clause_str += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"
+            else:
+                from_clause_str += f"\nCROSS JOIN {cte_name}"
 
         combined_select = (
             f"SELECT {', '.join(final_parts)}\n"
@@ -569,6 +571,15 @@ class SQLGenerator:
         # When skip_isolated, only include joins needed for dimensions (not filter-target
         # joins of isolated measures, which would cause conflicting INNER JOIN intersections).
         dim_only_aliases = _needed_join_aliases(enriched) if skip_isolated else None
+        if dim_only_aliases is not None:
+            # Also include aliases needed by WHERE-clause filters
+            for f in enriched.filters:
+                if not f.is_post_filter:
+                    for col in f.columns:
+                        if "." in col:
+                            parts = col.split(".")
+                            for i in range(1, len(parts)):
+                                dim_only_aliases.add("__".join(parts[:i]))
         resolved_joins = enriched.resolved_joins
         if dim_only_aliases is not None:
             resolved_joins = [(t, a, c, j) for t, a, c, j in resolved_joins if a in dim_only_aliases]
