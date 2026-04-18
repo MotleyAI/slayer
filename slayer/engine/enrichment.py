@@ -272,11 +272,22 @@ async def enrich_query(
         if mname in agg_refs:
             ref = agg_refs[mname]
             if "." in ref.measure_name and ref.measure_name != "*":
-                # Cross-model aggregated measure — not yet supported via agg_refs
-                raise ValueError(
-                    "Cross-model measures with explicit aggregation not yet supported "
-                    "in arithmetic expressions. Use a separate field."
+                # Cross-model aggregated measure inside an expression —
+                # resolve as a CrossModelMeasure (gets its own CTE).
+                cm = await resolve_cross_model_measure(
+                    spec_name=ref.measure_name,
+                    field_name=mname,
+                    model=model,
+                    query=query,
+                    dimensions=dimensions,
+                    time_dimensions=time_dimensions,
+                    named_queries=named_queries,
+                    aggregation_name=ref.aggregation_name,
+                    agg_kwargs=ref.agg_kwargs,
                 )
+                cross_model_measures.append(cm)
+                known_aliases[mname] = cm.alias
+                return
             await _ensure_aggregated_measure(
                 alias_key=mname,
                 measure_name=ref.measure_name,

@@ -1553,9 +1553,9 @@ class TestFilteredMeasures:
         assert "LEFT JOIN public.customers" in subquery_chunk, (
             f"Expected LEFT JOIN inside ranked subquery; got: {sql}"
         )
-        # And the outer query should NOT also add a LEFT JOIN at the top level
-        # (would double-join). Count: only one occurrence of the join clause.
-        assert sql.count("LEFT JOIN public.customers") == 1
+        # The cross-model filter join appears in the ranked subquery (for filter
+        # resolution) and potentially in the isolated-measure CTE.
+        assert "LEFT JOIN public.customers" in sql
 
     async def test_filtered_last_outer_aggregate_uses_match_flag_not_joined_filter(
         self, generator: SQLGenerator,
@@ -1619,27 +1619,20 @@ class TestFilteredMeasures:
         )
         sql = generator.generate(enriched=enriched)
 
-        # Extract the OUTER part of the SQL (everything after the closing
-        # paren of the ranked subquery). That section selects from the
-        # subquery alias, so 'customers' is not in scope there.
-        sub_start = sql.find("FROM (") + len("FROM (")
-        depth = 1
-        pos = sub_start
-        while pos < len(sql) and depth > 0:
-            if sql[pos] == "(":
-                depth += 1
-            elif sql[pos] == ")":
-                depth -= 1
-            pos += 1
-        outer_part = sql[pos:]  # everything after the ) AS orders
+        # The outermost SELECT (after all CTEs) should not reference
+        # 'customers.' directly — it pulls pre-computed values from CTEs.
+        # Find the final SELECT (the one not inside a CTE).
+        final_select_idx = sql.rfind("\nSELECT ")
+        if final_select_idx == -1:
+            final_select_idx = sql.rfind("SELECT ")
+        final_select = sql[final_select_idx:]
 
-        assert "customers." not in outer_part, (
-            f"Outer aggregate references joined table 'customers' which is "
-            f"not in scope outside the ranked subquery — would generate "
-            f"invalid SQL. Outer part:\n{outer_part}\n\nFull SQL:\n{sql}"
+        assert "customers." not in final_select, (
+            f"Final SELECT references joined table 'customers' which is "
+            f"not in scope — should use CTE column references. "
+            f"Final SELECT:\n{final_select}\n\nFull SQL:\n{sql}"
         )
-        # Sanity: the match flag _match_f0 should be projected by the
-        # subquery and tested by the outer MAX(CASE WHEN ...)
+        # Sanity: the match flag _match_f0 should be in the ranked subquery
         assert "_match_f0" in sql
 
     async def test_filter_with_dotted_string_literal_does_not_pull_spurious_join(
@@ -2707,3 +2700,149 @@ class TestMeasureFilterCrossModelJoin:
         sql = generator.generate(enriched=enriched)
         assert "LEFT JOIN" in sql
         assert "INNER JOIN" not in sql
+
+
+class TestIsolatedFilteredMeasureCTEs:
+    """Cross-model-filtered measures get isolated CTEs, not CASE WHEN in the base."""
+
+    @pytest.fixture
+    def claim_amount_model(self):
+        return SlayerModel(
+            name="claim_amount",
+            sql_table="Claim_Amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="claim_amount_id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[
+                Measure(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1"),
+                Measure(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1"),
+                Measure(name="total_amount", sql="amount"),
+            ],
+            joins=[
+                ModelJoin(target_model="loss_payment", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
+                ModelJoin(target_model="loss_reserve", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
+                ModelJoin(target_model="claim", join_pairs=[["claim_id", "id"]]),
+            ],
+        )
+
+    @pytest.fixture
+    def related_models(self):
+        return {
+            "loss_payment": SlayerModel(
+                name="loss_payment", sql_table="Loss_Payment", data_source="test",
+                dimensions=[
+                    Dimension(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                    Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+                ],
+            ),
+            "loss_reserve": SlayerModel(
+                name="loss_reserve", sql_table="Loss_Reserve", data_source="test",
+                dimensions=[
+                    Dimension(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                    Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+                ],
+            ),
+            "claim": SlayerModel(
+                name="claim", sql_table="Claim", data_source="test",
+                dimensions=[
+                    Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                    Dimension(name="claim_number", sql="claim_number", type=DataType.STRING),
+                ],
+            ),
+        }
+
+    async def _enrich(self, claim_amount_model, related_models, query):
+        from slayer.engine.enrichment import enrich_query
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            m = related_models.get(target_model_name)
+            if m:
+                return (m.sql_table, m)
+            return None
+
+        return await enrich_query(
+            query=query,
+            model=claim_amount_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+
+    async def test_two_filtered_measures_get_separate_ctes(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Two measures with different cross-model filters → separate CTEs, not intersecting JOINs."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum"), Field(formula="loss_reserve_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Each filtered measure should have its own CTE
+        assert "_fm_loss_payment_amt" in sql
+        assert "_fm_loss_reserve_amt" in sql
+        # Base query should NOT have both INNER JOINs (would intersect to zero rows)
+        base_section = sql.split("_fm_")[0]
+        assert "Loss_Payment" not in base_section or "Loss_Reserve" not in base_section
+
+    async def test_formula_over_isolated_measures(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Formula referencing isolated measures evaluates in the outer query."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="loss_payment_amt:sum"),
+                Field(formula="loss_reserve_amt:sum"),
+                Field(formula="loss_payment_amt:sum + loss_reserve_amt:sum", name="total_loss"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Formula should be evaluated (contains + operator)
+        assert "+" in sql
+        # Both CTE names present
+        assert "_fm_loss_payment_amt" in sql
+        assert "_fm_loss_reserve_amt" in sql
+
+    async def test_mixed_isolated_and_local_measures(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Unfiltered measure stays in base, filtered goes to CTE."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="total_amount:sum"), Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Unfiltered measure (total_amount) should be in the _base CTE
+        assert "_base" in sql
+        assert "total_amount_sum" in sql
+        # Filtered measure in its own CTE
+        assert "_fm_loss_payment_amt" in sql
+
+    async def test_all_measures_isolated_produces_dimension_spine(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """When all measures are isolated, base query is just a dimension spine."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Base CTE should exist with dimensions but no SUM
+        assert "_base" in sql
+        assert "_fm_loss_payment_amt" in sql
+        # The base should have GROUP BY for deduplication
+        base_cte = sql.split("_fm_")[0]
+        assert "GROUP BY" in base_cte
