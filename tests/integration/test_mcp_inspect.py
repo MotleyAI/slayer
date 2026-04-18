@@ -321,6 +321,59 @@ class TestInspectModelEndToEnd:
             _json.loads(result)
 
 
+class TestMeasureTypeInference:
+    """get_column_types infers measure types via LIMIT 0 against a real DB."""
+
+    async def test_infers_numeric_types(self, env) -> None:
+        """amount (REAL) and quantity (INTEGER) both infer as 'number'."""
+        engine = env["engine"]
+        types = await engine.get_column_types(model_name="orders")
+        assert types["amount"] == "number"
+        assert types["quantity"] == "number"
+
+    async def test_string_measure_inferred(self, tmp_path) -> None:
+        """A VARCHAR/TEXT measure infers as 'string'."""
+        import sqlite3 as _sqlite3
+
+        db_path = tmp_path / "types.db"
+        conn = _sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, price REAL)")
+        conn.execute("INSERT INTO t VALUES (1, 'hello', 9.99)")
+        conn.commit()
+        conn.close()
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+        await storage.save_datasource(DatasourceConfig(
+            name="types_ds", type="sqlite", database=str(db_path),
+        ))
+        model = SlayerModel(
+            name="t", sql_table="t", data_source="types_ds",
+            dimensions=[Dimension(name="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[
+                Measure(name="label", sql="label"),
+                Measure(name="price", sql="price"),
+            ],
+        )
+        await storage.save_model(model)
+        engine = SlayerQueryEngine(storage=storage)
+
+        types = await engine.get_column_types(model_name="t")
+        assert types["label"] == "string"
+        assert types["price"] == "number"
+
+    async def test_type_appears_in_inspect_model(self, env) -> None:
+        """inspect_model measures table includes a type column with inferred types."""
+        server = create_mcp_server(storage=env["storage"])
+        content, _ = await server.call_tool(
+            name="inspect_model", arguments={"model_name": "orders", "num_rows": 0},
+        )
+        result = content[0].text
+        measures_section = result.split("## Measures")[1].split("##")[0]
+        # The type column should show "number" for both measures
+        assert "| type |" in measures_section or "| number |" in measures_section
+        assert "number" in measures_section
+
+
 class TestStringAggregationRejection:
     """Validation: numeric-only aggregations on string measures are rejected
     during query enrichment, before SQL is generated or executed.

@@ -265,6 +265,44 @@ class SlayerQueryEngine:
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
+    async def get_column_types(self, model_name: str) -> Dict[str, str]:
+        """Infer column types for a model's measures via LIMIT 0 query.
+
+        Returns {measure_name: type_category} where type_category is
+        "number", "string", "time", or "boolean".
+        """
+        model = await self.storage.get_model(model_name)
+        if model is None:
+            return {}
+        measures = [m for m in model.measures if not m.hidden]
+        if not measures:
+            return {}
+
+        try:
+            datasource = await self._resolve_datasource(model=model)
+        except ValueError:
+            return {}
+
+        ds_key = datasource.get_connection_string()
+        if ds_key not in self._sql_clients:
+            self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
+        client = self._sql_clients[ds_key]
+
+        # Build SELECT with measure SQL expressions against the model's source
+        if model.sql:
+            from_sql = f"({model.sql}) AS {model.name}"
+        else:
+            from_sql = f"{model.sql_table} AS {model.name}"
+        select_parts = [
+            f"{model.name}.{m.sql or m.name} AS {m.name}" for m in measures
+        ]
+        sql = f"SELECT {', '.join(select_parts)} FROM {from_sql}"
+
+        try:
+            return await client.get_column_types(sql=sql)
+        except Exception:
+            return {}
+
     def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
         from slayer.async_utils import run_sync

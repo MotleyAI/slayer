@@ -192,21 +192,25 @@ def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
     return "\n".join([header, sep] + body)
 
 
-def _build_sample_query_args(model: SlayerModel, num_rows: int) -> Dict[str, Any]:
+def _build_sample_query_args(
+    model: SlayerModel,
+    num_rows: int,
+    measure_types: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
 
     - First field is always ``*:count``.
     - For each non-hidden measure:
       - If ``allowed_aggregations`` is restricted and doesn't include ``avg``,
         use the first entry of ``allowed_aggregations``. Empty list → skip.
-      - Else (avg is permitted): prefer ``avg``, but if the measure shares its
-        name with a non-numeric dimension (string/boolean/date/time), fall back
-        to ``count_distinct`` so the generated SQL is valid for that column
-        type. Auto-ingested string measures (e.g. ``sku``) can't be averaged.
+      - Else (avg is permitted): prefer ``avg``, but fall back to
+        ``count_distinct`` for non-numeric columns (using inferred types from
+        ``measure_types``, or dim-name heuristic as fallback).
     - Groups by up to two non-primary-key, non-hidden dimensions so the sample
       shows variation without exploding table width.
     """
-    # dim type lookup by name (for same-named measures created by auto-ingestion)
+    measure_types = measure_types or {}
+    # dim type lookup by name (fallback for when measure_types is unavailable)
     dim_types = {d.name: str(d.type) for d in model.dimensions}
 
     fields: List[Dict[str, str]] = [{"formula": "*:count"}]
@@ -220,9 +224,12 @@ def _build_sample_query_args(model: SlayerModel, num_rows: int) -> Dict[str, Any
             safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
             agg = safe if safe else allowed[0]
         else:
-            # avg is permitted; drop to count_distinct when the backing column
-            # is non-numeric so AVG(VARCHAR) / AVG(BOOL) don't blow up.
-            if dim_types.get(m.name) in ("string", "boolean", "date", "time"):
+            # avg is permitted; drop to count_distinct for non-numeric columns
+            inferred = measure_types.get(m.name)
+            if inferred and inferred != "number":
+                agg = "count_distinct"
+            elif dim_types.get(m.name) in ("string", "boolean", "date", "time"):
+                # Fallback heuristic: measure shares name with non-numeric dim
                 agg = "count_distinct"
             else:
                 agg = "avg"
@@ -877,6 +884,9 @@ def create_mcp_server(storage: StorageBackend):
             + _markdown_table(rows=dim_rows, columns=dim_columns)
         )
 
+        # Infer measure column types via LIMIT 0 probe
+        measure_types = await engine.get_column_types(model_name=model.name)
+
         # Measures table
         measure_rows: List[Dict[str, Any]] = []
         for m in model.measures:
@@ -885,13 +895,14 @@ def create_mcp_server(storage: StorageBackend):
             aggs = ", ".join(m.allowed_aggregations) if m.allowed_aggregations else "all"
             measure_rows.append({
                 "name": m.name,
+                "type": measure_types.get(m.name),
                 "sql": m.sql if m.sql else m.name,
                 "allowed_aggregations": aggs,
                 "filter": m.filter,
                 "label": m.label,
                 "description": m.description,
             })
-        meas_columns = ["name", "sql", "allowed_aggregations", "filter", "label", "description"]
+        meas_columns = ["name", "type", "sql", "allowed_aggregations", "filter", "label", "description"]
         if not show_sql:
             meas_columns = [c for c in meas_columns if c not in ("sql", "filter")]
         sections.append(
@@ -951,7 +962,9 @@ def create_mcp_server(storage: StorageBackend):
             sections.append("\n".join(lines))
 
         # Sample data via a regular SlayerQuery (same path the `query` MCP tool takes)
-        query_args = _build_sample_query_args(model=model, num_rows=num_rows)
+        query_args = _build_sample_query_args(
+            model=model, num_rows=num_rows, measure_types=measure_types,
+        )
         sample_sql: Optional[str] = None
         sample_data: Optional[Dict[str, Any]] = None
         sample_error: Optional[str] = None

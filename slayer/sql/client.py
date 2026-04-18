@@ -70,6 +70,99 @@ def _async_connection_string(connection_string: str, db_type: Optional[str]) -> 
 # ---------------------------------------------------------------------------
 
 
+def _map_type_code(type_code) -> str:
+    """Map a DB-API type_code to a SLayer type category.
+
+    Handles DuckDB (string type names), SQLite (Python types), and
+    asyncpg (OID integers) cursor description formats.
+    """
+    if isinstance(type_code, str):
+        # DuckDB returns type name strings like 'INTEGER', 'VARCHAR', etc.
+        tc = type_code.upper()
+        if any(t in tc for t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL")):
+            return "number"
+        if any(t in tc for t in ("VARCHAR", "TEXT", "CHAR", "STRING", "BLOB", "ENUM")):
+            return "string"
+        if any(t in tc for t in ("TIMESTAMP", "DATE", "TIME", "INTERVAL")):
+            return "time"
+        if "BOOL" in tc:
+            return "boolean"
+        return "string"
+    if isinstance(type_code, type):
+        # SQLite/some drivers return Python types
+        if issubclass(type_code, (int, float)):
+            return "number"
+        if issubclass(type_code, str):
+            return "string"
+        return "string"
+    # asyncpg OIDs, others — default to string
+    return "string"
+
+
+def _extract_types_from_cursor(result) -> Dict[str, str]:
+    """Extract {column_name: type_category} from a SQLAlchemy CursorResult.
+
+    Uses cursor.description type_code when available (DuckDB, Postgres).
+    Falls back to checking Python value types from the first row when
+    type_codes are all None (SQLite, some drivers).
+    """
+    columns = list(result.keys())
+    cursor_desc = result.cursor.description
+
+    # Try cursor.description type_codes first
+    if cursor_desc is not None:
+        type_codes = [desc[1] for desc in cursor_desc]
+        if any(tc is not None for tc in type_codes):
+            return {col: _map_type_code(tc) for col, tc in zip(columns, type_codes)}
+
+    # Fallback: check Python value types from the first fetched row
+    rows = result.fetchall()
+    if not rows:
+        return {col: "string" for col in columns}  # empty table — safe default
+    row = rows[0]
+    types = {}
+    for col, val in zip(columns, row):
+        if val is None:
+            types[col] = "string"  # can't infer from NULL
+        elif isinstance(val, (int, float)):
+            types[col] = "number"
+        elif isinstance(val, str):
+            types[col] = "string"
+        elif hasattr(val, "isoformat"):
+            types[col] = "time"
+        elif isinstance(val, bool):
+            types[col] = "boolean"
+        else:
+            types[col] = "string"
+    return types
+
+
+def _get_column_types_sync(
+    sql: str,
+    connection_string: str,
+    db_type: Optional[str],
+) -> Dict[str, str]:
+    """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 as fallback."""
+    engine = _get_sync_engine(connection_string)
+    # Try LIMIT 0 first (schema only, no data scan)
+    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT 1"
+    with engine.connect() as conn:
+        result = conn.execute(sa.text(limit_sql))
+        return _extract_types_from_cursor(result)
+
+
+async def _get_column_types_async(
+    sql: str,
+    engine,
+    db_type: Optional[str],
+) -> Dict[str, str]:
+    """Async version of column type inference."""
+    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT 1"
+    async with engine.connect() as conn:
+        result = await conn.execute(sa.text(limit_sql))
+        return _extract_types_from_cursor(result)
+
+
 class SlayerSQLClient:
     """Executes SQL against databases via SQLAlchemy.
 
@@ -117,6 +210,22 @@ class SlayerSQLClient:
             connection_string=self.datasource.get_connection_string(),
             db_type=db_type,
             timeout_seconds=timeout_seconds,
+        )
+
+    async def get_column_types(self, sql: str) -> Dict[str, str]:
+        """Infer column types by executing SQL with LIMIT 0.
+
+        Returns {column_name: type_category} where type_category is
+        "number", "string", "time", or "boolean".
+        """
+        async_engine = self._get_async_engine()
+        if async_engine is not None:
+            return await _get_column_types_async(
+                sql=sql, engine=async_engine, db_type=self.datasource.type,
+            )
+        return await asyncio.to_thread(
+            _get_column_types_sync, sql,
+            self.datasource.get_connection_string(), self.datasource.type,
         )
 
     def execute_sync(

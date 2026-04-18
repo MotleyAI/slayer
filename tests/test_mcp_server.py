@@ -279,6 +279,39 @@ class TestMdCodeSpan:
         assert "claim_detail.claim.status" not in result
 
 
+    async def test_measure_type_column_in_schema(self, mcp_server, storage: YAMLStorage) -> None:
+        """Measure type column is included when type inference succeeds.
+
+        Without a real DB, get_column_types returns {} and the type column
+        is auto-pruned. This test verifies the column appears in the schema
+        by checking _build_sample_query_args uses inferred types.
+        """
+        from slayer.mcp.server import _build_sample_query_args
+
+        model = SlayerModel(
+            name="typed",
+            sql_table="t",
+            data_source="test",
+            dimensions=[Dimension(name="status", type=DataType.STRING)],
+            measures=[
+                Measure(name="amount", sql="amount"),
+                Measure(name="label", sql="label"),
+            ],
+        )
+        # Without types: both get avg (label has no matching dim to trigger heuristic)
+        args_no_types = _build_sample_query_args(model=model, num_rows=3)
+        formulas = [f["formula"] for f in args_no_types["fields"]]
+        assert "label:avg" in formulas
+
+        # With inferred types: label is string → count_distinct
+        args_with_types = _build_sample_query_args(
+            model=model, num_rows=3, measure_types={"amount": "number", "label": "string"},
+        )
+        formulas = [f["formula"] for f in args_with_types["fields"]]
+        assert "amount:avg" in formulas
+        assert "label:count_distinct" in formulas
+
+
 class TestInspectModelJsonFormat:
     async def test_json_format_includes_sample_data(self, mcp_server, storage: YAMLStorage) -> None:
         """inspect_model(format='json') must include sample_data and sample_data_error keys."""
