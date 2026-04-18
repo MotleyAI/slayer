@@ -73,8 +73,8 @@ def _async_connection_string(connection_string: str, db_type: Optional[str]) -> 
 def _map_type_code(type_code) -> str:
     """Map a DB-API type_code to a SLayer type category.
 
-    Handles DuckDB (string type names), SQLite (Python types), and
-    asyncpg (OID integers) cursor description formats.
+    Handles DuckDB (string type names), SQLite (Python types),
+    asyncpg (OID integers), and aiomysql (field-type codes).
     """
     if isinstance(type_code, str):
         # DuckDB returns type name strings like 'INTEGER', 'VARCHAR', etc.
@@ -90,13 +90,59 @@ def _map_type_code(type_code) -> str:
         return "string"
     if isinstance(type_code, type):
         # SQLite/some drivers return Python types
+        # Check bool before int — bool is a subclass of int in Python
+        if issubclass(type_code, bool):
+            return "boolean"
         if issubclass(type_code, (int, float)):
             return "number"
         if issubclass(type_code, str):
             return "string"
         return "string"
-    # asyncpg OIDs, others — default to string
+    if isinstance(type_code, int):
+        # asyncpg returns Postgres OID integers; aiomysql returns field-type codes
+        return _OID_TYPE_MAP.get(type_code, "string")
     return "string"
+
+
+# Postgres OIDs (from pg_type) and MySQL field-type codes
+_OID_TYPE_MAP: Dict[int, str] = {
+    # Postgres boolean
+    16: "boolean",
+    # Postgres integers
+    20: "number",   # int8 (bigint)
+    21: "number",   # int2 (smallint)
+    23: "number",   # int4 (integer)
+    26: "number",   # oid
+    # Postgres floats/numeric
+    700: "number",  # float4
+    701: "number",  # float8
+    1700: "number", # numeric
+    790: "number",  # money
+    # Postgres strings
+    18: "string",   # char
+    25: "string",   # text
+    1042: "string", # bpchar
+    1043: "string", # varchar
+    # Postgres time
+    1082: "time",   # date
+    1083: "time",   # time
+    1114: "time",   # timestamp
+    1184: "time",   # timestamptz
+    1186: "time",   # interval
+    # MySQL field-type codes (aiomysql)
+    1: "boolean",   # MYSQL_TYPE_TINY (TINYINT/BOOL)
+    3: "number",    # MYSQL_TYPE_LONG (INT)
+    5: "number",    # MYSQL_TYPE_DOUBLE
+    8: "number",    # MYSQL_TYPE_LONGLONG (BIGINT)
+    246: "number",  # MYSQL_TYPE_NEWDECIMAL
+    7: "time",      # MYSQL_TYPE_TIMESTAMP
+    10: "time",     # MYSQL_TYPE_DATE
+    11: "time",     # MYSQL_TYPE_TIME
+    12: "time",     # MYSQL_TYPE_DATETIME
+    15: "string",   # MYSQL_TYPE_VARCHAR
+    253: "string",  # MYSQL_TYPE_VAR_STRING
+    254: "string",  # MYSQL_TYPE_STRING
+}
 
 
 def _extract_types_from_cursor(result) -> Dict[str, str]:
@@ -124,14 +170,14 @@ def _extract_types_from_cursor(result) -> Dict[str, str]:
     for col, val in zip(columns, row):
         if val is None:
             types[col] = "string"  # can't infer from NULL
+        elif isinstance(val, bool):
+            types[col] = "boolean"
         elif isinstance(val, (int, float)):
             types[col] = "number"
         elif isinstance(val, str):
             types[col] = "string"
         elif hasattr(val, "isoformat"):
             types[col] = "time"
-        elif isinstance(val, bool):
-            types[col] = "boolean"
         else:
             types[col] = "string"
     return types
