@@ -2069,7 +2069,7 @@ class TestAutoMoveDimensions:
     async def test_bare_local_dimension_moved(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["status", "revenue:sum"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert len(result.fields) == 1
         assert result.fields[0].formula == "revenue:sum"
         assert any(d.name == "status" for d in result.dimensions)
@@ -2077,52 +2077,52 @@ class TestAutoMoveDimensions:
     async def test_cross_model_dimension_moved(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["customers.name", "revenue:sum"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert len(result.fields) == 1
         assert any(d.full_name == "customers.name" for d in result.dimensions)
 
     async def test_colon_fields_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["revenue:sum", "*:count"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert len(result.fields) == 2
         assert not result.dimensions
 
     async def test_arithmetic_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["revenue:sum / *:count"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert len(result.fields) == 1
 
     async def test_bare_measure_name_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["revenue", "revenue:sum"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         # "revenue" is a measure, not a dimension — stays in fields
         assert len(result.fields) == 2
 
     async def test_unknown_bare_name_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["nonexistent", "revenue:sum"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert len(result.fields) == 2
 
     async def test_invalid_cross_model_path_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["customers.nonexistent", "revenue:sum"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert len(result.fields) == 2
 
     async def test_no_fields_noop(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", dimensions=["status"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert result.fields is None
 
     async def test_appends_to_existing_dimensions(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", fields=["customer_id", "revenue:sum"], dimensions=["status"])
-        result = await engine._auto_move_fields_to_dimensions(query, model, {})
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
         assert len(result.fields) == 1
         dim_names = [d.name for d in result.dimensions]
         assert "status" in dim_names
@@ -2933,3 +2933,73 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "claim_amount.claim_number" not in fm_body, (
             f"Found wrong table qualification claim_amount.claim_number in CTE:\n{fm_body}"
         )
+
+    def test_cm_cte_skips_filters_on_unavailable_tables(self, generator: SQLGenerator) -> None:
+        """Cross-model CTE WHERE must not include filters referencing tables it doesn't join (Bug Q9)."""
+        from slayer.core.formula import ParsedFilter
+        from slayer.engine.enriched import CrossModelMeasure, EnrichedDimension, EnrichedMeasure, EnrichedQuery
+
+        # Build an EnrichedQuery with:
+        # - A cross-model measure (source=orders, target=customers)
+        # - A filter on "warehouse.status = 'ACTIVE'" (table not in the CM CTE)
+        enriched = EnrichedQuery(
+            model_name="orders",
+            sql_table="Orders",
+            dimensions=[
+                EnrichedDimension(name="order_id", sql="order_id", type=DataType.NUMBER, alias="orders.order_id", model_name="orders"),
+            ],
+            time_dimensions=[],
+            measures=[],
+            cross_model_measures=[
+                CrossModelMeasure(
+                    name="customer_score",
+                    alias="orders.customers.customer_score_sum",
+                    target_model_name="customers",
+                    target_model_sql_table="Customers",
+                    target_model_sql=None,
+                    measure=EnrichedMeasure(
+                        name="score", sql="score", alias="orders.customers.customer_score_sum",
+                        aggregation="sum", model_name="customers",
+                    ),
+                    join_pairs=[["customer_id", "id"]],
+                    shared_dimensions=[
+                        EnrichedDimension(name="order_id", sql="order_id", type=DataType.NUMBER, alias="orders.order_id", model_name="orders"),
+                    ],
+                    shared_time_dimensions=[],
+                    source_model_name="orders",
+                    source_sql_table="Orders",
+                    source_sql=None,
+                ),
+            ],
+            filters=[
+                ParsedFilter(sql="warehouse.status = 'ACTIVE'", columns=["warehouse.status"]),
+            ],
+        )
+        sql = generator.generate(enriched=enriched)
+
+        # The _cm_ CTE should NOT reference "warehouse" (it only joins orders → customers)
+        cm_start = sql.index("_cm_")
+        cm_end = sql.index("\n)", cm_start)
+        cm_body = sql[cm_start:cm_end]
+        assert "warehouse" not in cm_body.lower(), (
+            f"CM CTE references unavailable table 'warehouse':\n{cm_body}"
+        )
+        # The base query SHOULD have the filter
+        base_section = sql[:cm_start]
+        assert "warehouse" in base_section.lower()
+
+    async def test_base_not_empty_when_no_dims_all_measures_skipped(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10)."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            # No dimensions — base has nothing to select
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # Must not have an empty SELECT clause
+        assert "SELECT\nFROM" not in sql, f"Empty SELECT detected:\n{sql}"
+        # Should still produce valid SQL with the measure CTE
+        assert "_fm_loss_payment_amt" in sql

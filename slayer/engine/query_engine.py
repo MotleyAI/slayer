@@ -650,7 +650,7 @@ class SlayerQueryEngine:
                     except ValueError:
                         dim_def = None  # Circular join — leave in fields
                     if dim_def is not None:
-                        # Also check it's not a measure on the terminal model
+                        # parts[-2] is the terminal model containing the dimension named by parts[-1]
                         terminal_model_name = parts[-2]
                         terminal_model = (
                             await self.storage.get_model(terminal_model_name)

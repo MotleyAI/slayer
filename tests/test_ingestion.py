@@ -1,10 +1,11 @@
 """Unit tests for ingestion fallback functions (SQL injection prevention)."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import sqlalchemy as sa
 
 from slayer.engine.ingestion import (
+    _generate_joins,
     _get_columns_fallback,
     _get_pk_constraint_fallback,
     _parse_info_schema_is_float,
@@ -174,3 +175,48 @@ class TestParseInfoSchemaIsFloat:
     def test_no_scale_in_parens(self):
         """DECIMAL(10) with only precision defaults to float."""
         assert _parse_info_schema_is_float("DECIMAL(10)") is True
+
+
+class TestGenerateJoinsDedup:
+    """Tests for _generate_joins FK deduplication logic."""
+
+    def test_multiple_fks_to_same_target_preserved(self):
+        """Two distinct FKs to the same target table should both produce joins."""
+        inspector = MagicMock(spec=sa.engine.Inspector)
+        fk_rels = [
+            ("buyer_id", "users", "id"),
+            ("seller_id", "users", "id"),
+        ]
+        with patch(
+            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
+        ):
+            joins = _generate_joins(
+                inspector=inspector,
+                source_table="orders",
+                referenced_tables={"users"},
+                schema=None,
+                table_set={"orders", "users"},
+            )
+        assert len(joins) == 2
+        pairs = [j.join_pairs for j in joins]
+        assert [["buyer_id", "id"]] in pairs
+        assert [["seller_id", "id"]] in pairs
+
+    def test_exact_duplicate_fk_deduplicated(self):
+        """Identical FK pair to the same target should be deduplicated."""
+        inspector = MagicMock(spec=sa.engine.Inspector)
+        fk_rels = [
+            ("buyer_id", "users", "id"),
+            ("buyer_id", "users", "id"),
+        ]
+        with patch(
+            "slayer.engine.ingestion._get_fk_relationships", return_value=fk_rels,
+        ):
+            joins = _generate_joins(
+                inspector=inspector,
+                source_table="orders",
+                referenced_tables={"users"},
+                schema=None,
+                table_set={"orders", "users"},
+            )
+        assert len(joins) == 1

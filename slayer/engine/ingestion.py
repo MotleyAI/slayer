@@ -9,7 +9,7 @@ Flow:
 
 import logging
 from collections import defaultdict, deque
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import sqlalchemy as sa
 
@@ -253,13 +253,14 @@ def _generate_joins(
     )
 
     joins = []
-    seen_targets: Set[str] = set()
+    seen_signatures: Set[Tuple[str, str, str]] = set()
     for src_col, ref_table, tgt_col in fk_rels:
         if ref_table not in referenced_tables:
             continue
-        if ref_table in seen_targets:
+        signature = (ref_table, src_col, tgt_col)
+        if signature in seen_signatures:
             continue
-        seen_targets.add(ref_table)
+        seen_signatures.add(signature)
         joins.append(
             ModelJoin(
                 target_model=ref_table,
