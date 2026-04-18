@@ -34,7 +34,7 @@ SLayer generates and executes the query against your database.
 }
 ```
 
-## Four things that are easy to get wrong
+## Things that are easy to get wrong
 
 1. **Measures are not aggregates.** A measure is just a named SQL expression.
    Pick the aggregation at query time with colon syntax: `revenue:sum`,
@@ -54,9 +54,14 @@ SLayer generates and executes the query against your database.
    becomes a post-filter on an outer wrapper query. Write the condition; SLayer
    decides where it lands.
 
+5. Consider the type of a measure shown by inspect_model when choosing an aggregation for it.
+    Do NOT use eg. :avg or :sum for a string measure, for example. 
+
 ## Deep dives
 
-Call `help(topic='...')` (or `slayer help <topic>` from the CLI) for the detail
-pages. See the tool description (or `slayer help --help`) for the full topic list.
+Call `help(topic='...')` for detail pages on specific subjects.
+Available topics: `queries`, `formulas`, `aggregations`, `transforms`,
+`time`, `filters`, `joins`, `models`, `extending`, `workflow`.
+
 Recommended starting order for an unfamiliar agent: `help(topic='workflow')` for
 tool-chaining, then `help(topic='queries')` for the query model.
