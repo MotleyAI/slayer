@@ -183,15 +183,19 @@ def _extract_types_from_cursor(result) -> Dict[str, str]:
     return types
 
 
+# Databases that return all-None cursor.description type codes need a real row
+_NEEDS_ROW_FOR_TYPES = {"sqlite"}
+
+
 def _get_column_types_sync(
     sql: str,
     connection_string: str,
     db_type: Optional[str],
 ) -> Dict[str, str]:
-    """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 as fallback."""
+    """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 for SQLite."""
     engine = _get_sync_engine(connection_string)
-    # Try LIMIT 0 first (schema only, no data scan)
-    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT 1"
+    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
+    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
     with engine.connect() as conn:
         result = conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result)
@@ -202,8 +206,9 @@ async def _get_column_types_async(
     engine,
     db_type: Optional[str],
 ) -> Dict[str, str]:
-    """Async version of column type inference."""
-    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT 1"
+    """Async version of column type inference. Uses LIMIT 0; LIMIT 1 for SQLite."""
+    limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
+    limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
     async with engine.connect() as conn:
         result = await conn.execute(sa.text(limit_sql))
         return _extract_types_from_cursor(result)

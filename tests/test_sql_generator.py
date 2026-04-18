@@ -3254,3 +3254,57 @@ class TestGetColumnTypesSql:
         assert "orders.amount" in sql
         # Expression should appear as-is
         assert "COALESCE(amount, 0)" in sql
+
+    async def test_cross_model_measures_probed_via_engine(self) -> None:
+        """Cross-model measures should be probed via the engine's enrich+generate pipeline."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[
+                Measure(name="revenue", sql="amount"),
+                Measure(name="customer_score", sql="customers.score"),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+        # The enriched query that _enrich would produce
+        mock_enriched = EnrichedQuery(
+            model_name="orders", sql_table="public.orders",
+            measures=[
+                EnrichedMeasure(name="revenue_max", sql="amount", alias="orders.revenue_max",
+                                aggregation="max", model_name="orders", source_measure_name="revenue"),
+                EnrichedMeasure(name="customer_score_max", sql="customers.score",
+                                alias="orders.customer_score_max", aggregation="max",
+                                model_name="orders", source_measure_name="customer_score"),
+            ],
+        )
+
+        with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=model):
+            engine = SlayerQueryEngine(storage=storage)
+            mock_ds = MagicMock()
+            mock_ds.get_connection_string.return_value = "sqlite://"
+            mock_ds.type = "sqlite"
+
+            with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds), \
+                 patch.object(engine, "_enrich", new_callable=AsyncMock, return_value=mock_enriched):
+
+                async def capture_types(sql):
+                    return {"orders.revenue_max": "number", "orders.customer_score_max": "number"}
+
+                mock_client = MagicMock()
+                mock_client.get_column_types = capture_types
+                engine._sql_clients["sqlite://"] = mock_client
+
+                result = await engine.get_column_types("orders")
+
+        # Both measures should have types (cross-model included)
+        assert result.get("revenue") == "number", f"Missing revenue type: {result}"
+        assert result.get("customer_score") == "number", f"Missing customer_score type: {result}"

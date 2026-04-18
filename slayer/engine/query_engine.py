@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import ColumnRef, Field, SlayerQuery
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
@@ -265,8 +265,27 @@ class SlayerQueryEngine:
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
+    def _build_type_probe_query(self, model: SlayerModel) -> SlayerQuery:
+        """Build a SlayerQuery for type-probing all of a model's measures.
+
+        Uses :max aggregation by default (works on all column types).
+        Falls back to the first allowed aggregation if max is restricted.
+        """
+        fields = []
+        for m in model.measures:
+            if m.hidden:
+                continue
+            agg = "max"
+            if m.allowed_aggregations and "max" not in m.allowed_aggregations:
+                agg = m.allowed_aggregations[0]
+            fields.append(Field(formula=f"{m.name}:{agg}"))
+        return SlayerQuery(source_model=model.name, fields=fields)
+
     async def get_column_types(self, model_name: str) -> Dict[str, str]:
-        """Infer column types for a model's measures via LIMIT 0 query.
+        """Infer column types for a model's measures via a type-probe query.
+
+        Builds a real query through the engine's enrich+generate pipeline
+        so cross-model measures (with JOINs) are resolved correctly.
 
         Returns {measure_name: type_category} where type_category is
         "number", "string", "time", or "boolean".
@@ -288,25 +307,29 @@ class SlayerQueryEngine:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
 
-        # Build SELECT with measure SQL expressions against the model's source
-        if model.sql:
-            from_sql = f"({model.sql}) AS {model.name}"
-        else:
-            from_sql = f"{model.sql_table} AS {model.name}"
-        def _qualify_measure_sql(m):
-            sql_expr = m.sql or m.name
-            # Only qualify bare identifiers; expressions already contain table refs or functions
-            if sql_expr.isidentifier():
-                return f"{model.name}.{sql_expr} AS {m.name}"
-            return f"{sql_expr} AS {m.name}"
+        probe_query = self._build_type_probe_query(model=model)
+        try:
+            enriched = await self._enrich(query=probe_query, model=model)
+        except Exception:
+            logger.warning("get_column_types enrichment failed for model '%s'", model_name)
+            return {}
 
-        select_parts = [_qualify_measure_sql(m) for m in measures]
-        sql = f"SELECT {', '.join(select_parts)} FROM {from_sql}"
+        dialect = self._dialect_for_type(datasource.type)
+        generator = SQLGenerator(dialect=dialect)
+        sql = generator.generate(enriched=enriched)
 
         try:
-            return await client.get_column_types(sql=sql)
+            raw_types = await client.get_column_types(sql=sql)
         except Exception:
+            logger.warning("get_column_types probe failed for model '%s'", model_name)
             return {}
+
+        # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
+        result: Dict[str, str] = {}
+        for em in enriched.measures:
+            if em.alias in raw_types:
+                result[em.source_measure_name or em.name] = raw_types[em.alias]
+        return result
 
     def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
