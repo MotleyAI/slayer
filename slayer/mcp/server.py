@@ -569,6 +569,8 @@ async def _mirror_inner_joins(model: SlayerModel, storage: StorageBackend) -> No
     for join in model.joins:
         if str(join.join_type) != "inner":
             continue
+        if join.target_model == model.name:
+            continue  # Skip self-referencing joins
         target = await storage.get_model(join.target_model)
         if target is None:
             continue
