@@ -950,7 +950,10 @@ async def resolve_filter_columns(
                             qualified,
                             resolved_sql,
                         )
-                        resolved_columns.append(qualified)
+                        # Keep the original dotted path in resolved_columns
+                        # so _collect_needed_paths picks up the join requirement,
+                        # even when sql_expr is a constant (e.g., "1").
+                        resolved_columns.append(col_name)
                         continue
 
                 resolved_columns.append(col_name)

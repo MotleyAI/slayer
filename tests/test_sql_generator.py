@@ -2611,6 +2611,57 @@ class TestJoinType:
         assert "INNER JOIN" in sql
         assert "LEFT JOIN" not in sql
 
+
+class TestMeasureFilterCrossModelJoin:
+    """Measure filters referencing cross-model dimensions must trigger the join."""
+
+    async def test_measure_filter_cross_model_constant_triggers_join(self, generator: SQLGenerator) -> None:
+        """Measure filter 'loss_payment.has_flag = 1' where has_flag sql='1' must JOIN to loss_payment."""
+        from slayer.engine.enrichment import enrich_query
+
+        loss_payment = SlayerModel(
+            name="loss_payment",
+            sql_table="Loss_Payment",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+            ],
+        )
+        claim_amount = SlayerModel(
+            name="claim_amount",
+            sql_table="Claim_Amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[
+                Measure(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1"),
+            ],
+            joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "loss_payment":
+                return ("Loss_Payment", loss_payment)
+            return None
+
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_amt:sum")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=claim_amount,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        # The JOIN to loss_payment must be present for the filter to work
+        assert "Loss_Payment" in sql, f"Missing JOIN to Loss_Payment: {sql}"
+        assert "JOIN" in sql
+
     async def test_left_join_default(self, generator: SQLGenerator) -> None:
         """Default join_type produces LEFT JOIN."""
         from slayer.engine.enrichment import enrich_query
