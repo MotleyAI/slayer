@@ -26,7 +26,7 @@ SLayer compiles these queries into the correct SQL for your database, handling j
 2. **simple**: query structure is intuitive and easily understood by LLMs and humans
 3. **expressive**: [supports](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_
 4. **embeddable**: can be used as a standalone service or imported as a Python module with no extra server
-5. **flexible**: exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client) interfaces; supports most popular databases
+5. **flexible**: exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client) interfaces; [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases
 
 See also: [automatic model ingestion](https://motley-slayer.readthedocs.io/en/latest/concepts/ingestion/), [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/), [auto-applied filters](https://motley-slayer.readthedocs.io/en/latest/concepts/models/#model-filters), and [more](https://motley-slayer.readthedocs.io/en/latest/).
 
