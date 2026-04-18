@@ -122,6 +122,23 @@ def _needed_join_aliases(enriched: EnrichedQuery, extra_columns: list = ()) -> s
     return aliases
 
 
+def _filter_references_available(f, available_aliases: set) -> bool:
+    """Check if all table references in a filter's columns are within a CTE's join set.
+
+    Non-dotted columns (local to the base model) are always available.
+    Dotted columns like "warehouse.status" produce alias "warehouse" which
+    must be in available_aliases.
+    """
+    for col in f.columns:
+        if "." not in col:
+            continue
+        parts = col.split(".")
+        table_alias = "__".join(parts[:-1])
+        if table_alias not in available_aliases:
+            return False
+    return True
+
+
 class SQLGenerator:
     """Generates SQL from an EnrichedQuery."""
 
@@ -223,7 +240,13 @@ class SQLGenerator:
                 f"FROM {from_sql}\n"
                 f"{cm.join_type.upper()} JOIN {target_from} ON {' AND '.join(join_conditions)}"
             )
+            # Only include WHERE conditions whose tables are in this CTE
+            cm_available = {cm.source_model_name, cm.target_model_name}
+            original_filters = enriched.filters
+            enriched.filters = [f for f in original_filters
+                                if _filter_references_available(f, cm_available)]
             where_clause, _ = self._build_where_and_having(enriched=enriched)
+            enriched.filters = original_filters
             if where_clause is not None:
                 cte_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
             if group_parts:
@@ -274,7 +297,13 @@ class SQLGenerator:
                     join_parts += f"\n{jtype.upper()} JOIN {target_ref} ON {join_cond}"
 
             cte_sql = f"SELECT {', '.join(select_parts)}\nFROM {from_sql}{join_parts}"
+            # Only include WHERE conditions whose tables are in this CTE
+            fm_available = needed | {enriched.model_name}
+            original_filters = enriched.filters
+            enriched.filters = [f for f in original_filters
+                                if _filter_references_available(f, fm_available)]
             where_clause, _ = self._build_where_and_having(enriched=enriched)
+            enriched.filters = original_filters
             if where_clause is not None:
                 cte_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
             if group_parts:
@@ -532,6 +561,11 @@ class SQLGenerator:
             select_columns.append(agg_expr.as_(measure.alias))
             if is_agg:
                 has_aggregation = True
+
+        # When all measures are isolated/cross-model and there are no dimensions,
+        # the base SELECT would be empty. Add a placeholder to produce valid SQL.
+        if not select_columns and skip_isolated:
+            select_columns.append(exp.Literal.number(1).as_("_placeholder"))
 
         where_clause, having_clause = self._build_where_and_having(
             enriched=enriched,
