@@ -148,28 +148,25 @@ class SQLGenerator:
             return base_sql
 
         if has_measure_ctes:
-            # Build combined SQL: base + per-measure CTEs joined on dimensions
-            # Skip pagination if expressions will wrap this as a CTE
-            combined_sql = self._build_combined(
-                enriched=enriched, base_sql=base_sql, skip_pagination=has_computed,
-            )
-        else:
-            combined_sql = base_sql
+            # Get structured CTE definitions (no WITH wrapper)
+            measure_ctes = self._build_combined(enriched=enriched, base_sql=base_sql)
+            if has_computed:
+                # Pass CTE list to computed layer — it merges into a flat WITH
+                return self._generate_with_computed(enriched=enriched, prefix_ctes=measure_ctes)
+            # No expressions: assemble CTEs + outer SELECT + pagination
+            return self._assemble_combined_sql(enriched=enriched, measure_ctes=measure_ctes)
 
-        if has_computed:
-            return self._generate_with_computed(enriched=enriched, base_sql=combined_sql)
+        # No measure CTEs, just computed columns
+        return self._generate_with_computed(enriched=enriched, base_sql=base_sql)
 
-        # No expressions — pagination already applied by _build_combined
-        return combined_sql
+    def _build_combined(self, enriched: EnrichedQuery,
+                         base_sql: str) -> list[tuple[str, str]]:
+        """Build CTE definitions for per-measure isolation.
 
-    def _build_combined(self, enriched: EnrichedQuery, base_sql: str,
-                         skip_pagination: bool = False) -> str:
-        """Build combined SQL: base + per-measure CTEs joined on shared dimensions.
-
-        Each cross-model measure and each cross-model-filtered measure gets its own
-        CTE. The base query (simple measures + dimensions) is wrapped as _base,
-        then all measure CTEs are LEFT JOINed on shared dimensions to produce a
-        _combined CTE with all measure values available.
+        Returns a list of (name, sql) tuples. The last entry is ("_combined", select)
+        which joins _base with all measure CTEs on shared dimensions. The caller
+        decides how to assemble these — either as a standalone WITH query or as
+        prefix CTEs for _generate_with_computed().
         """
         ctes = [("_base", base_sql)]
 
@@ -302,38 +299,47 @@ class SQLGenerator:
                 continue
             joined_ctes.add(cte_name)
 
-            # Determine which aliases to join on (use dim + td aliases present in the CTE)
-            # Cross-model CTEs use shared_dimensions; isolated CTEs use enriched.dimensions
             join_on_parts = []
             for a in join_aliases:
                 join_on_parts.append(f'_base."{a}" = {cte_name}."{a}"')
             if join_on_parts:
                 from_clause_str += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"
 
-        cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in ctes]
-        combined_sql = (
-            f"WITH {', '.join(cte_strs)}\n"
+        combined_select = (
             f"SELECT {', '.join(final_parts)}\n"
             f"{from_clause_str}"
         )
+        ctes.append(("_combined", combined_select))
+        return ctes
 
-        # Apply ORDER/LIMIT/OFFSET (skip if expressions will wrap as CTE)
-        # Qualify ORDER BY columns with _base to avoid ambiguity in multi-CTE joins
-        if not skip_pagination:
-            if enriched.order:
-                order_parts = []
-                for order_item in enriched.order:
-                    col = order_item.column
-                    col_name = self._resolve_order_column(col=col, enriched=enriched)
-                    direction = "ASC" if order_item.direction == "asc" else "DESC"
-                    order_parts.append(f'_base."{col_name}" {direction}')
-                combined_sql += "\nORDER BY " + ", ".join(order_parts)
-            if enriched.limit is not None:
-                combined_sql += f"\nLIMIT {enriched.limit}"
-            if enriched.offset is not None:
-                combined_sql += f"\nOFFSET {enriched.offset}"
+    def _assemble_combined_sql(self, enriched: EnrichedQuery,
+                                measure_ctes: list[tuple[str, str]]) -> str:
+        """Assemble measure CTEs into final SQL with pagination.
 
-        return combined_sql
+        The last entry in measure_ctes is the combined SELECT that joins _base
+        with measure CTEs. Earlier entries become WITH clauses.
+        """
+        inner_ctes = measure_ctes[:-1]
+        combined_select = measure_ctes[-1][1]
+
+        cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in inner_ctes]
+        sql = f"WITH {', '.join(cte_strs)}\n{combined_select}"
+
+        # ORDER BY qualified with _base. to avoid ambiguity in multi-CTE joins
+        if enriched.order:
+            order_parts = []
+            for order_item in enriched.order:
+                col = order_item.column
+                col_name = self._resolve_order_column(col=col, enriched=enriched)
+                direction = "ASC" if order_item.direction == "asc" else "DESC"
+                order_parts.append(f'_base."{col_name}" {direction}')
+            sql += "\nORDER BY " + ", ".join(order_parts)
+        if enriched.limit is not None:
+            sql += f"\nLIMIT {enriched.limit}"
+        if enriched.offset is not None:
+            sql += f"\nOFFSET {enriched.offset}"
+
+        return sql
 
     @staticmethod
     def _apply_pagination_to_sql(enriched: EnrichedQuery, sql: str) -> str:
@@ -583,11 +589,19 @@ class SQLGenerator:
 
         return sql
 
-    def _generate_with_computed(self, enriched: EnrichedQuery, base_sql: str) -> str:
+    def _generate_with_computed(self, enriched: EnrichedQuery,
+                                base_sql: str | None = None,
+                                prefix_ctes: list[tuple[str, str]] | None = None) -> str:
         """Wrap the base query as a CTE and add expressions/transforms as stacked CTE layers.
 
         Transforms that reference other transforms' outputs get their own CTE layer.
         This handles arbitrary nesting like change(cumsum(revenue)).
+
+        Args:
+            base_sql: Base SQL to wrap as "base" CTE (simple case, no measure CTEs).
+            prefix_ctes: Pre-built CTE list from _build_combined(). When provided,
+                these are used as the initial CTE stack instead of wrapping base_sql.
+                The last entry is the "combined" CTE with all measure values available.
         """
         # Collect base aliases (includes all measures — combined SQL has them all)
         base_aliases = []
@@ -601,7 +615,10 @@ class SQLGenerator:
             base_aliases.append(cm.alias)
 
         # Build stacked CTEs. Each layer can reference aliases from previous layers.
-        ctes = [("base", base_sql)]
+        if prefix_ctes is not None:
+            ctes = list(prefix_ctes)
+        else:
+            ctes = [("base", base_sql)]
         available_aliases = set(base_aliases)  # Aliases available in the current layer
 
         # All transforms go into a unified layering loop. Each iteration tries
