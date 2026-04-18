@@ -206,74 +206,91 @@ class SQLGenerator:
         join_aliases = dim_aliases + td_aliases
 
         # Track all CTEs and their measure aliases
-        measure_cte_refs = []  # (cte_name, measure_alias)
+        # Each entry: (cte_name, measure_alias, cte_join_aliases)
+        # cte_join_aliases is None to use the default join_aliases, or a list
+        # of surviving aliases when the CTE has fewer dimensions.
+        measure_cte_refs = []
 
         # --- Cross-model measure CTEs ---
         seen_cm_ctes: set = set()
         for cm in enriched.cross_model_measures:
             cte_name = _cte_name_from_alias("_cm_", cm.alias)
             if cte_name in seen_cm_ctes:
-                measure_cte_refs.append((cte_name, cm.alias))
+                measure_cte_refs.append((cte_name, cm.alias, None))
                 continue
             seen_cm_ctes.add(cte_name)
 
-            select = exp.Select()
-            group_exprs = []
-
-            for dim in cm.shared_dimensions:
-                col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=cm.source_model_name)
-                select = select.select(col_expr.as_(dim.alias))
-                group_exprs.append(col_expr)
-            for td in cm.shared_time_dimensions:
-                col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=cm.source_model_name)
-                td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
-                select = select.select(td_expr.as_(td.alias))
-                group_exprs.append(td_expr)
-
-            agg_expr, _ = self._build_agg(measure=cm.measure)
-            select = select.select(agg_expr.as_(cm.alias))
-
-            # FROM source model
-            if cm.source_sql:
-                source_from = exp.Subquery(
-                    this=sqlglot.parse_one(cm.source_sql, dialect=self.dialect),
-                    alias=exp.to_identifier(cm.source_model_name),
+            if cm.rerooted_enriched is not None:
+                # Re-rooted subquery: full query with target model as source,
+                # all joins/filters resolved from the target's join graph.
+                cte_sql = self._generate_base(enriched=cm.rerooted_enriched)
+                ctes.append((cte_name, cte_sql))
+                # Surviving dims may be fewer than shared dims (unreachable dropped)
+                surviving = (
+                    [d.alias for d in cm.rerooted_enriched.dimensions]
+                    + [td.alias for td in cm.rerooted_enriched.time_dimensions]
                 )
+                measure_cte_refs.append((cte_name, cm.alias, surviving))
+                continue
             else:
-                source_from = exp.to_table(cm.source_sql_table, alias=cm.source_model_name)
-            select = select.from_(source_from)
+                # Fallback: minimal source→target CTE (legacy path)
+                select = exp.Select()
+                group_exprs = []
 
-            # JOIN target model
-            if cm.target_model_sql:
-                target_join = exp.Subquery(
-                    this=sqlglot.parse_one(cm.target_model_sql, dialect=self.dialect),
-                    alias=exp.to_identifier(cm.target_model_name),
-                )
-            else:
-                target_join = exp.to_table(cm.target_model_sql_table, alias=cm.target_model_name)
-            join_on = exp.and_(*(
-                exp.EQ(
-                    this=exp.Column(this=exp.to_identifier(src), table=exp.to_identifier(cm.source_model_name)),
-                    expression=exp.Column(this=exp.to_identifier(tgt), table=exp.to_identifier(cm.target_model_name)),
-                )
-                for src, tgt in cm.join_pairs
-            ))
-            select = select.join(target_join, on=join_on, join_type=cm.join_type.upper())
+                for dim in cm.shared_dimensions:
+                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=cm.source_model_name)
+                    select = select.select(col_expr.as_(dim.alias))
+                    group_exprs.append(col_expr)
+                for td in cm.shared_time_dimensions:
+                    col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=cm.source_model_name)
+                    td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
+                    select = select.select(td_expr.as_(td.alias))
+                    group_exprs.append(td_expr)
 
-            # Only include WHERE conditions whose tables are in this CTE
-            cm_available = {cm.source_model_name, cm.target_model_name}
-            original_filters = enriched.filters
-            enriched.filters = [f for f in original_filters
-                                if _filter_references_available(f, cm_available)]
-            where_clause, _ = self._build_where_and_having(enriched=enriched)
-            enriched.filters = original_filters
-            if where_clause is not None:
-                select = select.where(where_clause)
-            for gb in group_exprs:
-                select = select.group_by(gb)
+                agg_expr, _ = self._build_agg(measure=cm.measure)
+                select = select.select(agg_expr.as_(cm.alias))
 
-            ctes.append((cte_name, select.sql(dialect=self.dialect)))
-            measure_cte_refs.append((cte_name, cm.alias))
+                # FROM source model
+                if cm.source_sql:
+                    source_from = exp.Subquery(
+                        this=sqlglot.parse_one(cm.source_sql, dialect=self.dialect),
+                        alias=exp.to_identifier(cm.source_model_name),
+                    )
+                else:
+                    source_from = exp.to_table(cm.source_sql_table, alias=cm.source_model_name)
+                select = select.from_(source_from)
+
+                # JOIN target model
+                if cm.target_model_sql:
+                    target_join = exp.Subquery(
+                        this=sqlglot.parse_one(cm.target_model_sql, dialect=self.dialect),
+                        alias=exp.to_identifier(cm.target_model_name),
+                    )
+                else:
+                    target_join = exp.to_table(cm.target_model_sql_table, alias=cm.target_model_name)
+                join_on = exp.and_(*(
+                    exp.EQ(
+                        this=exp.Column(this=exp.to_identifier(src), table=exp.to_identifier(cm.source_model_name)),
+                        expression=exp.Column(this=exp.to_identifier(tgt), table=exp.to_identifier(cm.target_model_name)),
+                    )
+                    for src, tgt in cm.join_pairs
+                ))
+                select = select.join(target_join, on=join_on, join_type=cm.join_type.upper())
+
+                # Only include WHERE conditions whose tables are in this CTE
+                cm_available = {cm.source_model_name, cm.target_model_name}
+                original_filters = enriched.filters
+                enriched.filters = [f for f in original_filters
+                                    if _filter_references_available(f, cm_available)]
+                where_clause, _ = self._build_where_and_having(enriched=enriched)
+                enriched.filters = original_filters
+                if where_clause is not None:
+                    select = select.where(where_clause)
+                for gb in group_exprs:
+                    select = select.group_by(gb)
+
+                ctes.append((cte_name, select.sql(dialect=self.dialect)))
+                measure_cte_refs.append((cte_name, cm.alias, None))
 
         # --- Isolated filtered-measure CTEs ---
         for measure in enriched.measures:
@@ -330,7 +347,7 @@ class SQLGenerator:
                 select = select.group_by(gb)
 
             ctes.append((cte_name, select.sql(dialect=self.dialect)))
-            measure_cte_refs.append((cte_name, measure.alias))
+            measure_cte_refs.append((cte_name, measure.alias, None))
 
         # --- Build combined SELECT: _base LEFT JOIN measure CTEs ---
         base_cols = list(dim_aliases) + list(td_aliases)
@@ -338,18 +355,21 @@ class SQLGenerator:
             if not _has_cross_model_filter(m):
                 base_cols.append(m.alias)
         final_parts = [f'_base."{a}"' for a in base_cols]
-        for cte_name, alias in measure_cte_refs:
+        for cte_name, alias, _ in measure_cte_refs:
             final_parts.append(f'{cte_name}."{alias}"')
 
         from_clause_str = "FROM _base"
         joined_ctes: set = set()
-        for cte_name, _ in measure_cte_refs:
+        for cte_name, _, cte_join_aliases in measure_cte_refs:
             if cte_name in joined_ctes:
                 continue
             joined_ctes.add(cte_name)
 
+            # Use per-CTE join aliases when available (re-rooted CTEs may
+            # have fewer dims than the main query if some were unreachable).
+            effective_aliases = cte_join_aliases if cte_join_aliases is not None else join_aliases
             join_on_parts = []
-            for a in join_aliases:
+            for a in effective_aliases:
                 join_on_parts.append(f'_base."{a}" = {cte_name}."{a}"')
             if join_on_parts:
                 from_clause_str += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"

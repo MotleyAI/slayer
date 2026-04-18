@@ -2662,6 +2662,239 @@ class TestDimensionAggregation:
             assert "/" in sql
 
 
+class TestCrossModelRerootedSubquery:
+    """Tests for the re-rooted subquery approach to cross-model measure CTEs.
+
+    When a cross-model measure is used, the CTE is generated with the target
+    model as FROM, allowing all of the target model's joins to be available
+    for filters and dimensions. Unreachable dims/filters are dropped.
+    """
+
+    @pytest.fixture
+    def _models(self):
+        """Shared model definitions for re-rooting tests."""
+        policy = SlayerModel(
+            name="policy", sql_table="policy", data_source="test",
+            dimensions=[
+                Dimension(name="policy_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="policy_number", type=DataType.STRING),
+                Dimension(name="status_code", type=DataType.STRING),
+            ],
+            joins=[
+                ModelJoin(target_model="policy_amount", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+                ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+            ],
+        )
+        policy_amount = SlayerModel(
+            name="policy_amount", sql_table="policy_amount", data_source="test",
+            dimensions=[
+                Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="effective_date", type=DataType.TIMESTAMP),
+            ],
+            measures=[Measure(name="total_policy_amount", sql="policy_amount")],
+            joins=[
+                ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+                ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
+                ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+            ],
+        )
+        premium = SlayerModel(
+            name="premium", sql_table="premium", data_source="test",
+            dimensions=[
+                Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_premium", sql="1", type=DataType.STRING),
+            ],
+        )
+        agreement_party_role = SlayerModel(
+            name="agreement_party_role", sql_table="agreement_party_role", data_source="test",
+            dimensions=[
+                Dimension(name="agreement_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="party_role_code", type=DataType.STRING),
+            ],
+        )
+        return policy, policy_amount, premium, agreement_party_role
+
+    async def _setup_engine(self, *models):
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+        tmp = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmp)
+        for m in models:
+            await storage.save_model(m)
+        return SlayerQueryEngine(storage=storage)
+
+    async def test_rerooted_cte_includes_target_join_filters(self, generator, _models):
+        """Q9-style: filters on premium and agreement_party_role are included in CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            dimensions=[ColumnRef(name="policy_number")],
+            filters=[
+                "agreement_party_role.party_role_code = 'PH'",
+                "policy_amount.premium.has_premium = '1'",
+            ],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should FROM policy_amount (target), not FROM policy (source)
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
+        # CTE should JOIN premium and agreement_party_role
+        assert "premium" in cte_section
+        assert "agreement_party_role" in cte_section
+        # CTE should include both filter conditions
+        assert "party_role_code" in cte_section
+        # has_premium sql='1' resolves to literal 1
+        assert "1 = '1'" in cte_section or "1 = 1" in cte_section
+
+    async def test_rerooted_cte_without_filters(self, generator, _models):
+        """Cross-model measure with no filters still uses re-rooted CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            dimensions=[ColumnRef(name="policy_number")],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should still FROM policy_amount (re-rooted)
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
+
+    async def test_rerooted_unreachable_dims_and_filters_dropped(self, generator):
+        """Unreachable dims/filters are dropped. CTE produces scalar CROSS JOIN."""
+        # orders → customers join, but customers has NO join back to orders.
+        # Dimension 'status' is on orders (unreachable from customers).
+        # Filter on 'warehouse' is reachable from orders but not customers.
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", type=DataType.STRING),
+            ],
+            measures=[],
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                ModelJoin(target_model="warehouse", join_pairs=[["warehouse_id", "id"]]),
+            ],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[Measure(name="score", sql="score")],
+        )
+        warehouse = SlayerModel(
+            name="warehouse", sql_table="warehouse", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="region", type=DataType.STRING),
+            ],
+        )
+        engine = await self._setup_engine(orders, customers, warehouse)
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customers.score:avg")],
+            dimensions=[ColumnRef(name="status")],
+            filters=["warehouse.region = 'US'"],
+        )
+        enriched = await engine._enrich(query=query, model=orders, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE: FROM customers, no GROUP BY (status unreachable), no warehouse filter
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:sql.find(")\nSELECT", cm_cte_start)]
+        assert "FROM customers" in cte_section or "FROM\n  customers" in cte_section
+        assert "warehouse" not in cte_section.lower()
+        assert "status" not in cte_section.lower()
+        # Combined: CROSS JOIN (no shared dims)
+        assert "CROSS JOIN" in sql
+
+    async def test_rerooted_with_time_dimension(self, generator, _models):
+        """Re-rooted CTE includes time dimension when reachable from target."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="policy_amount.effective_date"),
+                granularity=TimeGranularity.MONTH,
+            )],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should include effective_date with DATE_TRUNC
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "effective_date" in cte_section.lower()
+        assert "GROUP BY" in cte_section
+
+    async def test_rerooted_cross_model_in_formula(self, generator, _models):
+        """Formula mixing local + cross-model measure uses re-rooted CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        # Add a local measure to policy
+        policy_with_measure = policy.model_copy(update={
+            "measures": [Measure(name="number_of_policies", sql="1")],
+        })
+        engine = await self._setup_engine(policy_with_measure, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(
+                formula="number_of_policies:sum / policy_amount.total_policy_amount:sum",
+                name="ratio",
+            )],
+            dimensions=[ColumnRef(name="policy_number")],
+        )
+        enriched = await engine._enrich(query=query, model=policy_with_measure, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # Should have both _base (with SUM for local measure) and _cm_ CTE
+        assert "_base" in sql
+        assert "_cm_" in sql
+        assert "/" in sql  # Division expression
+
+    async def test_rerooted_local_filter_remapped_to_source(self, generator, _models):
+        """Unqualified filter on source model is remapped to source.col in CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        # policy_amount has a join to policy, so status_code is reachable
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            dimensions=[ColumnRef(name="policy_number")],
+            filters=["status_code = 'ACTIVE'"],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should include the filter, qualified with the source model alias
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "status_code" in cte_section.lower()
+        assert "'ACTIVE'" in cte_section
+
 class TestOrderByCustomFieldName:
     """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
 

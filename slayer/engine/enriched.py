@@ -171,3 +171,4 @@ class CrossModelMeasure:
     join_type: str = "left"  # "left" or "inner"
     label: Optional[str] = None
     format: Optional[NumberFormat] = None  # Inferred format for this cross-model measure
+    rerooted_enriched: Optional["EnrichedQuery"] = None  # Re-rooted subquery with target as source
