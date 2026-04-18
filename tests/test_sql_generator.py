@@ -2578,6 +2578,43 @@ class TestOrderByCustomFieldName:
         assert "ORDER BY" in sql
         assert "ASC" in sql
 
+    async def test_order_by_custom_name_in_computed_query(self, generator: SQLGenerator) -> None:
+        """ORDER BY with custom name must resolve correctly in computed/transform queries.
+
+        The _apply_pagination_to_sql path (used for expressions/transforms) must
+        use _resolve_order_column, not raw model.name formatting.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                Field(formula="customer_id:count_distinct", name="num_customers"),
+                Field(formula="cumsum(revenue:sum)", name="running_rev"),
+            ],
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        # The ORDER BY must NOT use the raw custom name "orders.num_customers"
+        assert "orders.num_customers" not in sql, (
+            f"Custom name not resolved in computed query path:\n{sql}"
+        )
+
 
 class TestJoinType:
     """join_type on ModelJoin controls LEFT vs INNER in generated SQL."""

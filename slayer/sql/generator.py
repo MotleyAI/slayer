@@ -392,7 +392,7 @@ class SQLGenerator:
             order_parts = []
             for order_item in enriched.order:
                 col = order_item.column
-                col_name = f"{col.model or enriched.model_name}.{col.name}"
+                col_name = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
                 order_parts.append(f'"{col_name}" {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
