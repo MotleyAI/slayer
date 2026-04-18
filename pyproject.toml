@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.2.0"
+version = "0.3.0"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"

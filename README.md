@@ -8,29 +8,29 @@
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 
-**SLayer** is a lightweight semantic layer that lets AI agents query data without writing SQL.
+**SLayer** is a semantic layer that lets AI agents query your database correctly.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
 
 ---
 
-## What is SLayer?
+## How it works
 
-SLayer is a semantic layer that sits between your database and whatever consumes the data – AI agents, internal tools, dashboards, or scripts. You define your data models (or let SLayer auto-generate them from the schema), and query using a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters instead of writing SQL directly.
+SLayer sits between your database and whatever consumes the data – AI agents, internal tools, dashboards, or scripts. You define your data models (or let SLayer auto-generate them from the schema), and query using a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters instead of writing SQL directly.
 
 SLayer compiles these queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences so that consumers don't have to.
 
-#### SLayer is
+### SLayer is
 
-1. **dynamic** – models can be updated at any time and used immediately; aggregations are [defined in queries, not models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
-2. **simple** – query structure is intuitive and easily understood by LLMs and humans
-3. **expressive** – [allows](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) to query things like _"month-on-month % increase in total revenue, compared to the previous year"_
-4. **embeddable** – can be used as a standalone service or imported as a Python module with no extra server
-5. **flexible** – exposes several interfaces – [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), supports most popular DB dialects
+1. **dynamic**: models can be updated at any time and used immediately; aggregations are [defined in queries, not models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
+2. **simple**: query structure is intuitive and easily understood by LLMs and humans
+3. **expressive**: [supports](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_
+4. **embeddable**: can be used as a standalone service or imported as a Python module with no extra server
+5. **flexible**: exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client) interfaces; supports most popular databases
 
-Key features include [automatic model ingestion](https://motley-slayer.readthedocs.io/en/latest/concepts/ingestion/), [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/), [auto-applied filters](https://motley-slayer.readthedocs.io/en/latest/concepts/models/#model-filters); see the [full documentation](https://motley-slayer.readthedocs.io/en/latest/).
+See also: [automatic model ingestion](https://motley-slayer.readthedocs.io/en/latest/concepts/ingestion/), [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/), [auto-applied filters](https://motley-slayer.readthedocs.io/en/latest/concepts/models/#model-filters), and [more](https://motley-slayer.readthedocs.io/en/latest/).
 
-> Why not just let agents write SQL? Several reasons: accuracy, consistency, interpretability, and more – see our [blog post](https://motley.ai/blog-posts/why-generating-raw-sql-by-agents-is-hard) and dbt's [benchmark analysis](https://docs.getdbt.com/blog/semantic-layer-vs-text-to-sql-2026?version=1.12).
+> Why not just let agents write SQL? Because they get it wrong often enough to matter – see our [blog post](https://motley.ai/blog-posts/why-generating-raw-sql-by-agents-is-hard) and dbt's [benchmark analysis](https://docs.getdbt.com/blog/semantic-layer-vs-text-to-sql-2026?version=1.12).
 
 ## Quickstart
 
