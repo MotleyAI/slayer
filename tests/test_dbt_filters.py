@@ -182,3 +182,45 @@ class TestConvertDbtFilter:
         assert any("all_semantic_models" in r.message for r in caplog.records), (
             f"Expected warning about all_semantic_models, got: {[r.message for r in caplog.records]}"
         )
+
+    def test_peer_dimension_deterministic_across_registry_order(self) -> None:
+        """When two peers both have the same dimension, the resolved peer must be
+        deterministic regardless of registry build order."""
+        source = DbtSemanticModel(
+            name="source",
+            entities=[DbtEntity(name="shared", type="primary", expr="id")],
+            dimensions=[],  # dim NOT on source
+        )
+        alpha = DbtSemanticModel(
+            name="alpha",
+            entities=[DbtEntity(name="shared", type="primary", expr="id")],
+            dimensions=[DbtDimension(name="the_dim")],
+        )
+        beta = DbtSemanticModel(
+            name="beta",
+            entities=[DbtEntity(name="shared", type="primary", expr="id")],
+            dimensions=[DbtDimension(name="the_dim")],
+        )
+        all_models = {"source": source, "alpha": alpha, "beta": beta}
+
+        reg1 = _build_registry(source, alpha, beta)
+        result1 = convert_dbt_filter(
+            filter_str="{{Dimension('shared__the_dim')}} = 1",
+            source_model_name="source",
+            entity_registry=reg1,
+            model_entity_names={"shared": "primary"},
+            all_semantic_models=all_models,
+        )
+
+        reg2 = _build_registry(source, beta, alpha)
+        result2 = convert_dbt_filter(
+            filter_str="{{Dimension('shared__the_dim')}} = 1",
+            source_model_name="source",
+            entity_registry=reg2,
+            model_entity_names={"shared": "primary"},
+            all_semantic_models=all_models,
+        )
+
+        assert result1 == result2, f"Nondeterministic: {result1!r} vs {result2!r}"
+        # Should pick the lexicographically first peer
+        assert result1 == "alpha.the_dim = 1"

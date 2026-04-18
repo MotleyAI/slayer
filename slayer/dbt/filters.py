@@ -70,7 +70,11 @@ def convert_dbt_filter(
                 return dim_name  # Local dimension — bare name
 
             # Dimension not on source — search peer models sharing the same entity
-            peer_models = entity_registry._primaries.get(entity_name, [])
+            # Sort by model name for deterministic selection when multiple peers match
+            peer_models = sorted(
+                entity_registry._primaries.get(entity_name, []),
+                key=lambda item: item[0],
+            )
             for peer_name, _ in peer_models:
                 if peer_name == source_model_name:
                     continue
