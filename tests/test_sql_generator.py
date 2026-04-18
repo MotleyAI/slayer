@@ -2128,6 +2128,46 @@ class TestAutoMoveDimensions:
         assert "status" in dim_names
         assert "customer_id" in dim_names
 
+    async def test_dotted_measure_not_moved_when_model_only_in_named_queries(self, storage) -> None:
+        """A dotted ref to a measure on a model only available via named_queries must stay in fields."""
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[Dimension(name="status", sql="status", type=DataType.STRING)],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        # customers NOT saved to storage — only available as a named query result
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="name", sql="name")],  # "name" is BOTH dim and measure
+        )
+        await storage.save_model(orders)
+        # Don't save customers to storage — simulate named-query-only model
+
+        engine = SlayerQueryEngine(storage=storage)
+
+        # Mock _resolve_model to return customers for "customers" (simulating named_queries)
+        original_resolve = engine._resolve_model
+
+        async def patched_resolve(model_name, named_queries=None, _resolving=None):
+            if model_name == "customers":
+                return customers
+            return await original_resolve(model_name=model_name, named_queries=named_queries, _resolving=_resolving)
+
+        engine._resolve_model = patched_resolve
+
+        query = SlayerQuery(source_model="orders", fields=["customers.name", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=orders, named_queries={})
+        # "customers.name" is both a dim and a measure — should stay in fields (not auto-moved)
+        assert len(result.fields) == 2, (
+            f"Expected 'customers.name' to stay in fields, but got {len(result.fields)} fields: "
+            f"{[f.formula for f in result.fields]}"
+        )
+
 
 class TestInlineSQLJoins:
     """Cross-model dimensions must emit LEFT JOINs even when source model uses inline SQL.

@@ -695,10 +695,13 @@ class SlayerQueryEngine:
                     if dim_def is not None:
                         # parts[-2] is the terminal model containing the dimension named by parts[-1]
                         terminal_model_name = parts[-2]
-                        terminal_model = (
-                            await self.storage.get_model(terminal_model_name)
-                            if self.storage else None
-                        )
+                        try:
+                            terminal_model = await self._resolve_model(
+                                model_name=terminal_model_name,
+                                named_queries=named_queries or {},
+                            )
+                        except ValueError:
+                            terminal_model = None
                         is_measure = (
                             terminal_model.get_measure(parts[-1]) is not None
                             if terminal_model else False
