@@ -66,3 +66,21 @@ class TestMapTypeCode:
 
     def test_duckdb_timestamp(self) -> None:
         assert _map_type_code("TIMESTAMP") == "time"
+
+    # --- Dialect-aware OID mapping ---
+
+    def test_pg_oid_16_is_boolean(self) -> None:
+        """Postgres OID 16 = bool."""
+        assert _map_type_code(16, db_type="postgresql") == "boolean"
+
+    def test_mysql_type_16_is_number(self) -> None:
+        """MySQL field type 16 = BIT (not boolean)."""
+        assert _map_type_code(16, db_type="mysql") == "number"
+
+    def test_mysql_float_oid(self) -> None:
+        """MySQL MYSQL_TYPE_FLOAT = 4."""
+        assert _map_type_code(4, db_type="mysql") == "number"
+
+    def test_mysql_decimal_oid(self) -> None:
+        """MySQL MYSQL_TYPE_DECIMAL = 0."""
+        assert _map_type_code(0, db_type="mysql") == "number"
