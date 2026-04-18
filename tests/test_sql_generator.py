@@ -3150,3 +3150,51 @@ class TestCteNameSanitization:
         # a.b_c → _fm_a__b_c, a_b.c → _fm_a_b__c
         assert name_a == "_fm_a__b_c"
         assert name_b == "_fm_a_b__c"
+
+
+class TestGetColumnTypesSql:
+    """get_column_types must build valid SQL for expression measures."""
+
+    async def test_expression_measure_sql_not_corrupted(self) -> None:
+        """Expression measures like COALESCE(amount, 0) must not get model.name prepended."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[
+                Measure(name="revenue", sql="amount"),
+                Measure(name="safe_amount", sql="COALESCE(amount, 0)"),
+            ],
+        )
+        with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=model):
+            engine = SlayerQueryEngine(storage=storage)
+            mock_ds = MagicMock()
+            mock_ds.get_connection_string.return_value = "sqlite://"
+            mock_ds.type = "sqlite"
+            with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
+                captured_sql = []
+
+                async def capture_sql(sql):
+                    captured_sql.append(sql)
+                    return {}
+
+                mock_client = MagicMock()
+                mock_client.get_column_types = capture_sql
+                engine._sql_clients["sqlite://"] = mock_client
+
+                await engine.get_column_types("orders")
+
+        assert captured_sql, "get_column_types did not call client"
+        sql = captured_sql[0]
+        # Expression measure must NOT be corrupted: "orders.COALESCE(amount, 0)" is invalid
+        assert "orders.COALESCE" not in sql, f"Expression measure corrupted:\n{sql}"
+        # Bare measure should be qualified
+        assert "orders.amount" in sql
+        # Expression should appear as-is
+        assert "COALESCE(amount, 0)" in sql

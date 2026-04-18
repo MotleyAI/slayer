@@ -293,9 +293,14 @@ class SlayerQueryEngine:
             from_sql = f"({model.sql}) AS {model.name}"
         else:
             from_sql = f"{model.sql_table} AS {model.name}"
-        select_parts = [
-            f"{model.name}.{m.sql or m.name} AS {m.name}" for m in measures
-        ]
+        def _qualify_measure_sql(m):
+            sql_expr = m.sql or m.name
+            # Only qualify bare identifiers; expressions already contain table refs or functions
+            if sql_expr.isidentifier():
+                return f"{model.name}.{sql_expr} AS {m.name}"
+            return f"{sql_expr} AS {m.name}"
+
+        select_parts = [_qualify_measure_sql(m) for m in measures]
         sql = f"SELECT {', '.join(select_parts)} FROM {from_sql}"
 
         try:
