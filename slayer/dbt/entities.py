@@ -65,12 +65,13 @@ class EntityRegistry:
         """Look up which model owns this entity as primary.
 
         Returns (model_name, expr) or None.  When multiple models share the
-        same primary entity, the first registered one is returned.
+        same primary entity, the one with the lexicographically smallest model
+        name is returned (deterministic regardless of registration order).
         """
         entries = self._primaries.get(entity_name)
         if not entries:
             return None
-        return entries[0]
+        return min(entries, key=lambda e: e[0])
 
     def resolve_joins_for_model(self, model: DbtSemanticModel) -> List[ModelJoin]:
         """For each foreign entity in the model, generate a ModelJoin to the primary model.

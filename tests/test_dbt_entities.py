@@ -46,6 +46,20 @@ class TestEntityRegistry:
         reg.build([sm])
         assert reg.get_primary_model("order_id") == ("orders", "id")
 
+    def test_get_primary_model_deterministic_across_input_order(self) -> None:
+        """When multiple models share a primary entity, get_primary_model must return
+        the same model regardless of input order."""
+        model_a = _make_model("alpha", [DbtEntity(name="shared", type="primary", expr="id")])
+        model_b = _make_model("beta", [DbtEntity(name="shared", type="primary", expr="id")])
+
+        reg1 = EntityRegistry()
+        reg1.build([model_a, model_b])
+
+        reg2 = EntityRegistry()
+        reg2.build([model_b, model_a])
+
+        assert reg1.get_primary_model("shared") == reg2.get_primary_model("shared")
+
 
 class TestJoinResolution:
     def test_foreign_to_primary_join(self) -> None:
