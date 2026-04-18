@@ -783,7 +783,7 @@ class SlayerQueryEngine:
             named_queries=named_queries or {},
         )
 
-        # Find the measure in the target model (* = COUNT(*), no measure needed)
+        # Find the measure (or dimension) in the target model
         if measure_name == "*":
             from slayer.core.models import Measure
 
@@ -791,10 +791,23 @@ class SlayerQueryEngine:
         else:
             measure_def = target_model.get_measure(measure_name)
             if measure_def is None:
-                raise ValueError(
-                    f"Measure '{measure_name}' not found in model '{target_model_name}'. "
-                    f"Available: {[m.name for m in target_model.measures]}"
-                )
+                # Fall back: allow aggregating a dimension (e.g. policies.id:count_distinct)
+                from slayer.core.enums import NUMERIC_ONLY_AGGREGATIONS
+                from slayer.core.models import Measure
+
+                dim_def = target_model.get_dimension(measure_name)
+                if dim_def is None:
+                    raise ValueError(
+                        f"Measure or dimension '{measure_name}' not found in model '{target_model_name}'. "
+                        f"Available measures: {[m.name for m in target_model.measures]}, "
+                        f"dimensions: {[d.name for d in target_model.dimensions]}"
+                    )
+                if aggregation_name and aggregation_name in NUMERIC_ONLY_AGGREGATIONS and str(dim_def.type) == "string":
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' is not applicable to "
+                        f"string dimension '{measure_name}' in model '{target_model_name}'."
+                    )
+                measure_def = Measure(name=measure_name, sql=dim_def.sql or measure_name)
 
         # The cross-model sub-query starts FROM the source table with JOIN to
         # the target, so all source dimensions are available for grouping.

@@ -2589,6 +2589,79 @@ class TestDimensionAggregation:
         assert "dim_revenue_col" not in sql
 
 
+    async def test_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
+        """dimension:count_distinct inside a formula should work, not just as a standalone field."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[
+                Measure(name="revenue", sql="amount"),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                Field(formula="revenue:sum / customer_id:count_distinct", name="rev_per_customer"),
+            ],
+        )
+        sql = await _generate(generator, query, model)
+        assert "COUNT(DISTINCT" in sql
+        assert "SUM(" in sql
+        assert "/" in sql
+
+    async def test_cross_model_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
+        """cross-model dimension:count_distinct in a formula (e.g., policies.id:count_distinct)."""
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        source = SlayerModel(
+            name="amounts",
+            sql_table="amounts",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[
+                Measure(name="total", sql="amount"),
+            ],
+            joins=[ModelJoin(target_model="policies", join_pairs=[["policy_id", "id"]])],
+        )
+        target = SlayerModel(
+            name="policies",
+            sql_table="policies",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="policy_number", sql="policy_number", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+
+        # Use a real query engine so resolve_cross_model_measure works
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(source)
+            await storage.save_model(target)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="amounts",
+                fields=[
+                    Field(formula="total:sum / policies.id:count_distinct", name="avg_per_policy"),
+                ],
+            )
+            enriched = await engine._enrich(query=query, model=source, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            assert "COUNT(DISTINCT" in sql
+            assert "SUM(" in sql
+            assert "/" in sql
+
+
 class TestOrderByCustomFieldName:
     """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
 
