@@ -217,42 +217,49 @@ class SQLGenerator:
                 continue
             seen_cm_ctes.add(cte_name)
 
-            select_parts = []
-            group_parts = []
+            select = exp.Select()
+            group_exprs = []
 
             for dim in cm.shared_dimensions:
                 col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=cm.source_model_name)
-                col_sql = col_expr.sql(dialect=self.dialect)
-                select_parts.append(f'{col_sql} AS "{dim.alias}"')
-                group_parts.append(col_sql)
+                select = select.select(col_expr.as_(dim.alias))
+                group_exprs.append(col_expr)
             for td in cm.shared_time_dimensions:
                 col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=cm.source_model_name)
                 td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
-                td_sql = td_expr.sql(dialect=self.dialect)
-                select_parts.append(f'{td_sql} AS "{td.alias}"')
-                group_parts.append(td_sql)
+                select = select.select(td_expr.as_(td.alias))
+                group_exprs.append(td_expr)
 
             agg_expr, _ = self._build_agg(measure=cm.measure)
-            select_parts.append(f'{agg_expr.sql(dialect=self.dialect)} AS "{cm.alias}"')
+            select = select.select(agg_expr.as_(cm.alias))
 
+            # FROM source model
             if cm.source_sql:
-                from_sql = f"({cm.source_sql}) AS {cm.source_model_name}"
+                source_from = exp.Subquery(
+                    this=sqlglot.parse_one(cm.source_sql, dialect=self.dialect),
+                    alias=exp.to_identifier(cm.source_model_name),
+                )
             else:
-                from_sql = f"{cm.source_sql_table} AS {cm.source_model_name}"
-            if cm.target_model_sql:
-                target_from = f"({cm.target_model_sql}) AS {cm.target_model_name}"
-            else:
-                target_from = f"{cm.target_model_sql_table} AS {cm.target_model_name}"
-            join_conditions = [
-                f"{cm.source_model_name}.{src} = {cm.target_model_name}.{tgt}"
-                for src, tgt in cm.join_pairs
-            ]
+                source_from = exp.to_table(cm.source_sql_table, alias=cm.source_model_name)
+            select = select.from_(source_from)
 
-            cte_sql = (
-                f"SELECT {', '.join(select_parts)}\n"
-                f"FROM {from_sql}\n"
-                f"{cm.join_type.upper()} JOIN {target_from} ON {' AND '.join(join_conditions)}"
-            )
+            # JOIN target model
+            if cm.target_model_sql:
+                target_join = exp.Subquery(
+                    this=sqlglot.parse_one(cm.target_model_sql, dialect=self.dialect),
+                    alias=exp.to_identifier(cm.target_model_name),
+                )
+            else:
+                target_join = exp.to_table(cm.target_model_sql_table, alias=cm.target_model_name)
+            join_on = exp.and_(*(
+                exp.EQ(
+                    this=exp.Column(this=exp.to_identifier(src), table=exp.to_identifier(cm.source_model_name)),
+                    expression=exp.Column(this=exp.to_identifier(tgt), table=exp.to_identifier(cm.target_model_name)),
+                )
+                for src, tgt in cm.join_pairs
+            ))
+            select = select.join(target_join, on=join_on, join_type=cm.join_type.upper())
+
             # Only include WHERE conditions whose tables are in this CTE
             cm_available = {cm.source_model_name, cm.target_model_name}
             original_filters = enriched.filters
@@ -261,11 +268,11 @@ class SQLGenerator:
             where_clause, _ = self._build_where_and_having(enriched=enriched)
             enriched.filters = original_filters
             if where_clause is not None:
-                cte_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
-            if group_parts:
-                cte_sql += f"\nGROUP BY {', '.join(group_parts)}"
+                select = select.where(where_clause)
+            for gb in group_exprs:
+                select = select.group_by(gb)
 
-            ctes.append((cte_name, cte_sql))
+            ctes.append((cte_name, select.sql(dialect=self.dialect)))
             measure_cte_refs.append((cte_name, cm.alias))
 
         # --- Isolated filtered-measure CTEs ---
@@ -274,42 +281,42 @@ class SQLGenerator:
                 continue
             cte_name = _cte_name_from_alias("_fm_", measure.alias)
 
-            select_parts = []
-            group_parts = []
+            select = exp.Select()
+            group_exprs = []
             for dim in enriched.dimensions:
                 col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
-                col_sql = col_expr.sql(dialect=self.dialect)
-                select_parts.append(f'{col_sql} AS "{dim.alias}"')
-                group_parts.append(col_sql)
+                select = select.select(col_expr.as_(dim.alias))
+                group_exprs.append(col_expr)
             for td in enriched.time_dimensions:
                 col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
                 td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
-                td_sql = td_expr.sql(dialect=self.dialect)
-                select_parts.append(f'{td_sql} AS "{td.alias}"')
-                group_parts.append(td_sql)
+                select = select.select(td_expr.as_(td.alias))
+                group_exprs.append(td_expr)
 
             # Measure aggregation without CASE WHEN (the join IS the filter)
             unfiltered = copy.copy(measure)
             unfiltered.filter_sql = None
             unfiltered.filter_columns = []
             agg_expr, _ = self._build_agg(measure=unfiltered)
-            select_parts.append(f'{agg_expr.sql(dialect=self.dialect)} AS "{measure.alias}"')
+            select = select.select(agg_expr.as_(measure.alias))
 
             from_clause = self._build_from_clause(enriched=enriched)
-            from_sql = from_clause.sql(dialect=self.dialect)
+            select = select.from_(from_clause)
 
             # Only include dimension joins + this measure's filter joins
             needed = _needed_join_aliases(enriched, extra_columns=measure.filter_columns)
-            join_parts = ""
             for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
                 if target_alias in needed:
                     if target_table.startswith("("):
-                        target_ref = f"({target_table}) AS {target_alias}"
+                        join_target = exp.Subquery(
+                            this=sqlglot.parse_one(target_table, dialect=self.dialect),
+                            alias=exp.to_identifier(target_alias),
+                        )
                     else:
-                        target_ref = f"{target_table} AS {target_alias}"
-                    join_parts += f"\n{jtype.upper()} JOIN {target_ref} ON {join_cond}"
+                        join_target = exp.to_table(target_table, alias=target_alias)
+                    join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+                    select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
-            cte_sql = f"SELECT {', '.join(select_parts)}\nFROM {from_sql}{join_parts}"
             # Only include WHERE conditions whose tables are in this CTE
             fm_available = needed | {enriched.model_name}
             original_filters = enriched.filters
@@ -318,11 +325,11 @@ class SQLGenerator:
             where_clause, _ = self._build_where_and_having(enriched=enriched)
             enriched.filters = original_filters
             if where_clause is not None:
-                cte_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
-            if group_parts:
-                cte_sql += f"\nGROUP BY {', '.join(group_parts)}"
+                select = select.where(where_clause)
+            for gb in group_exprs:
+                select = select.group_by(gb)
 
-            ctes.append((cte_name, cte_sql))
+            ctes.append((cte_name, select.sql(dialect=self.dialect)))
             measure_cte_refs.append((cte_name, measure.alias))
 
         # --- Build combined SELECT: _base LEFT JOIN measure CTEs ---
@@ -369,14 +376,20 @@ class SQLGenerator:
         cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in inner_ctes]
         sql = f"WITH {', '.join(cte_strs)}\n{combined_select}"
 
-        # ORDER BY qualified with _base. to avoid ambiguity in multi-CTE joins
+        # ORDER BY: use _base. for dimensions (ambiguous across CTEs),
+        # bare alias for measure CTE columns (not in _base)
         if enriched.order:
             order_parts = []
+            base_cols = set(d.alias for d in enriched.dimensions) | set(td.alias for td in enriched.time_dimensions)
+            base_cols |= {m.alias for m in enriched.measures if not _has_cross_model_filter(m)}
             for order_item in enriched.order:
                 col = order_item.column
                 col_name = self._resolve_order_column(col=col, enriched=enriched)
                 direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'_base."{col_name}" {direction}')
+                if col_name in base_cols:
+                    order_parts.append(f'_base."{col_name}" {direction}')
+                else:
+                    order_parts.append(f'"{col_name}" {direction}')
             sql += "\nORDER BY " + ", ".join(order_parts)
         if enriched.limit is not None:
             sql += f"\nLIMIT {enriched.limit}"
