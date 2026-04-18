@@ -3084,6 +3084,22 @@ class TestIsolatedFilteredMeasureCTEs:
         # Should still produce valid SQL with the measure CTE
         assert "_fm_" in sql and "loss_payment_amt" in sql
 
+    async def test_having_filter_on_isolated_measure_applied_in_base(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """HAVING filter on an isolated measure is correctly applied in the base CTE."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            filters=["loss_payment_amt:sum > 1000"],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # HAVING must appear in the base CTE (not dropped)
+        assert "HAVING" in sql, f"HAVING filter dropped:\n{sql}"
+        assert "1000" in sql
+
     async def test_same_filtered_measure_different_aggs_separate_ctes(
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
