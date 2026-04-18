@@ -13,7 +13,7 @@ SLayer generates and executes the query against your database.
   Not an aggregate — aggregation is chosen at query time.
 - **aggregation** — how a measure is rolled up: `sum`, `avg`, `count`, `weighted_avg`, …
   Applied via colon syntax: `revenue:sum`.
-- **field** — one output column of a query. A formula over measures and aggregations.
+- **field** — one output column of a query. A formula over measures and aggregations; normal arithmetic expressions work.
 - **filter** — a condition that restricts rows (WHERE or HAVING, routed automatically).
 - **join** — a LEFT-JOIN relationship between two models. Joins let you reach
   another model's dimensions/measures via dotted paths like `customers.regions.name`.
@@ -25,7 +25,7 @@ SLayer generates and executes the query against your database.
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count", "revenue:sum"],
+  "fields": ["*:count", "revenue:sum / orders.amount:sum"],
   "dimensions": ["status"],
   "filters": ["status <> 'cancelled'"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
@@ -54,8 +54,10 @@ SLayer generates and executes the query against your database.
    becomes a post-filter on an outer wrapper query. Write the condition; SLayer
    decides where it lands.
 
-5. Consider the type of a measure shown by inspect_model when choosing an aggregation for it.
-    Do NOT use eg. :avg or :sum for a string measure, for example. 
+5. It's critically important to choose the right source_model for a query. Put EXTRA THOUGHT into that.
+
+6. When picking a measure for a query, MAKE SURE to consider the underlying values range 
+   shown under "values" in inspect_model. If that's all NULL, maybe that's not the measure you want. 
 
 ## Deep dives
 
