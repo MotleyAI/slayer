@@ -2806,8 +2806,8 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = generator.generate(enriched=enriched)
 
         # Each filtered measure should have its own CTE
-        assert "_fm_loss_payment_amt" in sql
-        assert "_fm_loss_reserve_amt" in sql
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+        assert "loss_reserve_amt" in sql
         # Base query should NOT have both INNER JOINs (would intersect to zero rows)
         base_section = sql.split("_fm_")[0]
         assert "Loss_Payment" not in base_section or "Loss_Reserve" not in base_section
@@ -2831,8 +2831,8 @@ class TestIsolatedFilteredMeasureCTEs:
         # Formula should be evaluated (contains + operator)
         assert "+" in sql
         # Both CTE names present
-        assert "_fm_loss_payment_amt" in sql
-        assert "_fm_loss_reserve_amt" in sql
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+        assert "loss_reserve_amt" in sql
 
     async def test_mixed_isolated_and_local_measures(
         self, generator: SQLGenerator, claim_amount_model, related_models,
@@ -2850,7 +2850,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "_base" in sql
         assert "total_amount_sum" in sql
         # Filtered measure in its own CTE
-        assert "_fm_loss_payment_amt" in sql
+        assert "_fm_" in sql and "loss_payment_amt" in sql
 
     async def test_all_measures_isolated_produces_dimension_spine(
         self, generator: SQLGenerator, claim_amount_model, related_models,
@@ -2866,7 +2866,7 @@ class TestIsolatedFilteredMeasureCTEs:
 
         # Base CTE should exist with dimensions but no SUM
         assert "_base" in sql
-        assert "_fm_loss_payment_amt" in sql
+        assert "_fm_" in sql and "loss_payment_amt" in sql
         # The base should have GROUP BY for deduplication
         base_cte = sql.split("_fm_")[0]
         assert "GROUP BY" in base_cte
@@ -2882,8 +2882,8 @@ class TestIsolatedFilteredMeasureCTEs:
         enriched = await self._enrich(claim_amount_model, related_models, query)
         sql = generator.generate(enriched=enriched)
         # Both isolated CTEs should be present
-        assert "_fm_loss_payment_amt" in sql
-        assert "_fm_loss_reserve_amt" in sql
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+        assert "loss_reserve_amt" in sql
         # With no dimensions, CROSS JOIN is needed (not LEFT JOIN with no ON)
         assert "CROSS JOIN" in sql
 
@@ -2926,7 +2926,10 @@ class TestIsolatedFilteredMeasureCTEs:
         enriched = await self._enrich(claim_amount_model, related_models, query)
         sql = generator.generate(enriched=enriched)
         # Extract the _fm CTE body (between _fm_ name and the next CTE/combined)
-        fm_start = sql.index("_fm_loss_payment_amt")
+        import re as _re
+        fm_match = _re.search(r"_fm_\w*loss_payment_amt\w*", sql)
+        assert fm_match, f"No _fm_ CTE for loss_payment_amt in:\n{sql}"
+        fm_start = fm_match.start()
         fm_body = sql[fm_start:sql.index("\n)", fm_start)]
         # The dimension should use claim.claim_number, not claim_amount.claim_number
         assert "claim.claim_number" in fm_body, f"Expected claim.claim_number in CTE:\n{fm_body}"
@@ -3002,4 +3005,111 @@ class TestIsolatedFilteredMeasureCTEs:
         # Must not have an empty SELECT clause
         assert "SELECT\nFROM" not in sql, f"Empty SELECT detected:\n{sql}"
         # Should still produce valid SQL with the measure CTE
-        assert "_fm_loss_payment_amt" in sql
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+
+    async def test_same_filtered_measure_different_aggs_separate_ctes(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Same filtered measure with sum + avg must produce distinct CTEs, not collide."""
+        loss_m = claim_amount_model.get_measure("loss_payment_amt")
+        loss_m.allowed_aggregations = ["sum", "avg"]
+
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="loss_payment_amt:sum"),
+                Field(formula="loss_payment_amt:avg"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Both aliases must be present in the final SQL
+        assert "loss_payment_amt_sum" in sql, f"Missing loss_payment_amt_sum in:\n{sql}"
+        assert "loss_payment_amt_avg" in sql, f"Missing loss_payment_amt_avg in:\n{sql}"
+        # The two filtered measures must have distinct CTE names (no duplicate _fm_ CTEs)
+        import re as _re
+        fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
+        assert len(fm_cte_names) == len(set(fm_cte_names)), (
+            f"Duplicate _fm_ CTE names: {fm_cte_names}\n{sql}"
+        )
+        assert len(fm_cte_names) == 2, f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}"
+
+    def test_same_cm_measure_different_aggs_separate_ctes(self, generator: SQLGenerator) -> None:
+        """Same cross-model measure with sum + avg must produce distinct CTEs."""
+        from slayer.engine.enriched import CrossModelMeasure, EnrichedDimension, EnrichedMeasure, EnrichedQuery
+
+        dim = EnrichedDimension(
+            name="order_id", sql="order_id", type=DataType.NUMBER,
+            alias="orders.order_id", model_name="orders",
+        )
+        enriched = EnrichedQuery(
+            model_name="orders",
+            sql_table="Orders",
+            dimensions=[dim],
+            time_dimensions=[],
+            measures=[],
+            cross_model_measures=[
+                CrossModelMeasure(
+                    name="customer_revenue_sum",
+                    alias="orders.customers.revenue_sum",
+                    target_model_name="customers",
+                    target_model_sql_table="Customers",
+                    target_model_sql=None,
+                    measure=EnrichedMeasure(
+                        name="revenue", sql="revenue", alias="orders.customers.revenue_sum",
+                        aggregation="sum", model_name="customers",
+                    ),
+                    join_pairs=[["customer_id", "id"]],
+                    shared_dimensions=[dim],
+                    shared_time_dimensions=[],
+                    source_model_name="orders",
+                    source_sql_table="Orders",
+                    source_sql=None,
+                ),
+                CrossModelMeasure(
+                    name="customer_revenue_avg",
+                    alias="orders.customers.revenue_avg",
+                    target_model_name="customers",
+                    target_model_sql_table="Customers",
+                    target_model_sql=None,
+                    measure=EnrichedMeasure(
+                        name="revenue", sql="revenue", alias="orders.customers.revenue_avg",
+                        aggregation="avg", model_name="customers",
+                    ),
+                    join_pairs=[["customer_id", "id"]],
+                    shared_dimensions=[dim],
+                    shared_time_dimensions=[],
+                    source_model_name="orders",
+                    source_sql_table="Orders",
+                    source_sql=None,
+                ),
+            ],
+            filters=[],
+        )
+        sql = generator.generate(enriched=enriched)
+
+        # Both aliases must be present
+        assert "revenue_sum" in sql, f"Missing revenue_sum in:\n{sql}"
+        assert "revenue_avg" in sql, f"Missing revenue_avg in:\n{sql}"
+        # Two distinct CM CTE definitions
+        import re as _re
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) == 2, f"Expected 2 _cm_ CTEs, got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
+        assert cm_cte_names[0] != cm_cte_names[1], f"CTE names collide: {cm_cte_names}\n{sql}"
+
+
+class TestCteNameSanitization:
+    """CTE names from aliases must be collision-free."""
+
+    def test_dot_vs_underscore_no_collision(self) -> None:
+        """Aliases differing only in dot/underscore placement produce distinct CTE names."""
+        from slayer.sql.generator import _cte_name_from_alias
+
+        name_a = _cte_name_from_alias("_fm_", "a.b_c")
+        name_b = _cte_name_from_alias("_fm_", "a_b.c")
+        assert name_a != name_b, f"Collision: {name_a!r} == {name_b!r}"
+        # a.b_c → _fm_a__b_c, a_b.c → _fm_a_b__c
+        assert name_a == "_fm_a__b_c"
+        assert name_b == "_fm_a_b__c"

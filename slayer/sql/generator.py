@@ -99,6 +99,19 @@ def _has_cross_model_filter(m: EnrichedMeasure) -> bool:
     return False
 
 
+def _cte_name_from_alias(prefix: str, alias: str) -> str:
+    """Build a unique CTE name from a measure alias.
+
+    Dots are replaced with ``__`` (double underscore) to avoid collision
+    with aliases that already contain underscores. E.g.:
+    - ``orders.revenue_sum``  -> ``_fm_orders__revenue_sum``
+    - ``orders_v2.revenue_sum`` -> ``_fm_orders_v2__revenue_sum``
+    """
+    sanitized = alias.replace(".", "__")
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
+    return prefix + sanitized
+
+
 def _alias_prefixes(model_name: str) -> list:
     """'a__b__c' → ['a', 'a__b', 'a__b__c']"""
     parts = model_name.split("__")
@@ -195,10 +208,10 @@ class SQLGenerator:
         # Track all CTEs and their measure aliases
         measure_cte_refs = []  # (cte_name, measure_alias)
 
-        # --- Cross-model measure CTEs (existing pattern) ---
+        # --- Cross-model measure CTEs ---
         seen_cm_ctes: set = set()
         for cm in enriched.cross_model_measures:
-            cte_name = f"_cm_{cm.target_model_name}_{cm.measure.name}"
+            cte_name = _cte_name_from_alias("_cm_", cm.alias)
             if cte_name in seen_cm_ctes:
                 measure_cte_refs.append((cte_name, cm.alias))
                 continue
@@ -259,7 +272,7 @@ class SQLGenerator:
         for measure in enriched.measures:
             if not _has_cross_model_filter(measure):
                 continue
-            cte_name = f"_fm_{measure.name}"
+            cte_name = _cte_name_from_alias("_fm_", measure.alias)
 
             select_parts = []
             group_parts = []
