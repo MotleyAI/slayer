@@ -10,11 +10,14 @@ SLayer uses plain SQL-like strings:
     metric_time >= '2024-01-01'
 """
 
+import logging
 import re
 from typing import Dict, Optional
 
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.models import DbtSemanticModel
+
+logger = logging.getLogger(__name__)
 
 # Regex patterns for dbt Jinja filter references
 _DIMENSION_RE = re.compile(
@@ -76,6 +79,12 @@ def convert_dbt_filter(
                     return f"{peer_name}.{dim_name}"
 
             # Fallback: bare name (best effort, no model has the dimension)
+            if not all_semantic_models:
+                logger.warning(
+                    "Cannot resolve peer dimension '%s' for entity '%s' on model '%s': "
+                    "all_semantic_models not provided — falling back to bare name",
+                    dim_name, entity_name, source_model_name,
+                )
             return dim_name
 
         # Foreign entity — resolve to target_model.dim
