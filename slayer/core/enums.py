@@ -108,6 +108,11 @@ class OrderDirection(StrEnum):
     DESC = "desc"
 
 
+class JoinType(StrEnum):
+    LEFT = "left"
+    INNER = "inner"
+
+
 # ---------------------------------------------------------------------------
 # Aggregation constants
 # ---------------------------------------------------------------------------

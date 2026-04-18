@@ -802,7 +802,7 @@ async def _resolve_joins(
             for src_col, tgt_col in join.join_pairs:
                 join_conds.append(f"{current_alias}.{src_col} = {hop_alias}.{tgt_col}")
 
-            resolved_joins[hop_alias] = (target_table, hop_alias, " AND ".join(join_conds))
+            resolved_joins[hop_alias] = (target_table, hop_alias, " AND ".join(join_conds), str(join.join_type))
 
             # Advance to the resolved model for the next hop
             if target_model_obj:

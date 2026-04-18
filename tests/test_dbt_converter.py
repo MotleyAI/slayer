@@ -900,3 +900,79 @@ class TestMetricFilterDimensionQualification:
         assert filtered_measure is not None
         assert filtered_measure.filter == "status = 'active'", f"Got: {filtered_measure.filter!r}"
         assert not result.models[0].hidden
+
+
+class TestJoinTypeFromDbt:
+    """dbt entity-based joins should use JoinType.INNER."""
+
+    def test_foreign_entity_join_is_inner(self) -> None:
+        """Foreign entity join gets join_type=inner."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[
+                    DbtEntity(name="order_id", type="primary"),
+                    DbtEntity(name="customer", type="foreign", expr="customer_id"),
+                ],
+                dimensions=[], measures=[],
+            ),
+            DbtSemanticModel(
+                name="customers",
+                model="customers",
+                entities=[DbtEntity(name="customer", type="primary", expr="id")],
+                dimensions=[], measures=[],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        cust_join = next(j for j in orders.joins if j.target_model == "customers")
+        assert str(cust_join.join_type) == "inner"
+
+    def test_peer_join_is_inner(self) -> None:
+        """Peer join (shared primary entity) gets join_type=inner."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="claim",
+                model="claim",
+                entities=[DbtEntity(name="claim_identifier", type="primary")],
+                dimensions=[], measures=[],
+            ),
+            DbtSemanticModel(
+                name="claim_coverage",
+                model="claim_coverage",
+                entities=[DbtEntity(name="claim_identifier", type="primary")],
+                dimensions=[], measures=[],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        claim = next(m for m in result.models if m.name == "claim")
+        cov_join = next(j for j in claim.joins if j.target_model == "claim_coverage")
+        assert str(cov_join.join_type) == "inner"
+
+    def test_inner_join_mirrored(self) -> None:
+        """Inner join from A→B is auto-mirrored as B→A."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="policy_amount",
+                model="policy_amount",
+                entities=[
+                    DbtEntity(name="policy_amount", type="primary", expr="id"),
+                    DbtEntity(name="policy", type="foreign", expr="policy_id"),
+                ],
+                dimensions=[], measures=[],
+            ),
+            DbtSemanticModel(
+                name="policy",
+                model="policy",
+                entities=[DbtEntity(name="policy", type="primary", expr="id")],
+                dimensions=[], measures=[],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        policy = next(m for m in result.models if m.name == "policy")
+        # policy should have a reverse inner join back to policy_amount
+        reverse = next((j for j in policy.joins if j.target_model == "policy_amount"), None)
+        assert reverse is not None, f"Missing reverse join. Policy joins: {[j.target_model for j in policy.joins]}"
+        assert str(reverse.join_type) == "inner"
+        assert reverse.join_pairs == [["id", "policy_id"]]

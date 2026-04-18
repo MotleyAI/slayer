@@ -782,6 +782,7 @@ class SlayerQueryEngine:
                 source_measure_name=measure_name,
             ),
             join_pairs=join.join_pairs,
+            join_type=str(join.join_type),
             shared_dimensions=shared_dims,
             shared_time_dimensions=shared_time_dims,
             source_model_name=model.name,

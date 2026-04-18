@@ -120,7 +120,7 @@ class EnrichedQuery:
     sql_table: Optional[str] = None
     sql: Optional[str] = None
 
-    # Resolved JOIN clauses: [(target_table_sql, target_alias, join_condition), ...]
+    # Resolved JOIN clauses: [(target_table_sql, target_alias, join_condition, join_type), ...]
     resolved_joins: List[tuple] = field(default_factory=list)
 
     # Resolved columns
@@ -168,5 +168,6 @@ class CrossModelMeasure:
     source_model_name: str  # The main query's model name
     source_sql_table: Optional[str]  # Main model's table
     source_sql: Optional[str]  # Main model's SQL
+    join_type: str = "left"  # "left" or "inner"
     label: Optional[str] = None
     format: Optional[NumberFormat] = None  # Inferred format for this cross-model measure

@@ -8,6 +8,7 @@ then generates SLayer ModelJoin objects for foreign entity references.
 import logging
 from typing import Dict, List, Optional, Tuple
 
+from slayer.core.enums import JoinType
 from slayer.core.models import ModelJoin
 from slayer.dbt.models import DbtSemanticModel
 
@@ -108,6 +109,7 @@ class EntityRegistry:
                 joins.append(ModelJoin(
                     target_model=target_model_name,
                     join_pairs=[[foreign_expr, primary_expr]],
+                    join_type=JoinType.INNER,
                 ))
 
         # Peer joins: models sharing the same primary/unique entity are joinable
@@ -126,6 +128,7 @@ class EntityRegistry:
                 joins.append(ModelJoin(
                     target_model=peer_model_name,
                     join_pairs=[[local_expr, peer_expr]],
+                    join_type=JoinType.INNER,
                 ))
 
         return joins

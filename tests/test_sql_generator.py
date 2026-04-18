@@ -1122,7 +1122,7 @@ class TestPathAliasJoinInference:
             dimensions=[ColumnRef(name="is_us")],
         )
         enriched = await engine._enrich(query=query, model=chained_model)
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
 
@@ -1173,7 +1173,7 @@ class TestPathAliasJoinInference:
             fields=[Field(formula="*:count")],
         )
         enriched = await engine._enrich(query=query, model=model)
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "users" in join_aliases
         assert "users__orgs" in join_aliases
 
@@ -1189,7 +1189,7 @@ class TestPathAliasJoinInference:
             fields=[Field(formula="region_pop_sum:sum")],
         )
         enriched = await engine._enrich(query=query, model=chained_model)
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
 
@@ -1697,7 +1697,7 @@ class TestFilteredMeasures:
             f"Spurious join planning for 'foo' triggered by dotted string "
             f"literal in filter; lookups: {join_target_lookups}"
         )
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "foo" not in join_aliases
         # And confirm the SQL never gets a LEFT JOIN we didn't ask for.
         sql = generator.generate(enriched=enriched)
@@ -2560,3 +2560,99 @@ class TestOrderByCustomFieldName:
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
         assert "ASC" in sql
+
+
+class TestJoinType:
+    """join_type on ModelJoin controls LEFT vs INNER in generated SQL."""
+
+    async def test_inner_join_generated(self, generator: SQLGenerator) -> None:
+        """join_type='inner' produces INNER JOIN, not LEFT JOIN."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], join_type="inner")],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="customers.name")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        assert "INNER JOIN" in sql
+        assert "LEFT JOIN" not in sql
+
+    async def test_left_join_default(self, generator: SQLGenerator) -> None:
+        """Default join_type produces LEFT JOIN."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="customers.name")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        assert "LEFT JOIN" in sql
+        assert "INNER JOIN" not in sql

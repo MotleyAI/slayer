@@ -315,7 +315,7 @@ class SQLGenerator:
         # When has_first_or_last is true, the joins were already injected inside the
         # ranked subquery by _build_last_ranked_from — skip here to avoid duplicating.
         if enriched.resolved_joins and not has_first_or_last:
-            for target_table, target_alias, join_cond in enriched.resolved_joins:
+            for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
                 if target_table.startswith("("):
                     # Inline-SQL target: parse as subquery
                     parsed_target = sqlglot.parse_one(target_table, dialect=self.dialect)
@@ -325,7 +325,7 @@ class SQLGenerator:
                 else:
                     join_target = exp.to_table(target_table, alias=target_alias)
                 join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
-                select = select.join(join_target, on=join_on, join_type="LEFT")
+                select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
         sql = select.sql(dialect=self.dialect, pretty=True)
 
@@ -633,7 +633,7 @@ class SQLGenerator:
             cte_sql = (
                 f"SELECT {', '.join(select_parts)}\n"
                 f"FROM {from_sql}\n"
-                f"LEFT JOIN {target_from} ON {join_on}"
+                f"{cm.join_type.upper()} JOIN {target_from} ON {join_on}"
             )
 
             # Apply the main query's WHERE filters to the cross-model CTE
@@ -1008,8 +1008,8 @@ class SQLGenerator:
         # `FROM <table> AS <model>` and would miss this subquery wrapper.
         if enriched.resolved_joins:
             join_sql_parts = [
-                f"LEFT JOIN {target_table} AS {target_alias} ON {join_cond}"
-                for target_table, target_alias, join_cond in enriched.resolved_joins
+                f"{jtype.upper()} JOIN {target_table} AS {target_alias} ON {join_cond}"
+                for target_table, target_alias, join_cond, jtype in enriched.resolved_joins
             ]
             ranked_sql += " " + " ".join(join_sql_parts)
 

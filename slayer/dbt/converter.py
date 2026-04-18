@@ -12,8 +12,8 @@ from typing import Dict, List, Optional
 import sqlalchemy as sa
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import DataType
-from slayer.core.models import Dimension, Measure, SlayerModel
+from slayer.core.enums import DataType, JoinType
+from slayer.core.models import Dimension, Measure, ModelJoin, SlayerModel
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import convert_dbt_filter
 from slayer.dbt.models import (
@@ -212,7 +212,10 @@ class DbtToSlayerConverter:
             if query is not None:
                 queries.append(query)
 
-        # 5. Convert orphan regular dbt models into hidden SLayer models
+        # 5. Mirror inner joins: if A→B is inner, ensure B→A is inner too
+        self._mirror_inner_joins()
+
+        # 6. Convert orphan regular dbt models into hidden SLayer models
         if self.include_hidden_models and self.project.regular_models:
             models.extend(self._convert_regular_models(existing_names={m.name for m in models}))
 
@@ -221,6 +224,27 @@ class DbtToSlayerConverter:
             queries=queries,
             warnings=self._warnings,
         )
+
+    def _mirror_inner_joins(self) -> None:
+        """Ensure inner joins are symmetric: if A→B is inner, B→A should be too."""
+        for model in list(self._models_by_name.values()):
+            for join in model.joins:
+                if join.join_type != JoinType.INNER:
+                    continue
+                target = self._models_by_name.get(join.target_model)
+                if target is None:
+                    continue
+                reverse_pairs = [[tgt, src] for src, tgt in join.join_pairs]
+                already_exists = any(
+                    j.target_model == model.name and j.join_pairs == reverse_pairs
+                    for j in target.joins
+                )
+                if not already_exists:
+                    target.joins.append(ModelJoin(
+                        target_model=model.name,
+                        join_pairs=reverse_pairs,
+                        join_type=JoinType.INNER,
+                    ))
 
     def _convert_regular_models(self, existing_names: set) -> List[SlayerModel]:
         """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models.
