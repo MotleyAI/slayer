@@ -440,22 +440,19 @@ async def _collect_measure_profile(
     if not measures:
         return {}
 
-    probeable = []
+    # Use ModelExtension with inline measures to bypass allowed_aggregations
+    ext_measures = [
+        {"name": f"_slayer_probe_{m.name}", "sql": m.sql if m.sql else m.name}
+        for m in measures
+    ]
     fields: List[Dict[str, str]] = []
     for m in measures:
-        allowed = m.allowed_aggregations
-        if allowed is not None and "min" not in allowed:
-            continue
-        probeable.append(m)
-        fields.append({"formula": f"{m.name}:min"})
-        fields.append({"formula": f"{m.name}:max"})
-
-    if not fields:
-        return {}
+        fields.append({"formula": f"_slayer_probe_{m.name}:min"})
+        fields.append({"formula": f"_slayer_probe_{m.name}:max"})
 
     try:
         q = SlayerQuery.model_validate({
-            "source_model": model.name,
+            "source_model": {"source_name": model.name, "measures": ext_measures},
             "fields": fields,
         })
         r = await engine.execute(query=q)
@@ -464,9 +461,9 @@ async def _collect_measure_profile(
         return {}
 
     result: Dict[str, str] = {}
-    for m in probeable:
-        mn = row.get(f"{model.name}.{m.name}_min")
-        mx = row.get(f"{model.name}.{m.name}_max")
+    for m in measures:
+        mn = row.get(f"{model.name}._slayer_probe_{m.name}_min")
+        mx = row.get(f"{model.name}._slayer_probe_{m.name}_max")
         if mn is None and mx is None:
             result[m.name] = "all NULL"
         else:
