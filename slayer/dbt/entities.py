@@ -114,7 +114,7 @@ class EntityRegistry:
                 ))
 
         # Peer joins: models sharing the same primary/unique entity are joinable
-        already_targeted = {j.target_model for j in joins}
+        seen_peer_signatures: set = set()
         for entity in model.entities:
             if entity.type not in ("primary", "unique"):
                 continue
@@ -123,9 +123,10 @@ class EntityRegistry:
             for peer_model_name, peer_expr in peers:
                 if peer_model_name == model.name:
                     continue
-                if peer_model_name in already_targeted:
+                peer_signature = (peer_model_name, local_expr, peer_expr)
+                if peer_signature in seen_peer_signatures:
                     continue
-                already_targeted.add(peer_model_name)
+                seen_peer_signatures.add(peer_signature)
                 joins.append(ModelJoin(
                     target_model=peer_model_name,
                     join_pairs=[[local_expr, peer_expr]],

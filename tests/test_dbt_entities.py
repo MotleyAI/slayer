@@ -160,3 +160,24 @@ class TestJoinResolution:
 
         joins = reg.resolve_joins_for_model(orders)
         assert len(joins) == 0
+
+    def test_peer_joins_two_entities_same_peer_different_columns(self) -> None:
+        """Two shared primary entities mapping to the same peer via different columns
+        must both produce peer joins, not collapse to one."""
+        # model_a has two primary entities that both map to model_b
+        model_a = _make_model("model_a", [
+            DbtEntity(name="entity_x", type="primary", expr="col_x"),
+            DbtEntity(name="entity_y", type="primary", expr="col_y"),
+        ])
+        model_b = _make_model("model_b", [
+            DbtEntity(name="entity_x", type="primary", expr="bx"),
+            DbtEntity(name="entity_y", type="primary", expr="by"),
+        ])
+        reg = EntityRegistry()
+        reg.build([model_a, model_b])
+
+        joins = reg.resolve_joins_for_model(model_a)
+        # Both peer joins should survive (different columns)
+        assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.target_model, j.join_pairs) for j in joins]}"
+        pairs = sorted([j.join_pairs[0] for j in joins])
+        assert pairs == [["col_x", "bx"], ["col_y", "by"]]
