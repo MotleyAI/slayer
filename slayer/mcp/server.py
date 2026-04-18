@@ -426,6 +426,54 @@ async def _collect_dim_profile(
     return [entries[d.name] for d in eligible if d.name in entries]
 
 
+async def _collect_measure_profile(
+    model: SlayerModel,
+    engine: SlayerQueryEngine,
+) -> Dict[str, str]:
+    """Probe min/max for each non-hidden measure via a single batched query.
+
+    Returns ``{measure_name: "min .. max"}`` for measures with data, or
+    ``{measure_name: "all NULL"}`` for measures where both min and max are NULL.
+    Measures whose ``allowed_aggregations`` excludes ``min`` are skipped.
+    """
+    measures = [m for m in model.measures if not m.hidden]
+    if not measures:
+        return {}
+
+    probeable = []
+    fields: List[Dict[str, str]] = []
+    for m in measures:
+        allowed = m.allowed_aggregations
+        if allowed is not None and "min" not in allowed:
+            continue
+        probeable.append(m)
+        fields.append({"formula": f"{m.name}:min"})
+        fields.append({"formula": f"{m.name}:max"})
+
+    if not fields:
+        return {}
+
+    try:
+        q = SlayerQuery.model_validate({
+            "source_model": model.name,
+            "fields": fields,
+        })
+        r = await engine.execute(query=q)
+        row = r.data[0] if r.data else {}
+    except Exception:
+        return {}
+
+    result: Dict[str, str] = {}
+    for m in probeable:
+        mn = row.get(f"{model.name}.{m.name}_min")
+        mx = row.get(f"{model.name}.{m.name}_max")
+        if mn is None and mx is None:
+            result[m.name] = "all NULL"
+        else:
+            result[m.name] = f"{mn} .. {mx}"
+    return result
+
+
 async def _collect_reachable_fields(
     model: SlayerModel,
     storage: StorageBackend,
@@ -884,8 +932,9 @@ def create_mcp_server(storage: StorageBackend):
             + _markdown_table(rows=dim_rows, columns=dim_columns)
         )
 
-        # Infer measure column types via LIMIT 0 probe
+        # Infer measure column types via LIMIT 0 probe + min/max profile
         measure_types = await engine.get_column_types(model_name=model.name)
+        measure_profile = await _collect_measure_profile(model=model, engine=engine)
 
         # Measures table
         measure_rows: List[Dict[str, Any]] = []
@@ -896,13 +945,14 @@ def create_mcp_server(storage: StorageBackend):
             measure_rows.append({
                 "name": m.name,
                 "type": measure_types.get(m.name),
+                "values": measure_profile.get(m.name),
                 "sql": m.sql if m.sql else m.name,
                 "allowed_aggregations": aggs,
                 "filter": m.filter,
                 "label": m.label,
                 "description": m.description,
             })
-        meas_columns = ["name", "type", "sql", "allowed_aggregations", "filter", "label", "description"]
+        meas_columns = ["name", "type", "values", "sql", "allowed_aggregations", "filter", "label", "description"]
         if not show_sql:
             meas_columns = [c for c in meas_columns if c not in ("sql", "filter")]
         sections.append(
