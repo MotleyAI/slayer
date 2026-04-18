@@ -176,6 +176,13 @@ class SlayerQueryEngine:
                 query = SlayerQuery.model_validate(query)
             named_queries = {}
 
+        # Pre-processing: strip redundant source model name prefixes from all references
+        query = query.strip_source_model_prefix()
+        named_queries = {
+            name: q.strip_source_model_prefix()
+            for name, q in named_queries.items()
+        }
+
         # Preprocessing
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
@@ -631,15 +638,6 @@ class SlayerQueryEngine:
         For "customers.regions.name", walks: model → customers → regions,
         then looks up "name" on the regions model.
         """
-        # Strip self-referencing prefix: "orders.customers.name" on source_model=orders
-        # becomes "customers.name" (LLMs frequently include the source model name).
-        if len(parts) >= 3 and parts[0] == model.name:
-            logger.warning(
-                "Stripped self-referencing prefix '%s' from dimension path '%s'",
-                parts[0], ".".join(parts),
-            )
-            parts = parts[1:]
-
         current_model = model
         visited = {model.name}
         # Walk intermediate models (all parts except the last, which is the dim name)
@@ -762,15 +760,6 @@ class SlayerQueryEngine:
         (checking named queries first), finds shared dimensions, and returns
         a CrossModelMeasure for SQL generation.
         """
-        # Strip self-referencing prefix: "orders.customers.score" on source_model=orders
-        # becomes "customers.score" (LLMs frequently include the source model name).
-        if spec_name.startswith(model.name + ".") and spec_name.count(".") >= 2:
-            logger.warning(
-                "Stripped self-referencing prefix '%s' from cross-model measure '%s'",
-                model.name, spec_name,
-            )
-            spec_name = spec_name[len(model.name) + 1:]
-
         parts = spec_name.split(".", 1)
         if len(parts) != 2:
             raise ValueError(f"Invalid cross-model measure reference: '{spec_name}'")

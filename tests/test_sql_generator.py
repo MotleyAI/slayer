@@ -2251,7 +2251,9 @@ class TestSelfReferencingPaths:
     """LLMs sometimes prefix cross-model paths with the source model name.
 
     e.g. on source_model='orders', writing 'orders.customers.name' instead of
-    'customers.name'. The leading self-reference should be stripped with a warning.
+    'customers.name'. The leading self-reference is stripped by the deterministic
+    pre-processing step SlayerQuery.strip_source_model_prefix(), so internal
+    resolution methods receive already-clean references.
     """
 
     @pytest.fixture
@@ -2284,31 +2286,44 @@ class TestSelfReferencingPaths:
         engine = SlayerQueryEngine(storage=storage)
         return engine, orders
 
-    async def test_self_ref_dimension_trimmed(self, engine_and_models) -> None:
-        """'orders.customers.name' on source_model=orders should resolve as 'customers.name'."""
+    async def test_self_ref_dimension_resolved_after_strip(self, engine_and_models) -> None:
+        """'orders.customers.name' is pre-stripped to 'customers.name', then resolves correctly."""
         engine, model = engine_and_models
-        parts = ["orders", "customers", "name"]
+        query = SlayerQuery(source_model="orders", dimensions=["orders.customers.name"])
+        stripped = query.strip_source_model_prefix()
+        # After stripping, the dimension is "customers.name"
+        assert stripped.dimensions[0].model == "customers"
+        assert stripped.dimensions[0].name == "name"
+        # Verify the engine can resolve the stripped path
+        parts = stripped.dimensions[0].model.split(".") + [stripped.dimensions[0].name]
         dim = await engine._resolve_dimension_via_joins(model=model, parts=parts)
         assert dim is not None
         assert dim.name == "name"
 
-    async def test_self_ref_measure_trimmed(self, engine_and_models) -> None:
-        """'orders.customers.score:sum' on source_model=orders should resolve as 'customers.score:sum'."""
+    async def test_self_ref_measure_resolved_after_strip(self, engine_and_models) -> None:
+        """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves."""
         engine, model = engine_and_models
-        # _resolve_cross_model_measure expects "target.measure" after stripping
-        try:
-            result = await engine._resolve_cross_model_measure(
-                spec_name="orders.customers.score",
-                field_name="score",
-                model=model,
-                query=SlayerQuery(source_model="orders", fields=["orders.customers.score:sum"]),
-                dimensions=[], time_dimensions=[],
-                aggregation_name="sum",
-            )
-            assert result.target_model_name == "customers"
-        except ValueError as e:
-            # Before the fix, this raises "no join to 'orders'"
-            pytest.fail(f"Self-referencing path not trimmed: {e}")
+        query = SlayerQuery(source_model="orders", fields=["orders.customers.score:sum"])
+        stripped = query.strip_source_model_prefix()
+        # After stripping, the formula is "customers.score:sum"
+        assert stripped.fields[0].formula == "customers.score:sum"
+        # Verify the engine can resolve the stripped cross-model measure
+        result = await engine._resolve_cross_model_measure(
+            spec_name="customers.score",
+            field_name="score",
+            model=model,
+            query=stripped,
+            dimensions=[], time_dimensions=[],
+            aggregation_name="sum",
+        )
+        assert result.target_model_name == "customers"
+
+    def test_simple_self_ref_dimension_stripped(self) -> None:
+        """'orders.status' on source_model=orders becomes local 'status'."""
+        query = SlayerQuery(source_model="orders", dimensions=["orders.status"])
+        stripped = query.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
 
 
 class TestConstantSQLFilters:
