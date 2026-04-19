@@ -24,7 +24,6 @@ from slayer.mcp.server import (
     _friendly_db_error,
     _markdown_table,
     _md_code_span,
-    _mirror_inner_joins,
     _strip_model_prefix,
     create_mcp_server,
 )
@@ -1376,27 +1375,3 @@ class TestHelp:
             assert name in help_tool.description
 
 
-class TestMirrorInnerJoins:
-    """_mirror_inner_joins must not create self-referencing reverse joins."""
-
-    async def test_self_join_not_mirrored(self, storage) -> None:
-        """A model with an inner join to itself must not get a duplicate reverse join."""
-        model = SlayerModel(
-            name="employees",
-            sql_table="employees",
-            data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="manager_id", sql="manager_id", type=DataType.NUMBER),
-            ],
-            measures=[],
-            joins=[ModelJoin(target_model="employees", join_pairs=[["manager_id", "id"]], join_type="inner")],
-        )
-        await storage.save_model(model)
-        await _mirror_inner_joins(model=model, storage=storage)
-
-        reloaded = await storage.get_model("employees")
-        # Should still have only the original self-join, not a mirrored copy
-        assert len(reloaded.joins) == 1, (
-            f"Expected 1 join, got {len(reloaded.joins)}: {[(j.target_model, j.join_pairs) for j in reloaded.joins]}"
-        )

@@ -98,19 +98,19 @@ def resolve_storage(path: str) -> StorageBackend:
         scheme, _, remainder = path.partition("://")
         scheme = scheme.lower()
         if scheme in _STORAGE_REGISTRY:
-            return _STORAGE_REGISTRY[scheme](remainder)
+            return _wrap_join_sync(_STORAGE_REGISTRY[scheme](remainder))
         # Built-in schemes
         if scheme == "yaml":
             from slayer.storage.yaml_storage import YAMLStorage
 
-            return YAMLStorage(base_dir=remainder)
+            return _wrap_join_sync(YAMLStorage(base_dir=remainder))
         if scheme == "sqlite":
             from slayer.storage.sqlite_storage import SQLiteStorage
 
             # sqlite:///abs/path → remainder="/abs/path" (keep absolute)
             # sqlite://rel/path → remainder="rel/path" (keep relative)
             db_path = remainder if remainder.startswith("/") else remainder.lstrip("/")
-            return SQLiteStorage(db_path=db_path)
+            return _wrap_join_sync(SQLiteStorage(db_path=db_path))
         raise ValueError(
             f"Unknown storage scheme '{scheme}'. "
             f"Built-in: yaml, sqlite. "
@@ -122,9 +122,16 @@ def resolve_storage(path: str) -> StorageBackend:
     if path.endswith((".db", ".sqlite", ".sqlite3")):
         from slayer.storage.sqlite_storage import SQLiteStorage
 
-        return SQLiteStorage(db_path=path)
+        return _wrap_join_sync(SQLiteStorage(db_path=path))
 
     # Default: YAML directory
     from slayer.storage.yaml_storage import YAMLStorage
 
-    return YAMLStorage(base_dir=path)
+    return _wrap_join_sync(YAMLStorage(base_dir=path))
+
+
+def _wrap_join_sync(storage: StorageBackend) -> StorageBackend:
+    """Wrap a storage backend with automatic inner-join synchronization."""
+    from slayer.storage.join_sync import JoinSyncStorage
+
+    return JoinSyncStorage(inner=storage)

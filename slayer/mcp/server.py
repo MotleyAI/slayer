@@ -561,30 +561,6 @@ def _model_to_summary(model: SlayerModel) -> dict:
     }
 
 
-async def _mirror_inner_joins(model: SlayerModel, storage: StorageBackend) -> None:
-    """Ensure inner joins are symmetric: if A→B is inner, B→A should be too."""
-    for join in model.joins:
-        if str(join.join_type) != "inner":
-            continue
-        if join.target_model == model.name:
-            continue  # Skip self-referencing joins
-        target = await storage.get_model(join.target_model)
-        if target is None:
-            continue
-        reverse_pairs = [[tgt, src] for src, tgt in join.join_pairs]
-        already_exists = any(
-            j.target_model == model.name and j.join_pairs == reverse_pairs
-            for j in target.joins
-        )
-        if not already_exists:
-            target.joins.append(ModelJoin(
-                target_model=model.name,
-                join_pairs=reverse_pairs,
-                join_type=join.join_type,
-            ))
-            await storage.save_model(target)
-
-
 def create_mcp_server(storage: StorageBackend):
     try:
         from mcp.server.fastmcp import FastMCP
@@ -1198,7 +1174,6 @@ def create_mcp_server(storage: StorageBackend):
         model = SlayerModel.model_validate(data)
         existed = await storage.get_model(name) is not None
         await storage.save_model(model)
-        await _mirror_inner_joins(model, storage)
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
 
@@ -1420,7 +1395,6 @@ def create_mcp_server(storage: StorageBackend):
             return f"Validation error: {exc}"
 
         await storage.save_model(validated)
-        await _mirror_inner_joins(validated, storage)
         return json.dumps({
             "success": True,
             "model_name": model_name,
