@@ -1588,16 +1588,14 @@ class TestFilteredMeasures:
         # resolution) and potentially in the isolated-measure CTE.
         assert "LEFT JOIN public.customers" in sql
 
-    async def test_filtered_last_outer_aggregate_uses_match_flag_not_joined_filter(
+    async def test_filtered_last_cross_model_isolates_to_cte_with_ranked_subquery(
         self, generator: SQLGenerator,
     ) -> None:
         """Regression for CodeRabbit B6-4 — when a filtered first/last measure's
-        filter references a JOINED table (e.g. customers.status), the outer
-        aggregate must reference a per-measure boolean match flag projected by
-        the ranked subquery, NOT re-emit the original filter_sql. The outer FROM
-        is the ranked subquery alias, which only projects model.*, _td_*,
-        _rn*, and _match_*. Re-emitting `customers.status = 'active'` outside
-        that subquery references a table that isn't in scope → invalid SQL."""
+        filter references a JOINED table (e.g. customers.status), the measure
+        is isolated into its own CTE with a ranked subquery. The join is placed
+        inside the ranked subquery so the filter resolves, and the final SELECT
+        does not reference the joined table directly."""
         from slayer.engine.enrichment import enrich_query
 
         customers = SlayerModel(
@@ -1652,7 +1650,6 @@ class TestFilteredMeasures:
 
         # The outermost SELECT (after all CTEs) should not reference
         # 'customers.' directly — it pulls pre-computed values from CTEs.
-        # Find the final SELECT (the one not inside a CTE).
         final_select_idx = sql.rfind("\nSELECT ")
         if final_select_idx == -1:
             final_select_idx = sql.rfind("SELECT ")
@@ -1663,8 +1660,19 @@ class TestFilteredMeasures:
             f"not in scope — should use CTE column references. "
             f"Final SELECT:\n{final_select}\n\nFull SQL:\n{sql}"
         )
-        # Sanity: the match flag _match_f0 should be in the ranked subquery
-        assert "_match_f0" in sql
+        # The isolated CTE should contain a ranked subquery with _last_rn
+        assert "_fm_" in sql, f"Expected isolated _fm_ CTE:\n{sql}"
+        assert "_last_rn" in sql, f"Expected _last_rn in isolated CTE:\n{sql}"
+        # The customers JOIN should be inside the _fm_ CTE's ranked subquery
+        import re as _re
+        fm_match = _re.search(r"(_fm_\w+)\s+AS\s*\(", sql)
+        assert fm_match, f"No _fm_ CTE found:\n{sql}"
+        fm_start = fm_match.start()
+        fm_end = sql.index("\n)", fm_start)
+        fm_body = sql[fm_start:fm_end]
+        assert "public.customers" in fm_body, (
+            f"Expected customers JOIN inside _fm_ CTE:\n{fm_body}"
+        )
 
     async def test_filter_with_dotted_string_literal_does_not_pull_spurious_join(
         self, generator: SQLGenerator,
@@ -3456,6 +3464,218 @@ class TestIsolatedFilteredMeasureCTEs:
             f"Duplicate _fm_ CTE names: {fm_cte_names}\n{sql}"
         )
         assert len(fm_cte_names) == 2, f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}"
+
+    # --- Isolated first/last measures (Issue #40) ---
+
+    @pytest.fixture
+    def claim_amount_model_with_time(self, claim_amount_model):
+        """Extend claim_amount_model with a timestamp dimension and first/last measures."""
+        claim_amount_model.default_time_dimension = "created_at"
+        claim_amount_model.dimensions.append(
+            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        )
+        claim_amount_model.measures.append(
+            Measure(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1"),
+        )
+        return claim_amount_model
+
+    async def test_isolated_last_no_ranked_subquery_in_base(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Bug 1: When ALL first/last measures are isolated, base must NOT build
+        a ranked subquery — it should be a plain dimension spine."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="latest_payment:last")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Extract the _base CTE body
+        assert "_base" in sql, f"Expected _base CTE in:\n{sql}"
+        base_start = sql.index("_base AS")
+        base_end = sql.index("\n)", base_start)
+        base_body = sql[base_start:base_end]
+
+        # Base must NOT have ROW_NUMBER — no ranked subquery needed
+        assert "ROW_NUMBER" not in base_body, (
+            f"Redundant ROW_NUMBER in _base when all first/last are isolated:\n{base_body}"
+        )
+        # Base must NOT have a subquery FROM (SELECT ...)
+        assert "FROM (" not in base_body, (
+            f"Redundant ranked subquery in _base:\n{base_body}"
+        )
+
+    async def test_isolated_last_cte_has_valid_ranked_subquery(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Bug 2: The isolated CTE for a last measure must contain a ROW_NUMBER
+        ranked subquery and produce valid SQL (not reference non-existent _last_rn)."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="latest_payment:last")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # The _fm_ CTE must exist and contain ROW_NUMBER
+        import re as _re
+        fm_match = _re.search(r"(_fm_\w*latest_payment\w*)\s+AS\s*\(", sql)
+        assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
+        fm_start = fm_match.start()
+        fm_end = sql.index("\n)", fm_start)
+        fm_body = sql[fm_start:fm_end]
+
+        assert "ROW_NUMBER" in fm_body, (
+            f"_fm_ CTE for latest_payment must contain ROW_NUMBER:\n{fm_body}"
+        )
+        assert "_last_rn" in fm_body, (
+            f"_fm_ CTE must have _last_rn column:\n{fm_body}"
+        )
+        # The aggregate must use MAX(CASE WHEN _last_rn = 1 ...)
+        assert "MAX(CASE WHEN" in fm_body, (
+            f"_fm_ CTE must use MAX(CASE WHEN _last_rn = 1 ...):\n{fm_body}"
+        )
+        # Full SQL must parse as valid
+        _assert_valid_sql(sql)
+
+    async def test_mixed_isolated_and_local_first_last(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Mixed case: one non-isolated last stays in base with ranked subquery,
+        one isolated last goes to its own CTE with its own ranked subquery."""
+        # total_amount has no cross-model filter → stays in base
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="total_amount:last"),
+                Field(formula="latest_payment:last"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Base query SHOULD have ROW_NUMBER (for the non-isolated total_amount:last)
+        base_start = sql.index("_base AS")
+        base_end = sql.index("\n)", base_start)
+        base_body = sql[base_start:base_end]
+        assert "ROW_NUMBER" in base_body, (
+            f"Base must have ROW_NUMBER for non-isolated last measure:\n{base_body}"
+        )
+
+        # Isolated measure should get its own _fm_ CTE
+        import re as _re
+        fm_match = _re.search(r"_fm_\w*latest_payment\w*", sql)
+        assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
+
+        # Non-isolated measure should be in the base
+        assert "total_amount" in base_body, (
+            f"Non-isolated total_amount should be in base:\n{base_body}"
+        )
+
+        # Full SQL must be valid
+        _assert_valid_sql(sql)
+
+    async def test_isolated_first_with_explicit_time_column(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Isolated first measure with explicit time_column uses correct ordering."""
+        # Add a timestamp dimension and measure for the explicit time column
+        claim_amount_model_with_time.dimensions.append(
+            Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        )
+        claim_amount_model_with_time.measures.append(
+            Measure(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1"),
+        )
+        # Explicit time column specified at query time: first(updated_at)
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="earliest_reserve:first(updated_at)")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # The _fm_ CTE should use first (ASC ordering)
+        import re as _re
+        fm_match = _re.search(r"(_fm_\w*earliest_reserve\w*)\s+AS\s*\(", sql)
+        assert fm_match, f"No _fm_ CTE for earliest_reserve in:\n{sql}"
+        fm_start = fm_match.start()
+        fm_end = sql.index("\n)", fm_start)
+        fm_body = sql[fm_start:fm_end]
+
+        assert "_first_rn" in fm_body, (
+            f"_fm_ CTE should use _first_rn for 'first' aggregation:\n{fm_body}"
+        )
+        # ASC ordering for first
+        assert "ASC" in fm_body, f"Expected ASC ordering for first:\n{fm_body}"
+        # Should reference the explicit time column (updated_at), not default
+        assert "updated_at" in fm_body, (
+            f"Expected explicit time_column 'updated_at' in _fm_ CTE:\n{fm_body}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_multiple_isolated_first_last_separate_ctes(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER in base."""
+        # latest_payment already has cross-model filter; add another
+        claim_amount_model_with_time.measures.append(
+            Measure(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1"),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="latest_payment:last"),
+                Field(formula="latest_reserve:last"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # No ROW_NUMBER in base
+        base_start = sql.index("_base AS")
+        base_end = sql.index("\n)", base_start)
+        base_body = sql[base_start:base_end]
+        assert "ROW_NUMBER" not in base_body, (
+            f"No ROW_NUMBER should be in base when all first/last are isolated:\n{base_body}"
+        )
+
+        # Two separate _fm_ CTEs
+        import re as _re
+        fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
+        assert len(fm_cte_names) == 2, (
+            f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}\n{sql}"
+        )
+        # Each should have ROW_NUMBER
+        for fm_name in fm_cte_names:
+            fm_start = sql.index(f"{fm_name} AS")
+            fm_end = sql.index("\n)", fm_start)
+            fm_body = sql[fm_start:fm_end]
+            assert "ROW_NUMBER" in fm_body, (
+                f"CTE {fm_name} must have ROW_NUMBER:\n{fm_body}"
+            )
+
+        _assert_valid_sql(sql)
 
     def test_same_cm_measure_different_aggs_separate_ctes(self, generator: SQLGenerator) -> None:
         """Same cross-model measure with sum + avg must produce distinct CTEs."""

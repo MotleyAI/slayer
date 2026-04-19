@@ -298,51 +298,103 @@ class SQLGenerator:
                 continue
             cte_name = _cte_name_from_alias("_fm_", measure.alias)
 
-            select = exp.Select()
-            group_exprs = []
-            for dim in enriched.dimensions:
-                col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
-                select = select.select(col_expr.as_(dim.alias))
-                group_exprs.append(col_expr)
-            for td in enriched.time_dimensions:
-                col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-                td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
-                select = select.select(td_expr.as_(td.alias))
-                group_exprs.append(td_expr)
-
             # Measure aggregation without CASE WHEN (the join IS the filter)
             unfiltered = copy.copy(measure)
             unfiltered.filter_sql = None
             unfiltered.filter_columns = []
-            agg_expr, _ = self._build_agg(measure=unfiltered)
-            select = select.select(agg_expr.as_(measure.alias))
-
-            from_clause = self._build_from_clause(enriched=enriched)
-            select = select.from_(from_clause)
 
             # Only include dimension joins + this measure's filter joins
             needed = _needed_join_aliases(enriched, extra_columns=measure.filter_columns)
-            for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
-                if target_alias in needed:
-                    if target_table.startswith("("):
-                        join_target = exp.Subquery(
-                            this=sqlglot.parse_one(target_table, dialect=self.dialect),
-                            alias=exp.to_identifier(target_alias),
-                        )
-                    else:
-                        join_target = exp.to_table(target_table, alias=target_alias)
-                    join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
-                    select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
-            # Only include WHERE conditions whose tables are in this CTE
-            fm_available = needed | {enriched.model_name}
-            original_filters = enriched.filters
-            enriched.filters = [f for f in original_filters
-                                if _filter_references_available(f, fm_available)]
-            where_clause, _ = self._build_where_and_having(enriched=enriched)
-            enriched.filters = original_filters
-            if where_clause is not None:
-                select = select.where(where_clause)
+            is_first_or_last = measure.aggregation in ("first", "last")
+
+            if is_first_or_last and enriched.last_agg_time_column:
+                # Build a ranked subquery within this CTE so _last_rn/_first_rn
+                # columns exist for the MAX(CASE WHEN _rn = 1 ...) aggregate.
+                scoped = copy.copy(enriched)
+                scoped.measures = [unfiltered]
+                scoped.resolved_joins = [
+                    (t, a, c, j) for t, a, c, j in enriched.resolved_joins
+                    if a in needed
+                ]
+                fm_available = needed | {enriched.model_name}
+                scoped.filters = [
+                    f for f in enriched.filters
+                    if not f.is_post_filter and _filter_references_available(f, fm_available)
+                ]
+
+                from_clause = self._build_from_clause(enriched=enriched)
+                (
+                    ranked_from,
+                    rn_suffix_map,
+                    _filtered_rn_map,
+                    _filtered_match_map,
+                ) = self._build_last_ranked_from(
+                    enriched=scoped, base_from=from_clause,
+                )
+
+                select = exp.Select()
+                group_exprs: list[exp.Expression] = []
+                # Dimensions are already resolved inside the ranked subquery
+                for dim in enriched.dimensions:
+                    col_expr = exp.Column(this=exp.to_identifier(dim.name))
+                    select = select.select(col_expr.as_(dim.alias))
+                    group_exprs.append(col_expr)
+                for td in enriched.time_dimensions:
+                    col_expr = exp.Column(this=exp.to_identifier(f"_td_{td.name}"))
+                    select = select.select(col_expr.as_(td.alias))
+                    group_exprs.append(col_expr)
+
+                agg_expr, _ = self._build_agg(
+                    measure=unfiltered,
+                    rn_suffix_map=rn_suffix_map,
+                    default_time_col=enriched.last_agg_time_column,
+                )
+                select = select.select(agg_expr.as_(measure.alias))
+                select = select.from_(ranked_from)
+                # WHERE already inside ranked subquery
+            else:
+                # Standard aggregation (sum, avg, etc.)
+                select = exp.Select()
+                group_exprs = []
+                for dim in enriched.dimensions:
+                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+                    select = select.select(col_expr.as_(dim.alias))
+                    group_exprs.append(col_expr)
+                for td in enriched.time_dimensions:
+                    col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
+                    td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
+                    select = select.select(td_expr.as_(td.alias))
+                    group_exprs.append(td_expr)
+
+                agg_expr, _ = self._build_agg(measure=unfiltered)
+                select = select.select(agg_expr.as_(measure.alias))
+
+                from_clause = self._build_from_clause(enriched=enriched)
+                select = select.from_(from_clause)
+
+                for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
+                    if target_alias in needed:
+                        if target_table.startswith("("):
+                            join_target = exp.Subquery(
+                                this=sqlglot.parse_one(target_table, dialect=self.dialect),
+                                alias=exp.to_identifier(target_alias),
+                            )
+                        else:
+                            join_target = exp.to_table(target_table, alias=target_alias)
+                        join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+                        select = select.join(join_target, on=join_on, join_type=jtype.upper())
+
+                # Only include WHERE conditions whose tables are in this CTE
+                fm_available = needed | {enriched.model_name}
+                original_filters = enriched.filters
+                enriched.filters = [f for f in original_filters
+                                    if _filter_references_available(f, fm_available)]
+                where_clause, _ = self._build_where_and_having(enriched=enriched)
+                enriched.filters = original_filters
+                if where_clause is not None:
+                    select = select.where(where_clause)
+
             for gb in group_exprs:
                 select = select.group_by(gb)
 
@@ -552,7 +604,15 @@ class SQLGenerator:
 
         # If any measure has first/last aggregation, prepend a ROW_NUMBER CTE
         # to mark the latest (or earliest) row per group.
-        has_first_or_last = any(m.aggregation in ("first", "last") for m in enriched.measures)
+        # When skip_isolated is set, only consider non-isolated measures — isolated
+        # first/last measures get their own ranked subquery in their CTE.
+        if skip_isolated:
+            has_first_or_last = any(
+                m.aggregation in ("first", "last") and not _has_cross_model_filter(m)
+                for m in enriched.measures
+            )
+        else:
+            has_first_or_last = any(m.aggregation in ("first", "last") for m in enriched.measures)
         rn_suffix_map: dict[str, str] = {}
         filtered_rn_map: dict[str, str] = {}
         filtered_match_map: dict[str, str] = {}
