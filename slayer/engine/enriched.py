@@ -95,10 +95,12 @@ class EnrichedTransform:
 
     Most transforms generate window functions in an outer SELECT.
     time_shift generates a self-join CTE.
+    change and change_pct are desugared at enrichment time into
+    a hidden time_shift transform + an EnrichedExpression for the arithmetic.
     """
 
     name: str
-    transform: str  # cumsum, lag, lead, change, change_pct, rank, time_shift, last
+    transform: str  # cumsum, lag, lead, rank, time_shift, last
     measure_alias: str  # Alias of the measure in the base CTE to transform
     alias: str  # Result column name
     offset: int  # For time_shift: number of rows or calendar units

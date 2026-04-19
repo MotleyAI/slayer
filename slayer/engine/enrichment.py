@@ -35,7 +35,7 @@ from slayer.engine.enriched import (
     EnrichedTransform,
 )
 
-_SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
+_SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
 
 
@@ -362,6 +362,68 @@ async def enrich_query(
             return alias
 
         elif isinstance(spec, TransformField):
+            if spec.transform in ("change", "change_pct"):
+                # Desugar: change(a) → a - time_shift(a, offset)
+                #          change_pct(a) → CASE WHEN ts != 0 THEN (a - ts) / ts END
+                if (
+                    isinstance(spec.inner, TransformField)
+                    and spec.inner.transform in (*_SELF_JOIN_TRANSFORMS, "change", "change_pct")
+                ):
+                    raise ValueError(
+                        f"Nesting '{spec.transform}' around '{spec.inner.transform}' is not supported. "
+                        f"Both use self-join CTEs. Try wrapping with a window function instead "
+                        f"(e.g., cumsum, lag)."
+                    )
+
+                # Flatten the inner spec to get the measure alias
+                inner_name = f"_inner_{field_name}"
+                if isinstance(spec.inner, AggregatedMeasureRef):
+                    canonical = (
+                        spec.inner.aggregation_name
+                        if spec.inner.measure_name == "*"
+                        else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
+                    )
+                    inner_alias = await _flatten_spec(spec.inner, canonical)
+                else:
+                    inner_alias = await _flatten_spec(spec.inner, inner_name)
+
+                # Determine offset and granularity
+                offset = -1
+                granularity = None
+                if spec.args:
+                    offset = spec.args[0] if isinstance(spec.args[0], int) else -1
+                if len(spec.args) >= 2:
+                    granularity = str(spec.args[1])
+
+                # Create hidden time_shift transform
+                ts_name = f"_ts_{field_name}"
+                _add_transform(
+                    name=ts_name,
+                    transform="time_shift",
+                    measure_alias=inner_alias,
+                    offset=offset,
+                    granularity=granularity,
+                )
+                # Find the known_aliases key for the inner measure
+                inner_key = next(k for k, v in known_aliases.items() if v == inner_alias)
+
+                # Build expression
+                if spec.transform == "change":
+                    expr_sql = _resolve_sql(f"{inner_key} - {ts_name}")
+                else:  # change_pct
+                    expr_sql = _resolve_sql(
+                        f"CASE WHEN {ts_name} != 0 "
+                        f"THEN ({inner_key} - {ts_name}) * 1.0 / {ts_name} END"
+                    )
+
+                alias = f"{model_name_str}.{field_name}"
+                enriched_expressions.append(
+                    EnrichedExpression(name=field_name, sql=expr_sql, alias=alias)
+                )
+                known_aliases[field_name] = alias
+                return alias
+
+            # Non-change transforms (time_shift, cumsum, lag, lead, rank, last)
             if (
                 spec.transform in _SELF_JOIN_TRANSFORMS
                 and isinstance(spec.inner, TransformField)
@@ -389,8 +451,6 @@ async def enrich_query(
                 offset = spec.args[0] if isinstance(spec.args[0], int) else 1
             if len(spec.args) >= 2:
                 granularity = str(spec.args[1])
-            if spec.transform in ("change", "change_pct") and not spec.args:
-                offset = -1
 
             _add_transform(
                 name=field_name,

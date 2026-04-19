@@ -57,7 +57,13 @@ SLayer generates and executes the query against your database.
 5. It's critically important to choose the right source_model for a query. Put EXTRA THOUGHT into that.
 
 6. When picking a measure for a query, MAKE SURE to consider the underlying values range 
-   shown under "values" in inspect_model. If that's all NULL, maybe that's not the measure you want. 
+   shown under "values" in inspect_model. If that's all NULL, maybe that's not the measure you want.
+
+7. **`time_shift`, `change`, `change_pct` can only wrap aggregated measures** —
+   e.g. `time_shift(revenue:sum, -1)`, `change(amount:avg)`. They cannot wrap
+   other transforms or arithmetic expressions (`change(cumsum(x))` won't work).
+   The reverse direction is fine: `cumsum(change(x))` works because window
+   transforms *can* wrap self-join transforms.
 
 ## Deep dives
 

@@ -506,6 +506,7 @@ class TestFields:
         assert "rev_running" in sql.lower()
 
     async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -515,8 +516,8 @@ class TestFields:
         sql = await _generate(generator, query, orders_model)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
-        assert "ROW_NUMBER()" in sql
-        assert "_rn" in sql
+        # Calendar-based join with INTERVAL (no more ROW_NUMBER)
+        assert "INTERVAL" in sql
 
     async def test_lag(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
@@ -548,11 +549,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = await _generate(generator, query, orders_model)
+        # change is desugared into time_shift + expression
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
-        assert "_rn" in sql
-        # change = current - previous (self-join column expression)
-        assert " - shifted_" in sql
+        # Subtraction now in an expression CTE layer (not in the self-join column)
+        assert "rev_change" in sql.lower()
+        assert " - " in sql
 
     async def test_change_pct(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
@@ -715,7 +717,7 @@ class TestFields:
         assert "INTERVAL" in sql
 
     async def test_time_shift_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Calendar time_shift with date_range should shift the filter in the shifted CTE."""
+        """Calendar time_shift with date_range: shifted CTE uses INTERVAL, not shifted dates."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -732,12 +734,11 @@ class TestFields:
         # Base CTE should have original date range
         assert "2024-03-01" in sql
         assert "2024-03-31" in sql
-        # Shifted CTE should have date range shifted back by 1 month
-        assert "2024-02-01" in sql
-        assert "2024-02-29" in sql
+        # Shifted CTE uses INTERVAL to shift the time column (not shifted date strings)
+        assert "INTERVAL" in sql
 
     async def test_time_shift_yoy_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Year-over-year time_shift should shift the date range by 1 year."""
+        """Year-over-year time_shift uses INTERVAL '1' YEAR in the shifted CTE."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -751,12 +752,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_yoy")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Shifted CTE should query March 2023
-        assert "2023-03-01" in sql
-        assert "2023-03-31" in sql
+        # Shifted CTE should use INTERVAL for year shift
+        assert "INTERVAL" in sql
+        assert "YEAR" in sql
 
     async def test_change_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Row-based change with date_range should shift the filter using query's time granularity."""
+        """change() with date_range uses a hidden time_shift with INTERVAL."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -770,12 +771,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = await _generate(generator, query, orders_model)
-        # change looks back 1 period — shifted CTE should query February
-        assert "2024-02-01" in sql
-        assert "2024-02-29" in sql
+        # change desugars to time_shift + expression; shifted CTE uses INTERVAL
+        assert "INTERVAL" in sql
+        assert " - " in sql
 
     async def test_no_date_range_no_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Without a date_range, shifted CTE should still be a valid base query (no date filter)."""
+        """Without a date_range, shifted CTE should still have INTERVAL but no BETWEEN."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -783,12 +784,11 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Both base and shifted CTEs should query the source table without date filters
-        assert "shifted_base_" in sql
+        assert "shifted_" in sql
         assert "BETWEEN" not in sql
 
     async def test_forward_time_shift_with_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Forward time_shift(x, 1, 'month') with date_range should shift the filter forward."""
+        """Forward time_shift(x, 1, 'month') with date_range should use negative INTERVAL."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -802,12 +802,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, 1, 'month')", name="rev_next")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Shifted CTE should query April (1 month forward)
-        assert "2024-04-01" in sql
-        assert "2024-04-30" in sql
+        # Forward shift uses negative INTERVAL
+        assert "INTERVAL" in sql
+        assert "shifted_" in sql
 
     async def test_quarter_date_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """time_shift with quarter granularity should shift the date range by 3 months."""
+        """time_shift with quarter granularity uses INTERVAL with 3 months."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -821,9 +821,10 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'quarter')", name="prev_q")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Q3 2024 shifted back 1 quarter = Q2 2024
-        assert "2024-04-01" in sql
-        assert "2024-06-30" in sql
+        # Quarter = 3 months; shifted CTE uses INTERVAL
+        assert "INTERVAL" in sql
+        assert "MONTH" in sql
+        assert "shifted_" in sql
 
     async def test_nested_self_join_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Nesting self-join transforms (e.g., change(time_shift(x))) should raise."""
@@ -935,8 +936,26 @@ class TestFields:
 
 
 class TestNestedFields:
-    async def test_nested_transform_generates_stacked_ctes(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """change(cumsum(revenue)) should produce stacked CTEs."""
+    async def test_nested_cumsum_of_change_generates_stacked_ctes(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """cumsum(change(revenue:sum)) should produce stacked CTEs."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[
+                Field(formula="revenue:sum"),
+                Field(formula="cumsum(change(revenue:sum))", name="delta"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        # Should have base + stacked CTEs
+        assert "base" in sql.lower()
+        assert "shifted_" in sql  # change desugars to time_shift
+        assert "SUM(" in sql  # cumsum window
+        assert "delta" in sql.lower()
+
+    async def test_change_of_cumsum_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """change(cumsum(x)) is not supported — time_shift can't target a window function result."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -946,13 +965,8 @@ class TestNestedFields:
                 Field(formula="change(cumsum(revenue:sum))", name="delta"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
-        # Should have base + at least one step CTE
-        assert "base" in sql.lower()
-        assert "step" in sql.lower()
-        assert "SUM(" in sql  # cumsum
-        assert "shifted_" in sql  # change uses self-join
-        assert "delta" in sql.lower()
+        with pytest.raises(ValueError, match="not found"):
+            await _generate(generator, query, orders_model)
 
     async def test_mixed_arithmetic_with_transform(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """cumsum(revenue) / count should work."""

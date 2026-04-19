@@ -38,7 +38,7 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
 # and handles gaps in time series correctly.
-_SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
+_SELF_JOIN_TRANSFORMS = {"time_shift"}
 
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
@@ -487,58 +487,78 @@ class SQLGenerator:
             sql += f"\nOFFSET {enriched.offset}"
         return sql
 
-    def _generate_shifted_base(self, enriched: EnrichedQuery, transform,
-                               calendar_join: bool = False) -> str:
-        """Generate a base query with date ranges shifted for a self-join transform.
+    def _generate_shifted_base(self, enriched: EnrichedQuery, transform) -> str:
+        """Generate a shifted sub-query for a time_shift transform.
 
-        Instead of copying the base CTE (which has the original date filter and
-        would miss data outside that range), this generates a fresh query against
-        the source table with adjusted date ranges so the shifted CTE contains
-        the data needed for the join.
+        Shifts the time dimension column expression by -offset so that the
+        WHERE, SELECT, and GROUP BY all reference shifted time. Only includes
+        the target measure (not all measures).
 
-        When calendar_join is True, the raw timestamps are also shifted by -offset
-        inside the DATE_TRUNC so that the aggregated time buckets align with the
-        base query's buckets. This allows a simple equality join (no date arithmetic
-        in the ON clause).
+        For example, time_shift(revenue:sum, -1, 'month') with date_range
+        [2024-03-01, 2024-03-31] produces a sub-query where the time column
+        is (created_at + INTERVAL '1' MONTH). This makes the WHERE fetch
+        February data and the GROUP BY bucket it into March, aligning with
+        the base query for a simple equality join.
         """
-        # Determine the shift: use transform's granularity, or fall back to
-        # the query's time dimension granularity for row-based transforms
+        # Determine granularity: explicit or from time dim
         gran = transform.granularity
-        offset = transform.offset
         if not gran:
-            # Row-based: use the time dimension's granularity
             for td in enriched.time_dimensions:
                 if td.alias == transform.time_alias:
                     gran = td.granularity.value
                     break
             if not gran:
-                gran = "month"  # Shouldn't happen — transforms require a time dim
+                gran = "month"
 
-        # Create a copy of enriched with shifted date ranges and (optionally)
-        # shifted time dimension expressions
-        shifted = copy.deepcopy(enriched)
-
-        # Shift date ranges if present
-        has_date_ranges = any(
-            td.date_range and len(td.date_range) == 2
-            for td in enriched.time_dimensions
+        # Find target measure
+        target_measure = next(
+            (m for m in enriched.measures if m.alias == transform.measure_alias),
+            None,
         )
-        if has_date_ranges:
-            for td in shifted.time_dimensions:
-                if td.date_range and len(td.date_range) == 2:
-                    td.date_range = [
-                        self._shift_date(date=td.date_range[0], offset=offset, granularity=gran),
-                        self._shift_date(date=td.date_range[1], offset=offset, granularity=gran),
-                    ]
+        if target_measure is None:
+            raise ValueError(
+                f"time_shift target measure '{transform.measure_alias}' not found "
+                f"in enriched query measures"
+            )
 
-        # For calendar joins, pass the time offset so _generate_base shifts raw
-        # timestamps before DATE_TRUNC. This makes aggregated buckets align with
-        # the base query's buckets → simple equality join.
-        time_offset = None
-        if calendar_join:
-            time_offset = (-offset, gran)
+        # Create shifted time dimensions with offset baked into td.sql
+        shifted_tds = []
+        time_col_map: dict[str, str] = {}  # original_qualified → shifted_sql
+        for td in enriched.time_dimensions:
+            shifted_td = copy.copy(td)
+            raw_sql = td.sql or td.name
+            raw_expr = self._resolve_sql(sql=raw_sql, name=td.name, model_name=td.model_name)
+            shifted_expr = self._build_time_offset_expr(
+                col_expr=raw_expr, offset=-transform.offset, granularity=gran,
+            )
+            shifted_td.sql = shifted_expr.sql(dialect=self.dialect)
+            shifted_tds.append(shifted_td)
+            # Track for filter substitution
+            original_qualified = f"{enriched.model_name}.{td.name}"
+            time_col_map[original_qualified] = shifted_td.sql
 
-        return self._generate_base(enriched=shifted, time_offset=time_offset)
+        # Substitute time column references in filter SQL strings
+        shifted_filters = []
+        for f in enriched.filters:
+            if f.is_post_filter:
+                continue
+            sf = copy.copy(f)
+            for orig, shifted_sql in time_col_map.items():
+                sf.sql = sf.sql.replace(orig, f"({shifted_sql})")
+            shifted_filters.append(sf)
+
+        # Build minimal enriched query with only the target measure
+        shifted_enriched = EnrichedQuery(
+            model_name=enriched.model_name,
+            sql_table=enriched.sql_table,
+            sql=enriched.sql,
+            resolved_joins=enriched.resolved_joins,
+            dimensions=list(enriched.dimensions),
+            measures=[target_measure],
+            time_dimensions=shifted_tds,
+            filters=shifted_filters,
+        )
+        return self._generate_base(enriched=shifted_enriched)
 
     def _build_time_offset_expr(self, col_expr: exp.Expression, offset: int,
                                 granularity: str) -> exp.Expression:
@@ -569,37 +589,9 @@ class SQLGenerator:
         col_sql = col_expr.sql(dialect=self.dialect)
         return sqlglot.parse_one(f"{col_sql} + {interval_str}", dialect=self.dialect)
 
-    @staticmethod
-    def _shift_date(date: str, offset: int, granularity: str) -> str:
-        """Shift a date string by offset units of granularity."""
-        from datetime import datetime, timedelta
-        from dateutil.relativedelta import relativedelta
-
-        dt = datetime.strptime(date[:10], "%Y-%m-%d")
-        gran_map = {
-            "year": relativedelta(years=offset),
-            "quarter": relativedelta(months=offset * 3),
-            "month": relativedelta(months=offset),
-            "week": timedelta(weeks=offset),
-            "day": timedelta(days=offset),
-            "hour": timedelta(hours=offset),
-            "minute": timedelta(minutes=offset),
-            "second": timedelta(seconds=offset),
-        }
-        delta = gran_map.get(granularity, relativedelta(months=offset))
-        shifted = dt + delta
-        return shifted.strftime("%Y-%m-%d")
-
     def _generate_base(self, enriched: EnrichedQuery,
-                        time_offset: Optional[tuple[int, str]] = None,
                         skip_isolated: bool = False) -> str:
-        """Generate the base SELECT (measures, dimensions, filters).
-
-        Args:
-            time_offset: Optional (offset, granularity) to shift raw timestamps
-                before DATE_TRUNC. Used by shifted CTEs so aggregated buckets
-                align with the base query for simple equality joins.
-        """
+        """Generate the base SELECT (measures, dimensions, filters)."""
         from_clause = self._build_from_clause(enriched=enriched)
 
         # If any measure has first/last aggregation, prepend a ROW_NUMBER CTE
@@ -623,7 +615,7 @@ class SQLGenerator:
                 filtered_rn_map,
                 filtered_match_map,
             ) = self._build_last_ranked_from(
-                enriched=enriched, base_from=from_clause, time_offset=time_offset,
+                enriched=enriched, base_from=from_clause,
             )
 
         select_columns = []
@@ -643,12 +635,6 @@ class SQLGenerator:
                 # Time dimension is already truncated in the ranked subquery
                 col_expr = exp.Column(this=exp.to_identifier(f"_td_{td.name}"))
             else:
-                # Apply time offset before DATE_TRUNC (for shifted CTEs)
-                if time_offset is not None:
-                    offset_val, offset_gran = time_offset
-                    col_expr = self._build_time_offset_expr(
-                        col_expr=col_expr, offset=offset_val, granularity=offset_gran,
-                    )
                 col_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
             select_columns.append(col_expr.as_(td.alias))
             group_by_columns.append(col_expr)
@@ -818,68 +804,27 @@ class SQLGenerator:
                 ctes.append((layer_name, f"{layer_select}\nFROM {prev_cte}"))
                 available_aliases.update(added_this_layer)
 
-            # Now emit each self-join transform as its own CTE layer
+            # Now emit each self-join transform as its own CTE layer.
+            # The shifted sub-query has the time offset baked into td.sql,
+            # so we always join on time column equality (calendar-based).
             for t in deferred_self_joins:
                 src_cte = ctes[-1][0]
 
-                # Determine effective join granularity:
-                # - If transform has explicit granularity (calendar-based), use it
-                # - If no granularity (row-based) but date ranges are shifted,
-                #   use the time dimension's granularity for calendar join
-                # - If no granularity and no date ranges, use row-number join
-                has_date_ranges = any(
-                    td.date_range and len(td.date_range) == 2
-                    for td in enriched.time_dimensions
-                )
-                join_granularity = t.granularity
-                if not join_granularity and has_date_ranges:
-                    # Use query's time dimension granularity for calendar-based join
-                    for td in enriched.time_dimensions:
-                        if td.alias == t.time_alias:
-                            join_granularity = td.granularity.value
-                            break
-
-                # Add ROW_NUMBER if using row-number join
-                if not join_granularity:
-                    time_col = f'"{t.time_alias}"'
-                    all_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
-                    rn_cte = f"{src_cte}_rn"
-                    rn_sql = f"SELECT {all_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {src_cte}"
-                    ctes.append((rn_cte, rn_sql))
-                    src_cte = rn_cte
-
-                # Generate shifted CTE as a fresh base query with adjusted date ranges.
-                # For calendar joins, also shift raw timestamps so buckets align.
-                is_calendar = join_granularity is not None
-                shift_base_name = f"shifted_base_{t.name}"
                 shift_name = f"shifted_{t.name}"
                 shifted_sql = self._generate_shifted_base(
-                    enriched=enriched, transform=t, calendar_join=is_calendar,
+                    enriched=enriched, transform=t,
                 )
-                ctes.append((shift_base_name, shifted_sql))
+                ctes.append((shift_name, shifted_sql))
 
-                # For row-number joins, add ROW_NUMBER to the shifted CTE too
-                if not is_calendar:
-                    time_col = f'"{t.time_alias}"'
-                    shift_base_cols = ", ".join(f'"{a}"' for a in sorted(base_aliases))
-                    shift_rn_sql = f"SELECT {shift_base_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {shift_base_name}"
-                    ctes.append((shift_name, shift_rn_sql))
-                else:
-                    ctes.append((shift_name, f"SELECT * FROM {shift_base_name}"))
-
-                # Build the self-join CTE: src LEFT JOIN shifted ON condition
+                # Build the self-join CTE: src LEFT JOIN shifted ON time equality
                 time_col = f'"{t.time_alias}"'
-                if is_calendar:
-                    # Calendar join: simple equality (shifted timestamps are already aligned)
-                    join_cond = f'{src_cte}.{time_col} = {shift_name}.{time_col}'
-                else:
-                    # Row-number join
-                    join_cond = self._build_row_number_join(
-                        left_table=src_cte, right_table=shift_name, offset=t.offset,
-                    )
+                join_cond = f'{src_cte}.{time_col} = {shift_name}.{time_col}'
+                # Also join on all dimension columns for correct matching
+                for dim in enriched.dimensions:
+                    join_cond += f' AND {src_cte}."{dim.alias}" = {shift_name}."{dim.alias}"'
                 col_sql = self._build_self_join_column(
-                    transform=t.transform, left_table=src_cte,
-                    right_table=shift_name, measure_alias=t.measure_alias,
+                    transform=t.transform, right_table=shift_name,
+                    measure_alias=t.measure_alias,
                 )
                 join_cols = ", ".join(f'{src_cte}."{a}"' for a in sorted(available_aliases))
                 join_layer = f"sjoin_{t.name}"
@@ -1019,23 +964,13 @@ class SQLGenerator:
             raise ValueError(f"Unsupported transform: {t.transform}")
 
     @staticmethod
-    def _build_self_join_column(transform: str, left_table: str,
-                                right_table: str, measure_alias: str) -> str:
+    def _build_self_join_column(transform: str, right_table: str,
+                                measure_alias: str) -> str:
         """Build the SELECT expression for a self-join transform."""
-        cur = f'{left_table}."{measure_alias}"'
         prev = f'{right_table}."{measure_alias}"'
         if transform == "time_shift":
             return prev
-        elif transform == "change":
-            return f"{cur} - {prev}"
-        elif transform == "change_pct":
-            return f"CASE WHEN {prev} != 0 THEN ({cur} - {prev}) * 1.0 / {prev} END"
         raise ValueError(f"Unknown self-join transform: {transform}")
-
-    @staticmethod
-    def _build_row_number_join(left_table: str, right_table: str, offset: int) -> str:
-        """Build a row-number-based JOIN condition for row-based self-join transforms."""
-        return f"{left_table}._rn + {offset} = {right_table}._rn"
 
     def _apply_order_limit(self, select: exp.Select, enriched: EnrichedQuery) -> exp.Select:
         """Apply ORDER BY, LIMIT, OFFSET to a select expression."""
@@ -1119,7 +1054,6 @@ class SQLGenerator:
         self,
         enriched: EnrichedQuery,
         base_from: exp.Expression,
-        time_offset: Optional[tuple[int, str]] = None,
     ) -> tuple[exp.Expression, dict[str, str], dict[str, str], dict[str, str]]:
         """Build a ranked subquery for first/last aggregation.
 
@@ -1143,11 +1077,6 @@ class SQLGenerator:
         # Add pre-computed time dimension expressions (DATE_TRUNC)
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-            if time_offset is not None:
-                offset_val, offset_gran = time_offset
-                col_expr = self._build_time_offset_expr(
-                    col_expr=col_expr, offset=offset_val, granularity=offset_gran,
-                )
             td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
             parts.append(f"{td_expr.sql(dialect=self.dialect)} AS _td_{td.name}")
 
@@ -1159,11 +1088,6 @@ class SQLGenerator:
             partition_parts.append(col_expr.sql(dialect=self.dialect))
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-            if time_offset is not None:
-                offset_val, offset_gran = time_offset
-                col_expr = self._build_time_offset_expr(
-                    col_expr=col_expr, offset=offset_val, granularity=offset_gran,
-                )
             td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
             partition_parts.append(td_expr.sql(dialect=self.dialect))
 
@@ -1464,10 +1388,14 @@ class SQLGenerator:
         where_parts: list[str] = []
         having_parts: list[str] = []
 
-        # Time dimension date ranges
+        # Time dimension date ranges — use the resolved SQL expression
+        # (which may include a time offset for shifted sub-queries)
         for td in enriched.time_dimensions:
             if td.date_range and len(td.date_range) == 2:
-                col = f"{enriched.model_name}.{td.name}" if td.sql and "." not in (td.sql or "") else f"{enriched.model_name}.{td.name}"
+                col_expr = self._resolve_sql(
+                    sql=td.sql or td.name, name=td.name, model_name=td.model_name,
+                )
+                col = col_expr.sql(dialect=self.dialect)
                 where_parts.append(
                     f"{col} BETWEEN '{td.date_range[0]}' AND '{td.date_range[1]}'"
                 )
