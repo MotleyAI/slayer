@@ -10,10 +10,14 @@ SLayer uses plain SQL-like strings:
     metric_time >= '2024-01-01'
 """
 
+import logging
 import re
 from typing import Dict, Optional
 
 from slayer.dbt.entities import EntityRegistry
+from slayer.dbt.models import DbtSemanticModel
+
+logger = logging.getLogger(__name__)
 
 # Regex patterns for dbt Jinja filter references
 _DIMENSION_RE = re.compile(
@@ -33,6 +37,7 @@ def convert_dbt_filter(
     source_model_name: str,
     entity_registry: EntityRegistry,
     model_entity_names: Optional[Dict[str, str]] = None,
+    all_semantic_models: Optional[Dict[str, DbtSemanticModel]] = None,
 ) -> str:
     """Convert a dbt Jinja filter string to a SLayer filter string.
 
@@ -42,8 +47,13 @@ def convert_dbt_filter(
         entity_registry: Registry mapping entity names to primary models.
         model_entity_names: {entity_name: entity_type} for entities defined on the source model.
             Used to determine if an entity reference is local (primary) or remote (foreign).
+        all_semantic_models: {model_name: DbtSemanticModel} for all parsed models.
+            Used to verify whether a dimension actually exists on the source model when
+            the entity is local.  When the dimension is missing locally, peer models
+            sharing the same primary entity are searched and the result is qualified.
     """
     model_entity_names = model_entity_names or {}
+    all_semantic_models = all_semantic_models or {}
     result = filter_str
 
     # Replace {{ Dimension('entity__dim_name') }} references
@@ -54,7 +64,31 @@ def convert_dbt_filter(
         # Check if entity is the source model's own primary entity
         entity_type = model_entity_names.get(entity_name)
         if entity_type in ("primary", "unique"):
-            # Local dimension — bare name
+            # Verify the dimension actually exists on the source model
+            source_sm = all_semantic_models.get(source_model_name)
+            if source_sm and any(d.name == dim_name for d in source_sm.dimensions):
+                return dim_name  # Local dimension — bare name
+
+            # Dimension not on source — search peer models sharing the same entity
+            # Sort by model name for deterministic selection when multiple peers match
+            peer_models = sorted(
+                entity_registry._primaries.get(entity_name, []),
+                key=lambda item: item[0],
+            )
+            for peer_name, _ in peer_models:
+                if peer_name == source_model_name:
+                    continue
+                peer_sm = all_semantic_models.get(peer_name)
+                if peer_sm and any(d.name == dim_name for d in peer_sm.dimensions):
+                    return f"{peer_name}.{dim_name}"
+
+            # Fallback: bare name (best effort, no model has the dimension)
+            if not all_semantic_models:
+                logger.warning(
+                    "Cannot resolve peer dimension '%s' for entity '%s' on model '%s': "
+                    "all_semantic_models not provided — falling back to bare name",
+                    dim_name, entity_name, source_model_name,
+                )
             return dim_name
 
         # Foreign entity — resolve to target_model.dim

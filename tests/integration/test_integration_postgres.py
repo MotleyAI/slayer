@@ -392,10 +392,13 @@ class TestCrossModelAndMultistage:
         )
         result = await pg_cross_model_env.execute(query=query)
         assert result.row_count == 3
-        # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
-        assert float(result.data[0]["orders.customers.avg_score_avg"]) == pytest.approx(90.0)
-        assert float(result.data[1]["orders.customers.avg_score_avg"]) == pytest.approx(60.0)
-        assert float(result.data[2]["orders.customers.avg_score_avg"]) == pytest.approx(85.0)
+        # customers model has no join back to orders, so the time dimension is
+        # unreachable from the re-rooted CTE → dropped → scalar AVG CROSS JOINed.
+        # Global avg: (90 + 60 + 80) / 3 = 76.67
+        global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
+        assert float(result.data[0]["orders.customers.avg_score_avg"]) == global_avg
+        assert float(result.data[1]["orders.customers.avg_score_avg"]) == global_avg
+        assert float(result.data[2]["orders.customers.avg_score_avg"]) == global_avg
 
     async def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
         """Query list: named sub-query referenced by main query."""
@@ -697,7 +700,7 @@ class TestRollupIngestion:
         assert "regions" in result.sql
 
     def test_orders_has_joins_metadata(self, pg_ingest_env) -> None:
-        """Ingested models should have explicit join metadata."""
+        """Ingested models should have only direct join metadata."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
@@ -705,8 +708,8 @@ class TestRollupIngestion:
         join_targets = [j.target_model for j in orders.joins]
         assert "customers" in join_targets
 
-        # customers → regions (transitive, discovered via BFS)
-        assert "regions" in join_targets
+        # Multi-hop targets (regions) are NOT baked in — resolved at query time
+        assert "regions" not in join_targets
 
         # Each join has at least one join pair
         for j in orders.joins:

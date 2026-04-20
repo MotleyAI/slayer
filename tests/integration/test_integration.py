@@ -1034,10 +1034,13 @@ async def test_cross_model_measure_monthly(cross_model_env):
     response = await engine.execute(query)
 
     assert response.row_count == 3
-    # Jan: Alice (90), Feb: Bob (60), Mar: Charlie(80) + Alice(90) = avg 85
-    assert response.data[0]["orders.customers.avg_score_avg"] == pytest.approx(90.0)
-    assert response.data[1]["orders.customers.avg_score_avg"] == pytest.approx(60.0)
-    assert response.data[2]["orders.customers.avg_score_avg"] == pytest.approx(85.0)
+    # customers model has no join back to orders, so the time dimension is
+    # unreachable from the re-rooted CTE → dropped → scalar AVG CROSS JOINed.
+    # Global avg: (90 + 60 + 80) / 3 = 76.67
+    global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
+    assert response.data[0]["orders.customers.avg_score_avg"] == global_avg
+    assert response.data[1]["orders.customers.avg_score_avg"] == global_avg
+    assert response.data[2]["orders.customers.avg_score_avg"] == global_avg
 
 
 async def test_cross_model_measure_no_join_raises(cross_model_env):
@@ -1050,6 +1053,118 @@ async def test_cross_model_measure_no_join_raises(cross_model_env):
     )
     with pytest.raises(ValueError, match="has no join to"):
         await engine.execute(query)
+
+
+async def test_cross_model_measure_with_target_join_filters(cross_model_env):
+    """Cross-model measure CTE must include filters reachable from the target model.
+
+    Based on Q9 benchmark: policy_amount.total_policy_amount:sum with filters on
+    premium (has_premium='1', constant dim — INNER JOIN does the filtering) and
+    agreement_party_role (party_role_code='PH'). Both are reachable from
+    policy_amount's join graph. Without the re-rooted subquery fix, these filters
+    would be stripped from the cross-model CTE, producing wrong aggregates.
+    """
+    engine = cross_model_env
+    import os
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    db_path = f"{tmp}/test.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE policy (policy_identifier INTEGER PRIMARY KEY, policy_number TEXT)")
+    conn.execute("CREATE TABLE policy_amount (policy_amount_identifier INTEGER PRIMARY KEY, policy_identifier INTEGER, policy_amount REAL)")
+    conn.execute("CREATE TABLE premium (policy_amount_identifier INTEGER PRIMARY KEY)")
+    conn.execute("CREATE TABLE agreement_party_role (agreement_identifier INTEGER, party_role_code TEXT)")
+
+    # Policy 1: 2 amounts (100, 200), both have premium rows, PH role
+    # Policy 2: 2 amounts (300, 400), only 300 has a premium row, PH role
+    # Policy 3: 1 amount (500), has premium, but AG role (not PH)
+    conn.executemany("INSERT INTO policy VALUES (?, ?)", [
+        (1, "POL-001"), (2, "POL-002"), (3, "POL-003"),
+    ])
+    conn.executemany("INSERT INTO policy_amount VALUES (?, ?, ?)", [
+        (10, 1, 100.0), (11, 1, 200.0),
+        (20, 2, 300.0), (21, 2, 400.0),
+        (30, 3, 500.0),
+    ])
+    # Premium rows: existence = is a premium. Amount 21 has no premium row.
+    conn.executemany("INSERT INTO premium VALUES (?)", [
+        (10,), (11,), (20,), (30,),
+    ])
+    conn.executemany("INSERT INTO agreement_party_role VALUES (?, ?)", [
+        (1, "PH"), (2, "PH"), (3, "AG"),
+    ])
+    conn.commit()
+    conn.close()
+
+    storage_dir = f"{tmp}/storage"
+    os.makedirs(storage_dir)
+    storage = YAMLStorage(base_dir=storage_dir)
+    await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=db_path))
+
+    await storage.save_model(SlayerModel(
+        name="policy", sql_table="policy", data_source="db",
+        dimensions=[
+            Dimension(name="policy_identifier", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="policy_number", type=DataType.STRING),
+        ],
+        measures=[],
+        joins=[
+            ModelJoin(target_model="policy_amount", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+            ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="policy_amount", sql_table="policy_amount", data_source="db",
+        dimensions=[
+            Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+        ],
+        measures=[Measure(name="total_policy_amount", sql="policy_amount")],
+        joins=[
+            ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+            ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
+            ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="premium", sql_table="premium", data_source="db",
+        dimensions=[
+            Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="has_premium", sql="1", type=DataType.STRING),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="agreement_party_role", sql_table="agreement_party_role", data_source="db",
+        dimensions=[
+            Dimension(name="agreement_identifier", type=DataType.NUMBER, primary_key=True),
+            Dimension(name="party_role_code", type=DataType.STRING),
+        ],
+    ))
+
+    engine = SlayerQueryEngine(storage=storage)
+
+    # Q9-style query: cross-model measure with filters on target's join graph
+    query = SlayerQuery(
+        source_model="policy",
+        fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+        dimensions=[ColumnRef(name="policy_number")],
+        filters=[
+            "agreement_party_role.party_role_code = 'PH'",
+            "policy_amount.premium.has_premium = 1",
+        ],
+    )
+    response = await engine.execute(query)
+
+    # With both filters applied in the cross-model CTE:
+    # POL-001: amounts 100+200=300 (both have premium rows, PH)
+    # POL-002: only amount 300 has a premium row (INNER JOIN excludes 400)
+    # POL-003: excluded (AG role, not PH)
+    assert response.row_count == 2
+    data_by_policy = {row["policy.policy_number"]: row for row in response.data}
+    assert "POL-001" in data_by_policy
+    assert "POL-002" in data_by_policy
+    assert "POL-003" not in data_by_policy
+    assert data_by_policy["POL-001"]["policy.policy_amount.total_policy_amount_sum"] == pytest.approx(300.0)
+    assert data_by_policy["POL-002"]["policy.policy_amount.total_policy_amount_sum"] == pytest.approx(300.0)
 
 
 async def test_transform_on_cross_model(cross_model_env):
@@ -1070,10 +1185,12 @@ async def test_transform_on_cross_model(cross_model_env):
     )
     response = await engine.execute(query)
 
-    # Jan: Alice(90) → cumsum=90, Feb: Bob(60) → cumsum=150, Mar: Charlie(80)+Alice(90)=85 → cumsum=235
-    assert response.data[0]["orders.running"] == pytest.approx(90.0)
-    assert response.data[1]["orders.running"] == pytest.approx(150.0)
-    assert response.data[2]["orders.running"] == pytest.approx(235.0)
+    # customers has no join back to orders → time dim dropped → scalar avg
+    # CROSS JOINed. cumsum of a constant = constant * row_number.
+    global_avg = (90.0 + 60.0 + 80.0) / 3
+    assert response.data[0]["orders.running"] == pytest.approx(global_avg)
+    assert response.data[1]["orders.running"] == pytest.approx(global_avg * 2)
+    assert response.data[2]["orders.running"] == pytest.approx(global_avg * 3)
 
 
 # ---------------------------------------------------------------------------
@@ -1192,10 +1309,11 @@ async def test_query_list_with_joins(cross_model_env):
     response = await engine.execute(query=[sub, main])
 
     assert response.row_count == 3
-    # Jan: Alice(90), Feb: Bob(60), Mar: Charlie(80)+Alice(90)=85
-    assert response.data[0]["orders.customer_scores.avg_score_avg_avg"] == pytest.approx(90.0)
-    assert response.data[1]["orders.customer_scores.avg_score_avg_avg"] == pytest.approx(60.0)
-    assert response.data[2]["orders.customer_scores.avg_score_avg_avg"] == pytest.approx(85.0)
+    # customer_scores has no join back to orders → time dim dropped → scalar avg
+    global_avg = pytest.approx((90.0 + 60.0 + 80.0) / 3)
+    assert response.data[0]["orders.customer_scores.avg_score_avg_avg"] == global_avg
+    assert response.data[1]["orders.customer_scores.avg_score_avg_avg"] == global_avg
+    assert response.data[2]["orders.customer_scores.avg_score_avg_avg"] == global_avg
 
 
 # ---------------------------------------------------------------------------

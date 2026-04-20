@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
+from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
 from slayer.core.format import NumberFormat
 
 logger = logging.getLogger(__name__)
@@ -171,9 +171,10 @@ class Measure(BaseModel):
 
 
 class ModelJoin(BaseModel):
-    """A LEFT JOIN relationship to another model."""
+    """A join relationship to another model."""
     target_model: str                               # Name of the joined model
     join_pairs: List[List[str]] = Field(...)        # [["source_dim", "target_dim"], ...]
+    join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
 
     @field_validator("join_pairs")
     @classmethod

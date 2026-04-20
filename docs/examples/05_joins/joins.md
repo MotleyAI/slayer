@@ -22,7 +22,7 @@ As the multidot syntax described above would not be valid SQL, the syntax for re
 
 ## Auto-ingesting schemas
 
-When auto-ingesting a schema, SLayer introspects foreign key relationships between different tables, and turns these into join relationships between the models corresponding to the tables. These are then resolved at query time to generate the correct SQL. 
+When auto-ingesting a schema, SLayer introspects foreign key relationships and creates a **direct** join for each FK on a table (one hop only). Multi-hop reachability (e.g. `orders → customers → regions`) is not baked in at ingestion; instead, at query time SLayer walks each intermediate model's own joins to resolve the full path and generate the correct SQL.
 
 ## Recombining join patterns
 

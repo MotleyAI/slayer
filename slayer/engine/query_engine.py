@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, Field, SlayerQuery, TimeDimension
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
@@ -176,6 +176,13 @@ class SlayerQueryEngine:
                 query = SlayerQuery.model_validate(query)
             named_queries = {}
 
+        # Pre-processing: strip redundant source model name prefixes from all references
+        query = query.strip_source_model_prefix()
+        named_queries = {
+            name: q.strip_source_model_prefix()
+            for name, q in named_queries.items()
+        }
+
         # Preprocessing
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
@@ -187,6 +194,9 @@ class SlayerQueryEngine:
             named_queries=named_queries,
             _resolving=resolving,
         )
+
+        # Auto-correct: move bare field names to dimensions if they match
+        query = await self._auto_move_fields_to_dimensions(query, model, named_queries)
 
         datasource = await self._resolve_datasource(model=model)
 
@@ -261,6 +271,72 @@ class SlayerQueryEngine:
         rows = await client.execute(sql=sql)
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
+
+    def _build_type_probe_query(self, model: SlayerModel) -> SlayerQuery:
+        """Build a SlayerQuery for type-probing all of a model's measures.
+
+        Uses :max aggregation by default (works on all column types).
+        Falls back to the first allowed aggregation if max is restricted.
+        """
+        fields = []
+        for m in model.measures:
+            if m.hidden:
+                continue
+            agg = "max"
+            if m.allowed_aggregations and "max" not in m.allowed_aggregations:
+                agg = m.allowed_aggregations[0]
+            fields.append(Field(formula=f"{m.name}:{agg}"))
+        return SlayerQuery(source_model=model.name, fields=fields)
+
+    async def get_column_types(self, model_name: str) -> Dict[str, str]:
+        """Infer column types for a model's measures via a type-probe query.
+
+        Builds a real query through the engine's enrich+generate pipeline
+        so cross-model measures (with JOINs) are resolved correctly.
+
+        Returns {measure_name: type_category} where type_category is
+        "number", "string", "time", or "boolean".
+        """
+        model = await self.storage.get_model(model_name)
+        if model is None:
+            return {}
+        measures = [m for m in model.measures if not m.hidden]
+        if not measures:
+            return {}
+
+        try:
+            datasource = await self._resolve_datasource(model=model)
+        except ValueError:
+            return {}
+
+        ds_key = datasource.get_connection_string()
+        if ds_key not in self._sql_clients:
+            self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
+        client = self._sql_clients[ds_key]
+
+        probe_query = self._build_type_probe_query(model=model)
+        try:
+            enriched = await self._enrich(query=probe_query, model=model)
+        except Exception:
+            logger.warning("get_column_types enrichment failed for model '%s'", model_name)
+            return {}
+
+        dialect = self._dialect_for_type(datasource.type)
+        generator = SQLGenerator(dialect=dialect)
+        sql = generator.generate(enriched=enriched)
+
+        try:
+            raw_types = await client.get_column_types(sql=sql)
+        except Exception:
+            logger.warning("get_column_types probe failed for model '%s'", model_name)
+            return {}
+
+        # Map qualified aliases (e.g., "orders.revenue_max") back to bare measure names
+        result: Dict[str, str] = {}
+        for em in enriched.measures:
+            if em.alias in raw_types:
+                result[em.source_measure_name or em.name] = raw_types[em.alias]
+        return result
 
     def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
@@ -425,7 +501,7 @@ class SlayerQueryEngine:
                 return f"({target.sql})", target
             return None
 
-        return await enrich_query(
+        enriched = await enrich_query(
             query=query,
             model=model,
             named_queries=named_queries,
@@ -433,6 +509,15 @@ class SlayerQueryEngine:
             resolve_cross_model_measure=self._resolve_cross_model_measure,
             resolve_join_target=_resolve_join_target,
         )
+
+        # Post-process: build re-rooted enriched queries for cross-model measures
+        for cm in enriched.cross_model_measures:
+            cm.rerooted_enriched = await self._build_rerooted_enriched(
+                cm=cm, query=query, model=model,
+                named_queries=named_queries or {},
+            )
+
+        return enriched
 
     async def _query_as_model(
         self, inner_query: SlayerQuery, named_queries: dict[str, SlayerQuery] = None,
@@ -591,6 +676,80 @@ class SlayerQueryEngine:
         dim_name = parts[-1]
         return current_model.get_dimension(dim_name)
 
+    async def _auto_move_fields_to_dimensions(
+        self,
+        query: SlayerQuery,
+        model: SlayerModel,
+        named_queries: dict,
+    ) -> SlayerQuery:
+        """Move bare (no-colon) field names to dimensions if they're valid dimensions but not measures.
+
+        LLMs frequently place dimension names in ``fields`` instead of
+        ``dimensions``.  When a field has no colon (no aggregation) and
+        resolves as a dimension (local or via the full join path) but
+        NOT as a measure, silently move it to ``dimensions`` with a
+        warning.
+        """
+        if not query.fields:
+            return query
+
+        kept_fields = []
+        extra_dims = list(query.dimensions or [])
+        moved = False
+
+        for f in query.fields:
+            formula = f.formula.strip()
+            # Only consider bare names (no colon, no operators, no parens)
+            if ":" not in formula and not any(c in formula for c in "+-*/()"):
+                if "." not in formula:
+                    # Local reference
+                    is_dim = model.get_dimension(formula) is not None
+                    is_measure = model.get_measure(formula) is not None
+                    if is_dim and not is_measure:
+                        logger.warning(
+                            "Auto-moved '%s' from fields to dimensions (not a measure formula)",
+                            formula,
+                        )
+                        extra_dims.append(ColumnRef(name=formula))
+                        moved = True
+                        continue
+                else:
+                    # Cross-model reference — walk the full join path
+                    parts = formula.split(".")
+                    try:
+                        dim_def = await self._resolve_dimension_via_joins(
+                            model=model, parts=parts, named_queries=named_queries,
+                        )
+                    except ValueError:
+                        dim_def = None  # Circular join — leave in fields
+                    if dim_def is not None:
+                        # parts[-2] is the terminal model containing the dimension named by parts[-1]
+                        terminal_model_name = parts[-2]
+                        try:
+                            terminal_model = await self._resolve_model(
+                                model_name=terminal_model_name,
+                                named_queries=named_queries or {},
+                            )
+                        except ValueError:
+                            terminal_model = None
+                        is_measure = (
+                            terminal_model.get_measure(parts[-1]) is not None
+                            if terminal_model else False
+                        )
+                        if not is_measure:
+                            logger.warning(
+                                "Auto-moved '%s' from fields to dimensions (not a measure formula)",
+                                formula,
+                            )
+                            extra_dims.append(ColumnRef(name=formula))
+                            moved = True
+                            continue
+            kept_fields.append(f)
+
+        if not moved:
+            return query
+        return query.model_copy(update={"fields": kept_fields or None, "dimensions": extra_dims})
+
     async def _resolve_cross_model_measure(
         self,
         spec_name: str,
@@ -633,7 +792,7 @@ class SlayerQueryEngine:
             named_queries=named_queries or {},
         )
 
-        # Find the measure in the target model (* = COUNT(*), no measure needed)
+        # Find the measure (or dimension) in the target model
         if measure_name == "*":
             from slayer.core.models import Measure
 
@@ -641,10 +800,23 @@ class SlayerQueryEngine:
         else:
             measure_def = target_model.get_measure(measure_name)
             if measure_def is None:
-                raise ValueError(
-                    f"Measure '{measure_name}' not found in model '{target_model_name}'. "
-                    f"Available: {[m.name for m in target_model.measures]}"
-                )
+                # Fall back: allow aggregating a dimension (e.g. policies.id:count_distinct)
+                from slayer.core.enums import NUMERIC_ONLY_AGGREGATIONS
+                from slayer.core.models import Measure
+
+                dim_def = target_model.get_dimension(measure_name)
+                if dim_def is None:
+                    raise ValueError(
+                        f"Measure or dimension '{measure_name}' not found in model '{target_model_name}'. "
+                        f"Available measures: {[m.name for m in target_model.measures]}, "
+                        f"dimensions: {[d.name for d in target_model.dimensions]}"
+                    )
+                if aggregation_name and aggregation_name in NUMERIC_ONLY_AGGREGATIONS and str(dim_def.type) == "string":
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' is not applicable to "
+                        f"string dimension '{measure_name}' in model '{target_model_name}'."
+                    )
+                measure_def = Measure(name=measure_name, sql=dim_def.sql or measure_name)
 
         # The cross-model sub-query starts FROM the source table with JOIN to
         # the target, so all source dimensions are available for grouping.
@@ -690,6 +862,7 @@ class SlayerQueryEngine:
                 source_measure_name=measure_name,
             ),
             join_pairs=join.join_pairs,
+            join_type=str(join.join_type),
             shared_dimensions=shared_dims,
             shared_time_dimensions=shared_time_dims,
             source_model_name=model.name,
@@ -698,6 +871,158 @@ class SlayerQueryEngine:
             label=label,
             format=cm_format,
         )
+
+    async def _build_rerooted_enriched(
+        self,
+        cm: CrossModelMeasure,
+        query: SlayerQuery,
+        model: SlayerModel,
+        named_queries: dict,
+    ) -> EnrichedQuery:
+        """Build a re-rooted EnrichedQuery for a cross-model measure.
+
+        Instead of the minimal source→target CTE, this constructs a full query
+        with the target model as source. All of the target model's joins are
+        available, so filters on related tables (e.g., premium.has_premium)
+        are applied correctly.
+
+        Dimensions and filters referencing models not reachable from the
+        target are dropped.
+        """
+        import re
+
+        from slayer.core.formula import parse_filter
+
+        target_model = await self._resolve_model(
+            model_name=cm.target_model_name,
+            named_queries=named_queries,
+        )
+
+        source_model_name = model.name
+        target_model_name = cm.target_model_name
+
+        # --- Build re-rooted field (measure becomes local) ---
+        measure_name = cm.measure.source_measure_name or cm.measure.name
+        aggregation = cm.measure.aggregation
+        if cm.measure.agg_kwargs:
+            kwargs_str = ", ".join(f"{k}={v}" for k, v in cm.measure.agg_kwargs.items())
+            field_formula = f"{measure_name}:{aggregation}({kwargs_str})"
+        else:
+            field_formula = f"{measure_name}:{aggregation}"
+
+        # --- Remap dimensions ---
+        rerooted_dims = []
+        for dim in (query.dimensions or []):
+            if dim.model is None:
+                # Source-local dimension → cross-model from target's perspective
+                rerooted_dims.append(ColumnRef(name=f"{source_model_name}.{dim.name}"))
+            elif dim.model == target_model_name:
+                # Dimension on target model → now local
+                rerooted_dims.append(ColumnRef(name=dim.name))
+            elif dim.model.startswith(target_model_name + "."):
+                # Path through target → strip target prefix
+                new_model = dim.model[len(target_model_name) + 1:]
+                rerooted_dims.append(ColumnRef(name=f"{new_model}.{dim.name}"))
+            else:
+                # Other cross-model dim → keep as-is (enrichment resolves via target's joins)
+                rerooted_dims.append(ColumnRef(name=dim.full_name))
+
+        # --- Remap time dimensions ---
+        rerooted_time_dims = []
+        for td in (query.time_dimensions or []):
+            dim_ref = td.dimension
+            if dim_ref.model is None:
+                new_ref = ColumnRef(name=f"{source_model_name}.{dim_ref.name}")
+            elif dim_ref.model == target_model_name:
+                new_ref = ColumnRef(name=dim_ref.name)
+            elif dim_ref.model.startswith(target_model_name + "."):
+                new_model = dim_ref.model[len(target_model_name) + 1:]
+                new_ref = ColumnRef(name=f"{new_model}.{dim_ref.name}")
+            else:
+                new_ref = ColumnRef(name=dim_ref.full_name)
+            rerooted_time_dims.append(TimeDimension(
+                dimension=new_ref,
+                granularity=td.granularity,
+                date_range=td.date_range,
+                label=td.label,
+            ))
+
+        # --- Remap filters ---
+        rerooted_filters = []
+        target_prefix = target_model_name + "."
+        for f_str in (query.filters or []) + list(model.filters):
+            remapped = f_str
+            # Strip target model prefix from dotted references
+            # e.g., "policy_amount.premium.has_premium = '1'" → "premium.has_premium = '1'"
+            if target_prefix in remapped:
+                remapped = remapped.replace(target_prefix, "")
+            # For unqualified column references that are source model dimensions,
+            # prepend source model name (they're now on a joined table)
+            parsed = parse_filter(remapped)
+            for col in parsed.columns:
+                if "." not in col:
+                    dim = model.get_dimension(col)
+                    if dim:
+                        remapped = re.sub(
+                            rf"(?<!\.)(?<!\w)\b{re.escape(col)}\b(?!\.)",
+                            f"{source_model_name}.{col}",
+                            remapped,
+                        )
+            rerooted_filters.append(remapped)
+
+        # --- Build and enrich re-rooted query ---
+        rerooted_query = SlayerQuery(
+            source_model=target_model_name,
+            fields=[Field(formula=field_formula)],
+            dimensions=rerooted_dims or None,
+            time_dimensions=rerooted_time_dims or None,
+            filters=rerooted_filters or None,
+        )
+
+        rerooted_enriched = await self._enrich(
+            query=rerooted_query,
+            model=target_model,
+            named_queries=named_queries,
+        )
+
+        # --- Fix aliases to match main query's expectations ---
+        # Dimensions: rerooted aliases are "target.source.dim", main expects "source.dim"
+        main_dim_aliases = [d.alias for d in cm.shared_dimensions]
+        for i, dim in enumerate(rerooted_enriched.dimensions):
+            if i < len(main_dim_aliases):
+                dim.alias = main_dim_aliases[i]
+
+        main_td_aliases = [td.alias for td in cm.shared_time_dimensions]
+        for i, td in enumerate(rerooted_enriched.time_dimensions):
+            if i < len(main_td_aliases):
+                td.alias = main_td_aliases[i]
+
+        # Measure alias
+        if rerooted_enriched.measures:
+            rerooted_enriched.measures[0].alias = cm.alias
+
+        # --- Strip unreachable dimensions and filters ---
+        available_aliases = {target_model_name}
+        for _, alias, _, _ in rerooted_enriched.resolved_joins:
+            available_aliases.add(alias)
+
+        rerooted_enriched.dimensions = [
+            d for d in rerooted_enriched.dimensions
+            if d.model_name == target_model_name or d.model_name in available_aliases
+        ]
+        rerooted_enriched.time_dimensions = [
+            td for td in rerooted_enriched.time_dimensions
+            if td.model_name == target_model_name or td.model_name in available_aliases
+        ]
+        rerooted_enriched.filters = [
+            f for f in rerooted_enriched.filters
+            if all(
+                col.split(".")[0] in available_aliases or "." not in col
+                for col in f.columns
+            )
+        ]
+
+        return rerooted_enriched
 
     async def _resolve_datasource(self, model: SlayerModel) -> DatasourceConfig:
         ds_name = model.data_source

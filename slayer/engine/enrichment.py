@@ -9,7 +9,7 @@ transformation step in the query pipeline.
 """
 
 import re
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, NUMERIC_ONLY_AGGREGATIONS
 from slayer.core.formula import (
@@ -35,7 +35,7 @@ from slayer.engine.enriched import (
     EnrichedTransform,
 )
 
-_SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
+_SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
 
 
@@ -103,6 +103,7 @@ async def enrich_query(
     enriched_transforms: List[EnrichedTransform] = []
     cross_model_measures: List[CrossModelMeasure] = []
     known_aliases: Dict[str, str] = {}
+    field_name_aliases: Dict[str, str] = {}
 
     async def _ensure_aggregated_measure(
         alias_key: str,
@@ -145,29 +146,43 @@ async def enrich_query(
             sql = None
         else:
             measure_def = model.get_measure(measure_name)
-            if measure_def is None:
-                raise ValueError(f"Measure '{measure_name}' not found in model '{model.name}'")
-            if measure_def.allowed_aggregations is not None:
-                if aggregation_name not in measure_def.allowed_aggregations:
+            if measure_def is not None:
+                if measure_def.allowed_aggregations is not None:
+                    if aggregation_name not in measure_def.allowed_aggregations:
+                        raise ValueError(
+                            f"Aggregation '{aggregation_name}' not allowed for measure "
+                            f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                        )
+                # Type-compatibility check: reject numeric-only aggregations
+                # (sum/avg/median/weighted_avg/percentile) on measures backed by a
+                # non-numeric column. Type is inferred from a same-named dimension,
+                # which covers the common auto-ingestion case (one measure per
+                # column, both sharing the column name).
+                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS:
+                    matching_dim = model.get_dimension(measure_name)
+                    if matching_dim is not None and str(matching_dim.type) == "string":
+                        raise ValueError(
+                            f"Aggregation '{aggregation_name}' is not applicable to "
+                            f"string measure '{measure_name}' in model '{model.name}'. "
+                            f"Valid aggregations for string columns: count, "
+                            f"count_distinct, min, max, first, last."
+                        )
+                sql = measure_def.sql
+            else:
+                # Fall back: allow aggregating a dimension (e.g. pk:count_distinct)
+                dim_def = model.get_dimension(measure_name)
+                if dim_def is None:
                     raise ValueError(
-                        f"Aggregation '{aggregation_name}' not allowed for measure "
-                        f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                        f"Measure or dimension '{measure_name}' not found in model '{model.name}'"
                     )
-            # Type-compatibility check: reject numeric-only aggregations
-            # (sum/avg/median/weighted_avg/percentile) on measures backed by a
-            # non-numeric column. Type is inferred from a same-named dimension,
-            # which covers the common auto-ingestion case (one measure per
-            # column, both sharing the column name).
-            if aggregation_name in NUMERIC_ONLY_AGGREGATIONS:
-                matching_dim = model.get_dimension(measure_name)
-                if matching_dim is not None and str(matching_dim.type) == "string":
+                sql = dim_def.sql or measure_name
+                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS and str(dim_def.type) == "string":
                     raise ValueError(
                         f"Aggregation '{aggregation_name}' is not applicable to "
-                        f"string measure '{measure_name}' in model '{model.name}'. "
+                        f"string dimension '{measure_name}' in model '{model.name}'. "
                         f"Valid aggregations for string columns: count, "
                         f"count_distinct, min, max, first, last."
                     )
-            sql = measure_def.sql
 
         # Validate aggregation exists
         aggregation_def = model.get_aggregation(aggregation_name)
@@ -257,11 +272,22 @@ async def enrich_query(
         if mname in agg_refs:
             ref = agg_refs[mname]
             if "." in ref.measure_name and ref.measure_name != "*":
-                # Cross-model aggregated measure — not yet supported via agg_refs
-                raise ValueError(
-                    "Cross-model measures with explicit aggregation not yet supported "
-                    "in arithmetic expressions. Use a separate field."
+                # Cross-model aggregated measure inside an expression —
+                # resolve as a CrossModelMeasure (gets its own CTE).
+                cm = await resolve_cross_model_measure(
+                    spec_name=ref.measure_name,
+                    field_name=mname,
+                    model=model,
+                    query=query,
+                    dimensions=dimensions,
+                    time_dimensions=time_dimensions,
+                    named_queries=named_queries,
+                    aggregation_name=ref.aggregation_name,
+                    agg_kwargs=ref.agg_kwargs,
                 )
+                cross_model_measures.append(cm)
+                known_aliases[mname] = cm.alias
+                return
             await _ensure_aggregated_measure(
                 alias_key=mname,
                 measure_name=ref.measure_name,
@@ -336,6 +362,68 @@ async def enrich_query(
             return alias
 
         elif isinstance(spec, TransformField):
+            if spec.transform in ("change", "change_pct"):
+                # Desugar: change(a) → a - time_shift(a, offset)
+                #          change_pct(a) → CASE WHEN ts != 0 THEN (a - ts) / ts END
+                if (
+                    isinstance(spec.inner, TransformField)
+                    and spec.inner.transform in (*_SELF_JOIN_TRANSFORMS, "change", "change_pct")
+                ):
+                    raise ValueError(
+                        f"Nesting '{spec.transform}' around '{spec.inner.transform}' is not supported. "
+                        f"Both use self-join CTEs. Try wrapping with a window function instead "
+                        f"(e.g., cumsum, lag)."
+                    )
+
+                # Flatten the inner spec to get the measure alias
+                inner_name = f"_inner_{field_name}"
+                if isinstance(spec.inner, AggregatedMeasureRef):
+                    canonical = (
+                        spec.inner.aggregation_name
+                        if spec.inner.measure_name == "*"
+                        else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
+                    )
+                    inner_alias = await _flatten_spec(spec.inner, canonical)
+                else:
+                    inner_alias = await _flatten_spec(spec.inner, inner_name)
+
+                # Determine offset and granularity
+                offset = -1
+                granularity = None
+                if spec.args:
+                    offset = spec.args[0] if isinstance(spec.args[0], int) else -1
+                if len(spec.args) >= 2:
+                    granularity = str(spec.args[1])
+
+                # Create hidden time_shift transform
+                ts_name = f"_ts_{field_name}"
+                _add_transform(
+                    name=ts_name,
+                    transform="time_shift",
+                    measure_alias=inner_alias,
+                    offset=offset,
+                    granularity=granularity,
+                )
+                # Find the known_aliases key for the inner measure
+                inner_key = next(k for k, v in known_aliases.items() if v == inner_alias)
+
+                # Build expression
+                if spec.transform == "change":
+                    expr_sql = _resolve_sql(f"{inner_key} - {ts_name}")
+                else:  # change_pct
+                    expr_sql = _resolve_sql(
+                        f"CASE WHEN {ts_name} != 0 "
+                        f"THEN ({inner_key} - {ts_name}) * 1.0 / {ts_name} END"
+                    )
+
+                alias = f"{model_name_str}.{field_name}"
+                enriched_expressions.append(
+                    EnrichedExpression(name=field_name, sql=expr_sql, alias=alias)
+                )
+                known_aliases[field_name] = alias
+                return alias
+
+            # Non-change transforms (time_shift, cumsum, lag, lead, rank, last)
             if (
                 spec.transform in _SELF_JOIN_TRANSFORMS
                 and isinstance(spec.inner, TransformField)
@@ -363,8 +451,6 @@ async def enrich_query(
                 offset = spec.args[0] if isinstance(spec.args[0], int) else 1
             if len(spec.args) >= 2:
                 granularity = str(spec.args[1])
-            if spec.transform in ("change", "change_pct") and not spec.args:
-                offset = -1
 
             _add_transform(
                 name=field_name,
@@ -418,6 +504,9 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
+            # Register custom field name so ORDER BY can resolve it
+            if field_name != canonical_name and canonical_name in known_aliases:
+                field_name_aliases[field_name] = known_aliases[canonical_name]
 
             if spec.aggregation_name in ("first", "last") and last_agg_time_column is None:
                 raise ValueError(
@@ -516,6 +605,7 @@ async def enrich_query(
         order=query.order,
         limit=query.limit,
         offset=query.offset,
+        field_name_aliases=field_name_aliases,
     )
 
 
@@ -645,6 +735,65 @@ def _resolve_last_agg_time(
 # ---------------------------------------------------------------------------
 
 
+def _collect_needed_paths(
+    model: SlayerModel,
+    dimensions: List[EnrichedDimension],
+    time_dimensions: List[EnrichedTimeDimension],
+    measures: List[EnrichedMeasure],
+    cross_model_measures: list,
+    processed_filters: List[str],
+) -> Set[Tuple[str, ...]]:
+    """Extract ordered join-path tuples the query needs (including all prefixes)."""
+
+    def _add_with_prefixes(segments: List[str], paths: Set[Tuple[str, ...]]) -> None:
+        for i in range(1, len(segments) + 1):
+            paths.add(tuple(segments[:i]))
+
+    paths: Set[Tuple[str, ...]] = set()
+
+    for d in dimensions:
+        if d.model_name != model.name:
+            _add_with_prefixes(d.model_name.split("__"), paths)
+    for td in time_dimensions:
+        if td.model_name != model.name:
+            _add_with_prefixes(td.model_name.split("__"), paths)
+    for cm in cross_model_measures:
+        paths.add((cm.target_model_name,))
+
+    # Scan SQL expressions for __-delimited table references
+    sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions] + [m.sql for m in measures]
+    for sql_expr in sql_refs:
+        if sql_expr and "." in sql_expr:
+            for match in _TABLE_COL_RE.finditer(sql_expr):
+                _add_with_prefixes(match.group(1).split("__"), paths)
+
+    # Scan filters for dotted column references (e.g. customers.regions.name)
+    for f_str in processed_filters:
+        parsed_f = parse_filter(f_str)
+        for col in parsed_f.columns:
+            if "." in col:
+                parts = col.split(".")
+                # Expand any __ within segments (model filters convert dots to __)
+                expanded = []
+                for part in parts[:-1]:
+                    expanded.extend(part.split("__"))
+                if expanded:
+                    _add_with_prefixes(expanded, paths)
+
+    # Scan measure filter columns
+    for m in measures:
+        for col in m.filter_columns:
+            if "." in col:
+                parts = col.split(".")
+                expanded = []
+                for part in parts[:-1]:
+                    expanded.extend(part.split("__"))
+                if expanded:
+                    _add_with_prefixes(expanded, paths)
+
+    return paths
+
+
 async def _resolve_joins(
     model: SlayerModel,
     model_name_str: str,
@@ -656,87 +805,82 @@ async def _resolve_joins(
     named_queries: dict,
     resolve_join_target,
 ) -> List[tuple]:
-    """Resolve only the JOINs the query actually needs."""
-    needed_tables: Set[str] = set()
-    for d in dimensions:
-        if d.model_name != model.name:
-            for part in d.model_name.split("__"):
-                needed_tables.add(part)
-    for td in time_dimensions:
-        if td.model_name != model.name:
-            for part in td.model_name.split("__"):
-                needed_tables.add(part)
-    for cm in cross_model_measures:
-        needed_tables.add(cm.target_model_name)
-    # Scan SQL expressions for table references
-    sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions] + [m.sql for m in measures]
-    for sql_expr in sql_refs:
-        if sql_expr and "." in sql_expr:
-            for match in _TABLE_COL_RE.finditer(sql_expr):
-                needed_tables.update(match.group(1).split("__"))
-    # Scan filters for dotted column references
-    for f_str in processed_filters:
-        parsed_f = parse_filter(f_str)
-        for col in parsed_f.columns:
-            if "." in col:
-                parts = col.split(".")
-                for part in parts[:-1]:
-                    needed_tables.add(part)
-    # Scan measure filters for dotted column references — use the structured
-    # filter_columns from ParsedFilter rather than regexing rendered SQL.
-    # The regex approach can mis-fire on dotted literals (e.g. inside string
-    # literals like "description LIKE '%foo.bar%'") and pull in spurious joins.
-    for m in measures:
-        for col in m.filter_columns:
-            if "." in col:
-                parts = col.split(".")
-                for part in parts[:-1]:
-                    needed_tables.update(part.split("__"))
+    """Resolve only the JOINs the query actually needs by walking the join graph.
 
-    # BFS transitive expansion
-    expanded = set(needed_tables)
-    queue = list(needed_tables)
-    while queue:
-        table = queue.pop()
-        for mj in model.joins:
-            if mj.target_model == table:
-                for src_col, _ in mj.join_pairs:
-                    if "." in src_col:
-                        intermediate = src_col.split(".")[0]
-                        if intermediate not in expanded:
-                            expanded.add(intermediate)
-                            queue.append(intermediate)
-    needed_tables = expanded
+    Instead of relying on baked-in multi-hop joins, this walks each intermediate
+    model's own direct joins hop-by-hop to build the complete chain.
+    """
+    needed_paths = _collect_needed_paths(
+        model=model,
+        dimensions=dimensions,
+        time_dimensions=time_dimensions,
+        measures=measures,
+        cross_model_measures=cross_model_measures,
+        processed_filters=processed_filters,
+    )
+    if not needed_paths:
+        return []
 
-    # Build resolved joins
-    resolved_joins = []
-    for mj in model.joins:
-        if mj.target_model not in needed_tables:
+    # Sort shorter paths first so prefixes are resolved before extensions
+    sorted_paths = sorted(needed_paths, key=len)
+
+    resolved_joins: Dict[str, tuple] = {}  # alias -> (table_sql, alias, condition)
+    resolved_models: Dict[str, SlayerModel] = {}  # model_name -> SlayerModel
+
+    for path in sorted_paths:
+        alias = "__".join(path)
+        if alias in resolved_joins:
             continue
-        target_info = await resolve_join_target(
-            target_model_name=mj.target_model,
-            named_queries=named_queries,
-        )
-        if target_info:
-            target_table, _ = target_info
-        else:
-            target_table = mj.target_model
 
-        join_conds = []
-        path_prefix = ""
-        for src_col, tgt_col in mj.join_pairs:
-            if "." in src_col:
-                src_parts = src_col.rsplit(".", 1)
-                src_table = src_parts[0]
-                src_raw = src_parts[1]
-                path_prefix = src_table + "__"
-                join_conds.append(f"{src_table}.{src_raw} = {path_prefix}{mj.target_model}.{tgt_col}")
+        current_model = model
+        current_alias = model_name_str
+
+        for i, segment in enumerate(path):
+            hop_alias = "__".join(path[: i + 1])
+            if hop_alias in resolved_joins:
+                # Already resolved from a previous path prefix — advance
+                if segment in resolved_models:
+                    current_model = resolved_models[segment]
+                current_alias = hop_alias
+                continue
+
+            # Find a direct join on the current model
+            join = None
+            for j in current_model.joins:
+                if j.target_model == segment:
+                    join = j
+                    break
+
+            if join is None:
+                break  # No join found — remaining hops unresolvable
+
+            # Resolve the target model
+            target_info = await resolve_join_target(
+                target_model_name=segment,
+                named_queries=named_queries,
+            )
+            if target_info:
+                target_table, target_model_obj = target_info
             else:
-                join_conds.append(f"{model_name_str}.{src_col} = {mj.target_model}.{tgt_col}")
-        table_alias = f"{path_prefix}{mj.target_model}"
-        resolved_joins.append((target_table, table_alias, " AND ".join(join_conds)))
+                target_table = segment
+                target_model_obj = None
 
-    return resolved_joins
+            if target_model_obj:
+                resolved_models[segment] = target_model_obj
+
+            # Build join condition
+            join_conds = []
+            for src_col, tgt_col in join.join_pairs:
+                join_conds.append(f"{current_alias}.{src_col} = {hop_alias}.{tgt_col}")
+
+            resolved_joins[hop_alias] = (target_table, hop_alias, " AND ".join(join_conds), str(join.join_type))
+
+            # Advance to the resolved model for the next hop
+            if target_model_obj:
+                current_model = target_model_obj
+            current_alias = hop_alias
+
+    return list(resolved_joins.values())
 
 
 # ---------------------------------------------------------------------------
@@ -829,7 +973,7 @@ async def resolve_filter_columns(
                 dim = model.get_dimension(col_name)
                 if dim:
                     sql_expr = dim.sql or col_name
-                    qualified = f"{model_name}.{sql_expr}"
+                    qualified = f"{model_name}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
                         qualified,
@@ -871,13 +1015,16 @@ async def resolve_filter_columns(
                     if dim:
                         sql_expr = dim.sql or dim_name
                         table_alias = "__".join(path_parts)
-                        qualified = f"{table_alias}.{sql_expr}"
+                        qualified = f"{table_alias}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
                         resolved_sql = _re.sub(
                             rf"(?<!\w)\b{_re.escape(col_name)}\b",
                             qualified,
                             resolved_sql,
                         )
-                        resolved_columns.append(qualified)
+                        # Keep the original dotted path in resolved_columns
+                        # so _collect_needed_paths picks up the join requirement,
+                        # even when sql_expr is a constant (e.g., "1").
+                        resolved_columns.append(col_name)
                         continue
 
                 resolved_columns.append(col_name)

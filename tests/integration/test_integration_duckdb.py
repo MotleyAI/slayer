@@ -368,7 +368,8 @@ class TestDuckDBIngestion:
         assert len(orders.joins) > 0
         join_targets = [j.target_model for j in orders.joins]
         assert "customers" in join_targets
-        assert "regions" in join_targets
+        # Multi-hop targets (regions) are NOT baked in — resolved at query time
+        assert "regions" not in join_targets
 
     def test_regions_has_no_rollup(self, duckdb_ingest_env) -> None:
         models, _ = duckdb_ingest_env

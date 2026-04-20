@@ -7,12 +7,15 @@ fully resolved SQL expressions, model metadata, and is ready for SQL generation.
 from __future__ import annotations
 
 import datetime
+import logging
 import re
 from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import BaseModel, BeforeValidator, field_validator, model_validator
 
 from slayer.core.enums import TimeGranularity
+
+logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([^}]*)\}")
@@ -194,6 +197,44 @@ class ModelExtension(BaseModel):
     joins: Optional[List] = None        # Extra ModelJoin objects
 
 
+def _get_source_model_name(source_model: object) -> Optional[str]:
+    """Extract the model name from any source_model type.
+
+    Works before model resolution — handles str, dict, ModelExtension,
+    and SlayerModel (or any object with a .name attribute).
+    """
+    if isinstance(source_model, str):
+        return source_model
+    if isinstance(source_model, dict):
+        return source_model.get("source_name") or source_model.get("name")
+    # ModelExtension has .source_name; SlayerModel has .name
+    source_name = getattr(source_model, "source_name", None)
+    if isinstance(source_name, str):
+        return source_name
+    name = getattr(source_model, "name", None)
+    if isinstance(name, str):
+        return name
+    return None
+
+
+def _strip_column_ref(ref: ColumnRef, model_name: str) -> ColumnRef:
+    """Strip source model prefix from a ColumnRef.
+
+    "orders.status"          on model "orders" → model=None,  name="status"
+    "orders.customers.name"  on model "orders" → model="customers", name="name"
+    "customers.name"         on model "orders" → unchanged
+    "status"                 on model "orders" → unchanged
+    """
+    if ref.model is None:
+        return ref
+    if ref.model == model_name:
+        return ref.model_copy(update={"model": None})
+    prefix = model_name + "."
+    if ref.model.startswith(prefix):
+        return ref.model_copy(update={"model": ref.model[len(prefix):]})
+    return ref
+
+
 class SlayerQuery(BaseModel):
     """User-facing query object. Specifies what data to retrieve from a model.
 
@@ -253,3 +294,91 @@ class SlayerQuery(BaseModel):
                 filters.append(f"{dim_name} <= '{prev_end.isoformat()}'")
 
         return self.model_copy(update={"filters": filters, "whole_periods_only": False})
+
+    def strip_source_model_prefix(self) -> "SlayerQuery":
+        """Strip redundant source model name prefix from all dotted references.
+
+        LLMs frequently include the source model name as a prefix
+        (e.g., "orders.revenue:sum" instead of "revenue:sum" when
+        querying source_model="orders"). This normalizes all references
+        by removing the redundant prefix before any other processing.
+        """
+        model_name = _get_source_model_name(self.source_model)
+        if model_name is None:
+            return self
+
+        updates: Dict[str, Any] = {}
+        pattern = re.compile(r"\b" + re.escape(model_name) + r"\.")
+
+        # Dimensions
+        if self.dimensions:
+            new_dims = [_strip_column_ref(d, model_name) for d in self.dimensions]
+            if any(n is not o for n, o in zip(new_dims, self.dimensions)):
+                updates["dimensions"] = new_dims
+
+        # Time dimensions
+        if self.time_dimensions:
+            new_tds = []
+            td_changed = False
+            for td in self.time_dimensions:
+                stripped = _strip_column_ref(td.dimension, model_name)
+                if stripped is not td.dimension:
+                    new_tds.append(TimeDimension(
+                        dimension=stripped,
+                        granularity=td.granularity,
+                        date_range=td.date_range,
+                        label=td.label,
+                    ))
+                    td_changed = True
+                else:
+                    new_tds.append(td)
+            if td_changed:
+                updates["time_dimensions"] = new_tds
+
+        # Order
+        if self.order:
+            new_order = []
+            order_changed = False
+            for item in self.order:
+                stripped = _strip_column_ref(item.column, model_name)
+                if stripped is not item.column:
+                    new_order.append(OrderItem(column=stripped, direction=item.direction))
+                    order_changed = True
+                else:
+                    new_order.append(item)
+            if order_changed:
+                updates["order"] = new_order
+
+        # Fields (formula strings)
+        if self.fields:
+            new_fields = []
+            fields_changed = False
+            for f in self.fields:
+                new_formula = pattern.sub("", f.formula)
+                if new_formula != f.formula:
+                    new_fields.append(f.model_copy(update={"formula": new_formula}))
+                    fields_changed = True
+                else:
+                    new_fields.append(f)
+            if fields_changed:
+                updates["fields"] = new_fields
+
+        # Filters
+        if self.filters:
+            new_filters = [pattern.sub("", f) for f in self.filters]
+            if new_filters != self.filters:
+                updates["filters"] = new_filters
+
+        # main_time_dimension
+        prefix = model_name + "."
+        if self.main_time_dimension and self.main_time_dimension.startswith(prefix):
+            updates["main_time_dimension"] = self.main_time_dimension[len(prefix):]
+
+        if not updates:
+            return self
+
+        logger.info(
+            "Stripped source model prefix '%s.' from query references",
+            model_name,
+        )
+        return self.model_copy(update=updates)

@@ -95,10 +95,12 @@ class EnrichedTransform:
 
     Most transforms generate window functions in an outer SELECT.
     time_shift generates a self-join CTE.
+    change and change_pct are desugared at enrichment time into
+    a hidden time_shift transform + an EnrichedExpression for the arithmetic.
     """
 
     name: str
-    transform: str  # cumsum, lag, lead, change, change_pct, rank, time_shift, last
+    transform: str  # cumsum, lag, lead, rank, time_shift, last
     measure_alias: str  # Alias of the measure in the base CTE to transform
     alias: str  # Result column name
     offset: int  # For time_shift: number of rows or calendar units
@@ -120,7 +122,7 @@ class EnrichedQuery:
     sql_table: Optional[str] = None
     sql: Optional[str] = None
 
-    # Resolved JOIN clauses: [(target_table_sql, target_alias, join_condition), ...]
+    # Resolved JOIN clauses: [(target_table_sql, target_alias, join_condition, join_type), ...]
     resolved_joins: List[tuple] = field(default_factory=list)
 
     # Resolved columns
@@ -144,6 +146,9 @@ class EnrichedQuery:
     limit: Optional[int] = None
     offset: Optional[int] = None
 
+    # Custom field name → enriched alias mapping (for ORDER BY resolution)
+    field_name_aliases: Dict[str, str] = field(default_factory=dict)
+
 
 @dataclass
 class CrossModelMeasure:
@@ -165,5 +170,7 @@ class CrossModelMeasure:
     source_model_name: str  # The main query's model name
     source_sql_table: Optional[str]  # Main model's table
     source_sql: Optional[str]  # Main model's SQL
+    join_type: str = "left"  # "left" or "inner"
     label: Optional[str] = None
     format: Optional[NumberFormat] = None  # Inferred format for this cross-model measure
+    rerooted_enriched: Optional["EnrichedQuery"] = None  # Re-rooted subquery with target as source

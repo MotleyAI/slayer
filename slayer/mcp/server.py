@@ -192,21 +192,25 @@ def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
     return "\n".join([header, sep] + body)
 
 
-def _build_sample_query_args(model: SlayerModel, num_rows: int) -> Dict[str, Any]:
+def _build_sample_query_args(
+    model: SlayerModel,
+    num_rows: int,
+    measure_types: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
 
     - First field is always ``*:count``.
     - For each non-hidden measure:
       - If ``allowed_aggregations`` is restricted and doesn't include ``avg``,
         use the first entry of ``allowed_aggregations``. Empty list → skip.
-      - Else (avg is permitted): prefer ``avg``, but if the measure shares its
-        name with a non-numeric dimension (string/boolean/date/time), fall back
-        to ``count_distinct`` so the generated SQL is valid for that column
-        type. Auto-ingested string measures (e.g. ``sku``) can't be averaged.
+      - Else (avg is permitted): prefer ``avg``, but fall back to
+        ``count_distinct`` for non-numeric columns (using inferred types from
+        ``measure_types``, or dim-name heuristic as fallback).
     - Groups by up to two non-primary-key, non-hidden dimensions so the sample
       shows variation without exploding table width.
     """
-    # dim type lookup by name (for same-named measures created by auto-ingestion)
+    measure_types = measure_types or {}
+    # dim type lookup by name (fallback for when measure_types is unavailable)
     dim_types = {d.name: str(d.type) for d in model.dimensions}
 
     fields: List[Dict[str, str]] = [{"formula": "*:count"}]
@@ -220,9 +224,12 @@ def _build_sample_query_args(model: SlayerModel, num_rows: int) -> Dict[str, Any
             safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
             agg = safe if safe else allowed[0]
         else:
-            # avg is permitted; drop to count_distinct when the backing column
-            # is non-numeric so AVG(VARCHAR) / AVG(BOOL) don't blow up.
-            if dim_types.get(m.name) in ("string", "boolean", "date", "time"):
+            # avg is permitted; drop to count_distinct for non-numeric columns
+            inferred = measure_types.get(m.name)
+            if inferred and inferred != "number":
+                agg = "count_distinct"
+            elif dim_types.get(m.name) in ("string", "boolean", "date", "time"):
+                # Fallback heuristic: measure shares name with non-numeric dim
                 agg = "count_distinct"
             else:
                 agg = "avg"
@@ -419,6 +426,51 @@ async def _collect_dim_profile(
     return [entries[d.name] for d in eligible if d.name in entries]
 
 
+async def _collect_measure_profile(
+    model: SlayerModel,
+    engine: SlayerQueryEngine,
+) -> Dict[str, str]:
+    """Probe min/max for each non-hidden measure via a single batched query.
+
+    Returns ``{measure_name: "min .. max"}`` for measures with data, or
+    ``{measure_name: "all NULL"}`` for measures where both min and max are NULL.
+    Measures whose ``allowed_aggregations`` excludes ``min`` are skipped.
+    """
+    measures = [m for m in model.measures if not m.hidden]
+    if not measures:
+        return {}
+
+    # Use ModelExtension with inline measures to bypass allowed_aggregations
+    ext_measures = [
+        {"name": f"_slayer_probe_{m.name}", "sql": m.sql if m.sql else m.name}
+        for m in measures
+    ]
+    fields: List[Dict[str, str]] = []
+    for m in measures:
+        fields.append({"formula": f"_slayer_probe_{m.name}:min"})
+        fields.append({"formula": f"_slayer_probe_{m.name}:max"})
+
+    try:
+        q = SlayerQuery.model_validate({
+            "source_model": {"source_name": model.name, "measures": ext_measures},
+            "fields": fields,
+        })
+        r = await engine.execute(query=q)
+        row = r.data[0] if r.data else {}
+    except Exception:
+        return {}
+
+    result: Dict[str, str] = {}
+    for m in measures:
+        mn = row.get(f"{model.name}._slayer_probe_{m.name}_min")
+        mx = row.get(f"{model.name}._slayer_probe_{m.name}_max")
+        if mn is None and mx is None:
+            result[m.name] = "all NULL"
+        else:
+            result[m.name] = f"{mn} .. {mx}"
+    return result
+
+
 async def _collect_reachable_fields(
     model: SlayerModel,
     storage: StorageBackend,
@@ -429,13 +481,7 @@ async def _collect_reachable_fields(
     paths for every reachable non-hidden, non-pk dimension and non-hidden
     measure (excluding the root model's own fields — those live in the main
     Dimensions/Measures tables). Depth is measured in path segments and capped
-    at ``max_depth``.
-
-    Path derivation from a ``ModelJoin``: if ``join_pairs[0][0]`` has no dot the
-    join is direct and the path gets one new segment; if it has dots (a
-    multi-hop join baked in by auto-ingestion, e.g. ``orders.customer_id``),
-    every segment except the last is merged into the prefix. Cycles are broken
-    by a visited-path set.
+    at ``max_depth``. Cycles are broken by a visited-path set.
     """
     reachable_dims: set[str] = set()
     reachable_measures: set[str] = set()
@@ -443,11 +489,9 @@ async def _collect_reachable_fields(
     queue: List[Tuple[str, str]] = []  # (full_path, target_model_name)
 
     def _derive_path(base: str, join: ModelJoin) -> str:
-        source_col = join.join_pairs[0][0]
-        sub_prefix = source_col.rsplit(".", 1)[0] + "." if "." in source_col else ""
         if base:
-            return f"{base}.{sub_prefix}{join.target_model}"
-        return f"{sub_prefix}{join.target_model}"
+            return f"{base}.{join.target_model}"
+        return join.target_model
 
     for j in model.joins:
         path = _derive_path("", j)
@@ -472,7 +516,12 @@ async def _collect_reachable_fields(
                 reachable_measures.add(f"{path}.{m.name}")
         for j in target.joins:
             sub_path = _derive_path(path, j)
-            if sub_path not in visited:
+            # Per-path cycle check: don't revisit any model already on this
+            # path (prevents bounce-backs from peer joins while preserving
+            # diamond joins where the same model is reached via independent paths).
+            path_models = set(path.split("."))
+            path_models.add(model.name)  # include root
+            if sub_path not in visited and j.target_model not in path_models:
                 queue.append((sub_path, j.target_model))
 
     return sorted(reachable_dims), sorted(reachable_measures)
@@ -820,10 +869,10 @@ def create_mcp_server(storage: StorageBackend):
         if meta:
             sections.append("\n".join(meta))
 
-        if model.sql:
+        if show_sql and model.sql:
             sections.append(f"## SQL\n\n```sql\n{model.sql}\n```")
 
-        if model.filters:
+        if show_sql and model.filters:
             filter_lines = "\n".join(f"- `{f}`" for f in model.filters)
             sections.append(f"## Filters (model-level)\n\n{filter_lines}")
 
@@ -850,16 +899,17 @@ def create_mcp_server(storage: StorageBackend):
                 "description": d.description,
                 "sampled": profile_by_name.get(d.name),
             })
+        dim_columns = ["name", "type", "primary_key", "sql", "label", "description", "sampled"]
+        if not show_sql:
+            dim_columns.remove("sql")
         sections.append(
             f"## Dimensions ({len(dim_rows)})\n\n"
-            + _markdown_table(
-                rows=dim_rows,
-                columns=[
-                    "name", "type", "primary_key", "sql",
-                    "label", "description", "sampled",
-                ],
-            )
+            + _markdown_table(rows=dim_rows, columns=dim_columns)
         )
+
+        # Infer measure column types via LIMIT 0 probe + min/max profile
+        measure_types = await engine.get_column_types(model_name=model.name)
+        measure_profile = await _collect_measure_profile(model=model, engine=engine)
 
         # Measures table
         measure_rows: List[Dict[str, Any]] = []
@@ -869,18 +919,20 @@ def create_mcp_server(storage: StorageBackend):
             aggs = ", ".join(m.allowed_aggregations) if m.allowed_aggregations else "all"
             measure_rows.append({
                 "name": m.name,
+                "type": measure_types.get(m.name),
+                "values": measure_profile.get(m.name),
                 "sql": m.sql if m.sql else m.name,
                 "allowed_aggregations": aggs,
                 "filter": m.filter,
                 "label": m.label,
                 "description": m.description,
             })
+        meas_columns = ["name", "type", "values", "sql", "allowed_aggregations", "filter", "label", "description"]
+        if not show_sql:
+            meas_columns = [c for c in meas_columns if c not in ("sql", "filter")]
         sections.append(
             f"## Measures ({len(measure_rows)})\n\n"
-            + _markdown_table(
-                rows=measure_rows,
-                columns=["name", "sql", "allowed_aggregations", "filter", "label", "description"],
-            )
+            + _markdown_table(rows=measure_rows, columns=meas_columns)
         )
 
         # Custom aggregations (if any)
@@ -908,17 +960,15 @@ def create_mcp_server(storage: StorageBackend):
         join_rows: List[Dict[str, Any]] = []
         for j in model.joins:
             pairs = "; ".join(f"{src} = {tgt}" for src, tgt in j.join_pairs)
-            kind = "multi-hop" if any("." in src for src, _ in j.join_pairs) else "direct"
             join_rows.append({
                 "target_model": j.target_model,
                 "join_pairs": pairs,
-                "kind": kind,
             })
         sections.append(
             f"## Joins ({len(join_rows)})\n\n"
             + _markdown_table(
                 rows=join_rows,
-                columns=["target_model", "join_pairs", "kind"],
+                columns=["target_model", "join_pairs"],
             )
         )
 
@@ -937,7 +987,9 @@ def create_mcp_server(storage: StorageBackend):
             sections.append("\n".join(lines))
 
         # Sample data via a regular SlayerQuery (same path the `query` MCP tool takes)
-        query_args = _build_sample_query_args(model=model, num_rows=num_rows)
+        query_args = _build_sample_query_args(
+            model=model, num_rows=num_rows, measure_types=measure_types,
+        )
         sample_sql: Optional[str] = None
         sample_data: Optional[Dict[str, Any]] = None
         sample_error: Optional[str] = None
@@ -981,18 +1033,18 @@ def create_mcp_server(storage: StorageBackend):
                     "model_name": model.name,
                     "description": model.description,
                     "data_source": model.data_source,
-                    "sql_table": model.sql_table,
-                    "sql": model.sql,
+                    **({"sql_table": model.sql_table} if show_sql else {}),
+                    **({"sql": model.sql} if show_sql else {}),
                     "default_time_dimension": model.default_time_dimension,
                     "hidden": model.hidden,
                     "row_count": row_count,
-                    "filters": model.filters,
+                    **({"filters": model.filters} if show_sql else {}),
                     "dimensions": [
                         {
                             "name": d.name,
                             "type": str(d.type),
                             "primary_key": d.primary_key,
-                            "sql": d.sql,
+                            **({"sql": d.sql} if show_sql else {}),
                             "label": d.label,
                             "description": d.description,
                             "sampled": profile_by_name.get(d.name),
@@ -1002,9 +1054,9 @@ def create_mcp_server(storage: StorageBackend):
                     "measures": [
                         {
                             "name": m.name,
-                            "sql": m.sql,
+                            **({"sql": m.sql} if show_sql else {}),
                             "allowed_aggregations": m.allowed_aggregations,
-                            "filter": m.filter,
+                            **({"filter": m.filter} if show_sql else {}),
                             "label": m.label,
                             "description": m.description,
                         }
@@ -1025,7 +1077,6 @@ def create_mcp_server(storage: StorageBackend):
                         {
                             "target_model": j.target_model,
                             "join_pairs": j.join_pairs,
-                            "kind": "multi-hop" if any("." in src for src, _ in j.join_pairs) else "direct",
                         }
                         for j in model.joins
                     ],

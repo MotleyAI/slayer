@@ -12,7 +12,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Aggregation** — Specifies how a measure is aggregated. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`.
 
-**Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs. Joins are auto-resolved transitively — `customers.regions.name` walks `orders → customers → regions` via the join graph.
+**Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
 
 **Cross-model measure** — A measure from a joined model, referenced with dotted syntax and colon aggregation (`customers.score:avg`, or multi-hop: `customers.regions.population:sum`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(customers.score:avg)`.
 
@@ -55,8 +55,8 @@ Key terms used throughout SLayer documentation and code.
 
 ## Ingestion
 
-**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates models with explicit joins. Columns from joined tables appear as dotted dimensions (e.g., `customers.name`). JOINs are constructed dynamically at query time.
+**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates models with direct joins (one per FK on the source table). Columns from transitively reachable tables appear as dotted dimensions (e.g., `customers.name`, `customers.regions.name`). Multi-hop JOINs are resolved dynamically at query time by walking each intermediate model's own joins.
 
-**Transitive closure** — The set of all tables reachable from a source table via foreign key chains. For `orders → customers → regions`, the transitive closure of `orders` includes both `customers` and `regions`.
+**Transitive closure** — The set of all tables reachable from a source table via foreign key chains. For `orders → customers → regions`, the transitive closure of `orders` includes both `customers` and `regions`. Used during ingestion for FK graph analysis and column introspection (determining which dotted dimensions to create), but not baked into model joins — each model only stores direct joins from its own FKs.
 
 **Default time dimension** — An optional model-level setting (`default_time_dimension`) that specifies which dimension to use for time ordering in transform functions, when no time dimension is explicitly provided in the query.

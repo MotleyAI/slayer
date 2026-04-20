@@ -184,7 +184,7 @@ joins:
 
 Joins enable **cross-model measures** — querying a measure from a joined model alongside the main model's data. See [Cross-Model Measures](queries.md#cross-model-measures).
 
-During [auto-ingestion](ingestion.md), joins are generated automatically from foreign key relationships (including transitive joins like `orders → customers → regions`). Multi-hop dimensions are auto-resolved by walking the join graph — `customers.regions.name` in a query on `orders` follows `orders → customers → regions` automatically.
+During [auto-ingestion](ingestion.md), joins are generated automatically from foreign key relationships — one join per FK on the source table. Multi-hop dimensions are auto-resolved at query time by walking the join graph — `customers.regions.name` in a query on `orders` follows `orders → customers → regions` by traversing each intermediate model's own joins.
 
 ### Path-Based Table Aliases
 

@@ -147,7 +147,7 @@ class TestInspectModel:
             filters=["deleted_at IS NULL"],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test"})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "test", "show_sql": True})
 
         assert result.startswith("# Model: `test`")
         assert "A test model used in unit tests." in result
@@ -163,7 +163,7 @@ class TestInspectModel:
         assert "USD total" in result
         assert "## Joins (1)" in result
         assert "customers" in result
-        assert "direct" in result
+        assert "customer_id = id" in result
 
         # No longer JSON
         with pytest.raises(json.JSONDecodeError):
@@ -178,7 +178,7 @@ class TestInspectModel:
         await storage.save_model(SlayerModel(
             name="querybacked", sql="SELECT 1 AS x", data_source="test",
         ))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "querybacked"})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "querybacked", "show_sql": True})
         assert "## SQL" in result
         assert "```sql" in result
         assert "SELECT 1 AS x" in result
@@ -198,30 +198,26 @@ class TestInspectModel:
                 description="Weighted average",
             )],
         ))
-        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "t"})
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "t", "show_sql": True})
         assert "status = 'completed'" in result  # measure filter surfaces
         assert "sum, avg" in result              # allowed_aggregations rendered
         assert "## Aggregations (1)" in result
         assert "wavg" in result
         assert "Weighted average" in result
 
-    async def test_joins_kind_labels(self, mcp_server, storage: YAMLStorage) -> None:
-        """Joins table marks direct vs multi-hop joins."""
+    async def test_joins_table_rendered(self, mcp_server, storage: YAMLStorage) -> None:
+        """Joins table renders direct joins without kind labels."""
         await storage.save_model(SlayerModel(
             name="order_items", sql_table="order_items", data_source="test",
             joins=[
                 ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
-                ModelJoin(target_model="customers", join_pairs=[["orders.customer_id", "id"]]),
+                ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
             ],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "order_items"})
         assert "| orders |" in result
-        assert "| customers |" in result
-        # The "direct" label should appear on the orders row, "multi-hop" on the customers row.
-        orders_line = next(line for line in result.splitlines() if "| orders |" in line)
-        customers_line = next(line for line in result.splitlines() if "| customers |" in line)
-        assert "direct" in orders_line
-        assert "multi-hop" in customers_line
+        assert "| products |" in result
+        assert "kind" not in result
 
 
 class TestMdCodeSpan:
@@ -257,6 +253,65 @@ class TestMdCodeSpan:
         assert _md_code_span(42) == "`42`"
 
 
+    async def test_reachable_fields_no_bounce_back(self, mcp_server, storage: YAMLStorage) -> None:
+        """Peer joins should not cause inspect_model to list the root model's own
+        fields as 'reachable via joins'."""
+        await storage.save_model(SlayerModel(
+            name="claim", sql_table="t", data_source="test",
+            dimensions=[
+                Dimension(name="claim_id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", type=DataType.STRING),
+            ],
+            joins=[ModelJoin(target_model="claim_detail", join_pairs=[["claim_id", "claim_id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="claim_detail", sql_table="t2", data_source="test",
+            dimensions=[
+                Dimension(name="claim_id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="detail_notes", type=DataType.STRING),
+            ],
+            joins=[ModelJoin(target_model="claim", join_pairs=[["claim_id", "claim_id"]])],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "claim", "num_rows": 0})
+        # claim_detail.detail_notes should be reachable
+        assert "claim_detail.detail_notes" in result
+        # But claim_detail.claim.status (bounce-back to root) should NOT appear
+        assert "claim_detail.claim.status" not in result
+
+
+    async def test_measure_type_column_in_schema(self, mcp_server, storage: YAMLStorage) -> None:
+        """Measure type column is included when type inference succeeds.
+
+        Without a real DB, get_column_types returns {} and the type column
+        is auto-pruned. This test verifies the column appears in the schema
+        by checking _build_sample_query_args uses inferred types.
+        """
+        from slayer.mcp.server import _build_sample_query_args
+
+        model = SlayerModel(
+            name="typed",
+            sql_table="t",
+            data_source="test",
+            dimensions=[Dimension(name="status", type=DataType.STRING)],
+            measures=[
+                Measure(name="amount", sql="amount"),
+                Measure(name="label", sql="label"),
+            ],
+        )
+        # Without types: both get avg (label has no matching dim to trigger heuristic)
+        args_no_types = _build_sample_query_args(model=model, num_rows=3)
+        formulas = [f["formula"] for f in args_no_types["fields"]]
+        assert "label:avg" in formulas
+
+        # With inferred types: label is string → count_distinct
+        args_with_types = _build_sample_query_args(
+            model=model, num_rows=3, measure_types={"amount": "number", "label": "string"},
+        )
+        formulas = [f["formula"] for f in args_with_types["fields"]]
+        assert "amount:avg" in formulas
+        assert "label:count_distinct" in formulas
+
+
 class TestInspectModelJsonFormat:
     async def test_json_format_includes_sample_data(self, mcp_server, storage: YAMLStorage) -> None:
         """inspect_model(format='json') must include sample_data and sample_data_error keys."""
@@ -276,6 +331,87 @@ class TestInspectModelJsonFormat:
         assert parsed["model_name"] == "jtest"
         # sample_sql should NOT appear when show_sql is not requested
         assert "sample_sql" not in parsed
+
+
+class TestInspectModelShowSQL:
+    """show_sql parameter must control visibility of all SQL in inspect_model output."""
+
+    async def test_hides_sql_by_default_markdown(self, mcp_server, storage: YAMLStorage) -> None:
+        """Without show_sql, markdown output has no ## SQL section and no sql column."""
+        await storage.save_model(SlayerModel(
+            name="sqlt",
+            sql="SELECT id, val FROM raw_table",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "sqlt", "num_rows": 0,
+        })
+        assert "## SQL" not in result
+        # Dimension table should not have an "sql" column header
+        assert "| sql " not in result and "| sql|" not in result
+
+    async def test_shows_sql_when_requested_markdown(self, mcp_server, storage: YAMLStorage) -> None:
+        """With show_sql=True, markdown output includes ## SQL section and sql columns."""
+        await storage.save_model(SlayerModel(
+            name="sqlshow",
+            sql="SELECT id, val FROM raw_table",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "sqlshow", "num_rows": 0, "show_sql": True,
+        })
+        assert "## SQL" in result
+        assert "SELECT id, val FROM raw_table" in result
+
+    async def test_hides_sql_by_default_json(self, mcp_server, storage: YAMLStorage) -> None:
+        """JSON format without show_sql excludes sql keys from dimensions and measures."""
+        await storage.save_model(SlayerModel(
+            name="jsqlt",
+            sql="SELECT id, val FROM raw_table",
+            sql_table=None,
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val", filter="val > 0")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "jsqlt", "format": "json", "num_rows": 0,
+        })
+        parsed = json.loads(result)
+        # Model-level sql and sql_table should be absent
+        assert "sql" not in parsed
+        assert "sql_table" not in parsed
+        # Dimension and measure dicts should not have sql keys
+        for d in parsed["dimensions"]:
+            assert "sql" not in d
+        for m in parsed["measures"]:
+            assert "sql" not in m
+            assert "filter" not in m
+
+    async def test_shows_sql_when_requested_json(self, mcp_server, storage: YAMLStorage) -> None:
+        """JSON format with show_sql=True includes sql keys everywhere."""
+        await storage.save_model(SlayerModel(
+            name="jsqlshow",
+            sql="SELECT id, val FROM raw_table",
+            sql_table=None,
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="val", sql="val", filter="val > 0")],
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "jsqlshow", "format": "json", "num_rows": 0, "show_sql": True,
+        })
+        parsed = json.loads(result)
+        assert "sql" in parsed
+        assert parsed["sql"] == "SELECT id, val FROM raw_table"
+        for d in parsed["dimensions"]:
+            assert "sql" in d
+        for m in parsed["measures"]:
+            assert "sql" in m
+            assert "filter" in m
 
 
 class TestBuildSampleQueryArgs:
@@ -491,9 +627,8 @@ class TestReachableFields:
         assert dims == ["customers.name", "customers.region"]
         assert measures == ["customers.lifetime_value"]
 
-    async def test_auto_ingested_multi_hop_path(self, storage: YAMLStorage) -> None:
-        """A baked-in multi-hop join (source col 'orders.customer_id') should
-        produce the path 'orders.customers.<field>' from the root."""
+    async def test_multi_hop_via_graph_walk(self, storage: YAMLStorage) -> None:
+        """Multi-hop reachability via direct joins: order_items → orders → customers."""
         await storage.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="ds",
             dimensions=[Dimension(name="id", primary_key=True), Dimension(name="name")],
@@ -501,12 +636,12 @@ class TestReachableFields:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="ds",
             dimensions=[Dimension(name="id", primary_key=True), Dimension(name="customer_id")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
         root = SlayerModel(
             name="order_items", sql_table="order_items", data_source="ds",
             joins=[
                 ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
-                ModelJoin(target_model="customers", join_pairs=[["orders.customer_id", "id"]]),
             ],
         )
         await storage.save_model(root)
@@ -1238,3 +1373,5 @@ class TestHelp:
         assert "Available help topics:" in help_tool.description
         for name in ("queries", "formulas", "transforms", "workflow"):
             assert name in help_tool.description
+
+

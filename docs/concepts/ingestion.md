@@ -1,10 +1,10 @@
 # Auto-Ingestion
 
-SLayer can introspect a database schema and automatically generate models with dimensions, measures, and **rollup-style denormalized joins**.
+SLayer can introspect a database schema and automatically generate models with dimensions, measures, and **direct FK-based joins**.
 
 SLayer has three ingestion paths:
 
-1. **Auto-ingest** (this page) — introspect a live database and generate visible models with FK-based rollup joins.
+1. **Auto-ingest** (this page) — introspect a live database and generate visible models with direct FK-based joins.
 2. **dbt semantic layer import** — convert `semantic_models` and `metrics` from a dbt project into visible SLayer models. See [dbt Import](../dbt/dbt_import.md).
 3. **Hidden dbt-model import** — the `--include-hidden-models` variant of `import-dbt` adds every regular dbt model that isn't wrapped by a `semantic_model` as a **hidden** SlayerModel built via SQL introspection. Hidden models stay out of discovery/listing endpoints but remain queryable by name. See [Regular dbt Models (Hidden Import)](../dbt/dbt_import.md#regular-dbt-models-hidden-import).
 
@@ -20,17 +20,20 @@ SLayer introspects foreign key constraints and builds a directed dependency grap
 orders ──FK──→ customers ──FK──→ regions
 ```
 
-The graph is validated to be acyclic (a `RollupGraphError` is raised if cycles are detected). For each table, SLayer computes the **transitive closure** — all tables reachable via FK chains.
+The graph is validated to be acyclic (a `RollupGraphError` is raised if cycles are detected). For each table, SLayer computes the **transitive closure** — all tables reachable via FK chains — to determine which columns to introspect for dotted dimensions. The transitive closure is used only for column discovery, not for generating joins (see Step 2).
 
-### Step 2: Build Rollup SQL
+### Step 2: Build Direct Joins
 
-For tables with FK references, SLayer creates explicit join metadata and dotted dimensions. For example, `orders → customers → regions` produces:
+Each model gets one join entry per foreign key **on its own table** — never multi-hop joins. For example, given `orders → customers → regions`:
 
-- **Joins**: `orders → customers` (on `customer_id = id`), `customers → regions` (on `customers.region_id = id`)
-- **Dotted dimensions**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id`
-- **Path-based SQL**: Dimension SQL uses `__`-delimited table aliases (e.g., `customers__regions.name`) to disambiguate joined tables
+- The `orders` model gets a single join: `orders → customers` (on `customer_id = id`)
+- The `customers` model gets a single join: `customers → regions` (on `region_id = id`)
+- The `orders` model does **not** get a baked-in `orders → regions` join
 
-At query time, LEFT JOINs are constructed dynamically from this metadata — no SQL is baked into the model. Each joined table gets a path-based alias (e.g., `LEFT JOIN regions AS customers__regions`).
+Each join stores the source/target column pair from the table's own FK. Multi-hop paths (e.g., `customers.regions.name` queried from `orders`) are resolved at query time by walking each intermediate model's joins.
+
+- **Dotted dimensions**: `customers.name`, `customers.id`, `customers.regions.name`, `customers.regions.id` (the transitive closure from Step 1 tells ingestion which columns to create)
+- **Path-based SQL**: At query time, dimension SQL uses `__`-delimited table aliases (e.g., `customers__regions.name`) to disambiguate joined tables. Each joined table gets a path-based alias (e.g., `LEFT JOIN regions AS customers__regions`).
 
 Tables with no FK references use their plain table name with no joins.
 
@@ -45,7 +48,7 @@ SLayer introspects the column types and generates a model:
 
 ID-like columns (`id`, `*_id`, `*_key`, `*_pk`, `*_fk`) are excluded from sum/avg generation. FK columns from referenced tables are excluded from dimensions to avoid redundancy.
 
-All models use `sql_table` (the source table) plus `joins` (structured metadata). JOINs are built dynamically at query time.
+All models use `sql_table` (the source table) plus `joins` (direct FK joins only, storing source/target column pairs). Multi-hop JOINs are resolved dynamically at query time by walking the join graph.
 
 ## Usage
 
@@ -95,7 +98,7 @@ After ingestion, you can query rolled-up dimensions directly:
 }
 ```
 
-Or transitively joined dimensions (using full path):
+Or multi-hop dimensions (resolved at query time by walking each model's joins):
 
 ```json
 {
@@ -107,7 +110,7 @@ Or transitively joined dimensions (using full path):
 
 ## Diamond Joins
 
-When the same table is reachable via multiple FK paths (e.g., `orders → customers → regions` AND `orders → warehouses → regions`), ingestion creates separate joins for each path. Each path gets a unique alias:
+When the same table is reachable via multiple FK paths (e.g., `orders → customers → regions` AND `orders → warehouses → regions`), each model only stores its own direct joins. The multi-hop paths are resolved at query time by walking intermediate models' joins. Each path gets a unique alias:
 
 - `customers.regions.name` → SQL alias `customers__regions`
 - `warehouses.regions.name` → SQL alias `warehouses__regions`

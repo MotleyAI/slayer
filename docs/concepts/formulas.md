@@ -58,12 +58,12 @@ Functions apply window operations to measures:
 | Function | Description | SQL Generated |
 |----------|-------------|---------------|
 | `cumsum(x)` | Running total over time | `SUM(x) OVER (ORDER BY time)` |
-| `time_shift(x, n)` | Value N periods next or back | Self-join CTE on query granularity |
-| `time_shift(x, offset, gran)` | Value from a different time bucket | Self-join CTE on given granularity |
+| `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
+| `time_shift(x, offset, gran)` | Value from a different time bucket | Self-join CTE with INTERVAL offset |
 | `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (ORDER BY time)` |
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (ORDER BY time)` |
-| `change(x)` | Difference from previous period | Self-join CTE, `current - previous` |
-| `change_pct(x)` | Percentage change from previous period | Self-join CTE, `(current - previous) / previous` |
+| `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
+| `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
 | `rank(x)` | Ranking by value (descending) | `RANK() OVER (ORDER BY x DESC)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
@@ -71,7 +71,7 @@ Functions apply window operations to measures:
 
 **Self-join transforms vs window-function transforms:**
 
-`time_shift`, `change`, and `change_pct` all use **self-join CTEs** internally. This means they can reach outside the current result set to fetch previous/next values — no edge NULLs when the database has the data, and correct handling of gaps in time series.
+`time_shift` uses a **self-join CTE** with an INTERVAL-shifted time column. `change` and `change_pct` are desugared into a hidden `time_shift` + arithmetic expression at query enrichment time. The shifted sub-query applies the time offset everywhere (WHERE, GROUP BY, SELECT), so it can reach outside the current result set — no edge NULLs when the database has the data, and correct handling of gaps in time series.
 
 `lag(x, n)` and `lead(x, n)` use SQL `LAG`/`LEAD` window functions directly. They are more efficient but have two trade-offs:
 
@@ -80,15 +80,14 @@ Functions apply window operations to measures:
 
 ### Nesting
 
-Field formulas support arbitrary nesting — functions can wrap other functions or arithmetic:
+Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa):
 
 ```json
 "fields": [
-  {"formula": "change(cumsum(revenue:sum))", "name": "cumsum_delta"},
-  "last(change(cumsum(revenue:sum)))",
+  {"formula": "cumsum(change(revenue:sum))", "name": "cumsum_delta"},
+  "last(change(revenue:sum))",
   {"formula": "cumsum(revenue:sum / *:count)", "name": "running_aov"},
-  {"formula": "cumsum(revenue:sum) / *:count", "name": "cumsum_div_count"},
-  ...
+  {"formula": "cumsum(revenue:sum) / *:count", "name": "cumsum_div_count"}
 ]
 ```
 

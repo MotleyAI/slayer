@@ -15,6 +15,26 @@ async def _noop_async(**kw):
     return None
 
 
+_SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
+
+
+def _assert_valid_sql(sql: str, dialect: str = "postgres"):
+    """Assert generated SQL is structurally valid (parses, no nested WITH)."""
+    try:
+        statements = sqlglot.parse(sql, dialect=dialect)
+        assert statements, f"SQL failed to parse:\n{sql}"
+        assert len(statements) == 1, f"Expected 1 SQL statement, got {len(statements)}:\n{sql}"
+    except TypeError as exc:
+        if dialect not in _SQLGLOT_TYPEERROR_DIALECTS:
+            raise AssertionError(
+                f"sqlglot TypeError while validating {dialect} SQL:\n{sql}"
+            ) from exc
+        return  # Known sqlglot limitation for this dialect
+    # No nested WITH — only one WITH keyword allowed at the start of a line
+    with_lines = [line for line in sql.split("\n") if line.strip().upper().startswith("WITH ")]
+    assert len(with_lines) <= 1, f"Nested WITH clauses detected:\n{sql}"
+
+
 async def _generate(
     generator: SQLGenerator,
     query: SlayerQuery,
@@ -30,7 +50,9 @@ async def _generate(
         resolve_cross_model_measure=_noop_async,
         resolve_join_target=_noop_async,
     )
-    return generator.generate(enriched=enriched)
+    sql = generator.generate(enriched=enriched)
+    _assert_valid_sql(sql, dialect=generator.dialect)
+    return sql
 
 
 @pytest.fixture
@@ -55,7 +77,16 @@ def orders_model() -> SlayerModel:
 
 @pytest.fixture
 def generator() -> SQLGenerator:
-    return SQLGenerator(dialect="postgres")
+    gen = SQLGenerator(dialect="postgres")
+    _original = gen.generate
+
+    def _validating_generate(enriched):
+        sql = _original(enriched=enriched)
+        _assert_valid_sql(sql)
+        return sql
+
+    gen.generate = _validating_generate
+    return gen
 
 
 class TestBasicQueries:
@@ -475,6 +506,7 @@ class TestFields:
         assert "rev_running" in sql.lower()
 
     async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -484,8 +516,8 @@ class TestFields:
         sql = await _generate(generator, query, orders_model)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
-        assert "ROW_NUMBER()" in sql
-        assert "_rn" in sql
+        # Calendar-based join with INTERVAL (no more ROW_NUMBER)
+        assert "INTERVAL" in sql
 
     async def test_lag(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
@@ -517,11 +549,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = await _generate(generator, query, orders_model)
+        # change is desugared into time_shift + expression
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
-        assert "_rn" in sql
-        # change = current - previous (self-join column expression)
-        assert " - shifted_" in sql
+        # Subtraction now in an expression CTE layer (not in the self-join column)
+        assert "rev_change" in sql.lower()
+        assert " - " in sql
 
     async def test_change_pct(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.default_time_dimension = "created_at"
@@ -684,7 +717,7 @@ class TestFields:
         assert "INTERVAL" in sql
 
     async def test_time_shift_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Calendar time_shift with date_range should shift the filter in the shifted CTE."""
+        """Calendar time_shift with date_range: shifted CTE uses INTERVAL, not shifted dates."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -701,12 +734,11 @@ class TestFields:
         # Base CTE should have original date range
         assert "2024-03-01" in sql
         assert "2024-03-31" in sql
-        # Shifted CTE should have date range shifted back by 1 month
-        assert "2024-02-01" in sql
-        assert "2024-02-29" in sql
+        # Shifted CTE uses INTERVAL to shift the time column (not shifted date strings)
+        assert "INTERVAL" in sql
 
     async def test_time_shift_yoy_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Year-over-year time_shift should shift the date range by 1 year."""
+        """Year-over-year time_shift uses INTERVAL '1' YEAR in the shifted CTE."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -720,12 +752,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_yoy")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Shifted CTE should query March 2023
-        assert "2023-03-01" in sql
-        assert "2023-03-31" in sql
+        # Shifted CTE should use INTERVAL for year shift
+        assert "INTERVAL" in sql
+        assert "YEAR" in sql
 
     async def test_change_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Row-based change with date_range should shift the filter using query's time granularity."""
+        """change() with date_range uses a hidden time_shift with INTERVAL."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -739,12 +771,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = await _generate(generator, query, orders_model)
-        # change looks back 1 period — shifted CTE should query February
-        assert "2024-02-01" in sql
-        assert "2024-02-29" in sql
+        # change desugars to time_shift + expression; shifted CTE uses INTERVAL
+        assert "INTERVAL" in sql
+        assert " - " in sql
 
     async def test_no_date_range_no_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Without a date_range, shifted CTE should still be a valid base query (no date filter)."""
+        """Without a date_range, shifted CTE should still have INTERVAL but no BETWEEN."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -752,12 +784,11 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Both base and shifted CTEs should query the source table without date filters
-        assert "shifted_base_" in sql
+        assert "shifted_" in sql
         assert "BETWEEN" not in sql
 
     async def test_forward_time_shift_with_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Forward time_shift(x, 1, 'month') with date_range should shift the filter forward."""
+        """Forward time_shift(x, 1, 'month') with date_range should use negative INTERVAL."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -771,12 +802,12 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, 1, 'month')", name="rev_next")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Shifted CTE should query April (1 month forward)
-        assert "2024-04-01" in sql
-        assert "2024-04-30" in sql
+        # Forward shift uses negative INTERVAL
+        assert "INTERVAL" in sql
+        assert "shifted_" in sql
 
     async def test_quarter_date_shift(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """time_shift with quarter granularity should shift the date range by 3 months."""
+        """time_shift with quarter granularity uses INTERVAL with 3 months."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -790,9 +821,10 @@ class TestFields:
             fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'quarter')", name="prev_q")],
         )
         sql = await _generate(generator, query, orders_model)
-        # Q3 2024 shifted back 1 quarter = Q2 2024
-        assert "2024-04-01" in sql
-        assert "2024-06-30" in sql
+        # Quarter = 3 months; shifted CTE uses INTERVAL
+        assert "INTERVAL" in sql
+        assert "MONTH" in sql
+        assert "shifted_" in sql
 
     async def test_nested_self_join_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Nesting self-join transforms (e.g., change(time_shift(x))) should raise."""
@@ -904,8 +936,26 @@ class TestFields:
 
 
 class TestNestedFields:
-    async def test_nested_transform_generates_stacked_ctes(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """change(cumsum(revenue)) should produce stacked CTEs."""
+    async def test_nested_cumsum_of_change_generates_stacked_ctes(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """cumsum(change(revenue:sum)) should produce stacked CTEs."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[
+                Field(formula="revenue:sum"),
+                Field(formula="cumsum(change(revenue:sum))", name="delta"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        # Should have base + stacked CTEs
+        assert "base" in sql.lower()
+        assert "shifted_" in sql  # change desugars to time_shift
+        assert "SUM(" in sql  # cumsum window
+        assert "delta" in sql.lower()
+
+    async def test_change_of_cumsum_raises(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """change(cumsum(x)) is not supported — time_shift can't target a window function result."""
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
@@ -915,13 +965,8 @@ class TestNestedFields:
                 Field(formula="change(cumsum(revenue:sum))", name="delta"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
-        # Should have base + at least one step CTE
-        assert "base" in sql.lower()
-        assert "step" in sql.lower()
-        assert "SUM(" in sql  # cumsum
-        assert "shifted_" in sql  # change uses self-join
-        assert "delta" in sql.lower()
+        with pytest.raises(ValueError, match="not found"):
+            await _generate(generator, query, orders_model)
 
     async def test_mixed_arithmetic_with_transform(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """cumsum(revenue) / count should work."""
@@ -1061,11 +1106,33 @@ class TestMultiDialectGeneration:
 
 
 class TestPathAliasJoinInference:
-    """Test that __-delimited path aliases in inline SQL are split for join inference."""
+    """Test that __-delimited path aliases in inline SQL cause multi-hop join inference via graph walk."""
+
+    @pytest.fixture
+    async def storage(self, tmp_path):
+        from slayer.storage.yaml_storage import YAMLStorage
+        s = YAMLStorage(base_dir=str(tmp_path))
+        await s.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+                Dimension(name="population", sql="population", type=DataType.NUMBER),
+            ],
+        ))
+        await s.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="region_id", sql="region_id", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        return s
 
     @pytest.fixture
     def chained_model(self) -> SlayerModel:
-        """Model with orders → customers → regions join chain."""
+        """Model with orders → customers (direct) and customers → regions (on customers)."""
         return SlayerModel(
             name="orders",
             sql_table="orders",
@@ -1074,7 +1141,6 @@ class TestPathAliasJoinInference:
                 Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
                 Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
                 Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                # Inline dimension referencing a path-aliased joined table
                 Dimension(
                     name="is_us",
                     sql="CASE WHEN customers__regions.name = 'US' THEN 1 ELSE 0 END",
@@ -1084,13 +1150,12 @@ class TestPathAliasJoinInference:
             measures=[],
             joins=[
                 ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-                ModelJoin(target_model="regions", join_pairs=[["customers.region_id", "id"]]),
             ],
         )
 
     @pytest.fixture
-    def engine(self) -> SlayerQueryEngine:
-        return SlayerQueryEngine(storage=None)
+    def engine(self, storage) -> SlayerQueryEngine:
+        return SlayerQueryEngine(storage=storage)
 
     async def test_dimension_sql_with_path_alias_infers_joins(
         self, engine: SlayerQueryEngine, chained_model: SlayerModel
@@ -1102,12 +1167,27 @@ class TestPathAliasJoinInference:
             dimensions=[ColumnRef(name="is_us")],
         )
         enriched = await engine._enrich(query=query, model=chained_model)
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
 
-    async def test_time_dimension_sql_with_path_alias_infers_joins(self, engine: SlayerQueryEngine) -> None:
+    async def test_time_dimension_sql_with_path_alias_infers_joins(self, storage) -> None:
         """Inline time dimension SQL referencing path alias should also trigger join inference."""
+        await storage.save_model(SlayerModel(
+            name="orgs", sql_table="orgs", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="signup_date", sql="signup_date", type=DataType.TIMESTAMP),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="users", sql_table="users", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="org_id", sql="org_id", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="orgs", join_pairs=[["org_id", "id"]])],
+        ))
         model = SlayerModel(
             name="events",
             sql_table="events",
@@ -1115,7 +1195,6 @@ class TestPathAliasJoinInference:
             dimensions=[
                 Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
                 Dimension(name="user_id", sql="user_id", type=DataType.NUMBER),
-                # Time dimension with SQL referencing a path alias
                 Dimension(
                     name="user_signup_date",
                     sql="users__orgs.signup_date",
@@ -1125,9 +1204,9 @@ class TestPathAliasJoinInference:
             measures=[],
             joins=[
                 ModelJoin(target_model="users", join_pairs=[["user_id", "id"]]),
-                ModelJoin(target_model="orgs", join_pairs=[["users.org_id", "id"]]),
             ],
         )
+        engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             source_model="events",
             time_dimensions=[
@@ -1139,7 +1218,7 @@ class TestPathAliasJoinInference:
             fields=[Field(formula="*:count")],
         )
         enriched = await engine._enrich(query=query, model=model)
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "users" in join_aliases
         assert "users__orgs" in join_aliases
 
@@ -1147,7 +1226,6 @@ class TestPathAliasJoinInference:
         self, engine: SlayerQueryEngine, chained_model: SlayerModel
     ) -> None:
         """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
-        # Add a measure referencing a path-aliased joined table
         chained_model.measures.append(
             Measure(name="region_pop_sum", sql="customers__regions.population")
         )
@@ -1156,7 +1234,7 @@ class TestPathAliasJoinInference:
             fields=[Field(formula="region_pop_sum:sum")],
         )
         enriched = await engine._enrich(query=query, model=chained_model)
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
 
@@ -1520,20 +1598,18 @@ class TestFilteredMeasures:
         assert "LEFT JOIN public.customers" in subquery_chunk, (
             f"Expected LEFT JOIN inside ranked subquery; got: {sql}"
         )
-        # And the outer query should NOT also add a LEFT JOIN at the top level
-        # (would double-join). Count: only one occurrence of the join clause.
-        assert sql.count("LEFT JOIN public.customers") == 1
+        # The cross-model filter join appears in the ranked subquery (for filter
+        # resolution) and potentially in the isolated-measure CTE.
+        assert "LEFT JOIN public.customers" in sql
 
-    async def test_filtered_last_outer_aggregate_uses_match_flag_not_joined_filter(
+    async def test_filtered_last_cross_model_isolates_to_cte_with_ranked_subquery(
         self, generator: SQLGenerator,
     ) -> None:
         """Regression for CodeRabbit B6-4 — when a filtered first/last measure's
-        filter references a JOINED table (e.g. customers.status), the outer
-        aggregate must reference a per-measure boolean match flag projected by
-        the ranked subquery, NOT re-emit the original filter_sql. The outer FROM
-        is the ranked subquery alias, which only projects model.*, _td_*,
-        _rn*, and _match_*. Re-emitting `customers.status = 'active'` outside
-        that subquery references a table that isn't in scope → invalid SQL."""
+        filter references a JOINED table (e.g. customers.status), the measure
+        is isolated into its own CTE with a ranked subquery. The join is placed
+        inside the ranked subquery so the filter resolves, and the final SELECT
+        does not reference the joined table directly."""
         from slayer.engine.enrichment import enrich_query
 
         customers = SlayerModel(
@@ -1586,28 +1662,31 @@ class TestFilteredMeasures:
         )
         sql = generator.generate(enriched=enriched)
 
-        # Extract the OUTER part of the SQL (everything after the closing
-        # paren of the ranked subquery). That section selects from the
-        # subquery alias, so 'customers' is not in scope there.
-        sub_start = sql.find("FROM (") + len("FROM (")
-        depth = 1
-        pos = sub_start
-        while pos < len(sql) and depth > 0:
-            if sql[pos] == "(":
-                depth += 1
-            elif sql[pos] == ")":
-                depth -= 1
-            pos += 1
-        outer_part = sql[pos:]  # everything after the ) AS orders
+        # The outermost SELECT (after all CTEs) should not reference
+        # 'customers.' directly — it pulls pre-computed values from CTEs.
+        final_select_idx = sql.rfind("\nSELECT ")
+        if final_select_idx == -1:
+            final_select_idx = sql.rfind("SELECT ")
+        final_select = sql[final_select_idx:]
 
-        assert "customers." not in outer_part, (
-            f"Outer aggregate references joined table 'customers' which is "
-            f"not in scope outside the ranked subquery — would generate "
-            f"invalid SQL. Outer part:\n{outer_part}\n\nFull SQL:\n{sql}"
+        assert "customers." not in final_select, (
+            f"Final SELECT references joined table 'customers' which is "
+            f"not in scope — should use CTE column references. "
+            f"Final SELECT:\n{final_select}\n\nFull SQL:\n{sql}"
         )
-        # Sanity: the match flag _match_f0 should be projected by the
-        # subquery and tested by the outer MAX(CASE WHEN ...)
-        assert "_match_f0" in sql
+        # The isolated CTE should contain a ranked subquery with _last_rn
+        assert "_fm_" in sql, f"Expected isolated _fm_ CTE:\n{sql}"
+        assert "_last_rn" in sql, f"Expected _last_rn in isolated CTE:\n{sql}"
+        # The customers JOIN should be inside the _fm_ CTE's ranked subquery
+        import re as _re
+        fm_match = _re.search(r"(_fm_\w+)\s+AS\s*\(", sql)
+        assert fm_match, f"No _fm_ CTE found:\n{sql}"
+        fm_start = fm_match.start()
+        fm_end = sql.index("\n)", fm_start)
+        fm_body = sql[fm_start:fm_end]
+        assert "public.customers" in fm_body, (
+            f"Expected customers JOIN inside _fm_ CTE:\n{fm_body}"
+        )
 
     async def test_filter_with_dotted_string_literal_does_not_pull_spurious_join(
         self, generator: SQLGenerator,
@@ -1664,7 +1743,7 @@ class TestFilteredMeasures:
             f"Spurious join planning for 'foo' triggered by dotted string "
             f"literal in filter; lookups: {join_target_lookups}"
         )
-        join_aliases = {alias for _, alias, _ in enriched.resolved_joins}
+        join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "foo" not in join_aliases
         # And confirm the SQL never gets a LEFT JOIN we didn't ask for.
         sql = generator.generate(enriched=enriched)
@@ -1980,3 +2059,1814 @@ class TestMeasureFilterInjection:
         assert "'active'" in sql
         assert "CASE WHEN" in sql
         assert "SUM(" in sql
+
+
+class TestAutoMoveDimensions:
+    """Test _auto_move_fields_to_dimensions preprocessing in the query engine."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        return YAMLStorage(base_dir=str(tmp_path))
+
+    @pytest.fixture
+    async def engine_and_model(self, storage):
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+                Dimension(name="region", sql="region", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+        await storage.save_model(orders)
+        await storage.save_model(customers)
+        engine = SlayerQueryEngine(storage=storage)
+        return engine, orders
+
+    async def test_bare_local_dimension_moved(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["status", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert len(result.fields) == 1
+        assert result.fields[0].formula == "revenue:sum"
+        assert any(d.name == "status" for d in result.dimensions)
+
+    async def test_cross_model_dimension_moved(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["customers.name", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert len(result.fields) == 1
+        assert any(d.full_name == "customers.name" for d in result.dimensions)
+
+    async def test_colon_fields_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["revenue:sum", "*:count"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert len(result.fields) == 2
+        assert not result.dimensions
+
+    async def test_arithmetic_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["revenue:sum / *:count"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert len(result.fields) == 1
+
+    async def test_bare_measure_name_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["revenue", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        # "revenue" is a measure, not a dimension — stays in fields
+        assert len(result.fields) == 2
+
+    async def test_unknown_bare_name_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["nonexistent", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert len(result.fields) == 2
+
+    async def test_invalid_cross_model_path_kept(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["customers.nonexistent", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert len(result.fields) == 2
+
+    async def test_no_fields_noop(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert result.fields is None
+
+    async def test_appends_to_existing_dimensions(self, engine_and_model) -> None:
+        engine, model = engine_and_model
+        query = SlayerQuery(source_model="orders", fields=["customer_id", "revenue:sum"], dimensions=["status"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
+        assert len(result.fields) == 1
+        dim_names = [d.name for d in result.dimensions]
+        assert "status" in dim_names
+        assert "customer_id" in dim_names
+
+    async def test_dotted_measure_not_moved_when_model_only_in_named_queries(self, storage) -> None:
+        """A dotted ref to a measure on a model only available via named_queries must stay in fields."""
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[Dimension(name="status", sql="status", type=DataType.STRING)],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        # customers NOT saved to storage — only available as a named query result
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="name", sql="name")],  # "name" is BOTH dim and measure
+        )
+        await storage.save_model(orders)
+        # Don't save customers to storage — simulate named-query-only model
+
+        engine = SlayerQueryEngine(storage=storage)
+
+        # Mock _resolve_model to return customers for "customers" (simulating named_queries)
+        original_resolve = engine._resolve_model
+
+        async def patched_resolve(model_name, named_queries=None, _resolving=None):
+            if model_name == "customers":
+                return customers
+            return await original_resolve(model_name=model_name, named_queries=named_queries, _resolving=_resolving)
+
+        engine._resolve_model = patched_resolve
+
+        query = SlayerQuery(source_model="orders", fields=["customers.name", "revenue:sum"])
+        result = await engine._auto_move_fields_to_dimensions(query=query, model=orders, named_queries={})
+        # "customers.name" is both a dim and a measure — should stay in fields (not auto-moved)
+        assert len(result.fields) == 2, (
+            f"Expected 'customers.name' to stay in fields, but got {len(result.fields)} fields: "
+            f"{[f.formula for f in result.fields]}"
+        )
+
+
+class TestInlineSQLJoins:
+    """Cross-model dimensions must emit LEFT JOINs even when source model uses inline SQL.
+
+    Regression tests from benchmark failures: the SQL generator used string-level
+    FROM marker replacement to inject LEFT JOINs, which silently failed for models
+    with inline SQL (sql field) because sqlglot's pretty-printed subquery didn't
+    match the raw string.
+    """
+
+    @pytest.fixture
+    def inline_orders(self):
+        return SlayerModel(
+            name="orders_inline",
+            sql="SELECT id, customer_id, amount FROM raw_orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+    @pytest.fixture
+    def table_orders(self):
+        return SlayerModel(
+            name="orders_table",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+    async def test_sql_table_baseline(self, generator: SQLGenerator, table_orders) -> None:
+        """Sanity check: sql_table models emit LEFT JOIN correctly."""
+        query = SlayerQuery(
+            source_model="orders_table",
+            fields=["amount:sum"],
+            dimensions=["customers.name"],
+        )
+        sql = await _generate(generator, query, table_orders)
+        assert "LEFT JOIN" in sql
+        assert "customers" in sql
+
+    async def test_inline_sql_cross_model_dimension(self, generator: SQLGenerator, inline_orders) -> None:
+        """Mirrors benchmark Q2/Q5: inline-SQL source with a cross-model dimension."""
+        query = SlayerQuery(
+            source_model="orders_inline",
+            fields=["amount:sum"],
+            dimensions=["customers.name"],
+        )
+        sql = await _generate(generator, query, inline_orders)
+        assert "LEFT JOIN" in sql, f"LEFT JOIN missing from inline-SQL model query:\n{sql}"
+        assert "customers" in sql
+
+    async def test_inline_sql_cross_model_dim_plus_local_measure(self, generator: SQLGenerator, inline_orders) -> None:
+        """Mirrors benchmark Q1: inline-SQL source with both cross-model dim and local measure."""
+        query = SlayerQuery(
+            source_model="orders_inline",
+            fields=["amount:avg"],
+            dimensions=["customers.name"],
+        )
+        sql = await _generate(generator, query, inline_orders)
+        assert "LEFT JOIN" in sql, f"LEFT JOIN missing:\n{sql}"
+        assert "AVG(" in sql.upper()
+
+
+class TestSelfReferencingPaths:
+    """LLMs sometimes prefix cross-model paths with the source model name.
+
+    e.g. on source_model='orders', writing 'orders.customers.name' instead of
+    'customers.name'. The leading self-reference is stripped by the deterministic
+    pre-processing step SlayerQuery.strip_source_model_prefix(), so internal
+    resolution methods receive already-clean references.
+    """
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        return YAMLStorage(base_dir=str(tmp_path))
+
+    @pytest.fixture
+    async def engine_and_models(self, storage):
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="score", sql="score")],
+        )
+        await storage.save_model(orders)
+        await storage.save_model(customers)
+        engine = SlayerQueryEngine(storage=storage)
+        return engine, orders
+
+    async def test_self_ref_dimension_resolved_after_strip(self, engine_and_models) -> None:
+        """'orders.customers.name' is pre-stripped to 'customers.name', then resolves correctly."""
+        engine, model = engine_and_models
+        query = SlayerQuery(source_model="orders", dimensions=["orders.customers.name"])
+        stripped = query.strip_source_model_prefix()
+        # After stripping, the dimension is "customers.name"
+        assert stripped.dimensions[0].model == "customers"
+        assert stripped.dimensions[0].name == "name"
+        # Verify the engine can resolve the stripped path
+        parts = stripped.dimensions[0].model.split(".") + [stripped.dimensions[0].name]
+        dim = await engine._resolve_dimension_via_joins(model=model, parts=parts)
+        assert dim is not None
+        assert dim.name == "name"
+
+    async def test_self_ref_measure_resolved_after_strip(self, engine_and_models) -> None:
+        """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves."""
+        engine, model = engine_and_models
+        query = SlayerQuery(source_model="orders", fields=["orders.customers.score:sum"])
+        stripped = query.strip_source_model_prefix()
+        # After stripping, the formula is "customers.score:sum"
+        assert stripped.fields[0].formula == "customers.score:sum"
+        # Verify the engine can resolve the stripped cross-model measure
+        result = await engine._resolve_cross_model_measure(
+            spec_name="customers.score",
+            field_name="score",
+            model=model,
+            query=stripped,
+            dimensions=[], time_dimensions=[],
+            aggregation_name="sum",
+        )
+        assert result.target_model_name == "customers"
+
+    def test_simple_self_ref_dimension_stripped(self) -> None:
+        """'orders.status' on source_model=orders becomes local 'status'."""
+        query = SlayerQuery(source_model="orders", dimensions=["orders.status"])
+        stripped = query.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
+
+
+class TestConstantSQLFilters:
+    """Filters on dimensions with constant/expression SQL must not be broken by table-qualifying."""
+
+    async def test_local_filter_on_constant_dimension(self, generator: SQLGenerator) -> None:
+        """Dimension with sql='1' should produce WHERE 1 = '1', not WHERE model.1 = '1'."""
+        model = SlayerModel(
+            name="premium",
+            sql_table="Premium",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_premium", sql="1", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="premium",
+            fields=[Field(formula="amount:sum")],
+            filters=["has_premium = '1'"],
+        )
+        sql = await _generate(generator, query, model)
+        assert "premium.1" not in sql, f"Constant SQL '1' was table-qualified: {sql}"
+        # The constant should appear as a bare literal in WHERE
+        assert "1 = '1'" in sql or "1 = 1" in sql
+
+    async def test_cross_model_filter_on_constant_dimension(self, generator: SQLGenerator) -> None:
+        """Cross-model filter premium.has_premium where has_premium sql='1' must not produce premium.1."""
+        from slayer.engine.enrichment import enrich_query
+
+        premium_model = SlayerModel(
+            name="premium",
+            sql_table="Premium",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_premium", sql="1", type=DataType.NUMBER),
+            ],
+        )
+        policy_amount = SlayerModel(
+            name="policy_amount",
+            sql_table="Policy_Amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="premium_id", sql="premium_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="total", sql="amount")],
+            joins=[ModelJoin(target_model="premium", join_pairs=[["premium_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "premium":
+                return ("Premium", premium_model)
+            return None
+
+        query = SlayerQuery(
+            source_model="policy_amount",
+            fields=[Field(formula="total:sum")],
+            filters=["premium.has_premium = '1'"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=policy_amount,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        assert "premium.1" not in sql, f"Constant SQL '1' was table-qualified: {sql}"
+        assert "1 = '1'" in sql or "1 = 1" in sql
+
+    async def test_local_filter_on_expression_dimension(self, generator: SQLGenerator) -> None:
+        """Dimension with sql='COALESCE(x, 0)' should not be table-qualified."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            filters=["safe_amount > 0"],
+        )
+        sql = await _generate(generator, query, model)
+        assert "orders.COALESCE" not in sql, f"Expression SQL was table-qualified: {sql}"
+        assert "COALESCE" in sql
+
+    async def test_cross_model_filter_on_normal_dimension(self, generator: SQLGenerator) -> None:
+        """Normal column-name dimensions must still be table-qualified (regression guard)."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            filters=["customers.status = 'active'"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        # Normal dimension should be qualified with the table alias
+        assert "customers.status" in sql
+
+
+class TestDimensionAggregation:
+    """Dimensions can be aggregated with colon syntax (e.g., pk:count_distinct)."""
+
+    async def test_count_distinct_on_pk_dimension(self, generator: SQLGenerator) -> None:
+        """Primary key dimension with count_distinct should produce COUNT(DISTINCT col)."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="order_id", sql="order_id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="order_id:count_distinct")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "COUNT(DISTINCT" in sql
+        assert "order_id" in sql
+
+    async def test_count_on_dimension(self, generator: SQLGenerator) -> None:
+        """count on a dimension produces COUNT(col) for non-null counting."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customer_id:count")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "COUNT(" in sql
+        assert "customer_id" in sql
+
+    async def test_min_max_on_string_dimension(self, generator: SQLGenerator) -> None:
+        """min/max on string dimensions is allowed."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="status:min")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "MIN(" in sql
+
+    async def test_sum_on_string_dimension_rejected(self, generator: SQLGenerator) -> None:
+        """sum on a string dimension must be rejected."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="status:sum")],
+        )
+        with pytest.raises(ValueError, match="not applicable to string dimension"):
+            await _generate(generator, query, model)
+
+    async def test_sum_on_number_dimension_allowed(self, generator: SQLGenerator) -> None:
+        """sum on a numeric dimension is allowed."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="quantity", sql="qty", type=DataType.NUMBER),
+            ],
+            measures=[],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="quantity:sum")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "SUM(" in sql
+        assert "qty" in sql
+
+    async def test_measure_takes_precedence_over_dimension(self, generator: SQLGenerator) -> None:
+        """When measure and dimension share a name, the measure is used."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="revenue", sql="dim_revenue_col", type=DataType.NUMBER),
+            ],
+            measures=[
+                Measure(name="revenue", sql="measure_revenue_col"),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+        )
+        sql = await _generate(generator, query, model)
+        # Should use the measure's SQL, not the dimension's
+        assert "measure_revenue_col" in sql
+        assert "dim_revenue_col" not in sql
+
+
+    async def test_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
+        """dimension:count_distinct inside a formula should work, not just as a standalone field."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[
+                Measure(name="revenue", sql="amount"),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                Field(formula="revenue:sum / customer_id:count_distinct", name="rev_per_customer"),
+            ],
+        )
+        sql = await _generate(generator, query, model)
+        assert "COUNT(DISTINCT" in sql
+        assert "SUM(" in sql
+        assert "/" in sql
+
+    async def test_cross_model_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
+        """cross-model dimension:count_distinct in a formula (e.g., policies.id:count_distinct)."""
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        source = SlayerModel(
+            name="amounts",
+            sql_table="amounts",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[
+                Measure(name="total", sql="amount"),
+            ],
+            joins=[ModelJoin(target_model="policies", join_pairs=[["policy_id", "id"]])],
+        )
+        target = SlayerModel(
+            name="policies",
+            sql_table="policies",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="policy_number", sql="policy_number", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+
+        # Use a real query engine so resolve_cross_model_measure works
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(source)
+            await storage.save_model(target)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="amounts",
+                fields=[
+                    Field(formula="total:sum / policies.id:count_distinct", name="avg_per_policy"),
+                ],
+            )
+            enriched = await engine._enrich(query=query, model=source, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            assert "COUNT(DISTINCT" in sql
+            assert "SUM(" in sql
+            assert "/" in sql
+
+
+class TestCrossModelRerootedSubquery:
+    """Tests for the re-rooted subquery approach to cross-model measure CTEs.
+
+    When a cross-model measure is used, the CTE is generated with the target
+    model as FROM, allowing all of the target model's joins to be available
+    for filters and dimensions. Unreachable dims/filters are dropped.
+    """
+
+    @pytest.fixture
+    def _models(self):
+        """Shared model definitions for re-rooting tests."""
+        policy = SlayerModel(
+            name="policy", sql_table="policy", data_source="test",
+            dimensions=[
+                Dimension(name="policy_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="policy_number", type=DataType.STRING),
+                Dimension(name="status_code", type=DataType.STRING),
+            ],
+            joins=[
+                ModelJoin(target_model="policy_amount", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+                ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+            ],
+        )
+        policy_amount = SlayerModel(
+            name="policy_amount", sql_table="policy_amount", data_source="test",
+            dimensions=[
+                Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="effective_date", type=DataType.TIMESTAMP),
+            ],
+            measures=[Measure(name="total_policy_amount", sql="policy_amount")],
+            joins=[
+                ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+                ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
+                ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+            ],
+        )
+        premium = SlayerModel(
+            name="premium", sql_table="premium", data_source="test",
+            dimensions=[
+                Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_premium", sql="1", type=DataType.STRING),
+            ],
+        )
+        agreement_party_role = SlayerModel(
+            name="agreement_party_role", sql_table="agreement_party_role", data_source="test",
+            dimensions=[
+                Dimension(name="agreement_identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="party_role_code", type=DataType.STRING),
+            ],
+        )
+        return policy, policy_amount, premium, agreement_party_role
+
+    async def _setup_engine(self, *models):
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+        tmp = tempfile.mkdtemp()
+        storage = YAMLStorage(base_dir=tmp)
+        for m in models:
+            await storage.save_model(m)
+        return SlayerQueryEngine(storage=storage)
+
+    async def test_rerooted_cte_includes_target_join_filters(self, generator, _models):
+        """Q9-style: filters on premium and agreement_party_role are included in CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            dimensions=[ColumnRef(name="policy_number")],
+            filters=[
+                "agreement_party_role.party_role_code = 'PH'",
+                "policy_amount.premium.has_premium = '1'",
+            ],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should FROM policy_amount (target), not FROM policy (source)
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
+        # CTE should JOIN premium and agreement_party_role
+        assert "premium" in cte_section
+        assert "agreement_party_role" in cte_section
+        # CTE should include both filter conditions
+        assert "party_role_code" in cte_section
+        # has_premium sql='1' resolves to literal 1
+        assert "1 = '1'" in cte_section or "1 = 1" in cte_section
+
+    async def test_rerooted_cte_without_filters(self, generator, _models):
+        """Cross-model measure with no filters still uses re-rooted CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            dimensions=[ColumnRef(name="policy_number")],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should still FROM policy_amount (re-rooted)
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "FROM policy_amount" in cte_section or "FROM\n  policy_amount" in cte_section
+
+    async def test_rerooted_unreachable_dims_and_filters_dropped(self, generator):
+        """Unreachable dims/filters are dropped. CTE produces scalar CROSS JOIN."""
+        # orders → customers join, but customers has NO join back to orders.
+        # Dimension 'status' is on orders (unreachable from customers).
+        # Filter on 'warehouse' is reachable from orders but not customers.
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", type=DataType.STRING),
+            ],
+            measures=[],
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                ModelJoin(target_model="warehouse", join_pairs=[["warehouse_id", "id"]]),
+            ],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[Measure(name="score", sql="score")],
+        )
+        warehouse = SlayerModel(
+            name="warehouse", sql_table="warehouse", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="region", type=DataType.STRING),
+            ],
+        )
+        engine = await self._setup_engine(orders, customers, warehouse)
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customers.score:avg")],
+            dimensions=[ColumnRef(name="status")],
+            filters=["warehouse.region = 'US'"],
+        )
+        enriched = await engine._enrich(query=query, model=orders, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE: FROM customers, no GROUP BY (status unreachable), no warehouse filter
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:sql.find(")\nSELECT", cm_cte_start)]
+        assert "FROM customers" in cte_section or "FROM\n  customers" in cte_section
+        assert "warehouse" not in cte_section.lower()
+        assert "status" not in cte_section.lower()
+        # Combined: CROSS JOIN (no shared dims)
+        assert "CROSS JOIN" in sql
+
+    async def test_rerooted_with_time_dimension(self, generator, _models):
+        """Re-rooted CTE includes time dimension when reachable from target."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="policy_amount.effective_date"),
+                granularity=TimeGranularity.MONTH,
+            )],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should include effective_date with DATE_TRUNC
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "effective_date" in cte_section.lower()
+        assert "GROUP BY" in cte_section
+
+    async def test_rerooted_cross_model_in_formula(self, generator, _models):
+        """Formula mixing local + cross-model measure uses re-rooted CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        # Add a local measure to policy
+        policy_with_measure = policy.model_copy(update={
+            "measures": [Measure(name="number_of_policies", sql="1")],
+        })
+        engine = await self._setup_engine(policy_with_measure, policy_amount, premium, agreement_party_role)
+
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(
+                formula="number_of_policies:sum / policy_amount.total_policy_amount:sum",
+                name="ratio",
+            )],
+            dimensions=[ColumnRef(name="policy_number")],
+        )
+        enriched = await engine._enrich(query=query, model=policy_with_measure, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # Should have both _base (with SUM for local measure) and _cm_ CTE
+        assert "_base" in sql
+        assert "_cm_" in sql
+        assert "/" in sql  # Division expression
+
+    async def test_rerooted_local_filter_remapped_to_source(self, generator, _models):
+        """Unqualified filter on source model is remapped to source.col in CTE."""
+        policy, policy_amount, premium, agreement_party_role = _models
+        engine = await self._setup_engine(policy, policy_amount, premium, agreement_party_role)
+
+        # policy_amount has a join to policy, so status_code is reachable
+        query = SlayerQuery(
+            source_model="policy",
+            fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+            dimensions=[ColumnRef(name="policy_number")],
+            filters=["status_code = 'ACTIVE'"],
+        )
+        enriched = await engine._enrich(query=query, model=policy, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+        # CTE should include the filter, qualified with the source model alias
+        cm_cte_start = sql.find("_cm_")
+        cte_section = sql[cm_cte_start:]
+        assert "status_code" in cte_section.lower()
+        assert "'ACTIVE'" in cte_section
+
+class TestOrderByCustomFieldName:
+    """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
+
+    async def test_order_by_custom_name(self, generator: SQLGenerator) -> None:
+        """Field with custom name 'num_customers' should be resolvable in ORDER BY."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customer_id:count_distinct", name="num_customers")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        # The ORDER BY should reference the count_distinct column, not "orders.num_customers"
+        assert "orders.num_customers" not in sql, f"Custom name not resolved: {sql}"
+        assert "COUNT(DISTINCT" in sql
+
+    async def test_order_by_canonical_name_still_works(self, generator: SQLGenerator) -> None:
+        """ORDER BY with the canonical name (customer_id_count_distinct) still works."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customer_id:count_distinct")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column=ColumnRef(name="customer_id_count_distinct"), direction="asc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "ASC" in sql
+
+    async def test_order_by_custom_name_in_computed_query(self, generator: SQLGenerator) -> None:
+        """ORDER BY with custom name must resolve correctly in computed/transform queries.
+
+        The _apply_pagination_to_sql path (used for expressions/transforms) must
+        use _resolve_order_column, not raw model.name formatting.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                Field(formula="customer_id:count_distinct", name="num_customers"),
+                Field(formula="cumsum(revenue:sum)", name="running_rev"),
+            ],
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        # The ORDER BY must NOT use the raw custom name "orders.num_customers"
+        assert "orders.num_customers" not in sql, (
+            f"Custom name not resolved in computed query path:\n{sql}"
+        )
+
+
+class TestJoinType:
+    """join_type on ModelJoin controls LEFT vs INNER in generated SQL."""
+
+    async def test_inner_join_generated(self, generator: SQLGenerator) -> None:
+        """join_type='inner' produces INNER JOIN, not LEFT JOIN."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], join_type="inner")],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="customers.name")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        assert "INNER JOIN" in sql
+        assert "LEFT JOIN" not in sql
+
+
+class TestMeasureFilterCrossModelJoin:
+    """Measure filters referencing cross-model dimensions must trigger the join."""
+
+    async def test_measure_filter_cross_model_constant_triggers_join(self, generator: SQLGenerator) -> None:
+        """Measure filter 'loss_payment.has_flag = 1' where has_flag sql='1' must JOIN to loss_payment."""
+        from slayer.engine.enrichment import enrich_query
+
+        loss_payment = SlayerModel(
+            name="loss_payment",
+            sql_table="Loss_Payment",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+            ],
+        )
+        claim_amount = SlayerModel(
+            name="claim_amount",
+            sql_table="Claim_Amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[
+                Measure(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1"),
+            ],
+            joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "loss_payment":
+                return ("Loss_Payment", loss_payment)
+            return None
+
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_amt:sum")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=claim_amount,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        # The JOIN to loss_payment must be present for the filter to work
+        assert "Loss_Payment" in sql, f"Missing JOIN to Loss_Payment: {sql}"
+        assert "JOIN" in sql
+
+    async def test_left_join_default(self, generator: SQLGenerator) -> None:
+        """Default join_type produces LEFT JOIN."""
+        from slayer.engine.enrichment import enrich_query
+
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "customers":
+                return ("customers", customers)
+            return None
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="customers.name")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=orders,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+        assert "LEFT JOIN" in sql
+        assert "INNER JOIN" not in sql
+
+
+class TestIsolatedFilteredMeasureCTEs:
+    """Cross-model-filtered measures get isolated CTEs, not CASE WHEN in the base."""
+
+    @pytest.fixture
+    def claim_amount_model(self):
+        return SlayerModel(
+            name="claim_amount",
+            sql_table="Claim_Amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="claim_amount_id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[
+                Measure(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1"),
+                Measure(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1"),
+                Measure(name="total_amount", sql="amount"),
+            ],
+            joins=[
+                ModelJoin(target_model="loss_payment", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
+                ModelJoin(target_model="loss_reserve", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
+                ModelJoin(target_model="claim", join_pairs=[["claim_id", "id"]]),
+            ],
+        )
+
+    @pytest.fixture
+    def related_models(self):
+        return {
+            "loss_payment": SlayerModel(
+                name="loss_payment", sql_table="Loss_Payment", data_source="test",
+                dimensions=[
+                    Dimension(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                    Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+                ],
+            ),
+            "loss_reserve": SlayerModel(
+                name="loss_reserve", sql_table="Loss_Reserve", data_source="test",
+                dimensions=[
+                    Dimension(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                    Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+                ],
+            ),
+            "claim": SlayerModel(
+                name="claim", sql_table="Claim", data_source="test",
+                dimensions=[
+                    Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                    Dimension(name="claim_number", sql="claim_number", type=DataType.STRING),
+                ],
+            ),
+        }
+
+    async def _enrich(self, claim_amount_model, related_models, query):
+        from slayer.engine.enrichment import enrich_query
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            m = related_models.get(target_model_name)
+            if m:
+                return (m.sql_table, m)
+            return None
+
+        return await enrich_query(
+            query=query,
+            model=claim_amount_model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+
+    async def test_two_filtered_measures_get_separate_ctes(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Two measures with different cross-model filters → separate CTEs, not intersecting JOINs."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum"), Field(formula="loss_reserve_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Each filtered measure should have its own CTE
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+        assert "loss_reserve_amt" in sql
+        # Base query should NOT have both INNER JOINs (would intersect to zero rows)
+        base_section = sql.split("_fm_")[0]
+        assert "Loss_Payment" not in base_section or "Loss_Reserve" not in base_section
+
+    async def test_formula_over_isolated_measures(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Formula referencing isolated measures evaluates in the outer query."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="loss_payment_amt:sum"),
+                Field(formula="loss_reserve_amt:sum"),
+                Field(formula="loss_payment_amt:sum + loss_reserve_amt:sum", name="total_loss"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Formula should be evaluated (contains + operator)
+        assert "+" in sql
+        # Both CTE names present
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+        assert "loss_reserve_amt" in sql
+
+    async def test_mixed_isolated_and_local_measures(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Unfiltered measure stays in base, filtered goes to CTE."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="total_amount:sum"), Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Unfiltered measure (total_amount) should be in the _base CTE
+        assert "_base" in sql
+        assert "total_amount_sum" in sql
+        # Filtered measure in its own CTE
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+
+    async def test_all_measures_isolated_produces_dimension_spine(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """When all measures are isolated, base query is just a dimension spine."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Base CTE should exist with dimensions but no SUM
+        assert "_base" in sql
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+        # The base should have GROUP BY for deduplication
+        base_cte = sql.split("_fm_")[0]
+        assert "GROUP BY" in base_cte
+
+    async def test_combined_uses_cross_join_when_no_dimensions(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """When no dimensions exist, measure CTEs are CROSS JOINed to base (Bug Q6)."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum"), Field(formula="loss_reserve_amt:sum")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # Both isolated CTEs should be present
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+        assert "loss_reserve_amt" in sql
+        # With no dimensions, CROSS JOIN is needed (not LEFT JOIN with no ON)
+        assert "CROSS JOIN" in sql
+
+    async def test_filter_join_preserved_when_skip_isolated(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Cross-model filter joins survive skip_isolated join stripping (Bug Q9).
+
+        When an isolated measure triggers skip_isolated, the base query strips
+        non-dimension joins. But query-level filters that reference cross-model
+        paths still need their joins.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            # No dimensions on claim — only the filter references the claim join
+            filters=["claim.claim_number = '12345'"],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # The base query WHERE clause references claim.claim_number
+        assert "claim_number" in sql
+        # The claim join must be present in the base query for the WHERE to work
+        base_section = sql.split("_fm_")[0]
+        assert "Claim" in base_section and "JOIN" in base_section
+
+    async def test_isolated_cte_qualifies_cross_model_dim_correctly(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Isolated CTEs qualify cross-model dimensions with dim.model_name (Bug Q11).
+
+        The dimension claim.claim_number is on the 'claim' model. The isolated
+        CTE must reference claim.claim_number, not claim_amount.claim_number.
+        """
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # Extract the _fm CTE body (between _fm_ name and the next CTE/combined)
+        import re as _re
+        fm_match = _re.search(r"_fm_\w*loss_payment_amt\w*", sql)
+        assert fm_match, f"No _fm_ CTE for loss_payment_amt in:\n{sql}"
+        fm_start = fm_match.start()
+        fm_body = sql[fm_start:sql.index("\n)", fm_start)]
+        # The dimension should use claim.claim_number, not claim_amount.claim_number
+        assert "claim.claim_number" in fm_body, f"Expected claim.claim_number in CTE:\n{fm_body}"
+        assert "claim_amount.claim_number" not in fm_body, (
+            f"Found wrong table qualification claim_amount.claim_number in CTE:\n{fm_body}"
+        )
+
+    def test_cm_cte_skips_filters_on_unavailable_tables(self, generator: SQLGenerator) -> None:
+        """Cross-model CTE WHERE must not include filters referencing tables it doesn't join (Bug Q9)."""
+        from slayer.core.formula import ParsedFilter
+        from slayer.engine.enriched import CrossModelMeasure, EnrichedDimension, EnrichedMeasure, EnrichedQuery
+
+        # Build an EnrichedQuery with:
+        # - A cross-model measure (source=orders, target=customers)
+        # - A filter on "warehouse.status = 'ACTIVE'" (table not in the CM CTE)
+        enriched = EnrichedQuery(
+            model_name="orders",
+            sql_table="Orders",
+            dimensions=[
+                EnrichedDimension(name="order_id", sql="order_id", type=DataType.NUMBER, alias="orders.order_id", model_name="orders"),
+            ],
+            time_dimensions=[],
+            measures=[],
+            cross_model_measures=[
+                CrossModelMeasure(
+                    name="customer_score",
+                    alias="orders.customers.customer_score_sum",
+                    target_model_name="customers",
+                    target_model_sql_table="Customers",
+                    target_model_sql=None,
+                    measure=EnrichedMeasure(
+                        name="score", sql="score", alias="orders.customers.customer_score_sum",
+                        aggregation="sum", model_name="customers",
+                    ),
+                    join_pairs=[["customer_id", "id"]],
+                    shared_dimensions=[
+                        EnrichedDimension(name="order_id", sql="order_id", type=DataType.NUMBER, alias="orders.order_id", model_name="orders"),
+                    ],
+                    shared_time_dimensions=[],
+                    source_model_name="orders",
+                    source_sql_table="Orders",
+                    source_sql=None,
+                ),
+            ],
+            filters=[
+                ParsedFilter(sql="warehouse.status = 'ACTIVE'", columns=["warehouse.status"]),
+            ],
+        )
+        sql = generator.generate(enriched=enriched)
+
+        # The _cm_ CTE should NOT reference "warehouse" (it only joins orders → customers)
+        cm_start = sql.index("_cm_")
+        cm_end = sql.index("\n)", cm_start)
+        cm_body = sql[cm_start:cm_end]
+        assert "warehouse" not in cm_body.lower(), (
+            f"CM CTE references unavailable table 'warehouse':\n{cm_body}"
+        )
+        # The base query SHOULD have the filter
+        base_section = sql[:cm_start]
+        assert "warehouse" in base_section.lower()
+
+    async def test_base_not_empty_when_no_dims_all_measures_skipped(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10)."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            # No dimensions — base has nothing to select
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # Must not have an empty SELECT clause
+        assert "SELECT\nFROM" not in sql, f"Empty SELECT detected:\n{sql}"
+        # Should still produce valid SQL with the measure CTE
+        assert "_fm_" in sql and "loss_payment_amt" in sql
+
+    async def test_having_filter_on_isolated_measure_applied_in_base(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """HAVING filter on an isolated measure is correctly applied in the base CTE."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="loss_payment_amt:sum")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            filters=["loss_payment_amt:sum > 1000"],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+        # HAVING must appear in the base CTE (not dropped)
+        assert "HAVING" in sql, f"HAVING filter dropped:\n{sql}"
+        assert "1000" in sql
+
+    async def test_same_filtered_measure_different_aggs_separate_ctes(
+        self, generator: SQLGenerator, claim_amount_model, related_models,
+    ) -> None:
+        """Same filtered measure with sum + avg must produce distinct CTEs, not collide."""
+        loss_m = claim_amount_model.get_measure("loss_payment_amt")
+        loss_m.allowed_aggregations = ["sum", "avg"]
+
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="loss_payment_amt:sum"),
+                Field(formula="loss_payment_amt:avg"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+        )
+        enriched = await self._enrich(claim_amount_model, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Both aliases must be present in the final SQL
+        assert "loss_payment_amt_sum" in sql, f"Missing loss_payment_amt_sum in:\n{sql}"
+        assert "loss_payment_amt_avg" in sql, f"Missing loss_payment_amt_avg in:\n{sql}"
+        # The two filtered measures must have distinct CTE names (no duplicate _fm_ CTEs)
+        import re as _re
+        fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
+        assert len(fm_cte_names) == len(set(fm_cte_names)), (
+            f"Duplicate _fm_ CTE names: {fm_cte_names}\n{sql}"
+        )
+        assert len(fm_cte_names) == 2, f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}"
+
+    # --- Isolated first/last measures (Issue #40) ---
+
+    @pytest.fixture
+    def claim_amount_model_with_time(self, claim_amount_model):
+        """Extend claim_amount_model with a timestamp dimension and first/last measures."""
+        claim_amount_model.default_time_dimension = "created_at"
+        claim_amount_model.dimensions.append(
+            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        )
+        claim_amount_model.measures.append(
+            Measure(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1"),
+        )
+        return claim_amount_model
+
+    async def test_isolated_last_no_ranked_subquery_in_base(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Bug 1: When ALL first/last measures are isolated, base must NOT build
+        a ranked subquery — it should be a plain dimension spine."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="latest_payment:last")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Extract the _base CTE body
+        assert "_base" in sql, f"Expected _base CTE in:\n{sql}"
+        base_start = sql.index("_base AS")
+        base_end = sql.index("\n)", base_start)
+        base_body = sql[base_start:base_end]
+
+        # Base must NOT have ROW_NUMBER — no ranked subquery needed
+        assert "ROW_NUMBER" not in base_body, (
+            f"Redundant ROW_NUMBER in _base when all first/last are isolated:\n{base_body}"
+        )
+        # Base must NOT have a subquery FROM (SELECT ...)
+        assert "FROM (" not in base_body, (
+            f"Redundant ranked subquery in _base:\n{base_body}"
+        )
+
+    async def test_isolated_last_cte_has_valid_ranked_subquery(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Bug 2: The isolated CTE for a last measure must contain a ROW_NUMBER
+        ranked subquery and produce valid SQL (not reference non-existent _last_rn)."""
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="latest_payment:last")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # The _fm_ CTE must exist and contain ROW_NUMBER
+        import re as _re
+        fm_match = _re.search(r"(_fm_\w*latest_payment\w*)\s+AS\s*\(", sql)
+        assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
+        fm_start = fm_match.start()
+        fm_end = sql.index("\n)", fm_start)
+        fm_body = sql[fm_start:fm_end]
+
+        assert "ROW_NUMBER" in fm_body, (
+            f"_fm_ CTE for latest_payment must contain ROW_NUMBER:\n{fm_body}"
+        )
+        assert "_last_rn" in fm_body, (
+            f"_fm_ CTE must have _last_rn column:\n{fm_body}"
+        )
+        # The aggregate must use MAX(CASE WHEN _last_rn = 1 ...)
+        assert "MAX(CASE WHEN" in fm_body, (
+            f"_fm_ CTE must use MAX(CASE WHEN _last_rn = 1 ...):\n{fm_body}"
+        )
+        # Full SQL must parse as valid
+        _assert_valid_sql(sql)
+
+    async def test_mixed_isolated_and_local_first_last(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Mixed case: one non-isolated last stays in base with ranked subquery,
+        one isolated last goes to its own CTE with its own ranked subquery."""
+        # total_amount has no cross-model filter → stays in base
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="total_amount:last"),
+                Field(formula="latest_payment:last"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # Base query SHOULD have ROW_NUMBER (for the non-isolated total_amount:last)
+        base_start = sql.index("_base AS")
+        base_end = sql.index("\n)", base_start)
+        base_body = sql[base_start:base_end]
+        assert "ROW_NUMBER" in base_body, (
+            f"Base must have ROW_NUMBER for non-isolated last measure:\n{base_body}"
+        )
+
+        # Isolated measure should get its own _fm_ CTE
+        import re as _re
+        fm_match = _re.search(r"_fm_\w*latest_payment\w*", sql)
+        assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
+
+        # Non-isolated measure should be in the base
+        assert "total_amount" in base_body, (
+            f"Non-isolated total_amount should be in base:\n{base_body}"
+        )
+
+        # Full SQL must be valid
+        _assert_valid_sql(sql)
+
+    async def test_isolated_first_with_explicit_time_column(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Isolated first measure with explicit time_column uses correct ordering."""
+        # Add a timestamp dimension and measure for the explicit time column
+        claim_amount_model_with_time.dimensions.append(
+            Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        )
+        claim_amount_model_with_time.measures.append(
+            Measure(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1"),
+        )
+        # Explicit time column specified at query time: first(updated_at)
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[Field(formula="earliest_reserve:first(updated_at)")],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # The _fm_ CTE should use first (ASC ordering)
+        import re as _re
+        fm_match = _re.search(r"(_fm_\w*earliest_reserve\w*)\s+AS\s*\(", sql)
+        assert fm_match, f"No _fm_ CTE for earliest_reserve in:\n{sql}"
+        fm_start = fm_match.start()
+        fm_end = sql.index("\n)", fm_start)
+        fm_body = sql[fm_start:fm_end]
+
+        assert "_first_rn" in fm_body, (
+            f"_fm_ CTE should use _first_rn for 'first' aggregation:\n{fm_body}"
+        )
+        # ASC ordering for first
+        assert "ASC" in fm_body, f"Expected ASC ordering for first:\n{fm_body}"
+        # Should reference the explicit time column (updated_at), not default
+        assert "updated_at" in fm_body, (
+            f"Expected explicit time_column 'updated_at' in _fm_ CTE:\n{fm_body}"
+        )
+        _assert_valid_sql(sql)
+
+    async def test_multiple_isolated_first_last_separate_ctes(
+        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+    ) -> None:
+        """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER in base."""
+        # latest_payment already has cross-model filter; add another
+        claim_amount_model_with_time.measures.append(
+            Measure(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1"),
+        )
+        query = SlayerQuery(
+            source_model="claim_amount",
+            fields=[
+                Field(formula="latest_payment:last"),
+                Field(formula="latest_reserve:last"),
+            ],
+            dimensions=[ColumnRef(name="claim.claim_number")],
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        enriched = await self._enrich(claim_amount_model_with_time, related_models, query)
+        sql = generator.generate(enriched=enriched)
+
+        # No ROW_NUMBER in base
+        base_start = sql.index("_base AS")
+        base_end = sql.index("\n)", base_start)
+        base_body = sql[base_start:base_end]
+        assert "ROW_NUMBER" not in base_body, (
+            f"No ROW_NUMBER should be in base when all first/last are isolated:\n{base_body}"
+        )
+
+        # Two separate _fm_ CTEs
+        import re as _re
+        fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
+        assert len(fm_cte_names) == 2, (
+            f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}\n{sql}"
+        )
+        # Each should have ROW_NUMBER
+        for fm_name in fm_cte_names:
+            fm_start = sql.index(f"{fm_name} AS")
+            fm_end = sql.index("\n)", fm_start)
+            fm_body = sql[fm_start:fm_end]
+            assert "ROW_NUMBER" in fm_body, (
+                f"CTE {fm_name} must have ROW_NUMBER:\n{fm_body}"
+            )
+
+        _assert_valid_sql(sql)
+
+    def test_same_cm_measure_different_aggs_separate_ctes(self, generator: SQLGenerator) -> None:
+        """Same cross-model measure with sum + avg must produce distinct CTEs."""
+        from slayer.engine.enriched import CrossModelMeasure, EnrichedDimension, EnrichedMeasure, EnrichedQuery
+
+        dim = EnrichedDimension(
+            name="order_id", sql="order_id", type=DataType.NUMBER,
+            alias="orders.order_id", model_name="orders",
+        )
+        enriched = EnrichedQuery(
+            model_name="orders",
+            sql_table="Orders",
+            dimensions=[dim],
+            time_dimensions=[],
+            measures=[],
+            cross_model_measures=[
+                CrossModelMeasure(
+                    name="customer_revenue_sum",
+                    alias="orders.customers.revenue_sum",
+                    target_model_name="customers",
+                    target_model_sql_table="Customers",
+                    target_model_sql=None,
+                    measure=EnrichedMeasure(
+                        name="revenue", sql="revenue", alias="orders.customers.revenue_sum",
+                        aggregation="sum", model_name="customers",
+                    ),
+                    join_pairs=[["customer_id", "id"]],
+                    shared_dimensions=[dim],
+                    shared_time_dimensions=[],
+                    source_model_name="orders",
+                    source_sql_table="Orders",
+                    source_sql=None,
+                ),
+                CrossModelMeasure(
+                    name="customer_revenue_avg",
+                    alias="orders.customers.revenue_avg",
+                    target_model_name="customers",
+                    target_model_sql_table="Customers",
+                    target_model_sql=None,
+                    measure=EnrichedMeasure(
+                        name="revenue", sql="revenue", alias="orders.customers.revenue_avg",
+                        aggregation="avg", model_name="customers",
+                    ),
+                    join_pairs=[["customer_id", "id"]],
+                    shared_dimensions=[dim],
+                    shared_time_dimensions=[],
+                    source_model_name="orders",
+                    source_sql_table="Orders",
+                    source_sql=None,
+                ),
+            ],
+            filters=[],
+        )
+        sql = generator.generate(enriched=enriched)
+
+        # Both aliases must be present
+        assert "revenue_sum" in sql, f"Missing revenue_sum in:\n{sql}"
+        assert "revenue_avg" in sql, f"Missing revenue_avg in:\n{sql}"
+        # Two distinct CM CTE definitions
+        import re as _re
+        cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
+        assert len(cm_cte_names) == 2, f"Expected 2 _cm_ CTEs, got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
+        assert cm_cte_names[0] != cm_cte_names[1], f"CTE names collide: {cm_cte_names}\n{sql}"
+
+
+class TestCteNameSanitization:
+    """CTE names from aliases must be collision-free."""
+
+    def test_dot_vs_underscore_no_collision(self) -> None:
+        """Aliases differing only in dot/underscore placement produce distinct CTE names."""
+        from slayer.sql.generator import _cte_name_from_alias
+
+        name_a = _cte_name_from_alias("_fm_", "a.b_c")
+        name_b = _cte_name_from_alias("_fm_", "a_b.c")
+        assert name_a != name_b, f"Collision: {name_a!r} == {name_b!r}"
+        # a.b_c → _fm_a__b_c, a_b.c → _fm_a_b__c
+        assert name_a == "_fm_a__b_c"
+        assert name_b == "_fm_a_b__c"
+
+
+class TestGetColumnTypesSql:
+    """get_column_types must build valid SQL for expression measures."""
+
+    async def test_expression_measure_sql_not_corrupted(self) -> None:
+        """Expression measures like COALESCE(amount, 0) must not get model.name prepended."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[
+                Measure(name="revenue", sql="amount"),
+                Measure(name="safe_amount", sql="COALESCE(amount, 0)"),
+            ],
+        )
+        with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=model):
+            engine = SlayerQueryEngine(storage=storage)
+            mock_ds = MagicMock()
+            mock_ds.get_connection_string.return_value = "sqlite://"
+            mock_ds.type = "sqlite"
+            with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds):
+                captured_sql = []
+
+                async def capture_sql(sql):
+                    captured_sql.append(sql)
+                    return {}
+
+                mock_client = MagicMock()
+                mock_client.get_column_types = capture_sql
+                engine._sql_clients["sqlite://"] = mock_client
+
+                await engine.get_column_types("orders")
+
+        assert captured_sql, "get_column_types did not call client"
+        sql = captured_sql[0]
+        # Expression measure must NOT be corrupted: "orders.COALESCE(amount, 0)" is invalid
+        assert "orders.COALESCE" not in sql, f"Expression measure corrupted:\n{sql}"
+        # Bare measure should be qualified
+        assert "orders.amount" in sql
+        # Expression should appear as-is
+        assert "COALESCE(amount, 0)" in sql
+
+    async def test_cross_model_measures_probed_via_engine(self) -> None:
+        """Cross-model measures should be probed via the engine's enrich+generate pipeline."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[
+                Measure(name="revenue", sql="amount"),
+                Measure(name="customer_score", sql="customers.score"),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+
+        # The enriched query that _enrich would produce
+        mock_enriched = EnrichedQuery(
+            model_name="orders", sql_table="public.orders",
+            measures=[
+                EnrichedMeasure(name="revenue_max", sql="amount", alias="orders.revenue_max",
+                                aggregation="max", model_name="orders", source_measure_name="revenue"),
+                EnrichedMeasure(name="customer_score_max", sql="customers.score",
+                                alias="orders.customer_score_max", aggregation="max",
+                                model_name="orders", source_measure_name="customer_score"),
+            ],
+        )
+
+        with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=model):
+            engine = SlayerQueryEngine(storage=storage)
+            mock_ds = MagicMock()
+            mock_ds.get_connection_string.return_value = "sqlite://"
+            mock_ds.type = "sqlite"
+
+            with patch.object(engine, "_resolve_datasource", new_callable=AsyncMock, return_value=mock_ds), \
+                 patch.object(engine, "_enrich", new_callable=AsyncMock, return_value=mock_enriched):
+
+                async def capture_types(sql):
+                    return {"orders.revenue_max": "number", "orders.customer_score_max": "number"}
+
+                mock_client = MagicMock()
+                mock_client.get_column_types = capture_types
+                engine._sql_clients["sqlite://"] = mock_client
+
+                result = await engine.get_column_types("orders")
+
+        # Both measures should have types (cross-model included)
+        assert result.get("revenue") == "number", f"Missing revenue type: {result}"
+        assert result.get("customer_score") == "number", f"Missing customer_score type: {result}"

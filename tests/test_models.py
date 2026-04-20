@@ -577,3 +577,306 @@ class TestSubstituteVariables:
             variables={"val": "completed"},
         )
         assert q.variables == {"val": "completed"}
+
+
+class TestStripSourceModelPrefix:
+    """strip_source_model_prefix() removes redundant source model name from query references."""
+
+    # --- Dimensions ---
+
+    def test_simple_self_ref_dimension_stripped(self) -> None:
+        """orders.status on source_model=orders -> status"""
+        q = SlayerQuery(source_model="orders", dimensions=["orders.status"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
+        assert stripped.dimensions[0].full_name == "status"
+
+    def test_cross_model_self_ref_dimension_stripped(self) -> None:
+        """orders.customers.name on source_model=orders -> customers.name"""
+        q = SlayerQuery(source_model="orders", dimensions=["orders.customers.name"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model == "customers"
+        assert stripped.dimensions[0].name == "name"
+
+    def test_multihop_self_ref_dimension_stripped(self) -> None:
+        """orders.customers.regions.name -> customers.regions.name"""
+        q = SlayerQuery(source_model="orders", dimensions=["orders.customers.regions.name"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model == "customers.regions"
+        assert stripped.dimensions[0].name == "name"
+
+    def test_non_prefixed_dimension_unchanged(self) -> None:
+        """customers.name on source_model=orders stays as customers.name"""
+        q = SlayerQuery(source_model="orders", dimensions=["customers.name"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model == "customers"
+        assert stripped.dimensions[0].name == "name"
+
+    def test_local_dimension_unchanged(self) -> None:
+        """status on source_model=orders stays as status"""
+        q = SlayerQuery(source_model="orders", dimensions=["status"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
+
+    def test_mixed_dimensions_partial_strip(self) -> None:
+        """Only prefixed dimensions are stripped; others unchanged."""
+        q = SlayerQuery(
+            source_model="orders",
+            dimensions=["orders.status", "customers.name", "region"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].full_name == "status"
+        assert stripped.dimensions[1].full_name == "customers.name"
+        assert stripped.dimensions[2].full_name == "region"
+
+    def test_dimension_label_preserved(self) -> None:
+        """Stripping preserves the label on a ColumnRef."""
+        q = SlayerQuery(
+            source_model="orders",
+            dimensions=[{"name": "orders.status", "label": "Status"}],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
+        assert stripped.dimensions[0].label == "Status"
+
+    # --- Time dimensions ---
+
+    def test_time_dimension_stripped(self) -> None:
+        """orders.created_at on source_model=orders -> created_at"""
+        q = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": "orders.created_at", "granularity": "month"}],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.time_dimensions[0].dimension.model is None
+        assert stripped.time_dimensions[0].dimension.name == "created_at"
+
+    def test_time_dimension_preserves_other_fields(self) -> None:
+        """Granularity, date_range, label are preserved after stripping."""
+        q = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{
+                "dimension": "orders.created_at",
+                "granularity": "month",
+                "date_range": ["2024-01-01", "2024-12-31"],
+                "label": "Month",
+            }],
+        )
+        stripped = q.strip_source_model_prefix()
+        td = stripped.time_dimensions[0]
+        assert td.dimension.name == "created_at"
+        assert td.dimension.model is None
+        assert td.granularity == TimeGranularity.MONTH
+        assert td.date_range == ["2024-01-01", "2024-12-31"]
+        assert td.label == "Month"
+
+    def test_time_dimension_cross_model_not_stripped(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[{"dimension": "customers.created_at", "granularity": "day"}],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.time_dimensions[0].dimension.model == "customers"
+
+    # --- Fields (formulas) ---
+
+    def test_formula_self_ref_stripped(self) -> None:
+        """orders.revenue:sum -> revenue:sum"""
+        q = SlayerQuery(source_model="orders", fields=["orders.revenue:sum"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "revenue:sum"
+
+    def test_formula_star_count_stripped(self) -> None:
+        """orders.*:count -> *:count"""
+        q = SlayerQuery(source_model="orders", fields=["orders.*:count"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "*:count"
+
+    def test_formula_arithmetic_stripped(self) -> None:
+        """orders.revenue:sum / orders.*:count -> revenue:sum / *:count"""
+        q = SlayerQuery(source_model="orders", fields=["orders.revenue:sum / orders.*:count"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "revenue:sum / *:count"
+
+    def test_formula_transform_stripped(self) -> None:
+        """cumsum(orders.revenue:sum) -> cumsum(revenue:sum)"""
+        q = SlayerQuery(source_model="orders", fields=["cumsum(orders.revenue:sum)"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "cumsum(revenue:sum)"
+
+    def test_formula_cross_model_self_ref_stripped(self) -> None:
+        """orders.customers.score:avg -> customers.score:avg"""
+        q = SlayerQuery(source_model="orders", fields=["orders.customers.score:avg"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "customers.score:avg"
+
+    def test_formula_cross_model_not_stripped(self) -> None:
+        """customers.score:avg on source_model=orders stays unchanged"""
+        q = SlayerQuery(source_model="orders", fields=["customers.score:avg"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "customers.score:avg"
+
+    def test_formula_name_and_label_preserved(self) -> None:
+        """Field name and label are preserved after formula stripping."""
+        q = SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "orders.revenue:sum", "name": "rev", "label": "Revenue"}],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "revenue:sum"
+        assert stripped.fields[0].name == "rev"
+        assert stripped.fields[0].label == "Revenue"
+
+    # --- Filters ---
+
+    def test_filter_self_ref_stripped(self) -> None:
+        """orders.status = 'active' -> status = 'active'"""
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            filters=["orders.status = 'active'"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.filters[0] == "status = 'active'"
+
+    def test_filter_cross_model_self_ref_stripped(self) -> None:
+        """orders.customers.name = 'foo' -> customers.name = 'foo'"""
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            filters=["orders.customers.name = 'foo'"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.filters[0] == "customers.name = 'foo'"
+
+    def test_filter_no_prefix_unchanged(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            filters=["status = 'active'", "customers.name = 'foo'"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.filters == ["status = 'active'", "customers.name = 'foo'"]
+
+    def test_filter_with_transform_stripped(self) -> None:
+        """change(orders.revenue:sum) > 0 -> change(revenue:sum) > 0"""
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            filters=["change(orders.revenue:sum) > 0"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.filters[0] == "change(revenue:sum) > 0"
+
+    # --- Order ---
+
+    def test_order_self_ref_stripped(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            order=[{"column": "orders.revenue_sum", "direction": "desc"}],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.order[0].column.model is None
+        assert stripped.order[0].column.name == "revenue_sum"
+        assert stripped.order[0].direction == "desc"
+
+    def test_order_no_prefix_unchanged(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            order=[{"column": "revenue_sum", "direction": "asc"}],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.order[0].column.model is None
+        assert stripped.order[0].column.name == "revenue_sum"
+
+    # --- main_time_dimension ---
+
+    def test_main_time_dimension_stripped(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            main_time_dimension="orders.created_at",
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.main_time_dimension == "created_at"
+
+    def test_main_time_dimension_no_prefix_unchanged(self) -> None:
+        q = SlayerQuery(
+            source_model="orders",
+            main_time_dimension="created_at",
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.main_time_dimension == "created_at"
+
+    # --- ModelExtension source ---
+
+    def test_model_extension_dict_source(self) -> None:
+        """ModelExtension dict with source_name is used for stripping."""
+        q = SlayerQuery(
+            source_model={"source_name": "orders"},
+            dimensions=["orders.status"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
+
+    def test_model_extension_object_source(self) -> None:
+        """ModelExtension object uses source_name for stripping."""
+        from slayer.core.query import ModelExtension
+
+        q = SlayerQuery(
+            source_model=ModelExtension(source_name="orders"),
+            dimensions=["orders.status"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
+
+    def test_inline_model_source(self) -> None:
+        """Inline SlayerModel uses .name for stripping."""
+        model = SlayerModel(name="orders", sql_table="orders", data_source="test")
+        q = SlayerQuery(
+            source_model=model,
+            dimensions=["orders.status"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.dimensions[0].model is None
+        assert stripped.dimensions[0].name == "status"
+
+    # --- No-op cases ---
+
+    def test_no_stripping_returns_same_object(self) -> None:
+        """When nothing to strip, returns self (no copy)."""
+        q = SlayerQuery(source_model="orders", dimensions=["status"])
+        stripped = q.strip_source_model_prefix()
+        assert stripped is q
+
+    def test_none_fields_handled(self) -> None:
+        """All-None optional fields don't crash."""
+        q = SlayerQuery(source_model="orders")
+        stripped = q.strip_source_model_prefix()
+        assert stripped is q
+
+    # --- Word boundary safety ---
+
+    def test_similar_model_name_not_stripped_in_filter(self) -> None:
+        """reorders.status should NOT be stripped when source_model=orders"""
+        q = SlayerQuery(
+            source_model="orders",
+            filters=["reorders.status = 'active'"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.filters[0] == "reorders.status = 'active'"
+
+    def test_similar_model_name_not_stripped_in_formula(self) -> None:
+        """reorders.revenue:sum should NOT be stripped when source_model=orders"""
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["reorders.revenue:sum"],
+        )
+        stripped = q.strip_source_model_prefix()
+        assert stripped.fields[0].formula == "reorders.revenue:sum"

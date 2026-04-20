@@ -38,7 +38,7 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
 # and handles gaps in time series correctly.
-_SELF_JOIN_TRANSFORMS = {"time_shift", "change", "change_pct"}
+_SELF_JOIN_TRANSFORMS = {"time_shift"}
 
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
@@ -76,6 +76,82 @@ _GRANULARITY_MAP = {
 }
 
 
+def _has_cross_model_filter(m: EnrichedMeasure) -> bool:
+    """Check if a measure's filter references a cross-model dimension.
+
+    Local columns are qualified as "model.column" by resolve_filter_columns.
+    Cross-model columns have a different prefix (e.g., "loss_payment.has_flag").
+    We detect cross-model by checking if any dotted column's prefix differs
+    from the measure's own model_name.
+    """
+    if not m.filter_columns:
+        return False
+    for col in m.filter_columns:
+        if "." not in col:
+            continue
+        prefix = col.rsplit(".", 1)[0]
+        # "__" in prefix means a multi-hop join path (always cross-model)
+        if "__" in prefix:
+            return True
+        # Single segment prefix: cross-model if it's not the measure's model
+        if prefix != m.model_name:
+            return True
+    return False
+
+
+def _cte_name_from_alias(prefix: str, alias: str) -> str:
+    """Build a unique CTE name from a measure alias.
+
+    Dots are replaced with ``__`` (double underscore) to avoid collision
+    with aliases that already contain underscores. E.g.:
+    - ``orders.revenue_sum``  -> ``_fm_orders__revenue_sum``
+    - ``orders_v2.revenue_sum`` -> ``_fm_orders_v2__revenue_sum``
+    """
+    sanitized = alias.replace(".", "__")
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
+    return prefix + sanitized
+
+
+def _alias_prefixes(model_name: str) -> list:
+    """'a__b__c' → ['a', 'a__b', 'a__b__c']"""
+    parts = model_name.split("__")
+    return ["__".join(parts[: i + 1]) for i in range(len(parts))]
+
+
+def _needed_join_aliases(enriched: EnrichedQuery, extra_columns: list = ()) -> set:
+    """Compute which resolved_join aliases are needed for dimensions + extra dotted columns."""
+    aliases: set = set()
+    for dim in enriched.dimensions:
+        if dim.model_name != enriched.model_name:
+            aliases.update(_alias_prefixes(dim.model_name))
+    for td in enriched.time_dimensions:
+        if td.model_name != enriched.model_name:
+            aliases.update(_alias_prefixes(td.model_name))
+    for col in extra_columns:
+        if "." in col:
+            parts = col.split(".")
+            for i in range(1, len(parts)):
+                aliases.add("__".join(parts[:i]))
+    return aliases
+
+
+def _filter_references_available(f, available_aliases: set) -> bool:
+    """Check if all table references in a filter's columns are within a CTE's join set.
+
+    Non-dotted columns (local to the base model) are always available.
+    Dotted columns like "warehouse.status" produce alias "warehouse" which
+    must be in available_aliases.
+    """
+    for col in f.columns:
+        if "." not in col:
+            continue
+        parts = col.split(".")
+        table_alias = "__".join(parts[:-1])
+        if table_alias not in available_aliases:
+            return False
+    return True
+
+
 class SQLGenerator:
     """Generates SQL from an EnrichedQuery."""
 
@@ -85,82 +161,404 @@ class SQLGenerator:
     def generate(self, enriched: EnrichedQuery) -> str:
         """Generate SQL from a fully resolved EnrichedQuery.
 
-        When expressions or transforms are present, the base query becomes a CTE
-        and computed columns are added in an outer SELECT.
+        Architecture:
+        1. Base CTE: simple (non-isolated) measures + dimensions
+        2. Per-measure CTEs: cross-model measures + cross-model-filtered measures
+        3. Combined: LEFT JOIN base + measure CTEs on shared dimensions
+        4. Expressions/transforms stacked on top of combined
         """
-        base_sql = self._generate_base(enriched=enriched)
-        has_computed = bool(enriched.expressions or enriched.transforms)
+        has_isolated = any(_has_cross_model_filter(m) for m in enriched.measures)
         has_cross_model = bool(enriched.cross_model_measures)
+        has_measure_ctes = has_isolated or has_cross_model
+        has_computed = bool(enriched.expressions or enriched.transforms)
 
-        if not has_computed and not has_cross_model:
+        base_sql = self._generate_base(enriched=enriched, skip_isolated=has_measure_ctes)
+
+        if not has_measure_ctes and not has_computed:
             return base_sql
 
-        # Wrap base query as CTE, compute expressions/transforms in outer SELECT
-        # Skip ORDER/LIMIT if cross-model measures will wrap this as a CTE
-        sql = self._generate_with_computed(
-            enriched=enriched, base_sql=base_sql,
-            skip_pagination=has_cross_model,
-        )
+        if has_measure_ctes:
+            # Get structured CTE definitions (no WITH wrapper)
+            measure_ctes = self._build_combined(enriched=enriched, base_sql=base_sql)
+            if has_computed:
+                # Pass CTE list to computed layer — it merges into a flat WITH
+                return self._generate_with_computed(enriched=enriched, prefix_ctes=measure_ctes)
+            # No expressions: assemble CTEs + outer SELECT + pagination
+            return self._assemble_combined_sql(enriched=enriched, measure_ctes=measure_ctes)
 
-        # Add cross-model measure CTEs and join them
-        if has_cross_model:
-            sql = self._generate_with_cross_model(enriched=enriched, base_sql=sql if has_computed else base_sql,
-                                                   is_cte=has_computed)
+        # No measure CTEs, just computed columns
+        return self._generate_with_computed(enriched=enriched, base_sql=base_sql)
+
+    def _build_combined(self, enriched: EnrichedQuery,
+                         base_sql: str) -> list[tuple[str, str]]:
+        """Build CTE definitions for per-measure isolation.
+
+        Returns a list of (name, sql) tuples. The last entry is ("_combined", select)
+        which joins _base with all measure CTEs on shared dimensions. The caller
+        decides how to assemble these — either as a standalone WITH query or as
+        prefix CTEs for _generate_with_computed().
+        """
+        ctes = [("_base", base_sql)]
+
+        # Collect dimension aliases for JOIN conditions
+        dim_aliases = [d.alias for d in enriched.dimensions]
+        td_aliases = [td.alias for td in enriched.time_dimensions]
+        join_aliases = dim_aliases + td_aliases
+
+        # Track all CTEs and their measure aliases
+        # Each entry: (cte_name, measure_alias, cte_join_aliases)
+        # cte_join_aliases is None to use the default join_aliases, or a list
+        # of surviving aliases when the CTE has fewer dimensions.
+        measure_cte_refs = []
+
+        # --- Cross-model measure CTEs ---
+        seen_cm_ctes: set = set()
+        for cm in enriched.cross_model_measures:
+            cte_name = _cte_name_from_alias("_cm_", cm.alias)
+            if cte_name in seen_cm_ctes:
+                measure_cte_refs.append((cte_name, cm.alias, None))
+                continue
+            seen_cm_ctes.add(cte_name)
+
+            if cm.rerooted_enriched is not None:
+                # Re-rooted subquery: full query with target model as source,
+                # all joins/filters resolved from the target's join graph.
+                cte_sql = self._generate_base(enriched=cm.rerooted_enriched)
+                ctes.append((cte_name, cte_sql))
+                # Surviving dims may be fewer than shared dims (unreachable dropped)
+                surviving = (
+                    [d.alias for d in cm.rerooted_enriched.dimensions]
+                    + [td.alias for td in cm.rerooted_enriched.time_dimensions]
+                )
+                measure_cte_refs.append((cte_name, cm.alias, surviving))
+                continue
+            else:
+                # Fallback: minimal source→target CTE (legacy path)
+                select = exp.Select()
+                group_exprs = []
+
+                for dim in cm.shared_dimensions:
+                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=cm.source_model_name)
+                    select = select.select(col_expr.as_(dim.alias))
+                    group_exprs.append(col_expr)
+                for td in cm.shared_time_dimensions:
+                    col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=cm.source_model_name)
+                    td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
+                    select = select.select(td_expr.as_(td.alias))
+                    group_exprs.append(td_expr)
+
+                agg_expr, _ = self._build_agg(measure=cm.measure)
+                select = select.select(agg_expr.as_(cm.alias))
+
+                # FROM source model
+                if cm.source_sql:
+                    source_from = exp.Subquery(
+                        this=sqlglot.parse_one(cm.source_sql, dialect=self.dialect),
+                        alias=exp.to_identifier(cm.source_model_name),
+                    )
+                else:
+                    source_from = exp.to_table(cm.source_sql_table, alias=cm.source_model_name)
+                select = select.from_(source_from)
+
+                # JOIN target model
+                if cm.target_model_sql:
+                    target_join = exp.Subquery(
+                        this=sqlglot.parse_one(cm.target_model_sql, dialect=self.dialect),
+                        alias=exp.to_identifier(cm.target_model_name),
+                    )
+                else:
+                    target_join = exp.to_table(cm.target_model_sql_table, alias=cm.target_model_name)
+                join_on = exp.and_(*(
+                    exp.EQ(
+                        this=exp.Column(this=exp.to_identifier(src), table=exp.to_identifier(cm.source_model_name)),
+                        expression=exp.Column(this=exp.to_identifier(tgt), table=exp.to_identifier(cm.target_model_name)),
+                    )
+                    for src, tgt in cm.join_pairs
+                ))
+                select = select.join(target_join, on=join_on, join_type=cm.join_type.upper())
+
+                # Only include WHERE conditions whose tables are in this CTE
+                cm_available = {cm.source_model_name, cm.target_model_name}
+                original_filters = enriched.filters
+                enriched.filters = [f for f in original_filters
+                                    if _filter_references_available(f, cm_available)]
+                where_clause, _ = self._build_where_and_having(enriched=enriched)
+                enriched.filters = original_filters
+                if where_clause is not None:
+                    select = select.where(where_clause)
+                for gb in group_exprs:
+                    select = select.group_by(gb)
+
+                ctes.append((cte_name, select.sql(dialect=self.dialect)))
+                measure_cte_refs.append((cte_name, cm.alias, None))
+
+        # --- Isolated filtered-measure CTEs ---
+        for measure in enriched.measures:
+            if not _has_cross_model_filter(measure):
+                continue
+            cte_name = _cte_name_from_alias("_fm_", measure.alias)
+
+            # Measure aggregation without CASE WHEN (the join IS the filter)
+            unfiltered = copy.copy(measure)
+            unfiltered.filter_sql = None
+            unfiltered.filter_columns = []
+
+            # Only include dimension joins + this measure's filter joins
+            needed = _needed_join_aliases(enriched, extra_columns=measure.filter_columns)
+
+            is_first_or_last = measure.aggregation in ("first", "last")
+
+            if is_first_or_last and enriched.last_agg_time_column:
+                # Build a ranked subquery within this CTE so _last_rn/_first_rn
+                # columns exist for the MAX(CASE WHEN _rn = 1 ...) aggregate.
+                scoped = copy.copy(enriched)
+                scoped.measures = [unfiltered]
+                scoped.resolved_joins = [
+                    (t, a, c, j) for t, a, c, j in enriched.resolved_joins
+                    if a in needed
+                ]
+                fm_available = needed | {enriched.model_name}
+                scoped.filters = [
+                    f for f in enriched.filters
+                    if not f.is_post_filter and _filter_references_available(f, fm_available)
+                ]
+
+                from_clause = self._build_from_clause(enriched=enriched)
+                (
+                    ranked_from,
+                    rn_suffix_map,
+                    _filtered_rn_map,
+                    _filtered_match_map,
+                ) = self._build_last_ranked_from(
+                    enriched=scoped, base_from=from_clause,
+                )
+
+                select = exp.Select()
+                group_exprs: list[exp.Expression] = []
+                # Dimensions are already resolved inside the ranked subquery
+                for dim in enriched.dimensions:
+                    col_expr = exp.Column(this=exp.to_identifier(dim.name))
+                    select = select.select(col_expr.as_(dim.alias))
+                    group_exprs.append(col_expr)
+                for td in enriched.time_dimensions:
+                    col_expr = exp.Column(this=exp.to_identifier(f"_td_{td.name}"))
+                    select = select.select(col_expr.as_(td.alias))
+                    group_exprs.append(col_expr)
+
+                agg_expr, _ = self._build_agg(
+                    measure=unfiltered,
+                    rn_suffix_map=rn_suffix_map,
+                    default_time_col=enriched.last_agg_time_column,
+                )
+                select = select.select(agg_expr.as_(measure.alias))
+                select = select.from_(ranked_from)
+                # WHERE already inside ranked subquery
+            else:
+                # Standard aggregation (sum, avg, etc.)
+                select = exp.Select()
+                group_exprs = []
+                for dim in enriched.dimensions:
+                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+                    select = select.select(col_expr.as_(dim.alias))
+                    group_exprs.append(col_expr)
+                for td in enriched.time_dimensions:
+                    col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
+                    td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
+                    select = select.select(td_expr.as_(td.alias))
+                    group_exprs.append(td_expr)
+
+                agg_expr, _ = self._build_agg(measure=unfiltered)
+                select = select.select(agg_expr.as_(measure.alias))
+
+                from_clause = self._build_from_clause(enriched=enriched)
+                select = select.from_(from_clause)
+
+                for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
+                    if target_alias in needed:
+                        if target_table.startswith("("):
+                            join_target = exp.Subquery(
+                                this=sqlglot.parse_one(target_table, dialect=self.dialect),
+                                alias=exp.to_identifier(target_alias),
+                            )
+                        else:
+                            join_target = exp.to_table(target_table, alias=target_alias)
+                        join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+                        select = select.join(join_target, on=join_on, join_type=jtype.upper())
+
+                # Only include WHERE conditions whose tables are in this CTE
+                fm_available = needed | {enriched.model_name}
+                original_filters = enriched.filters
+                enriched.filters = [f for f in original_filters
+                                    if _filter_references_available(f, fm_available)]
+                where_clause, _ = self._build_where_and_having(enriched=enriched)
+                enriched.filters = original_filters
+                if where_clause is not None:
+                    select = select.where(where_clause)
+
+            for gb in group_exprs:
+                select = select.group_by(gb)
+
+            ctes.append((cte_name, select.sql(dialect=self.dialect)))
+            measure_cte_refs.append((cte_name, measure.alias, None))
+
+        # --- Build combined SELECT: _base LEFT JOIN measure CTEs ---
+        base_cols = list(dim_aliases) + list(td_aliases)
+        for m in enriched.measures:
+            if not _has_cross_model_filter(m):
+                base_cols.append(m.alias)
+        final_parts = [f'_base."{a}"' for a in base_cols]
+        for cte_name, alias, _ in measure_cte_refs:
+            final_parts.append(f'{cte_name}."{alias}"')
+
+        from_clause_str = "FROM _base"
+        joined_ctes: set = set()
+        for cte_name, _, cte_join_aliases in measure_cte_refs:
+            if cte_name in joined_ctes:
+                continue
+            joined_ctes.add(cte_name)
+
+            # Use per-CTE join aliases when available (re-rooted CTEs may
+            # have fewer dims than the main query if some were unreachable).
+            effective_aliases = cte_join_aliases if cte_join_aliases is not None else join_aliases
+            join_on_parts = []
+            for a in effective_aliases:
+                join_on_parts.append(f'_base."{a}" = {cte_name}."{a}"')
+            if join_on_parts:
+                from_clause_str += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"
+            else:
+                from_clause_str += f"\nCROSS JOIN {cte_name}"
+
+        combined_select = (
+            f"SELECT {', '.join(final_parts)}\n"
+            f"{from_clause_str}"
+        )
+        ctes.append(("_combined", combined_select))
+        return ctes
+
+    def _assemble_combined_sql(self, enriched: EnrichedQuery,
+                                measure_ctes: list[tuple[str, str]]) -> str:
+        """Assemble measure CTEs into final SQL with pagination.
+
+        The last entry in measure_ctes is the combined SELECT that joins _base
+        with measure CTEs. Earlier entries become WITH clauses.
+        """
+        inner_ctes = measure_ctes[:-1]
+        combined_select = measure_ctes[-1][1]
+
+        cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in inner_ctes]
+        sql = f"WITH {', '.join(cte_strs)}\n{combined_select}"
+
+        # ORDER BY: use _base. for dimensions (ambiguous across CTEs),
+        # bare alias for measure CTE columns (not in _base)
+        if enriched.order:
+            order_parts = []
+            base_cols = set(d.alias for d in enriched.dimensions) | set(td.alias for td in enriched.time_dimensions)
+            base_cols |= {m.alias for m in enriched.measures if not _has_cross_model_filter(m)}
+            for order_item in enriched.order:
+                col = order_item.column
+                col_name = self._resolve_order_column(col=col, enriched=enriched)
+                direction = "ASC" if order_item.direction == "asc" else "DESC"
+                if col_name in base_cols:
+                    order_parts.append(f'_base."{col_name}" {direction}')
+                else:
+                    order_parts.append(f'"{col_name}" {direction}')
+            sql += "\nORDER BY " + ", ".join(order_parts)
+        if enriched.limit is not None:
+            sql += f"\nLIMIT {enriched.limit}"
+        if enriched.offset is not None:
+            sql += f"\nOFFSET {enriched.offset}"
 
         return sql
 
-    def _generate_shifted_base(self, enriched: EnrichedQuery, transform,
-                               calendar_join: bool = False) -> str:
-        """Generate a base query with date ranges shifted for a self-join transform.
+    @staticmethod
+    def _apply_pagination_to_sql(enriched: EnrichedQuery, sql: str) -> str:
+        """Apply ORDER BY, LIMIT, OFFSET to a raw SQL string."""
+        if enriched.order:
+            order_parts = []
+            for order_item in enriched.order:
+                col = order_item.column
+                col_name = SQLGenerator._resolve_order_column(col=col, enriched=enriched)
+                direction = "ASC" if order_item.direction == "asc" else "DESC"
+                order_parts.append(f'"{col_name}" {direction}')
+            sql += "\nORDER BY " + ", ".join(order_parts)
+        if enriched.limit is not None:
+            sql += f"\nLIMIT {enriched.limit}"
+        if enriched.offset is not None:
+            sql += f"\nOFFSET {enriched.offset}"
+        return sql
 
-        Instead of copying the base CTE (which has the original date filter and
-        would miss data outside that range), this generates a fresh query against
-        the source table with adjusted date ranges so the shifted CTE contains
-        the data needed for the join.
+    def _generate_shifted_base(self, enriched: EnrichedQuery, transform) -> str:
+        """Generate a shifted sub-query for a time_shift transform.
 
-        When calendar_join is True, the raw timestamps are also shifted by -offset
-        inside the DATE_TRUNC so that the aggregated time buckets align with the
-        base query's buckets. This allows a simple equality join (no date arithmetic
-        in the ON clause).
+        Shifts the time dimension column expression by -offset so that the
+        WHERE, SELECT, and GROUP BY all reference shifted time. Only includes
+        the target measure (not all measures).
+
+        For example, time_shift(revenue:sum, -1, 'month') with date_range
+        [2024-03-01, 2024-03-31] produces a sub-query where the time column
+        is (created_at + INTERVAL '1' MONTH). This makes the WHERE fetch
+        February data and the GROUP BY bucket it into March, aligning with
+        the base query for a simple equality join.
         """
-        # Determine the shift: use transform's granularity, or fall back to
-        # the query's time dimension granularity for row-based transforms
+        # Determine granularity: explicit or from time dim
         gran = transform.granularity
-        offset = transform.offset
         if not gran:
-            # Row-based: use the time dimension's granularity
             for td in enriched.time_dimensions:
                 if td.alias == transform.time_alias:
                     gran = td.granularity.value
                     break
             if not gran:
-                gran = "month"  # Shouldn't happen — transforms require a time dim
+                gran = "month"
 
-        # Create a copy of enriched with shifted date ranges and (optionally)
-        # shifted time dimension expressions
-        shifted = copy.deepcopy(enriched)
-
-        # Shift date ranges if present
-        has_date_ranges = any(
-            td.date_range and len(td.date_range) == 2
-            for td in enriched.time_dimensions
+        # Find target measure
+        target_measure = next(
+            (m for m in enriched.measures if m.alias == transform.measure_alias),
+            None,
         )
-        if has_date_ranges:
-            for td in shifted.time_dimensions:
-                if td.date_range and len(td.date_range) == 2:
-                    td.date_range = [
-                        self._shift_date(date=td.date_range[0], offset=offset, granularity=gran),
-                        self._shift_date(date=td.date_range[1], offset=offset, granularity=gran),
-                    ]
+        if target_measure is None:
+            raise ValueError(
+                f"time_shift target measure '{transform.measure_alias}' not found "
+                f"in enriched query measures"
+            )
 
-        # For calendar joins, pass the time offset so _generate_base shifts raw
-        # timestamps before DATE_TRUNC. This makes aggregated buckets align with
-        # the base query's buckets → simple equality join.
-        time_offset = None
-        if calendar_join:
-            time_offset = (-offset, gran)
+        # Create shifted time dimensions with offset baked into td.sql
+        shifted_tds = []
+        time_col_map: dict[str, str] = {}  # original_qualified → shifted_sql
+        for td in enriched.time_dimensions:
+            shifted_td = copy.copy(td)
+            raw_sql = td.sql or td.name
+            raw_expr = self._resolve_sql(sql=raw_sql, name=td.name, model_name=td.model_name)
+            shifted_expr = self._build_time_offset_expr(
+                col_expr=raw_expr, offset=-transform.offset, granularity=gran,
+            )
+            shifted_td.sql = shifted_expr.sql(dialect=self.dialect)
+            shifted_tds.append(shifted_td)
+            # Track for filter substitution
+            original_qualified = f"{enriched.model_name}.{td.name}"
+            time_col_map[original_qualified] = shifted_td.sql
 
-        return self._generate_base(enriched=shifted, time_offset=time_offset)
+        # Substitute time column references in filter SQL strings
+        shifted_filters = []
+        for f in enriched.filters:
+            if f.is_post_filter:
+                continue
+            sf = copy.copy(f)
+            for orig, shifted_sql in time_col_map.items():
+                sf.sql = sf.sql.replace(orig, f"({shifted_sql})")
+            shifted_filters.append(sf)
+
+        # Build minimal enriched query with only the target measure
+        shifted_enriched = EnrichedQuery(
+            model_name=enriched.model_name,
+            sql_table=enriched.sql_table,
+            sql=enriched.sql,
+            resolved_joins=enriched.resolved_joins,
+            dimensions=list(enriched.dimensions),
+            measures=[target_measure],
+            time_dimensions=shifted_tds,
+            filters=shifted_filters,
+        )
+        return self._generate_base(enriched=shifted_enriched)
 
     def _build_time_offset_expr(self, col_expr: exp.Expression, offset: int,
                                 granularity: str) -> exp.Expression:
@@ -191,41 +589,22 @@ class SQLGenerator:
         col_sql = col_expr.sql(dialect=self.dialect)
         return sqlglot.parse_one(f"{col_sql} + {interval_str}", dialect=self.dialect)
 
-    @staticmethod
-    def _shift_date(date: str, offset: int, granularity: str) -> str:
-        """Shift a date string by offset units of granularity."""
-        from datetime import datetime, timedelta
-        from dateutil.relativedelta import relativedelta
-
-        dt = datetime.strptime(date[:10], "%Y-%m-%d")
-        gran_map = {
-            "year": relativedelta(years=offset),
-            "quarter": relativedelta(months=offset * 3),
-            "month": relativedelta(months=offset),
-            "week": timedelta(weeks=offset),
-            "day": timedelta(days=offset),
-            "hour": timedelta(hours=offset),
-            "minute": timedelta(minutes=offset),
-            "second": timedelta(seconds=offset),
-        }
-        delta = gran_map.get(granularity, relativedelta(months=offset))
-        shifted = dt + delta
-        return shifted.strftime("%Y-%m-%d")
-
     def _generate_base(self, enriched: EnrichedQuery,
-                        time_offset: Optional[tuple[int, str]] = None) -> str:
-        """Generate the base SELECT (measures, dimensions, filters).
-
-        Args:
-            time_offset: Optional (offset, granularity) to shift raw timestamps
-                before DATE_TRUNC. Used by shifted CTEs so aggregated buckets
-                align with the base query for simple equality joins.
-        """
+                        skip_isolated: bool = False) -> str:
+        """Generate the base SELECT (measures, dimensions, filters)."""
         from_clause = self._build_from_clause(enriched=enriched)
 
         # If any measure has first/last aggregation, prepend a ROW_NUMBER CTE
         # to mark the latest (or earliest) row per group.
-        has_first_or_last = any(m.aggregation in ("first", "last") for m in enriched.measures)
+        # When skip_isolated is set, only consider non-isolated measures — isolated
+        # first/last measures get their own ranked subquery in their CTE.
+        if skip_isolated:
+            has_first_or_last = any(
+                m.aggregation in ("first", "last") and not _has_cross_model_filter(m)
+                for m in enriched.measures
+            )
+        else:
+            has_first_or_last = any(m.aggregation in ("first", "last") for m in enriched.measures)
         rn_suffix_map: dict[str, str] = {}
         filtered_rn_map: dict[str, str] = {}
         filtered_match_map: dict[str, str] = {}
@@ -236,7 +615,7 @@ class SQLGenerator:
                 filtered_rn_map,
                 filtered_match_map,
             ) = self._build_last_ranked_from(
-                enriched=enriched, base_from=from_clause, time_offset=time_offset,
+                enriched=enriched, base_from=from_clause,
             )
 
         select_columns = []
@@ -256,18 +635,14 @@ class SQLGenerator:
                 # Time dimension is already truncated in the ranked subquery
                 col_expr = exp.Column(this=exp.to_identifier(f"_td_{td.name}"))
             else:
-                # Apply time offset before DATE_TRUNC (for shifted CTEs)
-                if time_offset is not None:
-                    offset_val, offset_gran = time_offset
-                    col_expr = self._build_time_offset_expr(
-                        col_expr=col_expr, offset=offset_val, granularity=offset_gran,
-                    )
                 col_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
             select_columns.append(col_expr.as_(td.alias))
             group_by_columns.append(col_expr)
 
         has_aggregation = False
         for measure in enriched.measures:
+            if skip_isolated and _has_cross_model_filter(measure):
+                continue  # Will be handled in its own CTE
             agg_expr, is_agg = self._build_agg(
                 measure=measure,
                 rn_suffix_map=rn_suffix_map,
@@ -278,6 +653,11 @@ class SQLGenerator:
             select_columns.append(agg_expr.as_(measure.alias))
             if is_agg:
                 has_aggregation = True
+
+        # When all measures are isolated/cross-model and there are no dimensions,
+        # the base SELECT would be empty. Add a placeholder to produce valid SQL.
+        if not select_columns and skip_isolated:
+            select_columns.append(exp.Literal.number(1).as_("_placeholder"))
 
         where_clause, having_clause = self._build_where_and_having(
             enriched=enriched,
@@ -295,9 +675,9 @@ class SQLGenerator:
         if where_clause is not None and not has_first_or_last:
             select = select.where(where_clause)
 
-        # Group by when there are aggregations, or when cross-model measures
-        # exist (to deduplicate the base rows for the cross-model join)
-        needs_group_by = has_aggregation or bool(enriched.cross_model_measures)
+        # Group by when there are aggregations, cross-model measures exist,
+        # or isolated measures were skipped (to deduplicate the dimension spine)
+        needs_group_by = has_aggregation or bool(enriched.cross_model_measures) or skip_isolated
         if needs_group_by and group_by_columns:
             for gb in group_by_columns:
                 select = select.group_by(gb)
@@ -305,36 +685,62 @@ class SQLGenerator:
         if having_clause is not None:
             select = select.having(having_clause)
 
-        # When no computed columns, apply order/limit/offset to the base query.
-        # Otherwise, they'll be applied to the outer query.
-        if not enriched.expressions and not enriched.transforms:
+        # When no computed columns and no measure CTEs, apply order/limit/offset
+        # to the base query. Otherwise, they'll be applied to the outer query.
+        if not enriched.expressions and not enriched.transforms and not skip_isolated:
             select = self._apply_order_limit(select=select, enriched=enriched)
+
+        # Append LEFT JOINs from resolved joins via sqlglot AST (works for both
+        # sql_table and inline-SQL models).
+        # When has_first_or_last is true, the joins were already injected inside the
+        # ranked subquery by _build_last_ranked_from — skip here to avoid duplicating.
+        # When skip_isolated, only include joins needed for dimensions (not filter-target
+        # joins of isolated measures, which would cause conflicting INNER JOIN intersections).
+        dim_only_aliases = _needed_join_aliases(enriched) if skip_isolated else None
+        if dim_only_aliases is not None:
+            # Also include aliases needed by WHERE-clause filters
+            for f in enriched.filters:
+                if not f.is_post_filter:
+                    for col in f.columns:
+                        if "." in col:
+                            parts = col.split(".")
+                            for i in range(1, len(parts)):
+                                dim_only_aliases.add("__".join(parts[:i]))
+        resolved_joins = enriched.resolved_joins
+        if dim_only_aliases is not None:
+            resolved_joins = [(t, a, c, j) for t, a, c, j in resolved_joins if a in dim_only_aliases]
+        if resolved_joins and not has_first_or_last:
+            for target_table, target_alias, join_cond, jtype in resolved_joins:
+                if target_table.startswith("("):
+                    # Inline-SQL target: parse as subquery
+                    parsed_target = sqlglot.parse_one(target_table, dialect=self.dialect)
+                    join_target = exp.Subquery(
+                        this=parsed_target, alias=exp.to_identifier(target_alias),
+                    )
+                else:
+                    join_target = exp.to_table(target_table, alias=target_alias)
+                join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+                select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
         sql = select.sql(dialect=self.dialect, pretty=True)
 
-        # Append LEFT JOINs from resolved joins (string-level, after sqlglot rendering).
-        # When has_first_or_last is true, the joins were already injected inside the
-        # ranked subquery by _build_last_ranked_from — skip here to avoid duplicating
-        # them (and string-replace would otherwise re-match the inner FROM marker).
-        if enriched.resolved_joins and not has_first_or_last:
-            join_parts = []
-            for target_table, target_alias, join_cond in enriched.resolved_joins:
-                join_parts.append(f"LEFT JOIN {target_table} AS {target_alias} ON {join_cond}")
-            # Insert joins after the FROM clause line
-            from_marker = f"FROM {enriched.sql_table} AS {enriched.model_name}"
-            if from_marker in sql:
-                sql = sql.replace(from_marker, from_marker + "\n" + "\n".join(join_parts))
-
         return sql
 
-    def _generate_with_computed(self, enriched: EnrichedQuery, base_sql: str,
-                                skip_pagination: bool = False) -> str:
+    def _generate_with_computed(self, enriched: EnrichedQuery,
+                                base_sql: str | None = None,
+                                prefix_ctes: list[tuple[str, str]] | None = None) -> str:
         """Wrap the base query as a CTE and add expressions/transforms as stacked CTE layers.
 
         Transforms that reference other transforms' outputs get their own CTE layer.
         This handles arbitrary nesting like change(cumsum(revenue)).
+
+        Args:
+            base_sql: Base SQL to wrap as "base" CTE (simple case, no measure CTEs).
+            prefix_ctes: Pre-built CTE list from _build_combined(). When provided,
+                these are used as the initial CTE stack instead of wrapping base_sql.
+                The last entry is the "combined" CTE with all measure values available.
         """
-        # Collect base aliases
+        # Collect base aliases (includes all measures — combined SQL has them all)
         base_aliases = []
         for dim in enriched.dimensions:
             base_aliases.append(dim.alias)
@@ -342,9 +748,14 @@ class SQLGenerator:
             base_aliases.append(td.alias)
         for m in enriched.measures:
             base_aliases.append(m.alias)
+        for cm in enriched.cross_model_measures:
+            base_aliases.append(cm.alias)
 
         # Build stacked CTEs. Each layer can reference aliases from previous layers.
-        ctes = [("base", base_sql)]
+        if prefix_ctes is not None:
+            ctes = list(prefix_ctes)
+        else:
+            ctes = [("base", base_sql)]
         available_aliases = set(base_aliases)  # Aliases available in the current layer
 
         # All transforms go into a unified layering loop. Each iteration tries
@@ -352,11 +763,10 @@ class SQLGenerator:
         # (time_shift, change, change_pct) get their own CTE with a LEFT JOIN.
         # Window transforms (cumsum, lag, lead, rank, last) are batched into a
         # single CTE layer with OVER() expressions.
-        # Exclude transforms that depend on cross-model measure aliases —
-        # those are applied after the cross-model join in _generate_with_cross_model
-        cm_aliases = {cm.alias for cm in enriched.cross_model_measures}
+        # All measure aliases are available in base_sql (combined CTE includes
+        # cross-model and isolated filtered measures via LEFT JOIN).
         pending_expressions = list(enriched.expressions)
-        pending_transforms = [t for t in enriched.transforms if t.measure_alias not in cm_aliases]
+        pending_transforms = list(enriched.transforms)
         layer_num = 0
         while pending_expressions or pending_transforms:
             layer_num += 1
@@ -394,68 +804,27 @@ class SQLGenerator:
                 ctes.append((layer_name, f"{layer_select}\nFROM {prev_cte}"))
                 available_aliases.update(added_this_layer)
 
-            # Now emit each self-join transform as its own CTE layer
+            # Now emit each self-join transform as its own CTE layer.
+            # The shifted sub-query has the time offset baked into td.sql,
+            # so we always join on time column equality (calendar-based).
             for t in deferred_self_joins:
                 src_cte = ctes[-1][0]
 
-                # Determine effective join granularity:
-                # - If transform has explicit granularity (calendar-based), use it
-                # - If no granularity (row-based) but date ranges are shifted,
-                #   use the time dimension's granularity for calendar join
-                # - If no granularity and no date ranges, use row-number join
-                has_date_ranges = any(
-                    td.date_range and len(td.date_range) == 2
-                    for td in enriched.time_dimensions
-                )
-                join_granularity = t.granularity
-                if not join_granularity and has_date_ranges:
-                    # Use query's time dimension granularity for calendar-based join
-                    for td in enriched.time_dimensions:
-                        if td.alias == t.time_alias:
-                            join_granularity = td.granularity.value
-                            break
-
-                # Add ROW_NUMBER if using row-number join
-                if not join_granularity:
-                    time_col = f'"{t.time_alias}"'
-                    all_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
-                    rn_cte = f"{src_cte}_rn"
-                    rn_sql = f"SELECT {all_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {src_cte}"
-                    ctes.append((rn_cte, rn_sql))
-                    src_cte = rn_cte
-
-                # Generate shifted CTE as a fresh base query with adjusted date ranges.
-                # For calendar joins, also shift raw timestamps so buckets align.
-                is_calendar = join_granularity is not None
-                shift_base_name = f"shifted_base_{t.name}"
                 shift_name = f"shifted_{t.name}"
                 shifted_sql = self._generate_shifted_base(
-                    enriched=enriched, transform=t, calendar_join=is_calendar,
+                    enriched=enriched, transform=t,
                 )
-                ctes.append((shift_base_name, shifted_sql))
+                ctes.append((shift_name, shifted_sql))
 
-                # For row-number joins, add ROW_NUMBER to the shifted CTE too
-                if not is_calendar:
-                    time_col = f'"{t.time_alias}"'
-                    shift_base_cols = ", ".join(f'"{a}"' for a in sorted(base_aliases))
-                    shift_rn_sql = f"SELECT {shift_base_cols}, ROW_NUMBER() OVER (ORDER BY {time_col}) AS _rn FROM {shift_base_name}"
-                    ctes.append((shift_name, shift_rn_sql))
-                else:
-                    ctes.append((shift_name, f"SELECT * FROM {shift_base_name}"))
-
-                # Build the self-join CTE: src LEFT JOIN shifted ON condition
+                # Build the self-join CTE: src LEFT JOIN shifted ON time equality
                 time_col = f'"{t.time_alias}"'
-                if is_calendar:
-                    # Calendar join: simple equality (shifted timestamps are already aligned)
-                    join_cond = f'{src_cte}.{time_col} = {shift_name}.{time_col}'
-                else:
-                    # Row-number join
-                    join_cond = self._build_row_number_join(
-                        left_table=src_cte, right_table=shift_name, offset=t.offset,
-                    )
+                join_cond = f'{src_cte}.{time_col} = {shift_name}.{time_col}'
+                # Also join on all dimension columns for correct matching
+                for dim in enriched.dimensions:
+                    join_cond += f' AND {src_cte}."{dim.alias}" = {shift_name}."{dim.alias}"'
                 col_sql = self._build_self_join_column(
-                    transform=t.transform, left_table=src_cte,
-                    right_table=shift_name, measure_alias=t.measure_alias,
+                    transform=t.transform, right_table=shift_name,
+                    measure_alias=t.measure_alias,
                 )
                 join_cols = ", ".join(f'{src_cte}."{a}"' for a in sorted(available_aliases))
                 join_layer = f"sjoin_{t.name}"
@@ -498,22 +867,8 @@ class SQLGenerator:
 
         sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
 
-        # Apply order/limit/offset — skip if cross-model measures will wrap this
-        if not skip_pagination:
-            if enriched.order:
-                order_parts = []
-                for order_item in enriched.order:
-                    col = order_item.column
-                    col_name = f"{col.model or enriched.model_name}.{col.name}"
-                    direction = "ASC" if order_item.direction == "asc" else "DESC"
-                    order_parts.append(f'"{col_name}" {direction}')
-                sql += "\nORDER BY " + ", ".join(order_parts)
-
-            if enriched.limit is not None:
-                sql += f"\nLIMIT {enriched.limit}"
-
-            if enriched.offset is not None:
-                sql += f"\nOFFSET {enriched.offset}"
+        # Apply order/limit/offset
+        sql = self._apply_pagination_to_sql(enriched=enriched, sql=sql)
 
         # Apply post-filters (filters referencing computed columns)
         post_filters = [f for f in enriched.filters if f.is_post_filter]
@@ -536,170 +891,6 @@ class SQLGenerator:
                 conditions.append(qualified_sql)
             where_clause = " AND ".join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
-
-        return sql
-
-    def _generate_with_cross_model(self, enriched: EnrichedQuery,
-                                    base_sql: str, is_cte: bool) -> str:
-        """Wrap the main query with cross-model measure sub-queries.
-
-        Each cross-model measure becomes a CTE that aggregates the target model's
-        measure scoped to shared dimensions, then LEFT JOINed to the main query.
-        """
-        # Wrap the base/computed SQL as a CTE
-        if is_cte:
-            # base_sql is already a WITH ... SELECT — wrap it as a subquery CTE
-            main_cte = f"_main AS (\n{base_sql}\n)"
-        else:
-            main_cte = f"_main AS (\n{base_sql}\n)"
-
-        ctes = [main_cte]
-
-        # Build join columns from the main query (for the final SELECT)
-        main_columns = []
-        for dim in enriched.dimensions:
-            main_columns.append(dim.alias)
-        for td in enriched.time_dimensions:
-            main_columns.append(td.alias)
-        for m in enriched.measures:
-            main_columns.append(m.alias)
-        for expr in enriched.expressions:
-            main_columns.append(expr.alias)
-        # Transforms that depend on cross-model aliases are computed in the
-        # outer SELECT, not inside _main — exclude them from main_columns
-        cm_aliases_pre = {cm.alias for cm in enriched.cross_model_measures}
-        for t in enriched.transforms:
-            if t.measure_alias not in cm_aliases_pre:
-                main_columns.append(t.alias)
-
-        # Generate a CTE for each cross-model measure (deduplicate by CTE name)
-        cm_cte_names = []
-        seen_ctes = set()
-        for cm in enriched.cross_model_measures:
-            cte_name = f"_cm_{cm.target_model_name}_{cm.measure.name}"
-            is_duplicate = cte_name in seen_ctes
-            seen_ctes.add(cte_name)
-            cm_cte_names.append((cte_name, cm))
-
-            if is_duplicate:
-                continue  # CTE already generated, just reuse in final SELECT
-
-            # Build the sub-query: SELECT shared_dims, AGG(measure) FROM target GROUP BY shared_dims
-            select_parts = []
-            group_parts = []
-
-            # Shared dimensions
-            for dim in cm.shared_dimensions:
-                col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=cm.source_model_name)
-                col_sql = col_expr.sql(dialect=self.dialect)
-                select_parts.append(f'{col_sql} AS "{dim.alias}"')
-                group_parts.append(col_sql)
-
-            # Shared time dimensions
-            for td in cm.shared_time_dimensions:
-                col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=cm.source_model_name)
-                td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
-                td_sql = td_expr.sql(dialect=self.dialect)
-                select_parts.append(f'{td_sql} AS "{td.alias}"')
-                group_parts.append(td_sql)
-
-            # The measure aggregation
-            agg_expr, _ = self._build_agg(measure=cm.measure)
-            select_parts.append(f'{agg_expr.sql(dialect=self.dialect)} AS "{cm.alias}"')
-
-            # FROM: source table with JOIN to target
-            if cm.source_sql:
-                from_sql = f"({cm.source_sql}) AS {cm.source_model_name}"
-            else:
-                from_sql = f"{cm.source_sql_table} AS {cm.source_model_name}"
-
-            # JOIN to target model
-            if cm.target_model_sql:
-                target_from = f"({cm.target_model_sql}) AS {cm.target_model_name}"
-            else:
-                target_from = f"{cm.target_model_sql_table} AS {cm.target_model_name}"
-
-            join_conditions = []
-            for src_dim, tgt_dim in cm.join_pairs:
-                join_conditions.append(
-                    f"{cm.source_model_name}.{src_dim} = {cm.target_model_name}.{tgt_dim}"
-                )
-            join_on = " AND ".join(join_conditions)
-
-            cte_sql = (
-                f"SELECT {', '.join(select_parts)}\n"
-                f"FROM {from_sql}\n"
-                f"LEFT JOIN {target_from} ON {join_on}"
-            )
-
-            # Apply the main query's WHERE filters to the cross-model CTE
-            where_clause, _ = self._build_where_and_having(enriched=enriched)
-            if where_clause is not None:
-                cte_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
-
-            if group_parts:
-                cte_sql += f"\nGROUP BY {', '.join(group_parts)}"
-
-            ctes.append(f"{cte_name} AS (\n{cte_sql}\n)")
-
-        # Identify transforms that depend on cross-model measure aliases
-        cm_aliases = {cm.alias for _, cm in cm_cte_names}
-        post_cm_transforms = [t for t in enriched.transforms if t.measure_alias in cm_aliases]
-
-        # Build final SELECT: main columns + cross-model measure columns + post-CM transforms
-        final_parts = [f'_main."{a}"' for a in main_columns]
-        seen_cm_aliases = set()
-        for cte_name, cm in cm_cte_names:
-            if cm.alias not in seen_cm_aliases:
-                seen_cm_aliases.add(cm.alias)
-                final_parts.append(f'{cte_name}."{cm.alias}"')
-        for t in post_cm_transforms:
-            window_sql = self._build_transform_sql(t)
-            # Replace the quoted measure alias with the cross-model CTE reference
-            for cte_name, cm in cm_cte_names:
-                if cm.alias == t.measure_alias:
-                    window_sql = window_sql.replace(
-                        f'"{t.measure_alias}"', f'{cte_name}."{cm.alias}"'
-                    )
-                    break
-            # Qualify time alias with _main to avoid ambiguity in JOINed context
-            if t.time_alias:
-                window_sql = window_sql.replace(
-                    f'"{t.time_alias}"', f'_main."{t.time_alias}"'
-                )
-            final_parts.append(f'{window_sql} AS "{t.alias}"')
-
-        # Build JOINs: join each cross-model CTE to _main on shared dimensions (deduplicate)
-        from_clause = "FROM _main"
-        joined_ctes = set()
-        for cte_name, cm in cm_cte_names:
-            if cte_name in joined_ctes:
-                continue
-            joined_ctes.add(cte_name)
-            join_on_parts = []
-            for dim in cm.shared_dimensions:
-                join_on_parts.append(f'_main."{dim.alias}" = {cte_name}."{dim.alias}"')
-            for td in cm.shared_time_dimensions:
-                join_on_parts.append(f'_main."{td.alias}" = {cte_name}."{td.alias}"')
-            if join_on_parts:
-                from_clause += f"\nLEFT JOIN {cte_name} ON {' AND '.join(join_on_parts)}"
-
-        sql = f"WITH {','.join(ctes)}\nSELECT {', '.join(final_parts)}\n{from_clause}"
-
-        # Re-apply order/limit/offset (qualify with _main to avoid ambiguity)
-        if enriched.order:
-            order_parts = []
-            for order_item in enriched.order:
-                col = order_item.column
-                col_name = f"{col.model or enriched.model_name}.{col.name}"
-                direction = "ASC" if order_item.direction == "asc" else "DESC"
-                order_parts.append(f'_main."{col_name}" {direction}')
-            sql += "\nORDER BY " + ", ".join(order_parts)
-
-        if enriched.limit is not None:
-            sql += f"\nLIMIT {enriched.limit}"
-        if enriched.offset is not None:
-            sql += f"\nOFFSET {enriched.offset}"
 
         return sql
 
@@ -773,23 +964,13 @@ class SQLGenerator:
             raise ValueError(f"Unsupported transform: {t.transform}")
 
     @staticmethod
-    def _build_self_join_column(transform: str, left_table: str,
-                                right_table: str, measure_alias: str) -> str:
+    def _build_self_join_column(transform: str, right_table: str,
+                                measure_alias: str) -> str:
         """Build the SELECT expression for a self-join transform."""
-        cur = f'{left_table}."{measure_alias}"'
         prev = f'{right_table}."{measure_alias}"'
         if transform == "time_shift":
             return prev
-        elif transform == "change":
-            return f"{cur} - {prev}"
-        elif transform == "change_pct":
-            return f"CASE WHEN {prev} != 0 THEN ({cur} - {prev}) * 1.0 / {prev} END"
         raise ValueError(f"Unknown self-join transform: {transform}")
-
-    @staticmethod
-    def _build_row_number_join(left_table: str, right_table: str, offset: int) -> str:
-        """Build a row-number-based JOIN condition for row-based self-join transforms."""
-        return f"{left_table}._rn + {offset} = {right_table}._rn"
 
     def _apply_order_limit(self, select: exp.Select, enriched: EnrichedQuery) -> exp.Select:
         """Apply ORDER BY, LIMIT, OFFSET to a select expression."""
@@ -841,6 +1022,8 @@ class SQLGenerator:
             alias_lookup[t.name] = t.alias
         for cm in enriched.cross_model_measures:
             alias_lookup[cm.name] = cm.alias
+        # Custom field names (e.g., {"formula": "x:count_distinct", "name": "my_name"})
+        alias_lookup.update(enriched.field_name_aliases)
 
         # Direct match on the user-provided name
         if user_name in alias_lookup:
@@ -871,7 +1054,6 @@ class SQLGenerator:
         self,
         enriched: EnrichedQuery,
         base_from: exp.Expression,
-        time_offset: Optional[tuple[int, str]] = None,
     ) -> tuple[exp.Expression, dict[str, str], dict[str, str], dict[str, str]]:
         """Build a ranked subquery for first/last aggregation.
 
@@ -895,11 +1077,6 @@ class SQLGenerator:
         # Add pre-computed time dimension expressions (DATE_TRUNC)
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-            if time_offset is not None:
-                offset_val, offset_gran = time_offset
-                col_expr = self._build_time_offset_expr(
-                    col_expr=col_expr, offset=offset_val, granularity=offset_gran,
-                )
             td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
             parts.append(f"{td_expr.sql(dialect=self.dialect)} AS _td_{td.name}")
 
@@ -911,11 +1088,6 @@ class SQLGenerator:
             partition_parts.append(col_expr.sql(dialect=self.dialect))
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
-            if time_offset is not None:
-                offset_val, offset_gran = time_offset
-                col_expr = self._build_time_offset_expr(
-                    col_expr=col_expr, offset=offset_val, granularity=offset_gran,
-                )
             td_expr = self._build_date_trunc(col_expr=col_expr, granularity=td.granularity)
             partition_parts.append(td_expr.sql(dialect=self.dialect))
 
@@ -1002,8 +1174,8 @@ class SQLGenerator:
         # `FROM <table> AS <model>` and would miss this subquery wrapper.
         if enriched.resolved_joins:
             join_sql_parts = [
-                f"LEFT JOIN {target_table} AS {target_alias} ON {join_cond}"
-                for target_table, target_alias, join_cond in enriched.resolved_joins
+                f"{jtype.upper()} JOIN {target_table} AS {target_alias} ON {join_cond}"
+                for target_table, target_alias, join_cond, jtype in enriched.resolved_joins
             ]
             ranked_sql += " " + " ".join(join_sql_parts)
 
@@ -1216,10 +1388,14 @@ class SQLGenerator:
         where_parts: list[str] = []
         having_parts: list[str] = []
 
-        # Time dimension date ranges
+        # Time dimension date ranges — use the resolved SQL expression
+        # (which may include a time offset for shifted sub-queries)
         for td in enriched.time_dimensions:
             if td.date_range and len(td.date_range) == 2:
-                col = f"{enriched.model_name}.{td.name}" if td.sql and "." not in (td.sql or "") else f"{enriched.model_name}.{td.name}"
+                col_expr = self._resolve_sql(
+                    sql=td.sql or td.name, name=td.name, model_name=td.model_name,
+                )
+                col = col_expr.sql(dialect=self.dialect)
                 where_parts.append(
                     f"{col} BETWEEN '{td.date_range[0]}' AND '{td.date_range[1]}'"
                 )
@@ -1261,7 +1437,7 @@ class SQLGenerator:
                     if "." in col_name:
                         # Already qualified (e.g., "customers.name") — keep as-is
                         pass
-                    else:
+                    elif col_name.isidentifier():
                         qualified_sql = re.sub(
                             rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
                             f"{model}.{col_name}",

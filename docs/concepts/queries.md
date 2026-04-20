@@ -321,7 +321,7 @@ Extend a model inline with extra dimensions, measures, or joins — without modi
 
 ### Multi-hop dimensions
 
-Dimensions from transitively joined models can be referenced with dotted paths. SLayer auto-resolves the join chain:
+Dimensions from joined models can be referenced with dotted paths. SLayer auto-resolves multi-hop join chains by walking each intermediate model's own joins:
 
 ```json
 {

@@ -9,18 +9,21 @@ becomes an extra CTE in the generated SQL.
 | Transform | Purpose | SQL strategy |
 |-----------|---------|--------------|
 | `cumsum(x)` | Running total over time | Window: `SUM(x) OVER (ORDER BY time)` |
-| `time_shift(x, n)` | Value N buckets back/ahead | Self-join CTE on granularity |
-| `time_shift(x, n, 'year')` | Value at a different granularity offset (e.g. YoY) | Self-join CTE with calendar arithmetic |
-| `change(x)` | `x − previous(x)` | Self-join CTE |
-| `change_pct(x)` | `(x − previous) / previous` | Self-join CTE |
+| `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
+| `time_shift(x, n, 'year')` | Value at a different granularity offset (e.g. YoY) | Self-join CTE with INTERVAL offset |
+| `change(x)` | `x − previous(x)` | Desugars to `x − time_shift(x, -1)` |
+| `change_pct(x)` | `(x − previous) / previous` | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
 | `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn |
 | `rank(x)` | Rank by x, descending | `RANK() OVER (ORDER BY x DESC)` |
 | `last(x)` | Broadcast latest bucket's value to every row | Window + join |
 
 ## Self-join vs window-function — important trade-off
 
-`time_shift`, `change`, and `change_pct` use **self-join CTEs**: they can reach
-outside the current result set to fetch the previous/next value. Consequences:
+`time_shift` (and `change`/`change_pct` which desugar into it) uses a
+**self-join CTE** with an INTERVAL-shifted time column. The shifted sub-query
+applies the time offset to every occurrence of the time dimension (WHERE,
+GROUP BY, SELECT), so it can reach outside the current result set to fetch
+the previous/next value. Consequences:
 
 - No NULLs at the first / last rows when the database actually has the data.
 - Handles **gaps** in the time series correctly — shifts by calendar, not by row.
@@ -44,15 +47,16 @@ an ordering time dimension. Resolution: `main_time_dimension` → single
 
 ## Nesting
 
-Transforms compose freely. The identity `cumsum(change(x)) == x − x[0]` holds
-for rows after the first.
+Window transforms can wrap self-join transforms: `cumsum(change(x))` works
+(the identity `cumsum(change(x)) == x − x[0]` holds for rows after the first).
+Self-join transforms cannot wrap other self-join or change transforms.
 
 ```json
 {
   "source_model": "orders",
   "fields": [
     "revenue:sum",
-    {"formula": "change(cumsum(revenue:sum))", "name": "cumsum_delta"}
+    {"formula": "cumsum(change(revenue:sum))", "name": "cumsum_delta"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
