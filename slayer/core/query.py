@@ -127,6 +127,25 @@ def _coerce_column_ref(v: Any) -> Any:
     return v
 
 
+def _coerce_order_column(v: Any) -> Any:
+    """Coerce ORDER BY column, normalizing colon-aggregation syntax.
+
+    LLMs write "revenue:sum" or "*:count" in order columns, matching
+    the fields syntax. Convert to the underscore form that matches
+    enriched measure names: "revenue:sum" → "revenue_sum", "*:count" → "_count".
+    Multi-hop: "customers.revenue:sum" → "customers.revenue_sum".
+    """
+    if isinstance(v, str) and ":" in v:
+        base, agg = v.rsplit(":", 1)
+        if base == "*":
+            v = "_count"
+        else:
+            v = f"{base}_{agg}"
+    if isinstance(v, str):
+        return {"name": v}
+    return v
+
+
 class TimeDimension(BaseModel):
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
@@ -135,7 +154,7 @@ class TimeDimension(BaseModel):
 
 
 class OrderItem(BaseModel):
-    column: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
+    column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
 
 

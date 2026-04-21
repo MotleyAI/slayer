@@ -2684,6 +2684,142 @@ class TestDimensionAggregation:
             assert "/" in sql
 
 
+class TestMultiHopCrossModelMeasure:
+    """Multi-hop cross-model measures should walk the join chain to the final model."""
+
+    async def test_two_hop_measure(self, generator: SQLGenerator) -> None:
+        """policy_coverage_detail.claim_coverage.claim_amount.total_claim_amount:sum
+        should walk policy_coverage_detail → claim_coverage → claim_amount."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        pcd = SlayerModel(
+            name="policy_coverage_detail",
+            sql_table="policy_coverage_detail",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="coverage_code", sql="coverage_code", type=DataType.STRING),
+            ],
+            measures=[],
+            joins=[ModelJoin(target_model="claim_coverage", join_pairs=[["id", "pcd_id"]])],
+        )
+        claim_cov = SlayerModel(
+            name="claim_coverage",
+            sql_table="claim_coverage",
+            data_source="test",
+            dimensions=[
+                Dimension(name="pcd_id", sql="pcd_id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[],
+            joins=[ModelJoin(target_model="claim_amount", join_pairs=[["claim_id", "claim_id"]])],
+        )
+        claim_amt = SlayerModel(
+            name="claim_amount",
+            sql_table="claim_amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="claim_id", sql="claim_id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[Measure(name="total_claim_amount", sql="amount")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(pcd)
+            await storage.save_model(claim_cov)
+            await storage.save_model(claim_amt)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="policy_coverage_detail",
+                fields=[Field(formula="claim_coverage.claim_amount.total_claim_amount:sum")],
+                dimensions=[ColumnRef(name="coverage_code")],
+            )
+            enriched = await engine._enrich(query=query, model=pcd, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "SUM(" in sql
+            assert "claim_amount" in sql.lower()
+
+    async def test_three_hop_measure(self, generator: SQLGenerator) -> None:
+        """a.b.c.measure:sum should walk three hops."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        model_a = SlayerModel(
+            name="a", sql_table="a_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                        Dimension(name="status", sql="status", type=DataType.STRING)],
+            measures=[], joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        )
+        model_b = SlayerModel(
+            name="b", sql_table="b_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[], joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
+        )
+        model_c = SlayerModel(
+            name="c", sql_table="c_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[], joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
+        )
+        model_d = SlayerModel(
+            name="d", sql_table="d_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="value", sql="val")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            for m in (model_a, model_b, model_c, model_d):
+                await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="a",
+                fields=[Field(formula="b.c.d.value:sum")],
+                dimensions=[ColumnRef(name="status")],
+            )
+            enriched = await engine._enrich(query=query, model=model_a, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "SUM(" in sql
+
+    async def test_single_hop_still_works(self, generator: SQLGenerator) -> None:
+        """Existing single-hop cross-model measures must not regress."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                        Dimension(name="status", sql="status", type=DataType.STRING)],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="score", sql="score")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=[Field(formula="customers.score:sum")],
+                dimensions=[ColumnRef(name="status")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "SUM(" in sql
+
+
 class TestCrossModelRerootedSubquery:
     """Tests for the re-rooted subquery approach to cross-model measure CTEs.
 
@@ -3004,6 +3140,157 @@ class TestOrderByCustomFieldName:
         assert "orders.num_customers" not in sql, (
             f"Custom name not resolved in computed query path:\n{sql}"
         )
+
+
+class TestOrderByColonSyntax:
+    """ORDER BY should accept colon-aggregation syntax like fields do."""
+
+    async def test_order_by_local_measure_colon_syntax(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'revenue:sum' should resolve to the correct measure alias."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column="revenue:sum", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+
+    async def test_order_by_star_count_colon_syntax(self, generator: SQLGenerator) -> None:
+        """ORDER BY '*:count' should resolve to the _count alias."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column="*:count", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+
+    async def test_order_by_single_hop_cross_model_colon_syntax(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'customers.score:sum' on a cross-model measure."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="score", sql="score")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=[Field(formula="customers.score:sum")],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="customers.score:sum", direction="desc")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "ORDER BY" in sql
+            assert "DESC" in sql
+
+    async def test_order_by_two_hop_dimension_with_colon_measure(self, generator: SQLGenerator) -> None:
+        """ORDER BY a cross-model measure alongside a two-hop dimension."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="score", sql="score")],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        regions = SlayerModel(
+            name="regions",
+            sql_table="regions",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="region_name", sql="region_name", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            await storage.save_model(regions)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=[Field(formula="customers.score:sum")],
+                dimensions=[ColumnRef(name="customers.regions.region_name")],
+                order=[OrderItem(column="customers.score:sum", direction="asc")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "ORDER BY" in sql
+            assert "ASC" in sql
+            assert "regions" in sql  # two-hop dimension join was resolved
 
 
 class TestJoinType:

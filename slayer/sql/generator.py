@@ -1029,6 +1029,13 @@ class SQLGenerator:
         if user_name in alias_lookup:
             return alias_lookup[user_name]
 
+        # Qualified match for cross-model measures:
+        # col.model="customers", col.name="revenue_sum" → "customers.revenue_sum"
+        if col.model:
+            qualified = f"{col.model}.{col.name}"
+            if qualified in alias_lookup:
+                return alias_lookup[qualified]
+
         # Fallback for *:count → _count: user says "count", internal is "_count"
         prefixed = f"_{user_name}"
         if prefixed in alias_lookup:

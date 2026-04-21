@@ -27,9 +27,9 @@ SLayer generates and executes the query against your database.
   "source_model": "orders",
   "fields": ["*:count", "revenue:sum / orders.amount:sum"],
   "dimensions": ["status"],
-  "filters": ["status <> 'cancelled'"],
+  "filters": ["status <> 'cancelled'", "customers.regions.name='My Customer'"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-  "order": [{"column": "revenue_sum", "direction": "desc"}],
+  "order": [{"column": "customers.revenue:sum", "direction": "desc"}],
   "limit": 10
 }
 ```
@@ -45,7 +45,7 @@ SLayer generates and executes the query against your database.
    use `*:count` — not a primary-key column. You can also aggregate dimensions
    directly: `customer_id:count_distinct` for `COUNT(DISTINCT customer_id)`.
 
-3. **Joined data is reached via dotted paths, not by JOINing manually.**
+3. **Joined data is reached via DOTTED paths, not by JOINing manually.**.
    `customers.regions.name` on a query of `orders` auto-walks the join graph
    (`orders → customers → regions`). Don't try to add SQL joins yourself.
 

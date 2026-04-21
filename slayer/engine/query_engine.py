@@ -765,32 +765,43 @@ class SlayerQueryEngine:
     ) -> CrossModelMeasure:
         """Resolve a cross-model measure reference like 'customers.avg_score'.
 
+        Supports multi-hop paths: 'claim_coverage.claim_amount.total_claim_amount'
+        walks the join graph hop-by-hop to reach the final model.
+
         Looks up the join from the source model, loads the target model
         (checking named queries first), finds shared dimensions, and returns
         a CrossModelMeasure for SQL generation.
         """
-        parts = spec_name.split(".", 1)
-        if len(parts) != 2:
+        parts = spec_name.split(".")
+        if len(parts) < 2:
             raise ValueError(f"Invalid cross-model measure reference: '{spec_name}'")
-        target_model_name, measure_name = parts
+        measure_name = parts[-1]
+        hop_names = parts[:-1]  # e.g. ["claim_coverage", "claim_amount"]
 
-        # Find the join to the target model
-        join = None
-        for j in model.joins:
-            if j.target_model == target_model_name:
-                join = j
-                break
-        if join is None:
-            raise ValueError(
-                f"Model '{model.name}' has no join to '{target_model_name}'. "
-                f"Available joins: {[j.target_model for j in model.joins]}"
+        # Walk the join chain to find the final target model
+        current_model = model
+        first_join = None
+        for i, hop_name in enumerate(hop_names):
+            join = None
+            for j in current_model.joins:
+                if j.target_model == hop_name:
+                    join = j
+                    break
+            if join is None:
+                raise ValueError(
+                    f"Model '{current_model.name}' has no join to '{hop_name}'. "
+                    f"Available joins: {[j.target_model for j in current_model.joins]}"
+                )
+            if i == 0:
+                first_join = join
+            current_model = await self._resolve_model(
+                model_name=hop_name,
+                named_queries=named_queries or {},
             )
 
-        # Load the target model (named queries take precedence)
-        target_model = await self._resolve_model(
-            model_name=target_model_name,
-            named_queries=named_queries or {},
-        )
+        target_model_name = hop_names[-1]
+        target_model = current_model
+        join = first_join  # For join_pairs: source model → first hop
 
         # Find the measure (or dimension) in the target model
         if measure_name == "*":
@@ -835,7 +846,8 @@ class SlayerQueryEngine:
                 f"Cross-model measure '{spec_name}' must include an aggregation (e.g., '{spec_name}:sum')."
             )
 
-        alias = f"{query_model_name}.{target_model_name}.{canonical}"
+        hop_path = ".".join(hop_names)
+        alias = f"{query_model_name}.{hop_path}.{canonical}"
         aggregation_def = target_model.get_aggregation(agg)
 
         # Infer format from the target model's measure and aggregation
