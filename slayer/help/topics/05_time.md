@@ -54,15 +54,16 @@ show "this month is half-done, the bar looks tiny":
 
 ## Which time dimension wins for transforms
 
-When a transform needs "the" time dimension:
+All time-ordered transforms require an explicit `time_dimensions` entry.
+When resolving which one to use:
 
 1. Single `time_dimensions` entry — used directly.
 2. Two or more time dimensions — `main_time_dimension` disambiguates
    (or the model's `default_time_dimension`, if it is among the query's
    time dims).
-3. No time dimensions — falls back to the model's `default_time_dimension`.
 
-Set `main_time_dimension` whenever you have two or more time dimensions.
+Without any `time_dimensions` entry, transforms will error. Set
+`main_time_dimension` whenever you have two or more time dimensions.
 
 ## The three meanings of "last" — don't mix them up
 

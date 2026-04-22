@@ -890,18 +890,24 @@ class TestFields:
             source_model="orders",
             fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
-        with pytest.raises(ValueError, match="requires a time dimension"):
+        with pytest.raises(ValueError, match="requires a time_dimension"):
             await _generate(generator, query, orders_model)
 
-    async def test_default_time_dimension_fallback(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Model's default_time_dimension should be used when query has no time_dimensions."""
+    async def test_default_time_dimension_without_explicit_time_dims_raises(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """default_time_dimension alone (no query time_dimensions) must error.
+
+        Previously this would generate invalid SQL with an ORDER BY referencing
+        a column not in the base CTE.
+        """
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
             fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
-        sql = await _generate(generator, query, orders_model)
-        assert "OVER" in sql
+        with pytest.raises(ValueError, match="requires a time_dimension"):
+            await _generate(generator, query, orders_model)
 
     async def test_field_plain_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -933,6 +939,78 @@ class TestFields:
         assert "COUNT(*)" in sql
         assert "SUM(" in sql
         assert "aov" in sql.lower()
+
+
+class TestTransformRequiresTimeDimension:
+    """All time-ordered transforms require an explicit time_dimensions entry."""
+
+    async def test_cumsum_without_time_dimension_raises(self, generator: SQLGenerator) -> None:
+        """cumsum with only default_time_dimension (no query time_dimensions) must error."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="cumsum(revenue:sum)")],
+            dimensions=[ColumnRef(name="status")],
+            # No time_dimensions — only default_time_dimension on model
+        )
+        with pytest.raises(ValueError, match="requires a time_dimension"):
+            await _generate(generator, query, model)
+
+    async def test_lag_without_time_dimension_raises(self, generator: SQLGenerator) -> None:
+        """lag with only default_time_dimension must error."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="lag(revenue:sum)")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        with pytest.raises(ValueError, match="requires a time_dimension"):
+            await _generate(generator, query, model)
+
+    async def test_cumsum_with_time_dimension_works(self, generator: SQLGenerator) -> None:
+        """cumsum with explicit time_dimensions should work fine."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="cumsum(revenue:sum)")],
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "SUM(" in sql
+        assert "OVER" in sql
 
 
 class TestNestedFields:

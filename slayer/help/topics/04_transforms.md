@@ -41,10 +41,11 @@ prefer `lag` / `lead`.
 
 ## Time dimension requirement
 
-`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead` all need
-an ordering time dimension. Resolution: `main_time_dimension` → single
-`time_dimensions` entry → model's `default_time_dimension` (if in query).
-`rank` does **not** need a time dimension.
+All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`,
+`first`, `last`, `lag`, `lead`) require an explicit `time_dimensions` entry in
+the query. With a single entry it's used automatically; with 2+ entries,
+`main_time_dimension` disambiguates (or `default_time_dimension` if among
+query's time dims). `rank` does **not** need a time dimension.
 
 ## Nesting
 

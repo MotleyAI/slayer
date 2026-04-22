@@ -290,15 +290,10 @@ async def enrich_query(
 
     def _add_transform(name: str, transform: str, measure_alias: str, offset: int = 1, granularity: str = None):
         needs_time = transform in TIME_TRANSFORMS
-        if needs_time and resolved_time_alias is None:
+        if needs_time and not time_dimensions:
             raise ValueError(
-                f"Field '{name}' ({transform}) requires a time dimension. "
-                f"Add a time_dimension to the query or set default_time_dimension on the model."
-            )
-        if transform in (_SELF_JOIN_TRANSFORMS | {"first", "last"}) and not time_dimensions:
-            raise ValueError(
-                f"Field '{name}' ({transform}) requires a time_dimension in the query "
-                f"with a granularity for time bucketing."
+                f"Field '{name}' ({transform}) requires a time_dimension in the query. "
+                f"Add a time_dimensions entry with a granularity."
             )
         alias = f"{model_name_str}.{name}"
         enriched_transforms.append(
@@ -766,9 +761,8 @@ def _resolve_time_alias(
             td_names = {td.name for td in time_dimensions}
             if model.default_time_dimension in td_names:
                 return f"{model.name}.{model.default_time_dimension}"
-    else:
-        if model.default_time_dimension:
-            return f"{model.name}.{model.default_time_dimension}"
+    # No fallback to default_time_dimension without explicit time_dimensions —
+    # transforms require a time_dimensions entry so the column is in the base CTE.
     return None
 
 
