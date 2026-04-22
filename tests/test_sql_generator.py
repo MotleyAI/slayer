@@ -3341,6 +3341,60 @@ class TestOrderByColonSyntax:
             assert "regions" in sql  # two-hop dimension join was resolved
 
 
+class TestOrderByFormulaEnrichment:
+    """ORDER BY formulas should be enriched as hidden fields when not in fields."""
+
+    async def test_order_by_formula_not_in_fields(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'revenue:sum' creates a hidden measure when not in fields."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column="revenue:sum", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+        assert "SUM(" in sql  # hidden measure was created
+
+    async def test_order_by_parameterized_agg(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'revenue:last(ordered_at)' strips arglist for name matching."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="ordered_at", sql="ordered_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                Field(formula="*:count"),
+                Field(formula="revenue:last(ordered_at)"),
+            ],
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension="ordered_at", granularity="month")],
+            order=[OrderItem(column="revenue:last(ordered_at)", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+
+
 class TestJoinType:
     """join_type on ModelJoin controls LEFT vs INNER in generated SQL."""
 

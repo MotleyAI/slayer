@@ -553,23 +553,40 @@ class TestOrderColumnNormalization:
         from slayer.core.query import OrderItem
         item = OrderItem(column="sum(revenue)", direction="desc")
         assert item.column.name == "revenue_sum"
+        assert item.raw_formula == "revenue:sum"
 
     def test_funcstyle_count_star(self) -> None:
         from slayer.core.query import OrderItem
         item = OrderItem(column="count(*)", direction="desc")
         assert item.column.name == "_count"
+        assert item.raw_formula == "*:count"
 
     def test_colon_syntax_still_works(self) -> None:
         from slayer.core.query import OrderItem
         item = OrderItem(column="revenue:sum", direction="desc")
         assert item.column.name == "revenue_sum"
+        assert item.raw_formula == "revenue:sum"
 
     def test_star_count_colon_still_works(self) -> None:
         from slayer.core.query import OrderItem
         item = OrderItem(column="*:count", direction="asc")
         assert item.column.name == "_count"
+        assert item.raw_formula == "*:count"
 
     def test_plain_name_unchanged(self) -> None:
         from slayer.core.query import OrderItem
         item = OrderItem(column="revenue_sum", direction="desc")
         assert item.column.name == "revenue_sum"
+        assert item.raw_formula is None
+
+    def test_parameterized_agg_stripped(self) -> None:
+        from slayer.core.query import OrderItem
+        item = OrderItem(column="revenue:last(ordered_at)", direction="desc")
+        assert item.column.name == "revenue_last"
+        assert item.raw_formula == "revenue:last(ordered_at)"
+
+    def test_weighted_avg_args_stripped(self) -> None:
+        from slayer.core.query import OrderItem
+        item = OrderItem(column="price:weighted_avg(weight=qty)", direction="asc")
+        assert item.column.name == "price_weighted_avg"
+        assert item.raw_formula == "price:weighted_avg(weight=qty)"

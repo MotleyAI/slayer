@@ -110,10 +110,6 @@ async def enrich_query(
         named_queries=named_queries,
     )
 
-    # --- Normalize order columns (function-style + colon → underscore) ---
-    if query.order:
-        _normalize_order_columns(query.order, extra_agg_names=custom_agg_names)
-
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(
         query=query,
@@ -583,6 +579,26 @@ async def enrich_query(
                     if t.alias == alias:
                         t.label = qfield.label
 
+    # --- Enrich ORDER BY formulas as hidden fields ---
+    for item in query.order or []:
+        if not item.raw_formula:
+            continue
+        spec = parse_formula(item.raw_formula, extra_agg_names=custom_agg_names)
+        if isinstance(spec, AggregatedMeasureRef):
+            canonical = (
+                f"_{spec.aggregation_name}"
+                if spec.measure_name == "*"
+                else f"{spec.measure_name}_{spec.aggregation_name}"
+            )
+        else:
+            canonical = item.raw_formula.replace(" ", "_").replace("/", "_div_").replace(
+                ":", "_"
+            ).replace("*", "").replace("(", "_").replace(")", "").replace(",", "_")
+        # Only enrich if not already present from fields
+        if canonical not in known_aliases:
+            await _flatten_spec(spec, canonical)
+        item.column.name = canonical
+
     # --- Validate model filters ---
     measure_names_set = {m.name for m in measures}
     for mf in model.filters:
@@ -937,29 +953,6 @@ async def _resolve_joins(
     return list(resolved_joins.values())
 
 
-# ---------------------------------------------------------------------------
-# Order column normalization
-# ---------------------------------------------------------------------------
-
-
-def _normalize_order_columns(
-    order: list,
-    extra_agg_names: Optional[frozenset[str]] = None,
-) -> None:
-    """Normalize order column names for custom aggregations.
-
-    Built-in aggregation rewriting (function-style and colon→underscore) is
-    handled at Pydantic validation time in ``_coerce_order_column``.  This
-    function adds a second pass for **custom** aggregation names that are only
-    known once the model is available.
-    """
-    for item in order:
-        name = item.column.name
-        name = _rewrite_funcstyle_aggregations(name, extra_agg_names)
-        if ":" in name:
-            base, agg = name.rsplit(":", 1)
-            name = f"{base}_{agg}" if base != "*" else "_count"
-            item.column.name = name
 
 
 # ---------------------------------------------------------------------------
