@@ -86,6 +86,7 @@ poetry run ruff check slayer/ tests/
 - `slayer query` supports `--dry-run` (preview SQL) and `--explain` (execution plan, dialect-aware).
 - `slayer datasources create-inline` supports `--password-stdin` for secure credential input.
 - `slayer datasources test` verifies connectivity.
+- `slayer datasources create demo [--ingest]` spins up the bundled Jaffle Shop DuckDB (idempotent). `slayer serve --demo` and `slayer mcp --demo` do the same at server startup. Requires the `duckdb` extra and `jafgen` (git-only install); missing deps trigger a clean install-hint message. Lives in `slayer/demo/jaffle_shop.py`.
 - MCP `query()` tool has a `format` parameter: `"markdown"` (default), `"json"`, or `"csv"`.
 
 ## Database Support

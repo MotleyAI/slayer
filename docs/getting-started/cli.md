@@ -14,6 +14,31 @@ For databases other than SQLite, add the driver extra (see [full list](../config
 uv tool install 'motley-slayer[postgres]'
 ```
 
+## Quick demo: Jaffle Shop
+
+If you just want to kick the tyres, spin up the bundled Jaffle Shop dataset in one command:
+
+```bash
+slayer datasources create demo --ingest
+slayer query '{"source_model": "orders", "fields": [{"formula": "*:count"}]}'
+```
+
+This generates ~1 year of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `order_items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N`.
+
+The demo requires `duckdb` and [`jafgen`](https://github.com/rossbowen/jaffle-shop-generator) (a git-only install):
+
+```bash
+pip install duckdb
+pip install 'git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b'
+```
+
+You can also preload the demo at server startup:
+
+```bash
+slayer serve --demo         # API server on :5143 with the demo ready to query
+slayer mcp --demo           # MCP server with the demo ready for your agent
+```
+
 ## Connect a database
 
 Point `slayer datasources create` at a connection URL. The datasource name is derived from the database portion of the URL (override with `--name`). Pass `--ingest` to also auto-generate models in one shot:

@@ -21,7 +21,7 @@ pytestmark = pytest.mark.integration
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "examples"
 JAFFLE_DATA_DIR = EXAMPLES_DIR / "jaffle_data"
-JAFFLE_DB_PATH = JAFFLE_DATA_DIR / "jaffle_shop.duckdb"
+JAFFLE_DB_PATH = JAFFLE_DATA_DIR / "demo" / "jaffle_shop.duckdb"
 JAFFLE_MODELS_DIR = JAFFLE_DATA_DIR / "slayer_models"
 
 # Discover all .ipynb files, excluding checkpoints
@@ -37,21 +37,16 @@ def _ensure_jaffle_db():
     if JAFFLE_DB_PATH.exists():
         return  # Reuse existing DB
 
-    duckdb = pytest.importorskip("duckdb")
+    pytest.importorskip("duckdb")
 
-    import sys
-    sys.path.insert(0, str(JAFFLE_DATA_DIR))
-    try:
-        from ingest_jaffle_shop import SCHEMA_FILE, create_schema, generate_data, load_data
-    except ImportError as e:
-        pytest.skip(f"Jaffle shop helpers not available: {e}")
+    from slayer.demo.jaffle_shop import DemoDependencyError, build_jaffle_shop
 
+    JAFFLE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
-        data_dir = generate_data(output_dir=str(JAFFLE_DATA_DIR), years=3)
-        with duckdb.connect(database=str(JAFFLE_DB_PATH)) as conn:
-            create_schema(conn=conn, schema_path=SCHEMA_FILE)
-            load_data(conn=conn, data_dir=data_dir)
-    except (ImportError, FileNotFoundError) as e:
+        build_jaffle_shop(db_path=str(JAFFLE_DB_PATH), years=3)
+    except DemoDependencyError as e:
+        pytest.skip(f"Jaffle shop prerequisite missing: {e}")
+    except (FileNotFoundError, RuntimeError) as e:
         pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 
 

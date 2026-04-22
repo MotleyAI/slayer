@@ -8,6 +8,19 @@ from typing import Callable, Dict, List, Optional
 from slayer.core.models import DatasourceConfig, SlayerModel
 
 
+def storage_base_dir(path: str) -> str:
+    """Return the on-disk directory associated with a storage path.
+
+    For a SQLite file (``foo.db``/``.sqlite``/``.sqlite3``), returns its parent
+    directory; otherwise the path is itself a directory. Used by callers that
+    need to colocate auxiliary files (queries.yaml, demo databases, etc.) next
+    to the storage.
+    """
+    if path.endswith((".db", ".sqlite", ".sqlite3")):
+        return os.path.dirname(path) or "."
+    return path
+
+
 def default_storage_path() -> str:
     """Return the platform-appropriate default storage directory.
 

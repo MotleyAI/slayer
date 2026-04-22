@@ -1,76 +1,44 @@
 """Shared setup for Jaffle Shop example notebooks.
 
-Ensures the DuckDB database and SLayer models exist, creating them if needed.
-Each notebook calls ensure_jaffle_shop() to get a ready-to-use query engine.
+Thin wrapper over ``slayer.demo.jaffle_shop.ensure_demo_datasource`` — pins the
+DuckDB + SLayer-models location next to this file so notebooks can reuse a
+single on-disk dataset across runs.
 """
 
 import os
-import sys
 from typing import List, Tuple
 
-import duckdb
-
-from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.async_utils import run_sync
-from slayer.engine.ingestion import ingest_datasource
+from slayer.core.models import SlayerModel
+from slayer.demo.jaffle_shop import ensure_demo_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-# Add jaffle_data dir so we can import the data generation utils
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _THIS_DIR)
 
-from ingest_jaffle_shop import SCHEMA_FILE, create_schema, generate_data, load_data
-
-JAFFLE_DATA_DIR = _THIS_DIR
-DB_PATH = os.path.join(JAFFLE_DATA_DIR, "jaffle_shop.duckdb")
-MODELS_DIR = os.path.join(JAFFLE_DATA_DIR, "slayer_models")
-
-_DEFAULT_TIME_DIMENSIONS = {
-    "orders": "ordered_at",
-    "tweets": "tweeted_at",
-}
+DB_PATH = os.path.join(_THIS_DIR, "demo", "jaffle_shop.duckdb")
+MODELS_DIR = os.path.join(_THIS_DIR, "slayer_models")
 
 
 def ensure_jaffle_shop(
     years: int = 3,
 ) -> Tuple[SlayerQueryEngine, YAMLStorage, List[SlayerModel]]:
-    """Ensure the Jaffle Shop DuckDB and SLayer models exist, then return a query engine.
+    """Ensure the Jaffle Shop DuckDB and SLayer models exist; return an engine.
 
-    On first run, generates ~3 years of synthetic data with jafgen and ingests it.
-    Subsequent runs reuse the existing database and models.
-
-    Returns:
-        (engine, storage, models) tuple ready for querying.
+    On first run, generates ~``years`` of synthetic data with jafgen and ingests
+    the models. Subsequent runs reuse the existing database and models.
     """
     storage = YAMLStorage(base_dir=MODELS_DIR)
 
-    # Generate DB if missing
-    db_freshly_created = False
-    if not os.path.exists(DB_PATH):
-        print("Generating Jaffle Shop data (this takes ~1-2 minutes)...")
-        data_dir = generate_data(output_dir=JAFFLE_DATA_DIR, years=years)
-        conn = duckdb.connect(DB_PATH)
-        create_schema(conn, SCHEMA_FILE)
-        load_data(conn, data_dir)
-        conn.close()
-        print(f"Database created at {DB_PATH}")
-        db_freshly_created = True
+    _ds, models, db_built = ensure_demo_datasource(
+        storage,
+        storage_path=_THIS_DIR,
+        years=years,
+        ingest_models=True,
+        assume_yes=True,
+    )
 
-    # Ingest models if missing or stale (DB was regenerated but models dir persisted)
-    ds = DatasourceConfig(name="jaffle_shop", type="duckdb", database=DB_PATH)
-    existing_models = run_sync(storage.list_models())
-    if not existing_models or db_freshly_created:
-        print("Auto-ingesting models...")
-        run_sync(storage.save_datasource(ds))
-        models = ingest_datasource(datasource=ds)
-        for model in models:
-            if model.name in _DEFAULT_TIME_DIMENSIONS:
-                model.default_time_dimension = _DEFAULT_TIME_DIMENSIONS[model.name]
-            run_sync(storage.save_model(model))
-        print(f"Ingested {len(models)} models")
-    else:
-        models = [run_sync(storage.get_model(name)) for name in existing_models]
+    if db_built:
+        print(f"Database created at {DB_PATH}")
 
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage, models

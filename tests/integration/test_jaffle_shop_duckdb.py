@@ -1,7 +1,4 @@
-"""Integration test for the Jaffle Shop DuckDB example script."""
-
-import os
-import sys
+"""Integration test for the Jaffle Shop DuckDB loader."""
 
 import pytest
 
@@ -10,23 +7,25 @@ pytest.importorskip("jafgen")
 
 import duckdb
 
-# Add docs/examples/jaffle_data to path so we can import the script
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "docs", "examples", "jaffle_data"))
-
-from ingest_jaffle_shop import TABLE_NAMES, create_schema, generate_data, load_data, verify
+from slayer.demo.jaffle_shop import (
+    TABLE_NAMES,
+    create_schema,
+    generate_data,
+    load_data,
+    verify,
+)
 
 
 @pytest.fixture(scope="module")
 def jaffle_db(tmp_path_factory):
-    """Generate 30 days of data and load into DuckDB. Shared across all tests in this module."""
+    """Generate 1 year of data and load into DuckDB. Shared across all tests in this module."""
     tmpdir = tmp_path_factory.mktemp("jaffle")
     data_dir = generate_data(output_dir=str(tmpdir), years=1)
 
     db_path = tmpdir / "test_jaffle.duckdb"
     conn = duckdb.connect(str(db_path))
 
-    schema_path = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "examples", "jaffle_data", "jaffle_shop_schema.sql")
-    create_schema(conn=conn, schema_path=schema_path)
+    create_schema(conn=conn)
     load_data(conn=conn, data_dir=data_dir)
 
     yield conn
