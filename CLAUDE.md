@@ -73,6 +73,7 @@ poetry run ruff check slayer/ tests/
 - Result column keys use `model_name.column_name` format (e.g., `"orders.count"`). For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`
 - Datasource configs support `${ENV_VAR}` references resolved at read time
 - Integration tests are marked with `@pytest.mark.integration` and skip when DB is unavailable
+- NEVER use dataclasses, if you want to use dataclasses, use Pydantic classes instead. 
 
 ## Async Architecture
 
