@@ -7,7 +7,9 @@ This file provides guidance to Claude Code when working with code in this reposi
 SLayer (Semantic Layer) is a lightweight, open-source (MIT) semantic layer for AI agents, built by MotleyAI. Instead of writing raw SQL, agents describe what data they want — measures, dimensions, filters — and SLayer generates and executes the query.
 
 Default API port: **5143**.
- 
+
+When generating SLayer query examples or answering questions about SLayer syntax and capabilities, always read the documentation files in `docs/` first (especially `docs/concepts/queries.md`, `docs/concepts/formulas.md`, `docs/concepts/models.md`, and `docs/examples/`) to understand the current syntax and features.
+
 ## Common Commands
 
 ```bash
