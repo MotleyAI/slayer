@@ -14,11 +14,14 @@ A formula can be:
 
 import ast
 import re
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
+from slayer.core.enums import BUILTIN_AGGREGATIONS
+
 # Transforms that require a time dimension for ORDER BY
-TIME_TRANSFORMS = {"cumsum", "change", "change_pct", "time_shift", "last", "lag", "lead"}
+TIME_TRANSFORMS = {"cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead"}
 
 # Transforms that don't need time ordering
 TIMELESS_TRANSFORMS = {"rank"}
@@ -56,7 +59,7 @@ class ArithmeticField:
 @dataclass
 class TransformField:
     """A transform function call, possibly wrapping another transform or arithmetic."""
-    transform: str  # cumsum, lag, lead, change, change_pct, rank, time_shift, last
+    transform: str  # cumsum, lag, lead, change, change_pct, rank, time_shift, first, last
     inner: "FieldSpec"  # What's being transformed
     args: List[Any] = field(default_factory=list)
 
@@ -76,6 +79,168 @@ class MixedArithmeticField:
 
 # The parsed result of a single field
 FieldSpec = Union[AggregatedMeasureRef, ArithmeticField, TransformField, MixedArithmeticField]
+
+
+# ---------------------------------------------------------------------------
+# Function-style aggregation rewrite
+# ---------------------------------------------------------------------------
+
+# Pattern for an identifier or dotted path (e.g., "revenue", "customers.revenue", "a.b.c.d")
+_IDENT_OR_PATH_RE = re.compile(r'[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*')
+
+# Aggregation names that are also transform names — ambiguous, need special handling
+_AMBIGUOUS_AGG_TRANSFORMS = BUILTIN_AGGREGATIONS & ALL_TRANSFORMS  # {"first", "last"}
+
+
+def _find_balanced_close(s: str, start: int) -> int:
+    """Find the index of the balanced closing paren starting after the open paren at `start`."""
+    depth = 1
+    i = start + 1
+    in_string = False
+    string_char = ""
+    while i < len(s):
+        ch = s[i]
+        if in_string:
+            if ch == string_char:
+                in_string = False
+        elif ch in ("'", '"'):
+            in_string = True
+            string_char = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1  # unbalanced
+
+
+def _rewrite_funcstyle_aggregations(
+    formula: str,
+    extra_agg_names: Optional[frozenset[str]] = None,
+) -> str:
+    """Rewrite function-style aggregation calls to colon syntax.
+
+    E.g., ``sum(revenue)`` → ``revenue:sum``, ``count(*)`` → ``*:count``.
+
+    For aggregation names that are also transform names (``first``, ``last``),
+    the rewrite only fires when the first argument is a bare name (no colon).
+    If it already contains colon syntax (e.g., ``last(revenue:sum)``), it is
+    left alone as a valid transform call.
+
+    Args:
+        formula: The formula string to rewrite.
+        extra_agg_names: Additional (custom) aggregation names to recognise.
+    """
+    agg_names = BUILTIN_AGGREGATIONS | (extra_agg_names or frozenset())
+
+    # Build word-boundary regex for known aggregation names.
+    # Sort by length descending so longer names match first (e.g., count_distinct before count).
+    # Negative lookbehind for ':' avoids matching inside colon syntax (e.g., revenue:last(...)).
+    sorted_names = sorted(agg_names, key=len, reverse=True)
+    pattern = re.compile(
+        r'(?<!:)\b(' + '|'.join(re.escape(n) for n in sorted_names) + r')\('
+    )
+
+    max_iterations = 50  # safety limit
+    for _ in range(max_iterations):
+        # Search from successive positions to skip non-rewritable matches
+        search_start = 0
+        rewritten = False
+        while search_start < len(formula):
+            match = pattern.search(formula, search_start)
+            if not match:
+                break
+
+            agg_name = match.group(1)
+            open_paren = match.end() - 1  # index of '('
+            close_paren = _find_balanced_close(formula, open_paren)
+            if close_paren < 0:
+                search_start = match.end()
+                continue  # unbalanced parens, skip
+
+            inner = formula[open_paren + 1:close_paren].strip()
+
+            # For ambiguous names (first/last): skip if inner contains colon
+            # syntax (it's a valid transform call, not a function-style agg)
+            if agg_name in _AMBIGUOUS_AGG_TRANSFORMS and ":" in inner:
+                search_start = close_paren + 1
+                continue
+
+            # Parse inner: first arg is the measure, rest are agg args
+            parts = _split_args(inner)
+            if not parts:
+                search_start = close_paren + 1
+                continue
+
+            first_arg = parts[0].strip()
+
+            # Validate first arg is an identifier/path or *
+            if first_arg == "*":
+                measure = "*"
+            elif _IDENT_OR_PATH_RE.fullmatch(first_arg):
+                measure = first_arg
+            else:
+                # First arg is not a simple name — skip
+                search_start = close_paren + 1
+                continue
+
+            # Build the colon-syntax replacement
+            remaining_args = [p.strip() for p in parts[1:]]
+            if remaining_args:
+                replacement = f"{measure}:{agg_name}({', '.join(remaining_args)})"
+            else:
+                replacement = f"{measure}:{agg_name}"
+
+            warnings.warn(
+                f"Auto-rewrote function-style aggregation "
+                f"'{formula[match.start():close_paren + 1]}' "
+                f"to '{replacement}'. Use colon syntax directly "
+                f"(e.g., 'revenue:sum').",
+                stacklevel=2,
+            )
+
+            formula = formula[:match.start()] + replacement + formula[close_paren + 1:]
+            rewritten = True
+            break  # restart scanning from the beginning after a rewrite
+
+        if not rewritten:
+            break
+
+    return formula
+
+
+def _split_args(s: str) -> list[str]:
+    """Split a comma-separated argument string respecting parentheses and quotes."""
+    parts = []
+    depth = 0
+    current = []
+    in_string = False
+    string_char = ""
+    for ch in s:
+        if in_string:
+            current.append(ch)
+            if ch == string_char:
+                in_string = False
+        elif ch in ("'", '"'):
+            current.append(ch)
+            in_string = True
+            string_char = ch
+        elif ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current))
+    return parts
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +299,10 @@ def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasure
     return processed, refs
 
 
-def parse_formula(formula: str) -> FieldSpec:
+def parse_formula(
+    formula: str,
+    extra_agg_names: Optional[frozenset[str]] = None,
+) -> FieldSpec:
     """Parse a formula string into a FieldSpec.
 
     Examples:
@@ -146,7 +314,13 @@ def parse_formula(formula: str) -> FieldSpec:
         "revenue:last(ordered_at)"           → AggregatedMeasureRef(..., agg_args=["ordered_at"])
 
     Bare measure names (e.g., "revenue") are not valid — use colon syntax.
+
+    Args:
+        formula: The formula string to parse.
+        extra_agg_names: Additional aggregation names for function-style rewriting.
     """
+    # Rewrite function-style aggregations (e.g., sum(revenue) → revenue:sum)
+    formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Preprocess colon syntax into ast-parseable placeholders
     processed, agg_refs = _preprocess_agg_refs(formula)
 
@@ -401,7 +575,10 @@ def _preprocess_sql_operators(formula: str) -> str:
     return "".join(result)
 
 
-def parse_filter(formula: str) -> ParsedFilter:
+def parse_filter(
+    formula: str,
+    extra_agg_names: Optional[frozenset[str]] = None,
+) -> ParsedFilter:
     """Parse a filter formula string into a ParsedFilter.
 
     Accepts both SQL and Python operator syntax:
@@ -419,9 +596,15 @@ def parse_filter(formula: str) -> ParsedFilter:
     Also handles colon syntax for aggregated measure refs in filters
     (e.g., "total_amount:sum > 100"). These are converted to canonical
     names (total_amount_sum) for the parsed output.
+
+    Args:
+        formula: The filter string to parse.
+        extra_agg_names: Additional aggregation names for function-style rewriting.
     """
+    # Rewrite function-style aggregations (e.g., sum(revenue) > 100 → revenue:sum > 100)
+    processed = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing
-    processed = _preprocess_sql_operators(formula)
+    processed = _preprocess_sql_operators(processed)
     # Pre-process `like` / `not like` operators into internal function calls
     processed = _preprocess_like(processed)
     # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names

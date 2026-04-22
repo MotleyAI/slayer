@@ -100,7 +100,7 @@ class EnrichedTransform:
     """
 
     name: str
-    transform: str  # cumsum, lag, lead, rank, time_shift, last
+    transform: str  # cumsum, lag, lead, rank, time_shift, first, last
     measure_alias: str  # Alias of the measure in the base CTE to transform
     alias: str  # Result column name
     offset: int  # For time_shift: number of rows or calendar units

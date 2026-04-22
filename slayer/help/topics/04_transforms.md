@@ -15,7 +15,8 @@ becomes an extra CTE in the generated SQL.
 | `change_pct(x)` | `(x − previous) / previous` | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
 | `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn |
 | `rank(x)` | Rank by x, descending | `RANK() OVER (ORDER BY x DESC)` |
-| `last(x)` | Broadcast latest bucket's value to every row | Window + join |
+| `first(x)` | Broadcast earliest bucket's value to every row | Window |
+| `last(x)` | Broadcast latest bucket's value to every row | Window |
 
 ## Self-join vs window-function — important trade-off
 
@@ -40,7 +41,7 @@ prefer `lag` / `lead`.
 
 ## Time dimension requirement
 
-`cumsum`, `time_shift`, `change`, `change_pct`, `last`, `lag`, `lead` all need
+`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead` all need
 an ordering time dimension. Resolution: `main_time_dimension` → single
 `time_dimensions` entry → model's `default_time_dimension` (if in query).
 `rank` does **not** need a time dimension.
@@ -69,15 +70,17 @@ Self-join transforms cannot wrap other self-join or change transforms.
 no auto-partition by dimension. Use `filters: ["rank(revenue:sum) <= 10"]` for
 top-N.
 
-## last() — broadcast transform
+## first() and last() — broadcast transforms
 
-`last(x)` projects the most recent bucket's aggregated value onto every row:
+`first(x)` projects the **earliest** bucket's aggregated value onto every row.
+`last(x)` projects the **most recent** bucket's aggregated value onto every row.
 
 ```json
 {
   "source_model": "orders",
   "fields": [
     "revenue:sum",
+    {"formula": "first(revenue:sum)", "name": "initial_revenue"},
     {"formula": "last(revenue:sum)", "name": "latest_revenue"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
@@ -90,4 +93,4 @@ Useful for filtering on trend: `"filters": ["last(change(revenue:sum)) < 0"]`.
 
 - `help(topic='time')` — granularity, whole_periods_only, main_time_dimension.
 - `help(topic='filters')` — filtering on transform outputs.
-- `help(topic='aggregations')` — `:last` aggregation vs `last()` transform.
+- `help(topic='aggregations')` — `:first`/`:last` aggregation vs `first()`/`last()` transform.

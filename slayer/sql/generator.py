@@ -955,6 +955,11 @@ class SQLGenerator:
             return f"LEAD({measure}, {abs(t.offset)}) OVER ({order_clause})"
         elif t.transform == "rank":
             return f"RANK() OVER (ORDER BY {measure} DESC)"
+        elif t.transform == "first":
+            return (
+                f"FIRST_VALUE({measure}) OVER ({order_clause} "
+                f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
+            )
         elif t.transform == "last":
             return (
                 f"FIRST_VALUE({measure}) OVER ({order_clause} DESC "

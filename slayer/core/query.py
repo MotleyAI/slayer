@@ -128,20 +128,28 @@ def _coerce_column_ref(v: Any) -> Any:
 
 
 def _coerce_order_column(v: Any) -> Any:
-    """Coerce ORDER BY column, normalizing colon-aggregation syntax.
+    """Coerce ORDER BY column, normalizing aggregation syntax.
 
-    LLMs write "revenue:sum" or "*:count" in order columns, matching
-    the fields syntax. Convert to the underscore form that matches
-    enriched measure names: "revenue:sum" → "revenue_sum", "*:count" → "_count".
-    Multi-hop: "customers.revenue:sum" → "customers.revenue_sum".
+    Handles both colon syntax and function-style syntax for built-in
+    aggregations. Converts to the underscore form that matches enriched
+    measure names:
+    - "revenue:sum" → "revenue_sum"
+    - "*:count" → "_count"
+    - "sum(revenue)" → "revenue_sum"
+    - "count(*)" → "_count"
+
+    Custom aggregation names are handled in the enrichment layer where
+    model context is available.
     """
-    if isinstance(v, str) and ":" in v:
-        base, agg = v.rsplit(":", 1)
-        if base == "*":
-            v = "_count"
-        else:
-            v = f"{base}_{agg}"
     if isinstance(v, str):
+        from slayer.core.formula import _rewrite_funcstyle_aggregations
+        v = _rewrite_funcstyle_aggregations(v)
+        if ":" in v:
+            base, agg = v.rsplit(":", 1)
+            if base == "*":
+                v = "_count"
+            else:
+                v = f"{base}_{agg}"
         return {"name": v}
     return v
 

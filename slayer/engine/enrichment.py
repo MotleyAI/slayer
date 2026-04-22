@@ -20,6 +20,7 @@ from slayer.core.formula import (
     TIME_TRANSFORMS,
     TransformField,
     _preprocess_like,
+    _rewrite_funcstyle_aggregations,
     parse_filter,
     parse_formula,
 )
@@ -61,6 +62,15 @@ async def enrich_query(
     """
     named_queries = named_queries or {}
     model_name_str = query.source_model if isinstance(query.source_model, str) else model.name
+
+    # Custom aggregation names for function-style rewriting
+    custom_agg_names: Optional[frozenset[str]] = (
+        frozenset(a.name for a in model.aggregations) if model.aggregations else None
+    )
+
+    # --- Normalize order columns (function-style + colon → underscore) ---
+    if query.order:
+        _normalize_order_columns(query.order, extra_agg_names=custom_agg_names)
 
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(
@@ -203,7 +213,7 @@ async def enrich_query(
         filter_sql = None
         filter_columns: List[str] = []
         if measure_def and measure_def.filter:
-            parsed = parse_filter(measure_def.filter)
+            parsed = parse_filter(measure_def.filter, extra_agg_names=custom_agg_names)
             resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
@@ -247,7 +257,7 @@ async def enrich_query(
                 f"Field '{name}' ({transform}) requires a time dimension. "
                 f"Add a time_dimension to the query or set default_time_dimension on the model."
             )
-        if transform in (_SELF_JOIN_TRANSFORMS | {"last"}) and not time_dimensions:
+        if transform in (_SELF_JOIN_TRANSFORMS | {"first", "last"}) and not time_dimensions:
             raise ValueError(
                 f"Field '{name}' ({transform}) requires a time_dimension in the query "
                 f"with a granularity for time bucketing."
@@ -465,7 +475,7 @@ async def enrich_query(
 
     # Process each query field
     for qfield in query.fields or []:
-        spec = parse_formula(qfield.formula)
+        spec = parse_formula(qfield.formula, extra_agg_names=custom_agg_names)
         field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
             "*", ""
         )
@@ -534,7 +544,7 @@ async def enrich_query(
     # --- Validate model filters ---
     measure_names_set = {m.name for m in measures}
     for mf in model.filters:
-        parsed_mf = parse_filter(mf)
+        parsed_mf = parse_filter(mf, extra_agg_names=custom_agg_names)
         for col in parsed_mf.columns:
             if col in measure_names_set:
                 raise ValueError(
@@ -557,9 +567,11 @@ async def enrich_query(
     processed_filters = []
     ft_counter = [0]
     for f_str in all_filter_strs:
-        rewritten, extra_fields = extract_filter_transforms(f_str, counter=ft_counter)
+        rewritten, extra_fields = extract_filter_transforms(
+            f_str, counter=ft_counter, extra_agg_names=custom_agg_names,
+        )
         for name, formula in extra_fields:
-            spec = parse_formula(formula)
+            spec = parse_formula(formula, extra_agg_names=custom_agg_names)
             await _flatten_spec(spec, name)
         processed_filters.append(rewritten)
 
@@ -592,7 +604,7 @@ async def enrich_query(
         last_agg_time_column=last_agg_time_column if has_first_or_last else None,
         filters=classify_filters(
             filters=await resolve_filter_columns(
-                parsed_filters=[parse_filter(f) for f in processed_filters],
+                parsed_filters=[parse_filter(f, extra_agg_names=custom_agg_names) for f in processed_filters],
                 model=model,
                 model_name=model_name_str,
                 resolve_join_target=resolve_join_target,
@@ -884,6 +896,31 @@ async def _resolve_joins(
 
 
 # ---------------------------------------------------------------------------
+# Order column normalization
+# ---------------------------------------------------------------------------
+
+
+def _normalize_order_columns(
+    order: list,
+    extra_agg_names: Optional[frozenset[str]] = None,
+) -> None:
+    """Normalize order column names for custom aggregations.
+
+    Built-in aggregation rewriting (function-style and colon→underscore) is
+    handled at Pydantic validation time in ``_coerce_order_column``.  This
+    function adds a second pass for **custom** aggregation names that are only
+    known once the model is available.
+    """
+    for item in order:
+        name = item.column.name
+        name = _rewrite_funcstyle_aggregations(name, extra_agg_names)
+        if ":" in name:
+            base, agg = name.rsplit(":", 1)
+            name = f"{base}_{agg}" if base != "*" else "_count"
+            item.column.name = name
+
+
+# ---------------------------------------------------------------------------
 # Filter processing
 # ---------------------------------------------------------------------------
 
@@ -891,6 +928,7 @@ async def _resolve_joins(
 def extract_filter_transforms(
     filter_str: str,
     counter: Optional[List[int]] = None,
+    extra_agg_names: Optional[frozenset[str]] = None,
 ) -> tuple:
     """Extract transform function calls from a filter string.
 
@@ -904,7 +942,8 @@ def extract_filter_transforms(
     if counter is None:
         counter = [0]
 
-    preprocessed = _preprocess_like(filter_str)
+    preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)
+    preprocessed = _preprocess_like(preprocessed)
     # Preprocess colon syntax (e.g., "order_total:sum") into ast-safe placeholders
     preprocessed, agg_refs = _preprocess_agg_refs(preprocessed)
     # Build reverse map: placeholder → original colon form
