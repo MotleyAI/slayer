@@ -230,17 +230,17 @@ examples:
   slayer datasources list
   slayer datasources show my_postgres
 
-  # Create from YAML file
-  slayer datasources create datasource.yaml
+  # Create from a connection string (name derived from the URL)
+  slayer datasources create postgresql://user:${DB_PASSWORD}@localhost/analytics
 
-  # Create inline (quick setup — use env vars for secrets)
-  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password '${DB_PASSWORD}'
+  # Create and immediately ingest models from the schema
+  slayer datasources create postgresql://localhost/analytics --ingest
 
-  # Or read password interactively
-  slayer datasources create-inline my_pg --type postgres --host localhost --database mydb --username user --password-stdin
+  # SQLite / DuckDB (filename stem used as the name)
+  slayer datasources create sqlite:///path/to/app.db --ingest
 
-  # Create SQLite/DuckDB (just needs a path)
-  slayer datasources create-inline my_sqlite --type sqlite --database /path/to/data.db
+  # Override the auto-derived name
+  slayer datasources create duckdb:///tmp/data.duckdb --name warehouse --ingest
 
   slayer datasources delete my_postgres
   slayer datasources test my_postgres
@@ -257,28 +257,47 @@ examples:
     )
     datasources_show_parser.add_argument("name", help="Datasource name")
 
-    datasources_create_parser = datasources_subparsers.add_parser("create", help="Create a datasource from a YAML file")
-    datasources_create_parser.add_argument("file", help="Path to YAML datasource config")
-
-    ds_inline_parser = datasources_subparsers.add_parser(
-        "create-inline", help="Create a datasource from command-line flags"
+    datasources_create_parser = datasources_subparsers.add_parser(
+        "create",
+        help="Create a datasource from a connection string",
     )
-    ds_inline_parser.add_argument("name", help="Datasource name")
-    ds_inline_parser.add_argument("--type", required=True, help="Database type (postgres, mysql, sqlite, duckdb, ...)")
-    ds_inline_parser.add_argument("--host", default=None, help="Database host")
-    ds_inline_parser.add_argument("--port", type=int, default=None, help="Database port")
-    ds_inline_parser.add_argument("--database", default=None, help="Database name or file path")
-    ds_inline_parser.add_argument("--username", default=None, help="Database username")
-    ds_inline_parser.add_argument(
-        "--password", default=None, help="Database password (prefer --password-stdin or ${ENV_VAR} in YAML configs)"
+    datasources_create_parser.add_argument(
+        "connection_string",
+        help="Database connection URL, e.g. postgresql://user:pass@host/db or sqlite:///path/to/file.db. "
+        "${ENV_VAR} references are resolved at use time.",
     )
-    ds_inline_parser.add_argument(
-        "--password-stdin", action="store_true", help="Read password from stdin (more secure than --password)"
+    datasources_create_parser.add_argument(
+        "--name",
+        default=None,
+        help="Datasource name (default: derived from the database portion of the URL)",
     )
-    ds_inline_parser.add_argument(
-        "--connection-string", default=None, help="Full connection string (overrides other flags)"
+    datasources_create_parser.add_argument(
+        "--description", default=None, help="Human-readable description"
     )
-    ds_inline_parser.add_argument("--description", default=None, help="Human-readable description")
+    datasources_create_parser.add_argument(
+        "--ingest",
+        action="store_true",
+        help="Run auto-ingestion immediately after creating the datasource",
+    )
+    datasources_create_parser.add_argument(
+        "--schema", default=None, help="(with --ingest) Schema to ingest from"
+    )
+    datasources_create_parser.add_argument(
+        "--include",
+        default=None,
+        help="(with --ingest) Comma-separated list of tables to include",
+    )
+    datasources_create_parser.add_argument(
+        "--exclude",
+        default=None,
+        help="(with --ingest) Comma-separated list of tables to exclude",
+    )
+    datasources_create_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Overwrite existing datasource / colliding models without prompting",
+    )
 
     datasources_delete_parser = datasources_subparsers.add_parser("delete", help="Delete a datasource")
     datasources_delete_parser.add_argument("name", help="Datasource name")
@@ -551,8 +570,6 @@ def _run_models(args):
 def _run_datasources(args):
     import yaml
 
-    from slayer.core.models import DatasourceConfig
-
     storage = _resolve_storage(args)
 
     if args.datasources_command == "list":
@@ -578,27 +595,7 @@ def _run_datasources(args):
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
     elif args.datasources_command == "create":
-        with open(args.file) as f:
-            data = yaml.safe_load(f)
-        ds = DatasourceConfig.model_validate(data)
-        run_sync(storage.save_datasource(ds))
-        print(f"Created datasource '{ds.name}' ({ds.type}).")
-
-    elif args.datasources_command == "create-inline":
-        ds_data = {"name": args.name, "type": args.type}
-        for field in ("host", "port", "database", "username", "password", "connection_string", "description"):
-            val = getattr(args, field.replace("-", "_"), None)
-            if val is not None:
-                ds_data[field] = val
-        if args.password_stdin:
-            import getpass
-
-            ds_data["password"] = (
-                getpass.getpass("Password: ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\n")
-            )
-        ds = DatasourceConfig.model_validate(ds_data)
-        run_sync(storage.save_datasource(ds))
-        print(f"Created datasource '{ds.name}' ({ds.type}).")
+        _run_datasources_create(args, storage)
 
     elif args.datasources_command == "delete":
         deleted = run_sync(storage.delete_datasource(args.name))
@@ -626,8 +623,134 @@ def _run_datasources(args):
             sys.exit(1)
 
     else:
-        print("Usage: slayer datasources {list,show,create,create-inline,delete,test}")
+        print("Usage: slayer datasources {list,show,create,delete,test}")
         sys.exit(1)
+
+
+def _parse_connection_string(url: str) -> tuple[str, str]:
+    """Parse a database URL into (type, derived_name).
+
+    - Strips any ``+driver`` suffix from the scheme (``mysql+pymysql`` → ``mysql``).
+    - Normalizes ``postgresql`` → ``postgres``.
+    - For file-based backends (sqlite, duckdb), the derived name is the file stem.
+    - For networked backends, the derived name is the database portion of the path.
+
+    Raises ``ValueError`` if the scheme is missing or no name can be derived.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        raise ValueError(f"Connection string '{url}' is missing a scheme (e.g. postgresql://…)")
+
+    ds_type = parsed.scheme.split("+", 1)[0].lower()
+    if ds_type == "postgresql":
+        ds_type = "postgres"
+
+    if ds_type in ("sqlite", "duckdb"):
+        # Path may start with ``/`` (netloc empty) or be relative.
+        raw_path = parsed.path or parsed.netloc
+        if not raw_path:
+            raise ValueError(
+                f"Cannot derive a name from '{url}': no file path provided. Pass --name explicitly."
+            )
+        stem = os.path.splitext(os.path.basename(raw_path.rstrip("/")))[0]
+        if not stem:
+            raise ValueError(
+                f"Cannot derive a name from '{url}': empty filename. Pass --name explicitly."
+            )
+        return ds_type, stem
+
+    # Networked: take the first non-empty path segment (Postgres/MySQL/ClickHouse all put db there).
+    segments = [s for s in parsed.path.split("/") if s]
+    if not segments:
+        raise ValueError(
+            f"Cannot derive a name from '{url}': no database in path. Pass --name explicitly."
+        )
+    return ds_type, segments[0]
+
+
+def _confirm(prompt: str, *, assume_yes: bool) -> bool:
+    """Yes/no prompt. Returns True if user confirms or ``assume_yes`` is set.
+
+    Aborts (returns False) on a non-tty when ``assume_yes`` is not set — the caller
+    should treat that as a declined confirmation.
+    """
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        print(f"{prompt} (non-interactive session; pass --yes to proceed)")
+        return False
+    try:
+        answer = input(f"{prompt} [y/N] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("y", "yes")
+
+
+def _run_datasources_create(args, storage):
+    from slayer.core.models import DatasourceConfig
+
+    try:
+        ds_type, derived_name = _parse_connection_string(args.connection_string)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    name = args.name or derived_name
+    ds = DatasourceConfig.model_validate(
+        {
+            "name": name,
+            "type": ds_type,
+            "connection_string": args.connection_string,
+            "description": args.description,
+        }
+    )
+
+    existing = run_sync(storage.get_datasource(name))
+    if existing is not None and not _confirm(
+        f"Datasource '{name}' already exists. Overwrite?", assume_yes=args.yes
+    ):
+        print("Aborted.")
+        sys.exit(1)
+
+    run_sync(storage.save_datasource(ds))
+    print(f"Created datasource '{ds.name}' ({ds.type}).")
+
+    if not args.ingest:
+        return
+
+    from slayer.engine.ingestion import ingest_datasource
+
+    include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
+    exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
+
+    try:
+        models = ingest_datasource(
+            datasource=ds,
+            schema=args.schema,
+            include_tables=include,
+            exclude_tables=exclude,
+        )
+    except Exception as e:
+        print(f"Ingestion failed: {e}")
+        sys.exit(1)
+
+    if not models:
+        print("No models were generated.")
+        return
+
+    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
+    if colliding and not _confirm(
+        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
+        assume_yes=args.yes,
+    ):
+        print("Aborted before writing models.")
+        sys.exit(1)
+
+    for model in models:
+        run_sync(storage.save_model(model))
+        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
 
 
 if __name__ == "__main__":

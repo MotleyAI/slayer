@@ -225,7 +225,13 @@ Via MCP, agents can do this conversationally:
 
 ## Datasource Setup
 
-By default, datasources are configured as individual YAML files in the `datasources/` directory:
+The fastest way is from the CLI — pass a connection URL and optionally ingest models in one step:
+
+```bash
+slayer datasources create postgresql://user:${DB_PASSWORD}@localhost/analytics --ingest
+```
+
+Or configure datasources as individual YAML files in the `datasources/` directory:
 
 ```yaml
 # datasources/my_postgres.yaml
