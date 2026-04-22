@@ -138,6 +138,21 @@ class Aggregation(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _reject_transform_names(self) -> "Aggregation":
+        from slayer.core.formula import ALL_TRANSFORMS
+        # Names that are ONLY transforms (not also built-in aggregations) are
+        # forbidden as custom aggregation names to avoid ambiguity with the
+        # formula parser's transform detection.
+        transform_only = ALL_TRANSFORMS - BUILTIN_AGGREGATIONS
+        if self.name in transform_only:
+            raise ValueError(
+                f"Aggregation name '{self.name}' conflicts with a built-in "
+                f"transform function. Reserved names: "
+                f"{', '.join(sorted(transform_only))}"
+            )
+        return self
+
 
 class Measure(BaseModel):
     name: str

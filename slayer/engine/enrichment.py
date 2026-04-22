@@ -40,6 +40,46 @@ _SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
 
 
+async def _collect_reachable_agg_names(
+    model: SlayerModel,
+    resolve_join_target,
+    named_queries: Dict,
+    max_depth: int = 3,
+) -> Optional[frozenset[str]]:
+    """Collect custom aggregation names from the source model and all reachable joined models.
+
+    Walks the join graph via BFS up to ``max_depth`` hops to discover custom
+    aggregation names that should be recognised by the function-style rewrite.
+    Returns ``None`` when no custom aggregations exist anywhere.
+    """
+    names: set[str] = set()
+    visited: set[str] = set()
+    queue: list[tuple[SlayerModel, int]] = [(model, 0)]
+
+    while queue:
+        current, depth = queue.pop(0)
+        if current.name in visited:
+            continue
+        visited.add(current.name)
+
+        if current.aggregations:
+            names.update(a.name for a in current.aggregations)
+
+        if depth < max_depth:
+            for join in current.joins:
+                if join.target_model not in visited:
+                    target_info = await resolve_join_target(
+                        target_model_name=join.target_model,
+                        named_queries=named_queries,
+                    )
+                    if target_info:
+                        _, target_model_obj = target_info
+                        if target_model_obj:
+                            queue.append((target_model_obj, depth + 1))
+
+    return frozenset(names) if names else None
+
+
 async def enrich_query(
     query: SlayerQuery,
     model: SlayerModel,
@@ -63,9 +103,11 @@ async def enrich_query(
     named_queries = named_queries or {}
     model_name_str = query.source_model if isinstance(query.source_model, str) else model.name
 
-    # Custom aggregation names for function-style rewriting
-    custom_agg_names: Optional[frozenset[str]] = (
-        frozenset(a.name for a in model.aggregations) if model.aggregations else None
+    # Custom aggregation names from source + all reachable joined models
+    custom_agg_names = await _collect_reachable_agg_names(
+        model=model,
+        resolve_join_target=resolve_join_target,
+        named_queries=named_queries,
     )
 
     # --- Normalize order columns (function-style + colon → underscore) ---

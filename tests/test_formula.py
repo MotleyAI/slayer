@@ -487,6 +487,40 @@ class TestFuncStyleEndToEnd:
         assert result.measure_name == "revenue"
         assert result.aggregation_name == "first"
 
+    def test_cross_model_custom_agg_parses(self) -> None:
+        result = parse_formula(
+            "rolling_avg(customers.score)",
+            extra_agg_names=frozenset({"rolling_avg"}),
+        )
+        assert isinstance(result, AggregatedMeasureRef)
+        assert result.measure_name == "customers.score"
+        assert result.aggregation_name == "rolling_avg"
+
+
+class TestAggregationNameValidation:
+    """Custom aggregation names must not conflict with transform names."""
+
+    def test_rejects_transform_name(self) -> None:
+        from slayer.core.models import Aggregation
+        with pytest.raises(ValueError, match="conflicts with a built-in transform"):
+            Aggregation(name="cumsum", formula="SUM({value})")
+
+    def test_rejects_time_shift(self) -> None:
+        from slayer.core.models import Aggregation
+        with pytest.raises(ValueError, match="conflicts with a built-in transform"):
+            Aggregation(name="time_shift", formula="SUM({value})")
+
+    def test_allows_non_conflicting_name(self) -> None:
+        from slayer.core.models import Aggregation
+        agg = Aggregation(name="rolling_avg", formula="AVG({value})")
+        assert agg.name == "rolling_avg"
+
+    def test_allows_builtin_override(self) -> None:
+        """Built-in names like 'sum' that are also in ALL_TRANSFORMS (first/last) are fine."""
+        from slayer.core.models import Aggregation
+        agg = Aggregation(name="sum")  # built-in override, no formula needed
+        assert agg.name == "sum"
+
 
 class TestFirstTransform:
     """Tests for the first() transform (mirroring last())."""

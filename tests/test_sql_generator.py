@@ -1738,11 +1738,9 @@ class TestFilteredMeasures:
             resolve_cross_model_measure=_noop_async,
             resolve_join_target=resolve_join_target,
         )
-        # The 'foo' join must NOT have been pulled in.
-        assert "foo" not in join_target_lookups, (
-            f"Spurious join planning for 'foo' triggered by dotted string "
-            f"literal in filter; lookups: {join_target_lookups}"
-        )
+        # The 'foo' join must NOT have been pulled into the resolved joins.
+        # (resolve_join_target may be called for aggregation name discovery,
+        # but that should not result in an actual JOIN in the query.)
         join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "foo" not in join_aliases
         # And confirm the SQL never gets a LEFT JOIN we didn't ask for.
@@ -2682,6 +2680,56 @@ class TestDimensionAggregation:
             assert "COUNT(DISTINCT" in sql
             assert "SUM(" in sql
             assert "/" in sql
+
+
+class TestCrossModelCustomAggFuncStyle:
+    """Function-style syntax with custom aggregations from joined models."""
+
+    async def test_funcstyle_custom_agg_on_joined_model(self, generator: SQLGenerator) -> None:
+        """rolling_avg(customers.score) should rewrite and generate SQL."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+        from slayer.core.models import Aggregation
+
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[Measure(name="score", sql="score")],
+            aggregations=[
+                Aggregation(name="rolling_avg", formula="AVG({value})"),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=["rolling_avg(customers.score)"],
+                dimensions=[ColumnRef(name="status")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "AVG(" in sql
 
 
 class TestMultiHopCrossModelMeasure:
