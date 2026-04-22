@@ -145,6 +145,9 @@ def _rewrite_funcstyle_aggregations(
 
     max_iterations = 50  # safety limit
     for _ in range(max_iterations):
+        # Recompute quoted-literal spans each iteration (offsets shift after rewrites)
+        literal_spans = [(m.start(), m.end()) for m in _STRING_LITERAL_RE.finditer(formula)]
+
         # Search from successive positions to skip non-rewritable matches
         search_start = 0
         rewritten = False
@@ -152,6 +155,11 @@ def _rewrite_funcstyle_aggregations(
             match = pattern.search(formula, search_start)
             if not match:
                 break
+
+            # Skip matches inside quoted string literals
+            if any(start <= match.start() < end for start, end in literal_spans):
+                search_start = match.end()
+                continue
 
             agg_name = match.group(1)
             open_paren = match.end() - 1  # index of '('

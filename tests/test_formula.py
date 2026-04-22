@@ -412,6 +412,14 @@ class TestFuncStyleRewrite:
             assert len(w) == 1
             assert "Auto-rewrote" in str(w[0].message)
 
+    # Quoted string literals — must not be rewritten
+    def test_inside_single_quoted_string(self) -> None:
+        assert _rewrite_funcstyle_aggregations("name = 'sum(revenue)'") == "name = 'sum(revenue)'"
+
+    def test_mixed_quoted_and_unquoted(self) -> None:
+        result = _rewrite_funcstyle_aggregations("sum(revenue) > 0 and name = 'count(x)'")
+        assert result == "revenue:sum > 0 and name = 'count(x)'"
+
     # Filter context
     def test_in_filter_expression(self) -> None:
         result = _rewrite_funcstyle_aggregations("sum(revenue) > 100")
