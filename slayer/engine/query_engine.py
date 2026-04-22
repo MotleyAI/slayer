@@ -5,8 +5,9 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 
 import decimal
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field as PydanticField, model_validator
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
@@ -59,38 +60,37 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return f"{prefix} {sql}{suffix}"
 
 
-@dataclass
-class FieldMetadata:
+class FieldMetadata(BaseModel):
     """Metadata for a single field in the query response."""
 
     label: Optional[str] = None
     format: Optional[NumberFormat] = None
 
 
-@dataclass
-class ResponseAttributes:
+class ResponseAttributes(BaseModel):
     """Field metadata for a query response, split by type."""
 
-    dimensions: Dict[str, FieldMetadata] = field(default_factory=dict)
-    measures: Dict[str, FieldMetadata] = field(default_factory=dict)
+    dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    measures: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
 
     def get(self, column: str) -> Optional[FieldMetadata]:
         """Look up metadata for a column across both dicts."""
         return self.dimensions.get(column) or self.measures.get(column)
 
 
-@dataclass
-class SlayerResponse:
+class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
     data: List[Dict[str, Any]]
-    columns: List[str] = field(default_factory=list)
+    columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
-    attributes: ResponseAttributes = field(default_factory=ResponseAttributes)
+    attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
 
-    def __post_init__(self):
+    @model_validator(mode="after")
+    def _populate_columns(self) -> "SlayerResponse":
         if not self.columns and self.data:
             self.columns = list(self.data[0].keys())
+        return self
 
     @property
     def row_count(self) -> int:

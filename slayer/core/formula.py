@@ -15,8 +15,9 @@ A formula can be:
 import ast
 import re
 import warnings
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
+
+from pydantic import BaseModel, Field
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
 
@@ -29,8 +30,7 @@ TIMELESS_TRANSFORMS = {"rank"}
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
 
-@dataclass
-class AggregatedMeasureRef:
+class AggregatedMeasureRef(BaseModel):
     """A measure reference with explicit aggregation (new colon syntax).
 
     Examples:
@@ -42,43 +42,43 @@ class AggregatedMeasureRef:
         "revenue:last(ordered_at)"           → AggregatedMeasureRef("revenue", "last",
                                                                      agg_args=["ordered_at"])
     """
-    measure_name: str  # e.g., "revenue", "customers.revenue", "*"
-    aggregation_name: str  # e.g., "sum", "weighted_avg"
-    agg_args: List[str] = field(default_factory=list)  # positional args
-    agg_kwargs: Dict[str, str] = field(default_factory=dict)  # keyword args
+    measure_name: str = Field(description="Measure name, e.g. 'revenue', 'customers.revenue', '*'")
+    aggregation_name: str = Field(description="Aggregation name, e.g. 'sum', 'weighted_avg'")
+    agg_args: List[str] = Field(default_factory=list, description="Positional aggregation args")
+    agg_kwargs: Dict[str, str] = Field(default_factory=dict, description="Keyword aggregation args")
 
 
-@dataclass
-class ArithmeticField:
+class ArithmeticField(BaseModel):
     """An arithmetic expression over measures only (no transform calls inside)."""
-    sql: str  # Preprocessed formula (placeholders for aggregated refs)
-    measure_names: List[str]  # Placeholder IDs or bare names
-    agg_refs: Dict[str, AggregatedMeasureRef] = field(default_factory=dict)
+    sql: str = Field(description="Preprocessed formula with placeholders for aggregated refs")
+    measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
+    agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
 
 
-@dataclass
-class TransformField:
+class TransformField(BaseModel):
     """A transform function call, possibly wrapping another transform or arithmetic."""
-    transform: str  # cumsum, lag, lead, change, change_pct, rank, time_shift, first, last
-    inner: "FieldSpec"  # What's being transformed
-    args: List[Any] = field(default_factory=list)
+    transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, time_shift, first, last")
+    inner: "FieldSpec" = Field(description="The measure or expression being transformed")
+    args: List[Any] = Field(default_factory=list, description="Extra transform args (offset, granularity, etc.)")
 
 
-@dataclass
-class MixedArithmeticField:
+class MixedArithmeticField(BaseModel):
     """Arithmetic that contains transform sub-expressions.
 
     E.g., "cumsum(revenue:sum) / *:count" — the cumsum needs to be computed first
     as a CTE step, then the arithmetic references its result.
     """
-    sql: str  # Preprocessed formula with placeholders
-    measure_names: List[str]  # Placeholder IDs or bare measure names
-    sub_transforms: List[tuple]  # List of (placeholder_name, TransformField)
-    agg_refs: Dict[str, AggregatedMeasureRef] = field(default_factory=dict)
+    sql: str = Field(description="Preprocessed formula with placeholders")
+    measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
+    sub_transforms: List[tuple] = Field(description="List of (placeholder_name, TransformField)")
+    agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
 
 
 # The parsed result of a single field
 FieldSpec = Union[AggregatedMeasureRef, ArithmeticField, TransformField, MixedArithmeticField]
+
+# Rebuild TransformField which uses a forward reference to FieldSpec
+TransformField.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
@@ -499,17 +499,16 @@ def _parse_literal(node: ast.AST, original: str) -> Any:
 FILTER_FUNCTIONS = {"__like__", "__notlike__"}
 
 
-@dataclass
-class ParsedFilter:
+class ParsedFilter(BaseModel):
     """A parsed filter condition ready for SQL generation.
 
     The sql field contains a SQL-ready WHERE condition with column names
     as-is (they get qualified with the model name during SQL generation).
     """
-    sql: str  # e.g., "status = 'completed'"
-    columns: List[str]  # Column names referenced
-    is_having: bool = False  # True if this is a HAVING filter (aggregate condition)
-    is_post_filter: bool = False  # True if this references a computed column (transform/expression)
+    sql: str = Field(description="SQL WHERE condition, e.g. \"status = 'completed'\"")
+    columns: List[str] = Field(description="Column names referenced in the filter")
+    is_having: bool = Field(default=False, description="True if this is a HAVING filter (aggregate condition)")
+    is_post_filter: bool = Field(default=False, description="True if this references a computed column (transform/expression)")
 
 
 def _preprocess_like(formula: str) -> str:
