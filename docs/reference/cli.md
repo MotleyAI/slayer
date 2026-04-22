@@ -136,4 +136,30 @@ Manage datasources.
 ```bash
 slayer datasources list
 slayer datasources show my_postgres   # credentials masked
+slayer datasources test my_postgres
+slayer datasources delete my_postgres
 ```
+
+#### `slayer datasources create`
+
+Create a datasource from a connection URL. The name is derived from the database portion of the URL (or the filename stem for SQLite/DuckDB) unless `--name` is passed. Pass `--ingest` to create and ingest in a single step.
+
+```bash
+slayer datasources create postgresql://user:${DB_PW}@localhost/analytics
+slayer datasources create postgresql://localhost/analytics --ingest
+slayer datasources create sqlite:///path/to/app.db --name analytics --ingest
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `connection_string` | Yes | Database URL (e.g. `postgresql://…`, `mysql+pymysql://…`, `sqlite:///path/to/file.db`, `duckdb:///…`, `clickhouse+http://…`). `${ENV_VAR}` references are resolved at use time. |
+| `--name` | No | Override the auto-derived name |
+| `--description` | No | Human-readable description |
+| `--ingest` | No | Run auto-ingestion immediately after creating the datasource |
+| `--schema` | No | (with `--ingest`) Schema to ingest from |
+| `--include` | No | (with `--ingest`) Comma-separated tables to include |
+| `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
+| `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
+| `--storage` | No | Storage path |
+
+If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.

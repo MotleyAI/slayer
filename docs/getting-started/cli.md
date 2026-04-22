@@ -16,47 +16,32 @@ uv tool install 'motley-slayer[postgres]'
 
 ## Connect a database
 
-Create a datasource — either from a YAML file or inline:
+Point `slayer datasources create` at a connection URL. The datasource name is derived from the database portion of the URL (override with `--name`). Pass `--ingest` to also auto-generate models in one shot:
 
 ```bash
-# Inline (quick setup — use ${ENV_VAR} for secrets)
-slayer datasources create-inline my_pg \
-  --type postgres \
-  --host localhost \
-  --database myapp \
-  --username analyst \
-  --password-stdin
+# Postgres (use ${ENV_VAR} to keep secrets out of shell history)
+slayer datasources create postgresql://analyst:${DB_PASSWORD}@localhost/myapp --ingest
 
-# Or from a YAML file
-slayer datasources create datasource.yaml
-```
+# SQLite / DuckDB — name comes from the filename stem
+slayer datasources create sqlite:///path/to/app.db --ingest
 
-YAML file format:
-
-```yaml
-# datasource.yaml
-name: my_pg
-type: postgres
-host: localhost
-port: 5432
-database: myapp
-username: analyst
-password: ${DB_PASSWORD}
+# Override the auto-derived name
+slayer datasources create duckdb:///tmp/data.duckdb --name warehouse --ingest
 ```
 
 Test the connection:
 
 ```bash
-slayer datasources test my_pg
-# OK — connected to 'my_pg' (postgres).
+slayer datasources test myapp
+# OK — connected to 'myapp' (postgres).
 ```
 
 ## Ingest models
 
-Auto-generate models from your database schema:
+`--ingest` on `create` is shorthand for creating the datasource and immediately running ingestion. To re-ingest an existing datasource later:
 
 ```bash
-slayer ingest --datasource my_pg
+slayer ingest --datasource myapp
 # Ingested: orders (6 dims, 12 measures)
 # Ingested: customers (4 dims, 5 measures)
 # Ingested: regions (3 dims, 2 measures)
@@ -65,9 +50,11 @@ slayer ingest --datasource my_pg
 Optionally filter tables:
 
 ```bash
-slayer ingest --datasource my_pg --schema public --include orders,customers
-slayer ingest --datasource my_pg --exclude migrations,django_session
+slayer ingest --datasource myapp --schema public --include orders,customers
+slayer ingest --datasource myapp --exclude migrations,django_session
 ```
+
+The same `--schema`, `--include`, and `--exclude` flags work on `datasources create --ingest` too.
 
 ## Query
 
