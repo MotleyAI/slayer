@@ -39,7 +39,7 @@ async def test_create_demo_with_ingest_end_to_end(tmp_path):
         demo=False,
     )
 
-    cli._run_datasources_create(args, storage=storage)
+    cli._run_datasources_create(args=args, storage=storage)
 
     # DuckDB file written under <storage>/demo/
     assert os.path.exists(os.path.join(storage_path, "demo", "jaffle_shop.duckdb"))

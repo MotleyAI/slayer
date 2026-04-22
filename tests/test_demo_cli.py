@@ -1,6 +1,7 @@
 """Unit tests for the Jaffle Shop demo CLI affordances."""
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -31,22 +32,32 @@ class TestDemoKeywordDispatch:
     def test_demo_keyword_routes_to_demo_handler(self, monkeypatch):
         called = {}
 
-        def fake_handler(args, storage):
-            called["args"] = args
-            called["storage"] = storage
+        def fake_handler(*args, **kwargs):
+            called["args"] = kwargs.get("args", args[0] if args else None)
+            called["storage"] = kwargs.get("storage", args[1] if len(args) > 1 else None)
 
         monkeypatch.setattr(cli, "_run_datasources_create_demo", fake_handler)
 
-        cli._run_datasources_create(_make_args(connection_string="demo"), storage=object())
+        cli._run_datasources_create(
+            args=_make_args(connection_string="demo"), storage=object()
+        )
 
         assert "args" in called, "expected demo handler to be invoked"
 
     def test_demo_keyword_is_case_insensitive(self, monkeypatch):
         called = []
-        monkeypatch.setattr(cli, "_run_datasources_create_demo", lambda args, storage: called.append(1))
+        monkeypatch.setattr(
+            cli,
+            "_run_datasources_create_demo",
+            lambda *args, **kwargs: called.append(1),
+        )
 
-        cli._run_datasources_create(_make_args(connection_string="DEMO"), storage=object())
-        cli._run_datasources_create(_make_args(connection_string=" demo "), storage=object())
+        cli._run_datasources_create(
+            args=_make_args(connection_string="DEMO"), storage=object()
+        )
+        cli._run_datasources_create(
+            args=_make_args(connection_string=" demo "), storage=object()
+        )
 
         assert len(called) == 2
 
@@ -54,7 +65,7 @@ class TestDemoKeywordDispatch:
         monkeypatch.setattr(
             cli,
             "_run_datasources_create_demo",
-            lambda args, storage: pytest.fail("demo handler should not run for URLs"),
+            lambda *args, **kwargs: pytest.fail("demo handler should not run for URLs"),
         )
 
         # Force the normal path to exit early without hitting storage.
@@ -64,7 +75,8 @@ class TestDemoKeywordDispatch:
         monkeypatch.setattr(cli, "_parse_connection_string", fake_parse)
         with pytest.raises(SystemExit):
             cli._run_datasources_create(
-                _make_args(connection_string="postgresql://host/db"), storage=object()
+                args=_make_args(connection_string="postgresql://host/db"),
+                storage=object(),
             )
 
 
@@ -79,7 +91,7 @@ class TestMissingDependencyHints:
 
         with pytest.raises(SystemExit) as exc:
             cli._run_datasources_create_demo(
-                _make_args(storage=str(tmp_path)),
+                args=_make_args(storage=str(tmp_path)),
                 storage=object(),
             )
 
@@ -97,7 +109,7 @@ class TestMissingDependencyHints:
 
         with pytest.raises(SystemExit) as exc:
             cli._run_datasources_create_demo(
-                _make_args(storage=str(tmp_path)),
+                args=_make_args(storage=str(tmp_path)),
                 storage=object(),
             )
 
@@ -110,29 +122,35 @@ class TestMissingDependencyHints:
 class TestServeMcpDemoHook:
     def test_serve_demo_flag_calls_prepare_demo(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(cli, "_prepare_demo", lambda args, storage: calls.append("prepare"))
-        monkeypatch.setattr(cli, "_resolve_storage", lambda args: "STORAGE")
+        monkeypatch.setattr(
+            cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
+        )
+        monkeypatch.setattr(cli, "_resolve_storage", lambda *args, **kwargs: "STORAGE")
 
         # Stub out create_app + uvicorn.run.
         import sys as _sys
         import types as _types
 
         fake_api = _types.ModuleType("slayer.api.server")
-        fake_api.create_app = lambda storage: "APP"
+        fake_api.create_app = lambda *args, **kwargs: "APP"
         monkeypatch.setitem(_sys.modules, "slayer.api.server", fake_api)
         fake_uvicorn = _types.ModuleType("uvicorn")
-        fake_uvicorn.run = lambda app, host, port: calls.append(f"uvicorn:{app}:{host}:{port}")
+        fake_uvicorn.run = lambda *args, **kwargs: calls.append(
+            f"uvicorn:{args[0] if args else kwargs.get('app')}:{kwargs.get('host')}:{kwargs.get('port')}"
+        )
         monkeypatch.setitem(_sys.modules, "uvicorn", fake_uvicorn)
 
         args = argparse.Namespace(host="h", port=1, storage=None, models_dir=None, demo=True)
-        cli._run_serve(args)
+        cli._run_serve(args=args)
 
         assert calls == ["prepare", "uvicorn:APP:h:1"]
 
     def test_mcp_demo_flag_calls_prepare_demo(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(cli, "_prepare_demo", lambda args, storage: calls.append("prepare"))
-        monkeypatch.setattr(cli, "_resolve_storage", lambda args: "STORAGE")
+        monkeypatch.setattr(
+            cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
+        )
+        monkeypatch.setattr(cli, "_resolve_storage", lambda *args, **kwargs: "STORAGE")
 
         import sys as _sys
         import types as _types
@@ -142,27 +160,26 @@ class TestServeMcpDemoHook:
                 calls.append("mcp.run")
 
         fake_mcp = _types.ModuleType("slayer.mcp.server")
-        fake_mcp.create_mcp_server = lambda storage: _FakeMCP()
+        fake_mcp.create_mcp_server = lambda *args, **kwargs: _FakeMCP()
         monkeypatch.setitem(_sys.modules, "slayer.mcp.server", fake_mcp)
 
         args = argparse.Namespace(storage=None, models_dir=None, demo=True)
-        cli._run_mcp(args)
+        cli._run_mcp(args=args)
 
         assert calls == ["prepare", "mcp.run"]
 
 
 class TestResolveDemoDbPath:
     def test_yaml_directory_storage(self, tmp_path):
-        storage = str(tmp_path / "slayer_data")
-        result = jaffle_shop.resolve_demo_db_path(storage)
-        assert result.endswith("/demo/jaffle_shop.duckdb")
-        assert result.startswith(storage)
+        storage_dir = tmp_path / "slayer_data"
+        result = jaffle_shop.resolve_demo_db_path(str(storage_dir))
+        assert Path(result) == storage_dir / "demo" / "jaffle_shop.duckdb"
 
     def test_sqlite_file_storage_uses_parent_dir(self, tmp_path):
         db = tmp_path / "slayer.db"
         db.touch()
         result = jaffle_shop.resolve_demo_db_path(str(db))
-        assert result == str(tmp_path / "demo" / "jaffle_shop.duckdb")
+        assert Path(result) == tmp_path / "demo" / "jaffle_shop.duckdb"
 
 
 class TestBuildJaffleShopIdempotency:

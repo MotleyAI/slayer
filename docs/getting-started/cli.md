@@ -20,7 +20,7 @@ If you just want to kick the tyres, spin up the bundled Jaffle Shop dataset in o
 
 ```bash
 slayer datasources create demo --ingest
-slayer query '{"source_model": "orders", "fields": [{"formula": "*:count"}]}'
+slayer query '{"source_model": "orders", "fields": ["*:count"]}'
 ```
 
 This generates ~1 year of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `order_items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N`.

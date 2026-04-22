@@ -234,10 +234,16 @@ def load_data(
         if not os.path.exists(csv_path):
             continue
 
+        # read_csv_auto takes a SQL string literal, not a bound parameter, so
+        # escape any single quotes in the path by doubling them before
+        # interpolation. (The path itself is trusted in normal demo flows —
+        # this is defence-in-depth for callers who pass arbitrary data_dirs.)
+        quoted_csv_path = csv_path.replace("'", "''")
+
         cents_cols = CENTS_COLUMNS.get(csv_name, [])
         if cents_cols:
             conn.execute(
-                f"CREATE TEMP VIEW _{table}_raw AS SELECT * FROM read_csv_auto('{csv_path}')"
+                f"CREATE TEMP VIEW _{table}_raw AS SELECT * FROM read_csv_auto('{quoted_csv_path}')"
             )
             columns = [row[0] for row in conn.execute(f"DESCRIBE _{table}_raw").fetchall()]
             select_parts = []
@@ -251,7 +257,9 @@ def load_data(
             )
             conn.execute(f"DROP VIEW _{table}_raw")
         else:
-            conn.execute(f"INSERT INTO {table} SELECT * FROM read_csv_auto('{csv_path}')")
+            conn.execute(
+                f"INSERT INTO {table} SELECT * FROM read_csv_auto('{quoted_csv_path}')"
+            )
 
     shift_dates_to_today(conn)
 
