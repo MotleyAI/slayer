@@ -101,6 +101,9 @@ def _find_balanced_close(s: str, start: int) -> int:
     while i < len(s):
         ch = s[i]
         if in_string:
+            if ch == "\\" and i + 1 < len(s):
+                i += 2  # skip escaped character
+                continue
             if ch == string_char:
                 in_string = False
         elif ch in ("'", '"'):
@@ -223,11 +226,18 @@ def _split_args(s: str) -> list[str]:
     """Split a comma-separated argument string respecting parentheses and quotes."""
     parts = []
     depth = 0
-    current = []
+    current: list[str] = []
     in_string = False
     string_char = ""
-    for ch in s:
+    i = 0
+    while i < len(s):
+        ch = s[i]
         if in_string:
+            if ch == "\\" and i + 1 < len(s):
+                current.append(ch)
+                current.append(s[i + 1])
+                i += 2
+                continue
             current.append(ch)
             if ch == string_char:
                 in_string = False
@@ -246,6 +256,7 @@ def _split_args(s: str) -> list[str]:
             current = []
         else:
             current.append(ch)
+        i += 1
     if current:
         parts.append("".join(current))
     return parts
@@ -552,7 +563,7 @@ def _preprocess_like(formula: str) -> str:
     return formula
 
 
-_STRING_LITERAL_RE = re.compile(r"'[^']*'")
+_STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
 
 
 def _preprocess_sql_operators(formula: str) -> str:

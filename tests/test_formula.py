@@ -420,6 +420,11 @@ class TestFuncStyleRewrite:
         result = _rewrite_funcstyle_aggregations("sum(revenue) > 0 and name = 'count(x)'")
         assert result == "revenue:sum > 0 and name = 'count(x)'"
 
+    # Escaped quotes inside strings
+    def test_escaped_quote_in_string(self) -> None:
+        """Backslash-escaped quote inside a string must not break string tracking."""
+        assert _rewrite_funcstyle_aggregations(r"name = 'it\'s sum(x)'") == r"name = 'it\'s sum(x)'"
+
     # Filter context
     def test_in_filter_expression(self) -> None:
         result = _rewrite_funcstyle_aggregations("sum(revenue) > 100")
