@@ -129,8 +129,16 @@ _FENCE_RE = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
 
 
 def _json_snippets(body: str) -> list[tuple[int, str]]:
-    """Return (offset, snippet) pairs for every ```json ... ``` block."""
-    return [(m.start(), m.group(1)) for m in _FENCE_RE.finditer(body)]
+    """Return (offset, snippet) pairs for every ```json ... ``` block.
+
+    Skips snippets containing ``...`` (ellipsis), which are used as
+    illustrative fragments rather than complete, parseable JSON.
+    """
+    return [
+        (m.start(), m.group(1))
+        for m in _FENCE_RE.finditer(body)
+        if "..." not in m.group(1)
+    ]
 
 
 def _all_topic_bodies() -> list[tuple[str, str]]:
