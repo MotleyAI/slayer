@@ -972,6 +972,7 @@ def extract_filter_transforms(
         counter = [0]
 
     preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)
+    funcstyle_rewritten = preprocessed  # capture after funcstyle rewrite, before further preprocessing
     preprocessed = _preprocess_like(preprocessed)
     # Preprocess colon syntax (e.g., "order_total:sum") into ast-safe placeholders
     preprocessed, agg_refs = _preprocess_agg_refs(preprocessed)
@@ -1019,7 +1020,7 @@ def extract_filter_transforms(
 
     modified = _replace(tree.body)
     if not transforms:
-        return filter_str, []
+        return funcstyle_rewritten, []
     return _unmangle(_ast.unparse(modified)), transforms
 
 

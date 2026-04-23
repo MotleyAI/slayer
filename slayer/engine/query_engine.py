@@ -962,6 +962,10 @@ class SlayerQueryEngine:
         # --- Remap filters ---
         rerooted_filters = []
         target_prefix = target_model_name + "."
+        _custom_agg_names = frozenset(
+            a.name for m in (model, target_model)
+            for a in m.aggregations
+        ) or None
         for f_str in (query.filters or []) + list(model.filters):
             remapped = f_str
             # Strip target model prefix from dotted references
@@ -970,7 +974,7 @@ class SlayerQueryEngine:
                 remapped = remapped.replace(target_prefix, "")
             # For unqualified column references that are source model dimensions,
             # prepend source model name (they're now on a joined table)
-            parsed = parse_filter(remapped)
+            parsed = parse_filter(remapped, extra_agg_names=_custom_agg_names)
             for col in parsed.columns:
                 if "." not in col:
                     dim = model.get_dimension(col)

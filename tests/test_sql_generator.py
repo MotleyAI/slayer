@@ -3179,6 +3179,40 @@ class TestCrossModelRerootedSubquery:
         assert "status_code" in cte_section.lower()
         assert "'ACTIVE'" in cte_section
 
+    async def test_rerooted_custom_agg_in_filter(self, generator):
+        """Function-style custom aggregation in filter must be recognised during rerooting."""
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            aggregations=[Aggregation(name="custom_sum", formula="SUM({column})")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="lifetime_value", sql="lifetime_value")],
+            joins=[ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]])],
+        )
+        engine = await self._setup_engine(orders, customers)
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customers.lifetime_value:sum")],
+            dimensions=[ColumnRef(name="status")],
+            filters=["custom_sum(amount) > 0"],
+        )
+        enriched = await engine._enrich(query=query, model=orders, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+
 class TestOrderByCustomFieldName:
     """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
 
