@@ -39,14 +39,24 @@ We recommend using [uv](https://docs.astral.sh/uv/), especially if you don't wor
 To run the server:
 
 ```bash
+# Instant demo — spins up the bundled Jaffle Shop DuckDB and ingests it
+uvx --from 'motley-slayer[all]' slayer serve --demo
+
+# Or run without --demo and connect your own data afterwards
 uvx --from 'motley-slayer[all]' slayer serve
 ```
 
 Or to add the MCP server:
 
 ```bash
+# With the Jaffle Shop demo preloaded (zero-config quickstart)
+claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp --demo
+
+# Or without the demo
 claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp
 ```
+
+The `--demo` flag additionally requires [`jafgen`](https://github.com/rossbowen/jaffle-shop-generator) — install hints are printed if it's missing.
 
 Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#datasource-setup) or ask your agent to help you do it.
 
@@ -78,6 +88,9 @@ SLayer supports two MCP transports, **HTTP** (served alongside the API) and **st
 ```bash
 # 1. stdio-based, does not require a running server
 claude mcp add slayer -- slayer mcp
+
+# 1b. same, but preload the Jaffle Shop demo on startup
+claude mcp add slayer -- slayer mcp --demo
 
 # 2. HTTP-based (SSE), provided SLayer server is already running
 claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse

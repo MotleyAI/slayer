@@ -28,6 +28,7 @@ Start the HTTP server (REST API + MCP SSE endpoint at `/mcp/sse`).
 slayer serve
 slayer serve --host 0.0.0.0 --port 8080
 slayer serve --storage slayer.db
+slayer serve --demo            # auto-ingest the bundled Jaffle Shop demo first
 ```
 
 | Flag | Default | Description |
@@ -35,6 +36,7 @@ slayer serve --storage slayer.db
 | `--host` | `0.0.0.0` | Bind address |
 | `--port` | `5143` | Port number |
 | `--storage` | `./slayer_data` | Storage path (directory for YAML, .db file for SQLite) |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). Requires `duckdb` + `jafgen`. |
 
 ### `slayer mcp`
 
@@ -53,6 +55,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | `./slayer_data` | Storage path |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). Requires `duckdb` + `jafgen`. |
 
 ### `slayer query`
 
@@ -148,18 +151,22 @@ Create a datasource from a connection URL. The name is derived from the database
 slayer datasources create postgresql://user:${DB_PW}@localhost/analytics
 slayer datasources create postgresql://localhost/analytics --ingest
 slayer datasources create sqlite:///path/to/app.db --name analytics --ingest
+slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `connection_string` | Yes | Database URL (e.g. `postgresql://…`, `mysql+pymysql://…`, `sqlite:///path/to/file.db`, `duckdb:///…`, `clickhouse+http://…`). `${ENV_VAR}` references are resolved at use time. |
-| `--name` | No | Override the auto-derived name |
+| `connection_string` | Yes | Database URL (e.g. `postgresql://…`, `mysql+pymysql://…`, `sqlite:///path/to/file.db`, `duckdb:///…`, `clickhouse+http://…`). `${ENV_VAR}` references are resolved at use time. Pass the literal `demo` to spin up the bundled Jaffle Shop demo DuckDB. |
+| `--name` | No | Override the auto-derived name (default for the demo: `jaffle_shop`) |
 | `--description` | No | Human-readable description |
 | `--ingest` | No | Run auto-ingestion immediately after creating the datasource |
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
+| `--years` | No | (demo only) Years of synthetic data to generate (default: 1) |
 | `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
 | `--storage` | No | Storage path |
+
+The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. Requires `duckdb` (install with the `[duckdb]` or `[all]` extra) and [`jafgen`](https://github.com/rossbowen/jaffle-shop-generator) (git-only install); missing-dependency errors surface with a ready-to-copy install command.
 
 If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.

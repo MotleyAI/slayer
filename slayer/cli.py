@@ -5,7 +5,7 @@ import os
 import sys
 
 from slayer.async_utils import run_sync
-from slayer.storage.base import default_storage_path
+from slayer.storage.base import default_storage_path, storage_base_dir
 
 _STORAGE_DEFAULT = default_storage_path()
 _STORAGE_HELP = (
@@ -33,14 +33,8 @@ def _resolve_storage(args):
 
 
 def _queries_dir_for_storage(storage_path: str) -> str:
-    """Return the directory where queries.yaml should be written.
-
-    If storage_path points at a SQLite file (e.g. "slayer.db"), use its
-    parent directory. Otherwise the storage_path is itself a directory.
-    """
-    if storage_path.endswith((".db", ".sqlite", ".sqlite3")):
-        return os.path.dirname(storage_path) or "."
-    return storage_path
+    """Return the directory where queries.yaml should be written."""
+    return storage_base_dir(storage_path)
 
 
 def main():
@@ -78,11 +72,19 @@ examples:
   slayer serve
   slayer serve --port 8080 --storage ./my_data
   slayer serve --storage slayer.db
+
+  # Instant demo: auto-ingest the bundled Jaffle Shop dataset, then serve
+  slayer serve --demo
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     serve_parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     serve_parser.add_argument("--port", type=int, default=5143, help="Port number (default: 5143)")
+    serve_parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Generate and ingest the bundled Jaffle Shop demo dataset before starting (idempotent).",
+    )
     _add_storage_arg(serve_parser)
 
     # ── mcp ───────────────────────────────────────────────────────────
@@ -96,8 +98,16 @@ examples:
 
   # Add to Claude Code:
   claude mcp add slayer -- slayer mcp --storage ./slayer_data
+
+  # Instant demo: auto-ingest the bundled Jaffle Shop dataset, then serve over MCP
+  slayer mcp --demo
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    mcp_parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Generate and ingest the bundled Jaffle Shop demo dataset before starting (idempotent).",
     )
     _add_storage_arg(mcp_parser)
 
@@ -242,6 +252,9 @@ examples:
   # Override the auto-derived name
   slayer datasources create duckdb:///tmp/data.duckdb --name warehouse --ingest
 
+  # Spin up the bundled Jaffle Shop demo DuckDB (idempotent — safe to re-run)
+  slayer datasources create demo --ingest
+
   slayer datasources delete my_postgres
   slayer datasources test my_postgres
 """,
@@ -264,7 +277,8 @@ examples:
     datasources_create_parser.add_argument(
         "connection_string",
         help="Database connection URL, e.g. postgresql://user:pass@host/db or sqlite:///path/to/file.db. "
-        "${ENV_VAR} references are resolved at use time.",
+        "${ENV_VAR} references are resolved at use time. "
+        "Pass the literal 'demo' to spin up the bundled Jaffle Shop demo dataset.",
     )
     datasources_create_parser.add_argument(
         "--name",
@@ -291,6 +305,12 @@ examples:
         "--exclude",
         default=None,
         help="(with --ingest) Comma-separated list of tables to exclude",
+    )
+    datasources_create_parser.add_argument(
+        "--years",
+        type=int,
+        default=1,
+        help="(demo only) Years of synthetic data to generate (default: 1)",
     )
     datasources_create_parser.add_argument(
         "-y",
@@ -400,10 +420,45 @@ def _run_query(args):
             print(f"\n{result.row_count} row(s)")
 
 
+def _prepare_demo(args, storage, *, stream=None):
+    """Ensure the Jaffle Shop demo is set up before a long-running server starts.
+
+    Writes status messages to ``stream`` (default: stderr) so stdio-based
+    transports (``slayer mcp``) remain protocol-safe.
+    """
+    from slayer.demo import DemoDependencyError, ensure_demo_datasource
+
+    out = stream if stream is not None else sys.stderr
+    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    try:
+        ds, models, db_built = ensure_demo_datasource(
+            storage,
+            storage_path=storage_path,
+            ingest_models=True,
+            assume_yes=True,
+        )
+    except DemoDependencyError as e:
+        print(str(e), file=out)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Failed to set up the Jaffle Shop demo: {e}", file=out)
+        sys.exit(1)
+
+    state = "generated" if db_built else "reused"
+    print(
+        f"Demo ready: {state} {ds.database}; datasource '{ds.name}', "
+        f"{len(models)} model(s) available.",
+        file=out,
+    )
+
+
 def _run_serve(args):
     from slayer.api.server import create_app
 
     storage = _resolve_storage(args)
+    if getattr(args, "demo", False):
+        _prepare_demo(args, storage)
+
     app = create_app(storage=storage)
 
     import uvicorn
@@ -415,6 +470,9 @@ def _run_mcp(args):
     from slayer.mcp.server import create_mcp_server
 
     storage = _resolve_storage(args)
+    if getattr(args, "demo", False):
+        _prepare_demo(args, storage)
+
     mcp = create_mcp_server(storage=storage)
     mcp.run()
 
@@ -689,6 +747,10 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
 
 
 def _run_datasources_create(args, storage):
+    if (args.connection_string or "").strip().lower() == "demo":
+        _run_datasources_create_demo(args, storage)
+        return
+
     from slayer.core.models import DatasourceConfig
 
     try:
@@ -749,6 +811,85 @@ def _run_datasources_create(args, storage):
         sys.exit(1)
 
     for model in models:
+        run_sync(storage.save_model(model))
+        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+
+
+def _run_datasources_create_demo(args, storage):
+    from slayer.demo import (
+        DEFAULT_TIME_DIMENSIONS,
+        DEMO_NAME,
+        DemoDependencyError,
+        build_jaffle_shop,
+        resolve_demo_db_path,
+    )
+
+    storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+    name = args.name or DEMO_NAME
+    db_path = resolve_demo_db_path(storage_path)
+
+    try:
+        db_built = build_jaffle_shop(db_path=db_path, years=max(1, args.years))
+    except DemoDependencyError as e:
+        print(str(e))
+        sys.exit(1)
+    except Exception as e:
+        print(f"Failed to build Jaffle Shop demo: {e}")
+        sys.exit(1)
+
+    if db_built:
+        print(f"Generated Jaffle Shop DuckDB at {db_path}")
+    else:
+        print(f"Reusing existing Jaffle Shop DuckDB at {db_path}")
+
+    from slayer.core.models import DatasourceConfig
+
+    ds = DatasourceConfig.model_validate(
+        {
+            "name": name,
+            "type": "duckdb",
+            "database": db_path,
+            "description": args.description or "Jaffle Shop demo (synthetic data via jafgen)",
+        }
+    )
+
+    existing = run_sync(storage.get_datasource(name))
+    if existing is not None and not _confirm(
+        f"Datasource '{name}' already exists. Overwrite?", assume_yes=args.yes
+    ):
+        print("Aborted.")
+        sys.exit(1)
+
+    run_sync(storage.save_datasource(ds))
+    print(f"Created datasource '{ds.name}' (duckdb).")
+
+    if not args.ingest:
+        print("Run with --ingest to also auto-generate models.")
+        return
+
+    from slayer.engine.ingestion import ingest_datasource
+
+    try:
+        models = ingest_datasource(datasource=ds)
+    except Exception as e:
+        print(f"Ingestion failed: {e}")
+        sys.exit(1)
+
+    if not models:
+        print("No models were generated.")
+        return
+
+    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
+    if colliding and not _confirm(
+        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
+        assume_yes=args.yes,
+    ):
+        print("Aborted before writing models.")
+        sys.exit(1)
+
+    for model in models:
+        if model.name in DEFAULT_TIME_DIMENSIONS:
+            model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
         run_sync(storage.save_model(model))
         print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
 
