@@ -391,7 +391,17 @@ def _safe_get_pk_constraint(
     table_name: str,
     schema: Optional[str],
 ) -> Dict:
-    """Get PK constraint, falling back to INFORMATION_SCHEMA on failure."""
+    """Get PK constraint, falling back to INFORMATION_SCHEMA on failure.
+
+    SQLite has no information_schema views; its stock inspector reads
+    PRAGMA table_info() and is authoritative — empty constrained_columns
+    on SQLite means the table genuinely has no primary key.
+    """
+    if sa_engine.dialect.name == "sqlite":
+        try:
+            return inspector.get_pk_constraint(table_name, schema=schema)
+        except Exception:
+            return {"constrained_columns": []}
     try:
         result = inspector.get_pk_constraint(table_name, schema=schema)
         if result.get("constrained_columns"):

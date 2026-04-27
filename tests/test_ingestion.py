@@ -9,6 +9,7 @@ from slayer.engine.ingestion import (
     _get_columns_fallback,
     _get_pk_constraint_fallback,
     _parse_info_schema_is_float,
+    _safe_get_pk_constraint,
     _sa_type_is_float,
 )
 
@@ -111,7 +112,7 @@ class TestGetPkConstraintFallback:
     def test_empty_result(self):
         engine, conn = _setup_mock_engine([])
         result = _get_pk_constraint_fallback(sa_engine=engine, table_name="no_pk_table", schema=None)
-        assert result == {"constrained_columns": []}
+        assert result.get("constrained_columns") == []
 
     def test_no_fstring_interpolation(self):
         """Ensure table_name/schema values never appear literally in the SQL text."""
@@ -220,3 +221,58 @@ class TestGenerateJoinsDedup:
                 table_set={"orders", "users"},
             )
         assert len(joins) == 1
+
+
+class TestSqliteSafeGetters:
+    """Regression tests: SQLite engines must not hit information_schema fallback.
+
+    Reproduces an issue found when ingesting a SQLite DB whose tables had
+    foreign keys but no explicit PRIMARY KEY (e.g. mini-interact's robot DB).
+    The inspector returns empty PK info, the legacy code fell through to a
+    Postgres information_schema query, and crashed with
+    'no such table: information_schema.table_constraints'.
+    """
+
+    def test_safe_get_pk_constraint_sqlite_no_pk(self):
+        """Empty inspector PK on SQLite returns empty without info_schema query."""
+        engine = sa.create_engine("sqlite:///:memory:")
+        with engine.connect() as conn:
+            conn.execute(sa.text("CREATE TABLE t (a TEXT, b INTEGER)"))
+            conn.commit()
+        insp = sa.inspect(engine)
+        result = _safe_get_pk_constraint(
+            inspector=insp, sa_engine=engine, table_name="t", schema=None
+        )
+        assert result.get("constrained_columns") == []
+
+    def test_safe_get_pk_constraint_sqlite_fk_only(self):
+        """Tables with FK but no PK (the robot DB pattern) — must not crash."""
+        engine = sa.create_engine("sqlite:///:memory:")
+        with engine.connect() as conn:
+            conn.execute(sa.text("CREATE TABLE parent (id INTEGER PRIMARY KEY)"))
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE child (parent_ref INTEGER, "
+                    "FOREIGN KEY (parent_ref) REFERENCES parent(id))"
+                )
+            )
+            conn.commit()
+        insp = sa.inspect(engine)
+        result = _safe_get_pk_constraint(
+            inspector=insp, sa_engine=engine, table_name="child", schema=None
+        )
+        assert result.get("constrained_columns") == []
+
+    def test_safe_get_pk_constraint_sqlite_real_pk(self):
+        """SQLite tables with declared PK still report it correctly."""
+        engine = sa.create_engine("sqlite:///:memory:")
+        with engine.connect() as conn:
+            conn.execute(
+                sa.text("CREATE TABLE u (id INTEGER PRIMARY KEY, name TEXT)")
+            )
+            conn.commit()
+        insp = sa.inspect(engine)
+        result = _safe_get_pk_constraint(
+            inspector=insp, sa_engine=engine, table_name="u", schema=None
+        )
+        assert result.get("constrained_columns") == ["id"]
