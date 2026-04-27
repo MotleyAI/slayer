@@ -13,7 +13,8 @@ from slayer.core.formula import (
     parse_filter,
     parse_formula,
 )
-from slayer.engine.enrichment import extract_filter_transforms
+from slayer.core.models import Dimension, Measure, SlayerModel
+from slayer.engine.enrichment import _collect_needed_paths, extract_filter_transforms
 
 
 class TestFormulaParser:
@@ -595,3 +596,50 @@ class TestOrderColumnNormalization:
         item = OrderItem(column="price:weighted_avg(weight=qty)", direction="asc")
         assert item.column.name == "price_weighted_avg"
         assert item.raw_formula == "price:weighted_avg(weight=qty)"
+
+
+class TestCollectNeededPathsExtraAggNames:
+    """Verify _collect_needed_paths forwards extra_agg_names to parse_filter."""
+
+    def test_funcstyle_custom_agg_in_filter_does_not_error(self) -> None:
+        """A filter with a function-style custom agg should parse without error
+        when extra_agg_names is provided."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            dimensions=[Dimension(name="status", sql="status", type="string")],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        # Filter uses a custom aggregation in function style: custom_total(revenue) > 100
+        # Without extra_agg_names, parse_filter won't rewrite it → potential misparse
+        paths = _collect_needed_paths(
+            model=model,
+            dimensions=[],
+            time_dimensions=[],
+            measures=[],
+            cross_model_measures=[],
+            processed_filters=["custom_total(revenue) > 100"],
+            extra_agg_names=frozenset({"custom_total"}),
+        )
+        # No cross-model references → empty paths
+        assert paths == set()
+
+    def test_funcstyle_custom_agg_with_dotted_column(self) -> None:
+        """A filter with a custom agg on a cross-model column should extract join paths."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            dimensions=[Dimension(name="status", sql="status", type="string")],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        paths = _collect_needed_paths(
+            model=model,
+            dimensions=[],
+            time_dimensions=[],
+            measures=[],
+            cross_model_measures=[],
+            processed_filters=["customers.total:custom_total > 100"],
+            extra_agg_names=frozenset({"custom_total"}),
+        )
+        # Should detect the "customers" join path from the dotted column reference
+        assert ("customers",) in paths

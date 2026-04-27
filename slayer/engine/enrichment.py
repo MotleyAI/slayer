@@ -641,6 +641,7 @@ async def enrich_query(
         processed_filters=processed_filters,
         named_queries=named_queries,
         resolve_join_target=resolve_join_target,
+        extra_agg_names=custom_agg_names,
     )
 
     return EnrichedQuery(
@@ -806,6 +807,7 @@ def _collect_needed_paths(
     measures: List[EnrichedMeasure],
     cross_model_measures: list,
     processed_filters: List[str],
+    extra_agg_names: Optional[frozenset] = None,
 ) -> Set[Tuple[str, ...]]:
     """Extract ordered join-path tuples the query needs (including all prefixes)."""
 
@@ -833,7 +835,7 @@ def _collect_needed_paths(
 
     # Scan filters for dotted column references (e.g. customers.regions.name)
     for f_str in processed_filters:
-        parsed_f = parse_filter(f_str)
+        parsed_f = parse_filter(f_str, extra_agg_names=extra_agg_names)
         for col in parsed_f.columns:
             if "." in col:
                 parts = col.split(".")
@@ -868,6 +870,7 @@ async def _resolve_joins(
     processed_filters: List[str],
     named_queries: dict,
     resolve_join_target,
+    extra_agg_names: Optional[frozenset] = None,
 ) -> List[tuple]:
     """Resolve only the JOINs the query actually needs by walking the join graph.
 
@@ -881,6 +884,7 @@ async def _resolve_joins(
         measures=measures,
         cross_model_measures=cross_model_measures,
         processed_filters=processed_filters,
+        extra_agg_names=extra_agg_names,
     )
     if not needed_paths:
         return []
