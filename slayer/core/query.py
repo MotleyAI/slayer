@@ -14,6 +14,7 @@ from typing import Annotated, Any, Dict, List, Optional
 from pydantic import BaseModel, BeforeValidator, field_validator, model_validator
 
 from slayer.core.enums import TimeGranularity
+from slayer.storage.migrations import migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
 
@@ -297,9 +298,15 @@ class SlayerQuery(BaseModel):
         filters=["status == 'completed'", "amount > 100"]
     """
 
+    version: int = 1
     name: Optional[str] = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
     fields: Annotated[Optional[List[Field]], BeforeValidator(_coerce_fields)] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_schema_migrations(cls, data: Any) -> Any:
+        return _migrate_schema("SlayerQuery", data)
 
     @field_validator("name")
     @classmethod

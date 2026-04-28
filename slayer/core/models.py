@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
 from slayer.core.format import NumberFormat
+from slayer.storage.migrations import migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,7 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
+    version: int = 1
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
@@ -213,6 +215,11 @@ class SlayerModel(BaseModel):
     dimensions: List[Dimension] = Field(default_factory=list)
     measures: List[Measure] = Field(default_factory=list)
     aggregations: List[Aggregation] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_schema_migrations(cls, data: Any) -> Any:
+        return _migrate_schema("SlayerModel", data)
 
     @field_validator("name")
     @classmethod
@@ -274,6 +281,7 @@ class SlayerModel(BaseModel):
 
 
 class DatasourceConfig(BaseModel):
+    version: int = 1
     name: str
     type: Optional[str] = None
     host: Optional[str] = None
@@ -287,7 +295,8 @@ class DatasourceConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_user_alias(cls, data: Any) -> Any:
+    def _apply_schema_migrations_and_aliases(cls, data: Any) -> Any:
+        data = _migrate_schema("DatasourceConfig", data)
         if isinstance(data, dict) and "user" in data and "username" not in data:
             data["username"] = data.pop("user")
         return data

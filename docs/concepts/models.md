@@ -250,6 +250,7 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `version` | int | No | `1` | Schema version stamp (see [Schema versioning](#schema-versioning)) |
 | `name` | string | Yes | — | Unique model name |
 | `sql_table` | string | One of | — | Database table (e.g. `public.orders`) |
 | `sql` | string | these | — | Custom SQL subquery |
@@ -262,6 +263,26 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 | `hidden` | bool | No | `false` | Hide from model listings |
 | `default_time_dimension` | string | No | — | Default time dimension name for time-dependent formulas (e.g. `"created_at"`) |
 | `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"owner": "analytics", "version": 2}`) |
+
+## Schema versioning
+
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field that records the schema it was written against. The current schema is `1`.
+
+```yaml
+version: 1
+name: orders
+sql_table: public.orders
+...
+```
+
+Behaviour:
+
+- **On save**, SLayer always writes the current schema version. New objects default `version` to `1`.
+- **On load**, if the file's version is older than the current schema, SLayer runs a chain of pure dict→dict converters before Pydantic validates the data. This means hand-edited or older files keep working when the schema evolves.
+- **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis (unknown fields are ignored). It is not downgraded.
+- **Round-tripping** an older file (load → save) upgrades it on disk to the current schema.
+
+Migrations are defined in `slayer/storage/migrations.py` and apply at the Pydantic-validation layer, so every storage backend (YAML, SQLite, third-party backends registered via `register_storage`, plus the HTTP API, MCP server, and dbt importer) gets them automatically.
 
 ## Result Column Format
 
