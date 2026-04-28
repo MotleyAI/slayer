@@ -127,6 +127,9 @@ def _coerce_column_ref(v: Any) -> Any:
     return v
 
 
+_FUNCSTYLE_CALL_PATTERN = re.compile(r"^\w+\([^()]*\)$")
+
+
 def _coerce_order_column(v: Any) -> Any:
     """Coerce ORDER BY column, normalizing aggregation syntax.
 
@@ -139,18 +142,25 @@ def _coerce_order_column(v: Any) -> Any:
     - "*:count" → "_count"
     - "sum(revenue)" → "revenue_sum"
     - "revenue:last(ordered_at)" → "revenue_last"
+    - "rolling_avg(revenue)" → placeholder, raw_formula carries the call so
+      enrichment can resolve it via ``extra_agg_names``.
     """
     if isinstance(v, str):
         from slayer.core.formula import _rewrite_funcstyle_aggregations
-        v = _rewrite_funcstyle_aggregations(v)
-        if ":" in v:
-            base, agg = v.rsplit(":", 1)
+        rewritten = _rewrite_funcstyle_aggregations(v)
+        if _FUNCSTYLE_CALL_PATTERN.match(rewritten):
+            # Unrewritten function-style call (custom aggregation). Enrichment
+            # parses raw_formula with custom_agg_names and overwrites
+            # column.name with the canonical alias, so a placeholder is fine.
+            return {"name": "_funcstyle_pending"}
+        if ":" in rewritten:
+            base, agg = rewritten.rsplit(":", 1)
             agg_name = agg.split("(", 1)[0]  # strip arglist
             if base == "*":
-                v = f"_{agg_name}"
+                rewritten = f"_{agg_name}"
             else:
-                v = f"{base}_{agg_name}"
-        return {"name": v}
+                rewritten = f"{base}_{agg_name}"
+        return {"name": rewritten}
     return v
 
 
@@ -175,7 +185,7 @@ class OrderItem(BaseModel):
             if isinstance(col, str):
                 from slayer.core.formula import _rewrite_funcstyle_aggregations
                 rewritten = _rewrite_funcstyle_aggregations(col)
-                if ":" in rewritten:
+                if ":" in rewritten or _FUNCSTYLE_CALL_PATTERN.match(rewritten):
                     data = {**data, "raw_formula": rewritten}
         return data
 
@@ -382,8 +392,15 @@ class SlayerQuery(BaseModel):
             order_changed = False
             for item in self.order:
                 stripped = _strip_column_ref(item.column, model_name)
-                if stripped is not item.column:
-                    new_order.append(OrderItem(column=stripped, direction=item.direction))
+                stripped_raw_formula = (
+                    pattern.sub("", item.raw_formula) if item.raw_formula else None
+                )
+                if stripped is not item.column or stripped_raw_formula != item.raw_formula:
+                    new_order.append(OrderItem(
+                        column=stripped,
+                        direction=item.direction,
+                        raw_formula=stripped_raw_formula,
+                    ))
                     order_changed = True
                 else:
                     new_order.append(item)

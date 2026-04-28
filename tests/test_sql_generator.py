@@ -890,7 +890,7 @@ class TestFields:
             source_model="orders",
             fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
-        with pytest.raises(ValueError, match="requires a time_dimension"):
+        with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
             await _generate(generator, query, orders_model)
 
     async def test_default_time_dimension_without_explicit_time_dims_raises(
@@ -906,7 +906,7 @@ class TestFields:
             source_model="orders",
             fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
-        with pytest.raises(ValueError, match="requires a time_dimension"):
+        with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
             await _generate(generator, query, orders_model)
 
     async def test_field_plain_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
@@ -964,7 +964,7 @@ class TestTransformRequiresTimeDimension:
             dimensions=[ColumnRef(name="status")],
             # No time_dimensions — only default_time_dimension on model
         )
-        with pytest.raises(ValueError, match="requires a time_dimension"):
+        with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
             await _generate(generator, query, model)
 
     async def test_lag_without_time_dimension_raises(self, generator: SQLGenerator) -> None:
@@ -986,7 +986,7 @@ class TestTransformRequiresTimeDimension:
             fields=[Field(formula="lag(revenue:sum)")],
             dimensions=[ColumnRef(name="status")],
         )
-        with pytest.raises(ValueError, match="requires a time_dimension"):
+        with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
             await _generate(generator, query, model)
 
     async def test_cumsum_with_time_dimension_works(self, generator: SQLGenerator) -> None:
@@ -2810,6 +2810,296 @@ class TestCrossModelCustomAggFuncStyle:
             assert "AVG(" in sql
 
 
+class TestReachableAggDiscoveryUnbounded:
+    """Custom aggregation discovery walks the full reachable join graph.
+
+    Regression: ``_collect_reachable_agg_names`` previously stopped after 3 hops,
+    so a custom aggregation defined on a 4-hop joined model was not in
+    ``custom_agg_names`` and the function-style rewrite failed.
+    """
+
+    async def test_funcstyle_custom_agg_at_four_hops(self, generator: SQLGenerator) -> None:
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        a = SlayerModel(
+            name="a", sql_table="a", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[],
+            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        )
+        b = SlayerModel(
+            name="b", sql_table="b", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[],
+            joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
+        )
+        c = SlayerModel(
+            name="c", sql_table="c", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[],
+            joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
+        )
+        d = SlayerModel(
+            name="d", sql_table="d", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[],
+            joins=[ModelJoin(target_model="e", join_pairs=[["e_id", "id"]])],
+        )
+        e = SlayerModel(
+            name="e", sql_table="e", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="score", sql="score")],
+            aggregations=[Aggregation(name="rolling_avg", formula="AVG({value})")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            for m in (a, b, c, d, e):
+                await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+
+            # rolling_avg lives 4 hops away (a → b → c → d → e). The
+            # function-style rewrite must still recognise it.
+            query = SlayerQuery(
+                source_model="a",
+                fields=["rolling_avg(b.c.d.e.score)"],
+            )
+            enriched = await engine._enrich(query=query, model=a, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "AVG(" in sql
+
+    async def test_cycle_does_not_loop(self, generator: SQLGenerator) -> None:
+        """BFS terminates on a → b → a cycle (visited guard)."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        a = SlayerModel(
+            name="a", sql_table="a", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="amount", sql="amount")],
+            aggregations=[Aggregation(name="rolling_a", formula="AVG({value})")],
+            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        )
+        b = SlayerModel(
+            name="b", sql_table="b", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[],
+            joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(a)
+            await storage.save_model(b)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(source_model="a", fields=["rolling_a(amount)"])
+            enriched = await engine._enrich(query=query, model=a, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+
+
+class TestTransformAmbiguousTimeDimension:
+    """Time-dependent transforms must reject ambiguous time_dimension setups.
+
+    Regression: ``_add_transform`` only checked ``not time_dimensions`` (empty).
+    With 2+ time_dimensions and no main_time_dimension/default_time_dimension,
+    ``_resolve_time_alias`` returns None but the transform was built anyway.
+    """
+
+    async def test_two_time_dims_no_disambiguation_raises(self, generator: SQLGenerator) -> None:
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                fields=["cumsum(revenue:sum)"],
+                time_dimensions=[
+                    TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
+                    TimeDimension(dimension="updated_at", granularity=TimeGranularity.MONTH),
+                ],
+            )
+            with pytest.raises(ValueError, match="time"):
+                await engine._enrich(query=query, model=m, named_queries={})
+
+    async def test_two_time_dims_with_main_succeeds(self, generator: SQLGenerator) -> None:
+        """Disambiguation via main_time_dimension keeps the transform working."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                fields=["cumsum(revenue:sum)"],
+                time_dimensions=[
+                    TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
+                    TimeDimension(dimension="updated_at", granularity=TimeGranularity.MONTH),
+                ],
+                main_time_dimension="created_at",
+            )
+            enriched = await engine._enrich(query=query, model=m, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+
+
+class TestParameterizedAggCanonicalDistinct:
+    """Distinct parameterized aggregations must produce distinct hidden aliases.
+
+    Regression: canonical key was f"{measure}_{agg}", ignoring agg_args/agg_kwargs.
+    Two ORDER BY items like revenue:last(created_at) and revenue:last(updated_at)
+    collapsed to the same alias and sorted by the same value.
+    """
+
+    async def test_order_by_two_last_with_different_time_cols(
+        self, generator: SQLGenerator
+    ) -> None:
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                fields=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[
+                    OrderItem(column="revenue:last(created_at)", direction="desc"),
+                    OrderItem(column="revenue:last(updated_at)", direction="asc"),
+                ],
+            )
+            enriched = await engine._enrich(query=query, model=m, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # The two ORDER BY columns must reference distinct hidden aliases.
+            measure_aliases = [m.alias for m in enriched.measures]
+            assert len(set(measure_aliases)) == len(measure_aliases), (
+                f"Expected distinct measure aliases, got: {measure_aliases}"
+            )
+            order_cols = [item.column.name for item in (enriched.order or [])]
+            assert len(set(order_cols)) == 2, (
+                f"Expected two distinct ORDER BY canonical names, got: {order_cols}"
+            )
+
+    async def test_fields_two_percentiles_with_different_p(
+        self, generator: SQLGenerator
+    ) -> None:
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                fields=[
+                    Field(formula="revenue:percentile(p=0.5)", name="p50"),
+                    Field(formula="revenue:percentile(p=0.95)", name="p95"),
+                ],
+                dimensions=[ColumnRef(name="status")],
+            )
+            enriched = await engine._enrich(query=query, model=m, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Two distinct percentile parameterizations must produce two distinct
+            # EnrichedMeasures (not collapse via the canonical-name dedup).
+            assert len(enriched.measures) == 2, (
+                f"Expected 2 EnrichedMeasures for distinct percentiles, got "
+                f"{len(enriched.measures)}: {[em.alias for em in enriched.measures]}"
+            )
+            measure_aliases = [em.alias for em in enriched.measures]
+            assert len(set(measure_aliases)) == 2, (
+                f"Expected distinct measure aliases for distinct percentiles, got: {measure_aliases}"
+            )
+            # Each measure's agg_kwargs must reflect its own p value.
+            kwargs_seen = {tuple(sorted(em.agg_kwargs.items())) for em in enriched.measures}
+            assert kwargs_seen == {(("p", "0.5"),), (("p", "0.95"),)}, (
+                f"Expected distinct agg_kwargs per measure, got: {kwargs_seen}"
+            )
+
+    async def test_unparameterized_alias_unchanged(self, generator: SQLGenerator) -> None:
+        """Backwards-compat: revenue:sum still produces orders.revenue_sum (no suffix)."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(source_model="orders", fields=["revenue:sum"])
+            enriched = await engine._enrich(query=query, model=m, named_queries={})
+            assert any(em.alias == "orders.revenue_sum" for em in enriched.measures)
+
+    async def test_star_count_alias_unchanged(self, generator: SQLGenerator) -> None:
+        """Backwards-compat: *:count still produces orders._count."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(source_model="orders", fields=["*:count"])
+            enriched = await engine._enrich(query=query, model=m, named_queries={})
+            assert any(em.alias == "orders._count" for em in enriched.measures)
+
+
 class TestMultiHopCrossModelMeasure:
     """Multi-hop cross-model measures should walk the join chain to the final model."""
 
@@ -3188,7 +3478,7 @@ class TestCrossModelRerootedSubquery:
                 Dimension(name="status", type=DataType.STRING),
             ],
             measures=[Measure(name="amount", sql="amount")],
-            aggregations=[Aggregation(name="custom_sum", formula="SUM({column})")],
+            aggregations=[Aggregation(name="custom_sum", formula="SUM({value})")],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
