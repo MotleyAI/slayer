@@ -49,7 +49,7 @@ Parentheses work as expected: `"(revenue:sum - cost:sum) / *:count"`.
 
 All measure names referenced in the formula must exist in the model (except `*` which is always available). For measures from joined models, use dotted syntax with colon aggregation: `"customers.score:avg"` or multi-hop: `"customers.regions.population:sum"`. Joins are auto-resolved by walking the join graph. See [Cross-Model Measures](queries.md#cross-model-measures).
 
-Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
+Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
 ### Transform Functions
 
@@ -65,9 +65,10 @@ Functions apply window operations to measures:
 | `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
 | `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
 | `rank(x)` | Ranking by value (descending) | `RANK() OVER (ORDER BY x DESC)` |
+| `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** Functions that order over time (`cumsum`, `time_shift`, `change`, `change_pct`, `last`, `lag`, `lead`) need a time dimension. With a single `time_dimensions` entry, it's used automatically. With 2+ time dimensions, specify query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
 
 **Self-join transforms vs window-function transforms:**
 
@@ -126,26 +127,27 @@ With multiple dimensions (e.g., `status` + `month`), each status/month combinati
 
 Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at rank 2, the next row is rank 4.
 
-### Last Function
+### First and Last Functions
 
-`last(x)` is a window-function transform that takes an aggregated measure and **broadcasts the most recent time bucket's value to every row** in the result.
+`first(x)` and `last(x)` are window-function transforms that take an aggregated measure and **broadcast a single time bucket's value to every row** in the result. `first()` broadcasts the **earliest** bucket's value; `last()` broadcasts the **most recent** bucket's value.
 
 ```json
 {
   "source_model": "orders",
   "fields": [
     "revenue:sum",
+    {"formula": "first(revenue:sum)", "name": "initial_revenue"},
     {"formula": "last(revenue:sum)", "name": "latest_revenue"}
   ],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
 ```
 
-This returns monthly revenue with an extra column showing the most recent month's revenue on every row — useful for comparisons like "this month vs latest" or for filtering: `"last(change(revenue:sum)) < 0"` keeps rows only if the trend is negative.
+This returns monthly revenue with extra columns showing the first and last month's revenue on every row — useful for comparisons like "this month vs initial/latest" or for filtering: `"last(change(revenue:sum)) < 0"` keeps rows only if the trend is negative.
 
-`last()` requires a time dimension with granularity in the query (same resolution as `time_shift`).
+Both `first()` and `last()` require a time dimension with granularity in the query (same resolution as `time_shift`).
 
-Not to be confused with the [`last` aggregation type](models.md#the-last-aggregation-type), which is a per-group aggregate returning the latest *record's* value within each bucket.
+Not to be confused with the [`first`/`last` aggregation types](models.md#the-last-aggregation-type), which are per-group aggregates returning the earliest/latest *record's* value within each bucket.
 
 ---
 

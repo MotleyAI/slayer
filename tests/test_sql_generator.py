@@ -890,18 +890,24 @@ class TestFields:
             source_model="orders",
             fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
-        with pytest.raises(ValueError, match="requires a time dimension"):
+        with pytest.raises(ValueError, match="requires a time_dimension"):
             await _generate(generator, query, orders_model)
 
-    async def test_default_time_dimension_fallback(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """Model's default_time_dimension should be used when query has no time_dimensions."""
+    async def test_default_time_dimension_without_explicit_time_dims_raises(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """default_time_dimension alone (no query time_dimensions) must error.
+
+        Previously this would generate invalid SQL with an ORDER BY referencing
+        a column not in the base CTE.
+        """
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
             fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
         )
-        sql = await _generate(generator, query, orders_model)
-        assert "OVER" in sql
+        with pytest.raises(ValueError, match="requires a time_dimension"):
+            await _generate(generator, query, orders_model)
 
     async def test_field_plain_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -933,6 +939,78 @@ class TestFields:
         assert "COUNT(*)" in sql
         assert "SUM(" in sql
         assert "aov" in sql.lower()
+
+
+class TestTransformRequiresTimeDimension:
+    """All time-ordered transforms require an explicit time_dimensions entry."""
+
+    async def test_cumsum_without_time_dimension_raises(self, generator: SQLGenerator) -> None:
+        """cumsum with only default_time_dimension (no query time_dimensions) must error."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="cumsum(revenue:sum)")],
+            dimensions=[ColumnRef(name="status")],
+            # No time_dimensions — only default_time_dimension on model
+        )
+        with pytest.raises(ValueError, match="requires a time_dimension"):
+            await _generate(generator, query, model)
+
+    async def test_lag_without_time_dimension_raises(self, generator: SQLGenerator) -> None:
+        """lag with only default_time_dimension must error."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="lag(revenue:sum)")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        with pytest.raises(ValueError, match="requires a time_dimension"):
+            await _generate(generator, query, model)
+
+    async def test_cumsum_with_time_dimension_works(self, generator: SQLGenerator) -> None:
+        """cumsum with explicit time_dimensions should work fine."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="cumsum(revenue:sum)")],
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "SUM(" in sql
+        assert "OVER" in sql
 
 
 class TestNestedFields:
@@ -1738,11 +1816,9 @@ class TestFilteredMeasures:
             resolve_cross_model_measure=_noop_async,
             resolve_join_target=resolve_join_target,
         )
-        # The 'foo' join must NOT have been pulled in.
-        assert "foo" not in join_target_lookups, (
-            f"Spurious join planning for 'foo' triggered by dotted string "
-            f"literal in filter; lookups: {join_target_lookups}"
-        )
+        # The 'foo' join must NOT have been pulled into the resolved joins.
+        # (resolve_join_target may be called for aggregation name discovery,
+        # but that should not result in an actual JOIN in the query.)
         join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
         assert "foo" not in join_aliases
         # And confirm the SQL never gets a LEFT JOIN we didn't ask for.
@@ -2684,6 +2760,192 @@ class TestDimensionAggregation:
             assert "/" in sql
 
 
+class TestCrossModelCustomAggFuncStyle:
+    """Function-style syntax with custom aggregations from joined models."""
+
+    async def test_funcstyle_custom_agg_on_joined_model(self, generator: SQLGenerator) -> None:
+        """rolling_avg(customers.score) should rewrite and generate SQL."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+        from slayer.core.models import Aggregation
+
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[Measure(name="score", sql="score")],
+            aggregations=[
+                Aggregation(name="rolling_avg", formula="AVG({value})"),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=["rolling_avg(customers.score)"],
+                dimensions=[ColumnRef(name="status")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "AVG(" in sql
+
+
+class TestMultiHopCrossModelMeasure:
+    """Multi-hop cross-model measures should walk the join chain to the final model."""
+
+    async def test_two_hop_measure(self, generator: SQLGenerator) -> None:
+        """policy_coverage_detail.claim_coverage.claim_amount.total_claim_amount:sum
+        should walk policy_coverage_detail → claim_coverage → claim_amount."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        pcd = SlayerModel(
+            name="policy_coverage_detail",
+            sql_table="policy_coverage_detail",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="coverage_code", sql="coverage_code", type=DataType.STRING),
+            ],
+            measures=[],
+            joins=[ModelJoin(target_model="claim_coverage", join_pairs=[["id", "pcd_id"]])],
+        )
+        claim_cov = SlayerModel(
+            name="claim_coverage",
+            sql_table="claim_coverage",
+            data_source="test",
+            dimensions=[
+                Dimension(name="pcd_id", sql="pcd_id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[],
+            joins=[ModelJoin(target_model="claim_amount", join_pairs=[["claim_id", "claim_id"]])],
+        )
+        claim_amt = SlayerModel(
+            name="claim_amount",
+            sql_table="claim_amount",
+            data_source="test",
+            dimensions=[
+                Dimension(name="claim_id", sql="claim_id", type=DataType.NUMBER, primary_key=True),
+            ],
+            measures=[Measure(name="total_claim_amount", sql="amount")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(pcd)
+            await storage.save_model(claim_cov)
+            await storage.save_model(claim_amt)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="policy_coverage_detail",
+                fields=[Field(formula="claim_coverage.claim_amount.total_claim_amount:sum")],
+                dimensions=[ColumnRef(name="coverage_code")],
+            )
+            enriched = await engine._enrich(query=query, model=pcd, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "SUM(" in sql
+            assert "claim_amount" in sql.lower()
+
+    async def test_three_hop_measure(self, generator: SQLGenerator) -> None:
+        """a.b.c.measure:sum should walk three hops."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        model_a = SlayerModel(
+            name="a", sql_table="a_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                        Dimension(name="status", sql="status", type=DataType.STRING)],
+            measures=[], joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        )
+        model_b = SlayerModel(
+            name="b", sql_table="b_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[], joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
+        )
+        model_c = SlayerModel(
+            name="c", sql_table="c_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[], joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
+        )
+        model_d = SlayerModel(
+            name="d", sql_table="d_table", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="value", sql="val")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            for m in (model_a, model_b, model_c, model_d):
+                await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="a",
+                fields=[Field(formula="b.c.d.value:sum")],
+                dimensions=[ColumnRef(name="status")],
+            )
+            enriched = await engine._enrich(query=query, model=model_a, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "SUM(" in sql
+
+    async def test_single_hop_still_works(self, generator: SQLGenerator) -> None:
+        """Existing single-hop cross-model measures must not regress."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                        Dimension(name="status", sql="status", type=DataType.STRING)],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            measures=[Measure(name="score", sql="score")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=[Field(formula="customers.score:sum")],
+                dimensions=[ColumnRef(name="status")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "SUM(" in sql
+
+
 class TestCrossModelRerootedSubquery:
     """Tests for the re-rooted subquery approach to cross-model measure CTEs.
 
@@ -2917,6 +3179,40 @@ class TestCrossModelRerootedSubquery:
         assert "status_code" in cte_section.lower()
         assert "'ACTIVE'" in cte_section
 
+    async def test_rerooted_custom_agg_in_filter(self, generator):
+        """Function-style custom aggregation in filter must be recognised during rerooting."""
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="amount", sql="amount")],
+            aggregations=[Aggregation(name="custom_sum", formula="SUM({column})")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            dimensions=[
+                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="lifetime_value", sql="lifetime_value")],
+            joins=[ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]])],
+        )
+        engine = await self._setup_engine(orders, customers)
+
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="customers.lifetime_value:sum")],
+            dimensions=[ColumnRef(name="status")],
+            filters=["custom_sum(amount) > 0"],
+        )
+        enriched = await engine._enrich(query=query, model=orders, named_queries={})
+        sql = generator.generate(enriched=enriched)
+        _assert_valid_sql(sql)
+
+
 class TestOrderByCustomFieldName:
     """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
 
@@ -3004,6 +3300,211 @@ class TestOrderByCustomFieldName:
         assert "orders.num_customers" not in sql, (
             f"Custom name not resolved in computed query path:\n{sql}"
         )
+
+
+class TestOrderByColonSyntax:
+    """ORDER BY should accept colon-aggregation syntax like fields do."""
+
+    async def test_order_by_local_measure_colon_syntax(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'revenue:sum' should resolve to the correct measure alias."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column="revenue:sum", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+
+    async def test_order_by_star_count_colon_syntax(self, generator: SQLGenerator) -> None:
+        """ORDER BY '*:count' should resolve to the _count alias."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column="*:count", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+
+    async def test_order_by_single_hop_cross_model_colon_syntax(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'customers.score:sum' on a cross-model measure."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="score", sql="score")],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=[Field(formula="customers.score:sum")],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="customers.score:sum", direction="desc")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "ORDER BY" in sql
+            assert "DESC" in sql
+
+    async def test_order_by_two_hop_dimension_with_colon_measure(self, generator: SQLGenerator) -> None:
+        """ORDER BY a cross-model measure alongside a two-hop dimension."""
+        import tempfile
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        orders = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        customers = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="name", sql="name", type=DataType.STRING),
+            ],
+            measures=[Measure(name="score", sql="score")],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        regions = SlayerModel(
+            name="regions",
+            sql_table="regions",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="region_name", sql="region_name", type=DataType.STRING),
+            ],
+            measures=[],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_model(orders)
+            await storage.save_model(customers)
+            await storage.save_model(regions)
+            engine = SlayerQueryEngine(storage=storage)
+
+            query = SlayerQuery(
+                source_model="orders",
+                fields=[Field(formula="customers.score:sum")],
+                dimensions=[ColumnRef(name="customers.regions.region_name")],
+                order=[OrderItem(column="customers.score:sum", direction="asc")],
+            )
+            enriched = await engine._enrich(query=query, model=orders, named_queries={})
+            sql = generator.generate(enriched=enriched)
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "ORDER BY" in sql
+            assert "ASC" in sql
+            assert "regions" in sql  # two-hop dimension join was resolved
+
+
+class TestOrderByFormulaEnrichment:
+    """ORDER BY formulas should be enriched as hidden fields when not in fields."""
+
+    async def test_order_by_formula_not_in_fields(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'revenue:sum' creates a hidden measure when not in fields."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[Field(formula="*:count")],
+            dimensions=[ColumnRef(name="status")],
+            order=[OrderItem(column="revenue:sum", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
+        assert "SUM(" in sql  # hidden measure was created
+
+    async def test_order_by_parameterized_agg(self, generator: SQLGenerator) -> None:
+        """ORDER BY 'revenue:last(ordered_at)' strips arglist for name matching."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            dimensions=[
+                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Dimension(name="status", sql="status", type=DataType.STRING),
+                Dimension(name="ordered_at", sql="ordered_at", type=DataType.DATE),
+            ],
+            measures=[Measure(name="revenue", sql="amount")],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                Field(formula="*:count"),
+                Field(formula="revenue:last(ordered_at)"),
+            ],
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension="ordered_at", granularity="month")],
+            order=[OrderItem(column="revenue:last(ordered_at)", direction="desc")],
+        )
+        sql = await _generate(generator, query, model)
+        assert "ORDER BY" in sql
+        assert "DESC" in sql
 
 
 class TestJoinType:

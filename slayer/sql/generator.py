@@ -955,6 +955,11 @@ class SQLGenerator:
             return f"LEAD({measure}, {abs(t.offset)}) OVER ({order_clause})"
         elif t.transform == "rank":
             return f"RANK() OVER (ORDER BY {measure} DESC)"
+        elif t.transform == "first":
+            return (
+                f"FIRST_VALUE({measure}) OVER ({order_clause} "
+                f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
+            )
         elif t.transform == "last":
             return (
                 f"FIRST_VALUE({measure}) OVER ({order_clause} DESC "
@@ -1028,6 +1033,13 @@ class SQLGenerator:
         # Direct match on the user-provided name
         if user_name in alias_lookup:
             return alias_lookup[user_name]
+
+        # Qualified match for cross-model measures:
+        # col.model="customers", col.name="revenue_sum" → "customers.revenue_sum"
+        if col.model:
+            qualified = f"{col.model}.{col.name}"
+            if qualified in alias_lookup:
+                return alias_lookup[qualified]
 
         # Fallback for *:count → _count: user says "count", internal is "_count"
         prefixed = f"_{user_name}"

@@ -34,9 +34,9 @@ If none resolves, the aggregation errors at query time.
 
 Don't confuse:
 
-- `:last` aggregation — per-group record's latest value.
-- `last(x)` transform — broadcasts the most recent bucket's aggregated value to
-  every row. See `help(topic='transforms')`.
+- `:first`/`:last` aggregation — per-group record's earliest/latest value.
+- `first(x)`/`last(x)` transform — broadcasts the earliest/most recent bucket's
+  aggregated value to every row. See `help(topic='transforms')`.
 
 ## Allowed aggregations (whitelist)
 
@@ -89,5 +89,5 @@ arg, and `price:weighted_avg(weight=revenue)` overrides.
 ## See also
 
 - `help(topic='formulas')` — where `:agg` fits in the broader formula language.
-- `help(topic='transforms')` — `last()` transform vs `:last` aggregation.
+- `help(topic='transforms')` — `first()`/`last()` transforms vs `:first`/`:last` aggregations.
 - `help(topic='models')` — declaring measures and their `allowed_aggregations`.

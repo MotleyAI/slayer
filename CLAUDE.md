@@ -7,7 +7,9 @@ This file provides guidance to Claude Code when working with code in this reposi
 SLayer (Semantic Layer) is a lightweight, open-source (MIT) semantic layer for AI agents, built by MotleyAI. Instead of writing raw SQL, agents describe what data they want — measures, dimensions, filters — and SLayer generates and executes the query.
 
 Default API port: **5143**.
- 
+
+When generating SLayer query examples or answering questions about SLayer syntax and capabilities, always read the documentation files in `docs/` first (especially `docs/concepts/queries.md`, `docs/concepts/formulas.md`, `docs/concepts/models.md`, and `docs/examples/`) to understand the current syntax and features.
+
 ## Common Commands
 
 ```bash
@@ -56,7 +58,7 @@ poetry run ruff check slayer/ tests/
 - Queries support `fields` — list of `{"formula": "...", "name": "...", "label": "..."}` parsed by `slayer/core/formula.py`. `label` is an optional human-readable display name (also supported on `ColumnRef` and `TimeDimension`)
 - **Result column naming**: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders.count` (star-colon prefix stripped). When converting queries to models (`create_model_from_query`), the same colon-to-underscore mapping applies.
 - **Response attributes**: `SlayerResponse.attributes` is a `ResponseAttributes` with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata(label, format)`. Split by type so consumers can distinguish dimension metadata from measure metadata.
-- Available formula transforms: cumsum, time_shift, change, change_pct, rank, last (FIRST_VALUE window), lag, lead. time_shift uses a self-join CTE where the shifted sub-query has the time column expression offset by INTERVAL (calendar-based, gap-safe). change and change_pct are desugared at enrichment time into a hidden time_shift + arithmetic expression. lag/lead use LAG/LEAD window functions directly (more efficient but produce NULLs at edges)
+- Available formula transforms: cumsum, time_shift, change, change_pct, rank, first (FIRST_VALUE window ASC), last (FIRST_VALUE window DESC), lag, lead. time_shift uses a self-join CTE where the shifted sub-query has the time column expression offset by INTERVAL (calendar-based, gap-safe). change and change_pct are desugared at enrichment time into a hidden time_shift + arithmetic expression. lag/lead use LAG/LEAD window functions directly (more efficient but produce NULLs at edges)
 - Filters can reference computed field names or contain inline transform expressions (e.g., `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`). These are auto-extracted as hidden fields and applied as post-filters on the outer query
 - Filters support `{variable}` placeholders substituted from `query.variables: Dict[str, Any]`. Values must be str/number, inserted as-is. `{{`/`}}` for literal braces. Undefined variables raise errors.
 - Models can have explicit `joins` to other models (LEFT JOINs). Cross-model measures use dotted syntax with colon aggregation (`customers.revenue:sum`) and multi-hop (`customers.regions.name`). Joins are auto-resolved by walking the join graph. Transforms work on cross-model measures (`cumsum(customers.revenue:sum)`)
@@ -71,6 +73,7 @@ poetry run ruff check slayer/ tests/
 - Result column keys use `model_name.column_name` format (e.g., `"orders.count"`). For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`
 - Datasource configs support `${ENV_VAR}` references resolved at read time
 - Integration tests are marked with `@pytest.mark.integration` and skip when DB is unavailable
+- NEVER use dataclasses, if you want to use dataclasses, use Pydantic classes instead. 
 
 ## Async Architecture
 

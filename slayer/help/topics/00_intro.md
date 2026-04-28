@@ -9,11 +9,12 @@ SLayer generates and executes the query against your database.
 - **datasource** — a database connection (postgres, mysql, sqlite, duckdb, …).
 - **model** — a named mapping from a table (or SQL subquery) to queryable fields.
 - **dimension** — a column to group/filter by (e.g. `status`, `created_at`).
-- **measure** — a named row-level SQL expression on a model (e.g. `{name: "revenue", sql: "amount"}`).
-  Not an aggregate — aggregation is chosen at query time.
+- **measure** — a named row-level SQL expression on a model (e.g. `{"name": "adams_revenue", "sql": "amount", filter: "customer.name='Adam'"}`).
+  Not an aggregate — aggregation is chosen at query time. 
 - **aggregation** — how a measure is rolled up: `sum`, `avg`, `count`, `weighted_avg`, …
   Applied via colon syntax: `revenue:sum`.
-- **field** — one output column of a query. A formula over measures and aggregations; normal arithmetic expressions work.
+- **field** — one output column of a query. A formula over measures and aggregations; normal arithmetic expressions work. 
+  It's fine to have a query with just dimensions and no fields.
 - **filter** — a condition that restricts rows (WHERE or HAVING, routed automatically).
 - **join** — a LEFT-JOIN relationship between two models. Joins let you reach
   another model's dimensions/measures via dotted paths like `customers.regions.name`.
@@ -27,10 +28,22 @@ SLayer generates and executes the query against your database.
   "source_model": "orders",
   "fields": ["*:count", "revenue:sum / orders.amount:sum"],
   "dimensions": ["status"],
-  "filters": ["status <> 'cancelled'"],
+  "filters": ["status <> 'cancelled'", "customers.regions.name='Asia'"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-  "order": [{"column": "revenue_sum", "direction": "desc"}],
+  "order": [{"column": "customers.revenue:sum", "direction": "desc"}],
   "limit": 10
+}
+```
+
+You can add ad hoc measures, dimensions, etc to the source_model, like
+```json
+{
+  "source_model": {
+    "source_name": "orders",
+    "measures": [{"name": "adams_revenue", "sql": "amount", "filter": "customer.name='Adam'"}],
+    ...
+  }
+...
 }
 ```
 
@@ -42,10 +55,10 @@ SLayer generates and executes the query against your database.
 
 2. **Use `*:count` for counting rows.** `*:count` is `COUNT(*)` and is always
    available without a measure definition. When you just need to count records,
-   use `*:count` — not a primary-key column. You can also aggregate dimensions
-   directly: `customer_id:count_distinct` for `COUNT(DISTINCT customer_id)`.
+   use `*:count` — not a primary-key column. Only add that to queries when you actually need it.
+   You can also aggregate dimensions directly: `customer_id:count_distinct` for `COUNT(DISTINCT customer_id)`.
 
-3. **Joined data is reached via dotted paths, not by JOINing manually.**
+3. **Joined data is reached via DOTTED paths, not by JOINing manually.**.
    `customers.regions.name` on a query of `orders` auto-walks the join graph
    (`orders → customers → regions`). Don't try to add SQL joins yourself.
 

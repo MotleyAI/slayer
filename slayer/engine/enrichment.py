@@ -20,6 +20,7 @@ from slayer.core.formula import (
     TIME_TRANSFORMS,
     TransformField,
     _preprocess_like,
+    _rewrite_funcstyle_aggregations,
     parse_filter,
     parse_formula,
 )
@@ -37,6 +38,46 @@ from slayer.engine.enriched import (
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
+
+
+async def _collect_reachable_agg_names(
+    model: SlayerModel,
+    resolve_join_target,
+    named_queries: Dict,
+    max_depth: int = 3,
+) -> Optional[frozenset[str]]:
+    """Collect custom aggregation names from the source model and all reachable joined models.
+
+    Walks the join graph via BFS up to ``max_depth`` hops to discover custom
+    aggregation names that should be recognised by the function-style rewrite.
+    Returns ``None`` when no custom aggregations exist anywhere.
+    """
+    names: set[str] = set()
+    visited: set[str] = set()
+    queue: list[tuple[SlayerModel, int]] = [(model, 0)]
+
+    while queue:
+        current, depth = queue.pop(0)
+        if current.name in visited:
+            continue
+        visited.add(current.name)
+
+        if current.aggregations:
+            names.update(a.name for a in current.aggregations)
+
+        if depth < max_depth:
+            for join in current.joins:
+                if join.target_model not in visited:
+                    target_info = await resolve_join_target(
+                        target_model_name=join.target_model,
+                        named_queries=named_queries,
+                    )
+                    if target_info:
+                        _, target_model_obj = target_info
+                        if target_model_obj:
+                            queue.append((target_model_obj, depth + 1))
+
+    return frozenset(names) if names else None
 
 
 async def enrich_query(
@@ -61,6 +102,13 @@ async def enrich_query(
     """
     named_queries = named_queries or {}
     model_name_str = query.source_model if isinstance(query.source_model, str) else model.name
+
+    # Custom aggregation names from source + all reachable joined models
+    custom_agg_names = await _collect_reachable_agg_names(
+        model=model,
+        resolve_join_target=resolve_join_target,
+        named_queries=named_queries,
+    )
 
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(
@@ -203,7 +251,7 @@ async def enrich_query(
         filter_sql = None
         filter_columns: List[str] = []
         if measure_def and measure_def.filter:
-            parsed = parse_filter(measure_def.filter)
+            parsed = parse_filter(measure_def.filter, extra_agg_names=custom_agg_names)
             resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
@@ -242,15 +290,10 @@ async def enrich_query(
 
     def _add_transform(name: str, transform: str, measure_alias: str, offset: int = 1, granularity: str = None):
         needs_time = transform in TIME_TRANSFORMS
-        if needs_time and resolved_time_alias is None:
+        if needs_time and not time_dimensions:
             raise ValueError(
-                f"Field '{name}' ({transform}) requires a time dimension. "
-                f"Add a time_dimension to the query or set default_time_dimension on the model."
-            )
-        if transform in (_SELF_JOIN_TRANSFORMS | {"last"}) and not time_dimensions:
-            raise ValueError(
-                f"Field '{name}' ({transform}) requires a time_dimension in the query "
-                f"with a granularity for time bucketing."
+                f"Field '{name}' ({transform}) requires a time_dimension in the query. "
+                f"Add a time_dimensions entry with a granularity."
             )
         alias = f"{model_name_str}.{name}"
         enriched_transforms.append(
@@ -465,7 +508,7 @@ async def enrich_query(
 
     # Process each query field
     for qfield in query.fields or []:
-        spec = parse_formula(qfield.formula)
+        spec = parse_formula(qfield.formula, extra_agg_names=custom_agg_names)
         field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
             "*", ""
         )
@@ -531,10 +574,30 @@ async def enrich_query(
                     if t.alias == alias:
                         t.label = qfield.label
 
+    # --- Enrich ORDER BY formulas as hidden fields ---
+    for item in query.order or []:
+        if not item.raw_formula:
+            continue
+        spec = parse_formula(item.raw_formula, extra_agg_names=custom_agg_names)
+        if isinstance(spec, AggregatedMeasureRef):
+            canonical = (
+                f"_{spec.aggregation_name}"
+                if spec.measure_name == "*"
+                else f"{spec.measure_name}_{spec.aggregation_name}"
+            )
+        else:
+            canonical = item.raw_formula.replace(" ", "_").replace("/", "_div_").replace(
+                ":", "_"
+            ).replace("*", "").replace("(", "_").replace(")", "").replace(",", "_")
+        # Only enrich if not already present from fields
+        if canonical not in known_aliases:
+            await _flatten_spec(spec, canonical)
+        item.column.name = canonical
+
     # --- Validate model filters ---
     measure_names_set = {m.name for m in measures}
     for mf in model.filters:
-        parsed_mf = parse_filter(mf)
+        parsed_mf = parse_filter(mf, extra_agg_names=custom_agg_names)
         for col in parsed_mf.columns:
             if col in measure_names_set:
                 raise ValueError(
@@ -557,9 +620,11 @@ async def enrich_query(
     processed_filters = []
     ft_counter = [0]
     for f_str in all_filter_strs:
-        rewritten, extra_fields = extract_filter_transforms(f_str, counter=ft_counter)
+        rewritten, extra_fields = extract_filter_transforms(
+            f_str, counter=ft_counter, extra_agg_names=custom_agg_names,
+        )
         for name, formula in extra_fields:
-            spec = parse_formula(formula)
+            spec = parse_formula(formula, extra_agg_names=custom_agg_names)
             await _flatten_spec(spec, name)
         processed_filters.append(rewritten)
 
@@ -576,6 +641,7 @@ async def enrich_query(
         processed_filters=processed_filters,
         named_queries=named_queries,
         resolve_join_target=resolve_join_target,
+        extra_agg_names=custom_agg_names,
     )
 
     return EnrichedQuery(
@@ -592,7 +658,7 @@ async def enrich_query(
         last_agg_time_column=last_agg_time_column if has_first_or_last else None,
         filters=classify_filters(
             filters=await resolve_filter_columns(
-                parsed_filters=[parse_filter(f) for f in processed_filters],
+                parsed_filters=[parse_filter(f, extra_agg_names=custom_agg_names) for f in processed_filters],
                 model=model,
                 model_name=model_name_str,
                 resolve_join_target=resolve_join_target,
@@ -696,9 +762,8 @@ def _resolve_time_alias(
             td_names = {td.name for td in time_dimensions}
             if model.default_time_dimension in td_names:
                 return f"{model.name}.{model.default_time_dimension}"
-    else:
-        if model.default_time_dimension:
-            return f"{model.name}.{model.default_time_dimension}"
+    # No fallback to default_time_dimension without explicit time_dimensions —
+    # transforms require a time_dimensions entry so the column is in the base CTE.
     return None
 
 
@@ -742,6 +807,7 @@ def _collect_needed_paths(
     measures: List[EnrichedMeasure],
     cross_model_measures: list,
     processed_filters: List[str],
+    extra_agg_names: Optional[frozenset] = None,
 ) -> Set[Tuple[str, ...]]:
     """Extract ordered join-path tuples the query needs (including all prefixes)."""
 
@@ -769,7 +835,7 @@ def _collect_needed_paths(
 
     # Scan filters for dotted column references (e.g. customers.regions.name)
     for f_str in processed_filters:
-        parsed_f = parse_filter(f_str)
+        parsed_f = parse_filter(f_str, extra_agg_names=extra_agg_names)
         for col in parsed_f.columns:
             if "." in col:
                 parts = col.split(".")
@@ -804,6 +870,7 @@ async def _resolve_joins(
     processed_filters: List[str],
     named_queries: dict,
     resolve_join_target,
+    extra_agg_names: Optional[frozenset] = None,
 ) -> List[tuple]:
     """Resolve only the JOINs the query actually needs by walking the join graph.
 
@@ -817,6 +884,7 @@ async def _resolve_joins(
         measures=measures,
         cross_model_measures=cross_model_measures,
         processed_filters=processed_filters,
+        extra_agg_names=extra_agg_names,
     )
     if not needed_paths:
         return []
@@ -883,6 +951,8 @@ async def _resolve_joins(
     return list(resolved_joins.values())
 
 
+
+
 # ---------------------------------------------------------------------------
 # Filter processing
 # ---------------------------------------------------------------------------
@@ -891,6 +961,7 @@ async def _resolve_joins(
 def extract_filter_transforms(
     filter_str: str,
     counter: Optional[List[int]] = None,
+    extra_agg_names: Optional[frozenset[str]] = None,
 ) -> tuple:
     """Extract transform function calls from a filter string.
 
@@ -904,7 +975,9 @@ def extract_filter_transforms(
     if counter is None:
         counter = [0]
 
-    preprocessed = _preprocess_like(filter_str)
+    preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)
+    funcstyle_rewritten = preprocessed  # capture after funcstyle rewrite, before further preprocessing
+    preprocessed = _preprocess_like(preprocessed)
     # Preprocess colon syntax (e.g., "order_total:sum") into ast-safe placeholders
     preprocessed, agg_refs = _preprocess_agg_refs(preprocessed)
     # Build reverse map: placeholder → original colon form
@@ -951,7 +1024,7 @@ def extract_filter_transforms(
 
     modified = _replace(tree.body)
     if not transforms:
-        return filter_str, []
+        return funcstyle_rewritten, []
     return _unmangle(_ast.unparse(modified)), transforms
 
 

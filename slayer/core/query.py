@@ -127,6 +127,33 @@ def _coerce_column_ref(v: Any) -> Any:
     return v
 
 
+def _coerce_order_column(v: Any) -> Any:
+    """Coerce ORDER BY column, normalizing aggregation syntax.
+
+    Handles both colon syntax and function-style syntax for built-in
+    aggregations. Converts to the underscore form that matches enriched
+    measure names.
+
+    Examples:
+    - "revenue:sum" → "revenue_sum"
+    - "*:count" → "_count"
+    - "sum(revenue)" → "revenue_sum"
+    - "revenue:last(ordered_at)" → "revenue_last"
+    """
+    if isinstance(v, str):
+        from slayer.core.formula import _rewrite_funcstyle_aggregations
+        v = _rewrite_funcstyle_aggregations(v)
+        if ":" in v:
+            base, agg = v.rsplit(":", 1)
+            agg_name = agg.split("(", 1)[0]  # strip arglist
+            if base == "*":
+                v = f"_{agg_name}"
+            else:
+                v = f"{base}_{agg_name}"
+        return {"name": v}
+    return v
+
+
 class TimeDimension(BaseModel):
     dimension: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
     granularity: TimeGranularity
@@ -135,8 +162,22 @@ class TimeDimension(BaseModel):
 
 
 class OrderItem(BaseModel):
-    column: Annotated[ColumnRef, BeforeValidator(_coerce_column_ref)]
+    column: Annotated[ColumnRef, BeforeValidator(_coerce_order_column)]
     direction: str = "asc"
+    raw_formula: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _capture_raw_formula(cls, data: Any) -> Any:
+        """Capture the raw column formula before coercion normalizes it."""
+        if isinstance(data, dict):
+            col = data.get("column")
+            if isinstance(col, str):
+                from slayer.core.formula import _rewrite_funcstyle_aggregations
+                rewritten = _rewrite_funcstyle_aggregations(col)
+                if ":" in rewritten:
+                    data = {**data, "raw_formula": rewritten}
+        return data
 
 
 class Field(BaseModel):

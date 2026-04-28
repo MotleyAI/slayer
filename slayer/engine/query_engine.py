@@ -5,8 +5,9 @@ Flow: SlayerQuery → _enrich() → EnrichedQuery → SQLGenerator → SQL → e
 
 import decimal
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field as PydanticField, model_validator
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
@@ -59,38 +60,37 @@ def _build_explain_sql(dialect: str, sql: str) -> str:
     return f"{prefix} {sql}{suffix}"
 
 
-@dataclass
-class FieldMetadata:
+class FieldMetadata(BaseModel):
     """Metadata for a single field in the query response."""
 
     label: Optional[str] = None
     format: Optional[NumberFormat] = None
 
 
-@dataclass
-class ResponseAttributes:
+class ResponseAttributes(BaseModel):
     """Field metadata for a query response, split by type."""
 
-    dimensions: Dict[str, FieldMetadata] = field(default_factory=dict)
-    measures: Dict[str, FieldMetadata] = field(default_factory=dict)
+    dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    measures: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
 
     def get(self, column: str) -> Optional[FieldMetadata]:
         """Look up metadata for a column across both dicts."""
         return self.dimensions.get(column) or self.measures.get(column)
 
 
-@dataclass
-class SlayerResponse:
+class SlayerResponse(BaseModel):
     """Response from a SLayer query."""
 
     data: List[Dict[str, Any]]
-    columns: List[str] = field(default_factory=list)
+    columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
-    attributes: ResponseAttributes = field(default_factory=ResponseAttributes)
+    attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
 
-    def __post_init__(self):
+    @model_validator(mode="after")
+    def _populate_columns(self) -> "SlayerResponse":
         if not self.columns and self.data:
             self.columns = list(self.data[0].keys())
+        return self
 
     @property
     def row_count(self) -> int:
@@ -765,32 +765,43 @@ class SlayerQueryEngine:
     ) -> CrossModelMeasure:
         """Resolve a cross-model measure reference like 'customers.avg_score'.
 
+        Supports multi-hop paths: 'claim_coverage.claim_amount.total_claim_amount'
+        walks the join graph hop-by-hop to reach the final model.
+
         Looks up the join from the source model, loads the target model
         (checking named queries first), finds shared dimensions, and returns
         a CrossModelMeasure for SQL generation.
         """
-        parts = spec_name.split(".", 1)
-        if len(parts) != 2:
+        parts = spec_name.split(".")
+        if len(parts) < 2:
             raise ValueError(f"Invalid cross-model measure reference: '{spec_name}'")
-        target_model_name, measure_name = parts
+        measure_name = parts[-1]
+        hop_names = parts[:-1]  # e.g. ["claim_coverage", "claim_amount"]
 
-        # Find the join to the target model
-        join = None
-        for j in model.joins:
-            if j.target_model == target_model_name:
-                join = j
-                break
-        if join is None:
-            raise ValueError(
-                f"Model '{model.name}' has no join to '{target_model_name}'. "
-                f"Available joins: {[j.target_model for j in model.joins]}"
+        # Walk the join chain to find the final target model
+        current_model = model
+        first_join = None
+        for i, hop_name in enumerate(hop_names):
+            join = None
+            for j in current_model.joins:
+                if j.target_model == hop_name:
+                    join = j
+                    break
+            if join is None:
+                raise ValueError(
+                    f"Model '{current_model.name}' has no join to '{hop_name}'. "
+                    f"Available joins: {[j.target_model for j in current_model.joins]}"
+                )
+            if i == 0:
+                first_join = join
+            current_model = await self._resolve_model(
+                model_name=hop_name,
+                named_queries=named_queries or {},
             )
 
-        # Load the target model (named queries take precedence)
-        target_model = await self._resolve_model(
-            model_name=target_model_name,
-            named_queries=named_queries or {},
-        )
+        target_model_name = hop_names[-1]
+        target_model = current_model
+        join = first_join  # For join_pairs: source model → first hop
 
         # Find the measure (or dimension) in the target model
         if measure_name == "*":
@@ -835,7 +846,8 @@ class SlayerQueryEngine:
                 f"Cross-model measure '{spec_name}' must include an aggregation (e.g., '{spec_name}:sum')."
             )
 
-        alias = f"{query_model_name}.{target_model_name}.{canonical}"
+        hop_path = ".".join(hop_names)
+        alias = f"{query_model_name}.{hop_path}.{canonical}"
         aggregation_def = target_model.get_aggregation(agg)
 
         # Infer format from the target model's measure and aggregation
@@ -950,6 +962,10 @@ class SlayerQueryEngine:
         # --- Remap filters ---
         rerooted_filters = []
         target_prefix = target_model_name + "."
+        _custom_agg_names = frozenset(
+            a.name for m in (model, target_model)
+            for a in m.aggregations
+        ) or None
         for f_str in (query.filters or []) + list(model.filters):
             remapped = f_str
             # Strip target model prefix from dotted references
@@ -958,7 +974,7 @@ class SlayerQueryEngine:
                 remapped = remapped.replace(target_prefix, "")
             # For unqualified column references that are source model dimensions,
             # prepend source model name (they're now on a joined table)
-            parsed = parse_filter(remapped)
+            parsed = parse_filter(remapped, extra_agg_names=_custom_agg_names)
             for col in parsed.columns:
                 if "." not in col:
                     dim = model.get_dimension(col)

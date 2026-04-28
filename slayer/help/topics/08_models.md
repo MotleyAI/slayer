@@ -45,9 +45,11 @@ measures:
 
 ## default_time_dimension
 
-An optional model-level field naming the "canonical" time dimension. Transforms
-and `:first` / `:last` aggregations fall back to it when the query's own time
-dimensions don't disambiguate.
+An optional model-level field naming the "canonical" time dimension. Used to
+disambiguate when a query has 2+ `time_dimensions` entries (and no
+`main_time_dimension` is set). Also used by `:first` / `:last` aggregations
+for time column resolution. Transforms still require an explicit
+`time_dimensions` entry in the query.
 
 ```yaml
 name: orders
