@@ -326,10 +326,18 @@ async def _execute_with_retry_async(
                 db_type=db_type,
                 timeout_seconds=timeout_seconds,
             )
-        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError):
+        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
             if attempt == max_attempts - 1:
                 raise
-            logger.warning("Transient DB error on attempt %d, retrying in %.1fs", attempt + 1, delay)
+            # Log the underlying DBAPI message + a SQL excerpt so the
+            # warning is actionable. `exc.orig` carries the driver's
+            # exception (e.g. sqlite3.OperationalError("database is locked"));
+            # without it the warning was uninformative.
+            sql_excerpt = (sql or "").strip().splitlines()[0][:120]
+            logger.warning(
+                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
+                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
+            )
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
 
@@ -378,10 +386,18 @@ async def _execute_with_retry_threaded(
                 db_type,
                 timeout_seconds,
             )
-        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError):
+        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
             if attempt == max_attempts - 1:
                 raise
-            logger.warning("Transient DB error on attempt %d, retrying in %.1fs", attempt + 1, delay)
+            # Log the underlying DBAPI message + a SQL excerpt so the
+            # warning is actionable. `exc.orig` carries the driver's
+            # exception (e.g. sqlite3.OperationalError("database is locked"));
+            # without it the warning was uninformative.
+            sql_excerpt = (sql or "").strip().splitlines()[0][:120]
+            logger.warning(
+                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
+                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
+            )
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
 
@@ -409,10 +425,14 @@ def _execute_with_retry_sync(
                 db_type=db_type,
                 timeout_seconds=timeout_seconds,
             )
-        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError):
+        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
             if attempt == max_attempts - 1:
                 raise
-            logger.warning("Transient DB error on attempt %d, retrying in %.1fs", attempt + 1, delay)
+            sql_excerpt = (sql or "").strip().splitlines()[0][:120]
+            logger.warning(
+                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
+                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
+            )
             time.sleep(delay)
             delay = min(delay * 2, max_delay)
 
