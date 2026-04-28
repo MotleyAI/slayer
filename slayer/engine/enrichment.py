@@ -38,26 +38,75 @@ from slayer.engine.enriched import (
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
+_NON_IDENT_RE = re.compile(r"[^a-zA-Z0-9_]+")
+
+
+def _agg_signature_suffix(
+    agg_args: Optional[list],
+    agg_kwargs: Optional[dict],
+) -> str:
+    """Build a deterministic identifier suffix from aggregation args/kwargs.
+
+    Returns the empty string when both are empty so unparameterized aggregations
+    keep their existing canonical names. For parameterized variants (e.g.
+    ``last(created_at)`` vs ``last(updated_at)``, ``percentile(p=0.5)`` vs
+    ``percentile(p=0.95)``) the suffix differentiates them so they don't
+    collapse onto a single hidden alias.
+    """
+    args = agg_args or []
+    kwargs = agg_kwargs or {}
+    if not args and not kwargs:
+        return ""
+    parts: List[str] = []
+    for a in args:
+        sanitized = _NON_IDENT_RE.sub("_", str(a)).strip("_")
+        if sanitized:
+            parts.append(sanitized)
+    for k in sorted(kwargs.keys()):
+        sk = _NON_IDENT_RE.sub("_", str(k)).strip("_")
+        sv = _NON_IDENT_RE.sub("_", str(kwargs[k])).strip("_")
+        if sk:
+            parts.append(sk)
+        if sv:
+            parts.append(sv)
+    return "_" + "_".join(parts) if parts else ""
+
+
+def _canonical_agg_name(
+    measure_name: str,
+    aggregation_name: str,
+    agg_args: Optional[list] = None,
+    agg_kwargs: Optional[dict] = None,
+) -> str:
+    """Canonical hidden-column name for an aggregated measure ref.
+
+    ``revenue:sum`` → ``revenue_sum``; ``*:count`` → ``_count``;
+    ``revenue:percentile(p=0.5)`` → ``revenue_percentile_p_0_5``.
+    """
+    suffix = _agg_signature_suffix(agg_args, agg_kwargs)
+    if measure_name == "*":
+        return f"_{aggregation_name}{suffix}"
+    return f"{measure_name}_{aggregation_name}{suffix}"
 
 
 async def _collect_reachable_agg_names(
     model: SlayerModel,
     resolve_join_target,
     named_queries: Dict,
-    max_depth: int = 3,
 ) -> Optional[frozenset[str]]:
     """Collect custom aggregation names from the source model and all reachable joined models.
 
-    Walks the join graph via BFS up to ``max_depth`` hops to discover custom
-    aggregation names that should be recognised by the function-style rewrite.
-    Returns ``None`` when no custom aggregations exist anywhere.
+    Walks the full reachable join graph via BFS, bounded only by the ``visited``
+    cycle guard (no fixed depth cap). Dotted-path resolution supports arbitrary
+    depth, so the rewrite must too. Returns ``None`` when no custom aggregations
+    exist anywhere.
     """
     names: set[str] = set()
     visited: set[str] = set()
-    queue: list[tuple[SlayerModel, int]] = [(model, 0)]
+    queue: list[SlayerModel] = [model]
 
     while queue:
-        current, depth = queue.pop(0)
+        current = queue.pop(0)
         if current.name in visited:
             continue
         visited.add(current.name)
@@ -65,17 +114,16 @@ async def _collect_reachable_agg_names(
         if current.aggregations:
             names.update(a.name for a in current.aggregations)
 
-        if depth < max_depth:
-            for join in current.joins:
-                if join.target_model not in visited:
-                    target_info = await resolve_join_target(
-                        target_model_name=join.target_model,
-                        named_queries=named_queries,
-                    )
-                    if target_info:
-                        _, target_model_obj = target_info
-                        if target_model_obj:
-                            queue.append((target_model_obj, depth + 1))
+        for join in current.joins:
+            if join.target_model not in visited:
+                target_info = await resolve_join_target(
+                    target_model_name=join.target_model,
+                    named_queries=named_queries,
+                )
+                if target_info:
+                    _, target_model_obj = target_info
+                    if target_model_obj:
+                        queue.append(target_model_obj)
 
     return frozenset(names) if names else None
 
@@ -172,11 +220,15 @@ async def enrich_query(
         agg_args = agg_args or []
         agg_kwargs = agg_kwargs or {}
 
-        # Canonical name for the result column (colon → underscore)
-        if measure_name == "*":
-            canonical_name = f"_{aggregation_name}"  # *:count → "_count"
-        else:
-            canonical_name = f"{measure_name}_{aggregation_name}"
+        # Canonical name for the result column (colon → underscore). Includes a
+        # signature suffix when args/kwargs are present so that parameterized
+        # variants (e.g. percentile(p=0.5) vs percentile(p=0.95)) don't collide.
+        canonical_name = _canonical_agg_name(
+            measure_name=measure_name,
+            aggregation_name=aggregation_name,
+            agg_args=agg_args,
+            agg_kwargs=agg_kwargs,
+        )
 
         # Skip if already ensured with this alias_key
         alias = f"{model_name_str}.{canonical_name}"
@@ -290,10 +342,11 @@ async def enrich_query(
 
     def _add_transform(name: str, transform: str, measure_alias: str, offset: int = 1, granularity: str = None):
         needs_time = transform in TIME_TRANSFORMS
-        if needs_time and not time_dimensions:
+        if needs_time and resolved_time_alias is None:
             raise ValueError(
-                f"Field '{name}' ({transform}) requires a time_dimension in the query. "
-                f"Add a time_dimensions entry with a granularity."
+                f"Field '{name}' ({transform}) requires an unambiguous time dimension. "
+                f"Add a single time_dimensions entry, or set main_time_dimension to "
+                f"select among multiple time dimensions."
             )
         alias = f"{model_name_str}.{name}"
         enriched_transforms.append(
@@ -360,10 +413,11 @@ async def enrich_query(
                 known_aliases[field_name] = cm.alias
                 return cm.alias
 
-            canonical_name = (
-                f"_{spec.aggregation_name}"
-                if spec.measure_name == "*"
-                else f"{spec.measure_name}_{spec.aggregation_name}"
+            canonical_name = _canonical_agg_name(
+                measure_name=spec.measure_name,
+                aggregation_name=spec.aggregation_name,
+                agg_args=spec.agg_args,
+                agg_kwargs=spec.agg_kwargs,
             )
             await _ensure_aggregated_measure(
                 alias_key=canonical_name,
@@ -421,10 +475,11 @@ async def enrich_query(
                 # Flatten the inner spec to get the measure alias
                 inner_name = f"_inner_{field_name}"
                 if isinstance(spec.inner, AggregatedMeasureRef):
-                    canonical = (
-                        spec.inner.aggregation_name
-                        if spec.inner.measure_name == "*"
-                        else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
+                    canonical = _canonical_agg_name(
+                        measure_name=spec.inner.measure_name,
+                        aggregation_name=spec.inner.aggregation_name,
+                        agg_args=spec.inner.agg_args,
+                        agg_kwargs=spec.inner.agg_kwargs,
                     )
                     inner_alias = await _flatten_spec(spec.inner, canonical)
                 else:
@@ -479,10 +534,11 @@ async def enrich_query(
                 )
             inner_name = f"_inner_{field_name}"
             if isinstance(spec.inner, AggregatedMeasureRef):
-                canonical = (
-                    spec.inner.aggregation_name
-                    if spec.inner.measure_name == "*"
-                    else f"{spec.inner.measure_name}_{spec.inner.aggregation_name}"
+                canonical = _canonical_agg_name(
+                    measure_name=spec.inner.measure_name,
+                    aggregation_name=spec.inner.aggregation_name,
+                    agg_args=spec.inner.agg_args,
+                    agg_kwargs=spec.inner.agg_kwargs,
                 )
                 inner_alias = await _flatten_spec(spec.inner, canonical)
             else:
@@ -515,10 +571,11 @@ async def enrich_query(
 
         if isinstance(spec, AggregatedMeasureRef):
             # New colon syntax: "revenue:sum", "*:count", etc.
-            canonical_name = (
-                f"_{spec.aggregation_name}"
-                if spec.measure_name == "*"
-                else f"{spec.measure_name}_{spec.aggregation_name}"
+            canonical_name = _canonical_agg_name(
+                measure_name=spec.measure_name,
+                aggregation_name=spec.aggregation_name,
+                agg_args=spec.agg_args,
+                agg_kwargs=spec.agg_kwargs,
             )
             if field_name == qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace("*", ""):
                 field_name = canonical_name
@@ -580,10 +637,11 @@ async def enrich_query(
             continue
         spec = parse_formula(item.raw_formula, extra_agg_names=custom_agg_names)
         if isinstance(spec, AggregatedMeasureRef):
-            canonical = (
-                f"_{spec.aggregation_name}"
-                if spec.measure_name == "*"
-                else f"{spec.measure_name}_{spec.aggregation_name}"
+            canonical = _canonical_agg_name(
+                measure_name=spec.measure_name,
+                aggregation_name=spec.aggregation_name,
+                agg_args=spec.agg_args,
+                agg_kwargs=spec.agg_kwargs,
             )
         else:
             canonical = item.raw_formula.replace(" ", "_").replace("/", "_div_").replace(

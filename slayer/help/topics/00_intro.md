@@ -9,7 +9,7 @@ SLayer generates and executes the query against your database.
 - **datasource** — a database connection (postgres, mysql, sqlite, duckdb, …).
 - **model** — a named mapping from a table (or SQL subquery) to queryable fields.
 - **dimension** — a column to group/filter by (e.g. `status`, `created_at`).
-- **measure** — a named row-level SQL expression on a model (e.g. `{"name": "adams_revenue", "sql": "amount", filter: "customer.name='Adam'"}`).
+- **measure** — a named row-level SQL expression on a model (e.g. `{"name": "adams_revenue", "sql": "amount", "filter": "customers.name='Adam'"}`).
   Not an aggregate — aggregation is chosen at query time. 
 - **aggregation** — how a measure is rolled up: `sum`, `avg`, `count`, `weighted_avg`, …
   Applied via colon syntax: `revenue:sum`.
@@ -40,7 +40,7 @@ You can add ad hoc measures, dimensions, etc to the source_model, like
 {
   "source_model": {
     "source_name": "orders",
-    "measures": [{"name": "adams_revenue", "sql": "amount", "filter": "customer.name='Adam'"}],
+    "measures": [{"name": "adams_revenue", "sql": "amount", "filter": "customers.name='Adam'"}],
     ...
   }
 ...
@@ -58,7 +58,7 @@ You can add ad hoc measures, dimensions, etc to the source_model, like
    use `*:count` — not a primary-key column. Only add that to queries when you actually need it.
    You can also aggregate dimensions directly: `customer_id:count_distinct` for `COUNT(DISTINCT customer_id)`.
 
-3. **Joined data is reached via DOTTED paths, not by JOINing manually.**.
+3. **Joined data is reached via DOTTED paths, not by JOINing manually.**
    `customers.regions.name` on a query of `orders` auto-walks the join graph
    (`orders → customers → regions`). Don't try to add SQL joins yourself.
 

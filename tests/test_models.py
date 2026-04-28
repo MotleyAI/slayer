@@ -59,6 +59,43 @@ class TestColumnRef:
             ColumnRef(name="123invalid")
 
 
+class TestOrderItem:
+    """OrderItem column coercion and raw_formula capture."""
+
+    def test_colon_syntax_normalized(self) -> None:
+        item = OrderItem(column="revenue:sum", direction="desc")
+        assert item.column.name == "revenue_sum"
+        assert item.raw_formula == "revenue:sum"
+
+    def test_funcstyle_builtin_agg_normalized(self) -> None:
+        """Built-in function-style aggregations get rewritten to colon form."""
+        item = OrderItem(column="sum(revenue)", direction="desc")
+        assert item.column.name == "revenue_sum"
+        assert item.raw_formula == "revenue:sum"
+
+    def test_funcstyle_custom_agg_accepted(self) -> None:
+        """Function-style custom aggregations must validate without rejecting on parens.
+
+        Regression: _coerce_order_column previously wrapped the unrewritten string
+        as ``{"name": "rolling_avg(revenue)"}``, which ColumnRef's name validator
+        rejected. raw_formula is preserved so enrichment can resolve the agg via
+        extra_agg_names.
+        """
+        item = OrderItem(column="rolling_avg(revenue)", direction="desc")
+        assert item.raw_formula == "rolling_avg(revenue)"
+
+    def test_funcstyle_custom_agg_with_args_accepted(self) -> None:
+        """Function-style custom agg with args is captured as raw_formula."""
+        item = OrderItem(column="rolling_avg(revenue, window=7)", direction="asc")
+        assert item.raw_formula == "rolling_avg(revenue, window=7)"
+
+    def test_plain_column_no_raw_formula(self) -> None:
+        """A plain column reference has no raw_formula."""
+        item = OrderItem(column="status", direction="asc")
+        assert item.column.name == "status"
+        assert item.raw_formula is None
+
+
 class TestSlayerModel:
     def test_get_dimension(self) -> None:
         model = SlayerModel(
@@ -793,6 +830,39 @@ class TestStripSourceModelPrefix:
         stripped = q.strip_source_model_prefix()
         assert stripped.order[0].column.model is None
         assert stripped.order[0].column.name == "revenue_sum"
+
+    def test_order_raw_formula_preserved_after_strip(self) -> None:
+        """Source-prefixed colon syntax in order: raw_formula survives stripping.
+
+        Regression: strip_source_model_prefix() used to drop OrderItem.raw_formula
+        when reconstructing the OrderItem, which broke enrichment's hidden ORDER BY
+        materialization (enrichment.py: ``if not item.raw_formula: continue``).
+        """
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            order=[{"column": "orders.revenue:sum", "direction": "desc"}],
+        )
+        # Before stripping, raw_formula captured the rewritten input
+        assert q.order[0].raw_formula == "orders.revenue:sum"
+        stripped = q.strip_source_model_prefix()
+        assert stripped.order[0].column.model is None
+        assert stripped.order[0].column.name == "revenue_sum"
+        # After stripping the source-model prefix, raw_formula must also be stripped
+        assert stripped.order[0].raw_formula == "revenue:sum"
+
+    def test_order_raw_formula_preserved_after_strip_multihop(self) -> None:
+        """Multi-hop source-prefixed colon syntax: raw_formula gets prefix stripped."""
+        q = SlayerQuery(
+            source_model="orders",
+            fields=["*:count"],
+            order=[{"column": "orders.customers.score:sum", "direction": "asc"}],
+        )
+        assert q.order[0].raw_formula == "orders.customers.score:sum"
+        stripped = q.strip_source_model_prefix()
+        assert stripped.order[0].column.model == "customers"
+        assert stripped.order[0].column.name == "score_sum"
+        assert stripped.order[0].raw_formula == "customers.score:sum"
 
     # --- main_time_dimension ---
 
