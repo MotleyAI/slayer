@@ -85,21 +85,21 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
         },
     )
-    check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders.count"] == TOTAL_ORDERS)
+    check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders._count"] == TOTAL_ORDERS)
 
     result = api(
         "POST",
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
             "dimensions": [{"name": "status"}],
         },
     )
-    by_status = {r["orders.status"]: r["orders.count"] for r in result["data"]}
+    by_status = {r["orders.status"]: r["orders._count"] for r in result["data"]}
     for status, expected in STATUS_COUNTS.items():
         check(f"{status} = {expected}", by_status.get(status) == expected)
 
@@ -108,13 +108,13 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
             "filters": ["status == 'completed'"],
         },
     )
     check(
         f"filter works (completed={STATUS_COUNTS['completed']})",
-        result["data"][0]["orders.count"] == STATUS_COUNTS["completed"],
+        result["data"][0]["orders._count"] == STATUS_COUNTS["completed"],
     )
 
     result = api(
@@ -122,9 +122,9 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
             "dimensions": [{"name": "customer_id"}],
-            "order": [{"column": {"name": "count"}, "direction": "desc"}],
+            "order": [{"column": {"name": "_count"}, "direction": "desc"}],
             "limit": 3,
         },
     )
@@ -135,20 +135,20 @@ def run_common_checks():
         "/query",
         {
             "source_model": "products",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
         },
     )
-    check("8 products total", result["data"][0]["products.count"] == 8)
+    check("8 products total", result["data"][0]["products._count"] == 8)
 
     result = api(
         "POST",
         "/query",
         {
             "source_model": "customers",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
         },
     )
-    check("10 customers total", result["data"][0]["customers.count"] == 10)
+    check("10 customers total", result["data"][0]["customers._count"] == 10)
 
     # --- Datasources ---
     print("\nDatasources:")
