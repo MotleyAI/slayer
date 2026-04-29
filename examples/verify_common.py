@@ -159,6 +159,61 @@ def run_common_checks():
     return models
 
 
+def _percentile_cont(values, p):
+    """Linear-interpolation percentile, matches Postgres PERCENTILE_CONT.
+
+    Inlined here so verify.py has no third-party dependencies.
+    """
+    s = sorted(values)
+    n = len(s)
+    if n == 1:
+        return s[0]
+    rank = p * (n - 1)
+    lo = int(rank)
+    hi = min(lo + 1, n - 1)
+    return s[lo] + (rank - lo) * (s[hi] - s[lo])
+
+
+def check_median_percentile(measure="quantity"):
+    """Run median + percentile against a numeric measure on the orders model.
+
+    Compares against reference values computed in Python from the seed data so
+    this works for any database whose dialect SLayer supports for these aggs.
+    Skip on MySQL (and any dialect where SLayer raises) since the API will
+    return an error.
+    """
+    print("\nMedian / percentile:")
+
+    # Reference values from the seed (orders[3] is quantity in the tuple).
+    quantities = [o[3] for o in ORDERS]
+    import statistics
+    expected_median = statistics.median(quantities)
+    expected_p25 = _percentile_cont(quantities, 0.25)
+    expected_p75 = _percentile_cont(quantities, 0.75)
+
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "fields": [
+                {"formula": f"{measure}:median"},
+                {"formula": f"{measure}:percentile(p=0.25)"},
+                {"formula": f"{measure}:percentile(p=0.75)"},
+            ],
+        },
+    )
+    row = result["data"][0]
+    got_median = float(row[f"orders.{measure}_median"])
+    got_p25 = float(row[f"orders.{measure}_percentile_p_0_25"])
+    got_p75 = float(row[f"orders.{measure}_percentile_p_0_75"])
+
+    # Tolerance covers float drift across dialects without masking real bugs.
+    check(f"median({measure}) = {expected_median}", abs(got_median - expected_median) < 1e-6)
+    check(f"percentile(p=0.25) = {expected_p25}", abs(got_p25 - expected_p25) < 1e-6)
+    check(f"percentile(p=0.75) = {expected_p75}", abs(got_p75 - expected_p75) < 1e-6)
+
+
 def check_rollup(expect_rollup=True):
     """Check join-based cross-model queries on the orders model."""
     print("\nJoins:")
