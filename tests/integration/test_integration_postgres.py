@@ -496,19 +496,19 @@ def pg_ingest_env(postgresql):
 
 @pytest.mark.integration
 class TestRollupIngestion:
-    def test_orders_has_own_dimensions_only(self, pg_ingest_env) -> None:
-        """After ingestion, models only have their own columns as dimensions."""
+    def test_orders_has_own_columns_only(self, pg_ingest_env) -> None:
+        """After ingestion, models only have their own columns (no flattened joined dims)."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
-        dim_names = [d.name for d in orders.columns]
-        # Should have own columns only (no flattened joined dims)
-        assert "id" in dim_names
-        assert "customer_id" in dim_names
-        # Float-like columns (DECIMAL) get measures only, no dimension
-        assert "amount" not in dim_names
-        # Joined dimensions are resolved via join graph, not pre-flattened
-        assert not any("." in name for name in dim_names)
+        col_names = [c.name for c in orders.columns]
+        # Should have own columns only.
+        assert "id" in col_names
+        assert "customer_id" in col_names
+        # In v2, every non-joined column appears once (numeric columns included).
+        assert "amount" in col_names
+        # Joined dimensions are resolved via join graph, not pre-flattened.
+        assert not any("." in name for name in col_names)
 
     def test_orders_uses_sql_table_with_joins(self, pg_ingest_env) -> None:
         models, _, _ = pg_ingest_env
@@ -527,18 +527,17 @@ class TestRollupIngestion:
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    def test_orders_has_own_measures_only(self, pg_ingest_env) -> None:
-        """After ingestion, models only have measures for their own columns."""
+    def test_orders_has_no_named_measures_after_ingest(self, pg_ingest_env) -> None:
+        """v2 auto-ingest leaves model.measures (formula list) empty.
+
+        Row-level columns live on .columns; named-formula measures are an
+        opt-in library users populate themselves.
+        """
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
-
-        measure_names = [m.name for m in orders.measures]
-        # One measure per non-ID column; no auto-created 'count'
-        assert "amount" in measure_names
-        assert "count" not in measure_names
-        assert "amount_sum" not in measure_names
-        # No dotted measure names from joined models
-        assert not any("." in name for name in measure_names)
+        assert orders.measures == []
+        col_names = [c.name for c in orders.columns]
+        assert "amount" in col_names
 
     async def test_rollup_query_group_by_customer(self, pg_ingest_env) -> None:
         """Query orders grouped by rolled-up customer name."""
