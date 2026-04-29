@@ -2,6 +2,7 @@
 # Ingest models from Postgres and start the SLayer API server.
 
 python -c "
+from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
 from slayer.engine.ingestion import ingest_datasource
 from slayer.storage.yaml_storage import YAMLStorage
@@ -12,10 +13,10 @@ ds = DatasourceConfig(
     host='postgres', port=5432,
     database='slayer_demo', username='slayer', password='slayer',
 )
-storage.save_datasource(ds)
+run_sync(storage.save_datasource(ds))
 models = ingest_datasource(datasource=ds, schema='public')
 for m in models:
-    storage.save_model(m)
+    run_sync(storage.save_model(m))
 print(f'Ingested {len(models)} models')
 "
 

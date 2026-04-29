@@ -10,10 +10,18 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from verify_common import run_common_checks, check_rollup, check, summary
+from verify_common import (
+    run_common_checks,
+    check_rollup,
+    check_median_percentile,
+    check,
+    summary,
+)
 
 if __name__ == "__main__":
     models = run_common_checks()
     check("4 models (no rollup)", len(models) == 4)
     check_rollup(expect_rollup=False)
+    # Exercises the parametric quantile(p)(x) syntax SLayer emits for ClickHouse.
+    check_median_percentile()
     summary()
