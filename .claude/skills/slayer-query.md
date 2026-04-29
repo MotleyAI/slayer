@@ -117,8 +117,8 @@ from slayer.core.named_query_ops import save_named_query
 
 named = NamedQuery(
     name="monthly_top",
-    description="Monthly revenue, top quartile only.",
-    variables={"top_pct": 0.25},
+    description="Monthly revenue above a threshold.",
+    variables={"threshold": 1500},
     stages=[
         SlayerQuery(name="monthly", source_model="orders", fields=["revenue:sum"], time_dimensions=[...]),
         SlayerQuery(source_model="monthly", filters=["revenue_sum > {threshold}"]),

@@ -3,7 +3,7 @@
 import argparse
 import os
 import sys
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from slayer.async_utils import run_sync
 from slayer.storage.base import default_storage_path, storage_base_dir
@@ -715,6 +715,8 @@ def _parse_variables(spec: Optional[str]) -> Dict[str, Any]:
         key, _, raw = pair.partition("=")
         key = key.strip()
         raw = raw.strip()
+        if not key:
+            raise ValueError("--variables keys must be non-empty")
         try:
             value: Any = int(raw)
         except ValueError:
@@ -777,7 +779,11 @@ def _run_queries(args):
             sys.exit(1)
 
     elif args.queries_command == "run":
-        variables = _parse_variables(args.variables)
+        try:
+            variables = _parse_variables(args.variables)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         engine = SlayerQueryEngine(storage=storage)
 
         # If --dry-run, mark the final stage so SQL is generated but not executed.
@@ -814,7 +820,11 @@ def _run_queries(args):
         if named is None:
             print(f"NamedQuery '{args.name}' not found.")
             sys.exit(1)
-        supplied = _parse_variables(args.variables)
+        try:
+            supplied = _parse_variables(args.variables)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         variables = dict(supplied)
         # Fill placeholders for unsupplied vars so introspection succeeds.
         unsupplied = named.unsupplied_variables() - set(variables.keys())
@@ -831,12 +841,19 @@ def _run_queries(args):
             print(f"Inspection failed: {e}")
             sys.exit(1)
         attrs = response.attributes
-        columns = []
+        columns: List[Dict[str, Any]] = []
         for col_name in response.columns:
+            fm = attrs.get(col_name)
             kind = "dimension" if col_name in attrs.dimensions else (
                 "measure" if col_name in attrs.measures else "unknown"
             )
-            columns.append({"name": col_name, "kind": kind})
+            entry: Dict[str, Any] = {"name": col_name, "kind": kind}
+            if fm:
+                if fm.label:
+                    entry["label"] = fm.label
+                if fm.format:
+                    entry["format"] = fm.format.model_dump(mode="json", exclude_none=True)
+            columns.append(entry)
         out = {
             "name": named.name,
             "description": named.description,

@@ -7,8 +7,8 @@ A `NamedQuery` is a stored, runnable [multistage query](../06_multistage_queries
 ```json
 {
   "name": "monthly_top_stores",
-  "description": "Stores in the top quartile of monthly revenue.",
-  "variables": {"top_pct": 0.25},
+  "description": "Stores above a monthly revenue threshold.",
+  "variables": {"threshold": 1500},
   "stages": [
     {
       "name": "monthly_revenue",
@@ -66,7 +66,7 @@ slayer queries show monthly_top_stores
 slayer queries delete monthly_top_stores
 
 # Run with runtime variable overrides
-slayer queries run monthly_top_stores --variables threshold=1500,top_pct=0.1
+slayer queries run monthly_top_stores --variables threshold=1500
 
 # Inspect (column schema + missing variables)
 slayer queries inspect monthly_top_stores
