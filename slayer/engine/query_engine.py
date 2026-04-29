@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
@@ -275,17 +275,23 @@ class SlayerQueryEngine:
     def _build_type_probe_query(self, model: SlayerModel) -> SlayerQuery:
         """Build a SlayerQuery for type-probing all of a model's columns.
 
-        Uses :max aggregation by default (works on all column types).
-        Falls back to the first allowed aggregation if max is restricted.
+        Picks an aggregation per column from its effective allowed set:
+        explicit ``allowed_aggregations`` if present, otherwise the type
+        default. Prefers ``max`` (preserves the column's SQL type for orderable
+        types) and falls back to the first allowed aggregation otherwise.
         Skips primary-key columns (they're identifiers, not values to probe).
         """
         measures: List[ModelMeasure] = []
         for c in model.columns:
             if c.hidden or c.primary_key:
                 continue
-            agg = "max"
-            if c.allowed_aggregations and "max" not in c.allowed_aggregations:
-                agg = c.allowed_aggregations[0]
+            if c.allowed_aggregations:
+                allowed = list(c.allowed_aggregations)
+            else:
+                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.type, frozenset()))
+            if not allowed:
+                continue
+            agg = "max" if "max" in allowed else allowed[0]
             measures.append(ModelMeasure(formula=f"{c.name}:{agg}"))
         return SlayerQuery(source_model=model.name, measures=measures)
 

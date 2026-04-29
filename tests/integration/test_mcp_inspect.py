@@ -466,3 +466,30 @@ class TestStringAggregationRejection:
         })
         result = await env["engine"].execute(query=q)
         assert result.data
+
+
+class TestPrimaryKeyAggregationRule:
+    """v2 contract: primary-key columns are restricted to count/count_distinct
+    regardless of type or any explicit ``allowed_aggregations`` whitelist."""
+
+    async def test_sum_on_pk_rejected(self, env) -> None:
+        """`:sum` on a numeric primary-key column is rejected at enrichment."""
+        from slayer.core.query import SlayerQuery
+
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "fields": [{"formula": "id:sum"}],
+        })
+        with pytest.raises(ValueError, match="primary-key column"):
+            await env["engine"].execute(query=q)
+
+    async def test_count_on_pk_allowed(self, env) -> None:
+        """`:count` on a primary-key column is always allowed."""
+        from slayer.core.query import SlayerQuery
+
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "fields": [{"formula": "id:count"}],
+        })
+        result = await env["engine"].execute(query=q)
+        assert result.data

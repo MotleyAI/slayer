@@ -162,7 +162,7 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
         "count", "count_distinct", "first", "last", "min", "max",
     }),
     DataType.BOOLEAN: frozenset({
-        "count", "count_distinct", "sum",
+        "count", "count_distinct", "sum", "min", "max", "first", "last",
     }),
     DataType.DATE: frozenset({
         "count", "count_distinct", "first", "last", "min", "max",

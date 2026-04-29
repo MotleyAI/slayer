@@ -11,7 +11,12 @@ transformation step in the query pipeline.
 import re
 from typing import Dict, List, Optional, Set, Tuple
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, NUMERIC_ONLY_AGGREGATIONS
+from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
+    DEFAULT_AGGREGATIONS_BY_TYPE,
+    DataType,
+    PRIMARY_KEY_AGGREGATIONS,
+)
 from slayer.core.formula import (
     ALL_TRANSFORMS,
     AggregatedMeasureRef,
@@ -250,24 +255,39 @@ async def enrich_query(
                 raise ValueError(
                     f"Column '{measure_name}' not found in model '{model.name}'"
                 )
-            if measure_def.allowed_aggregations is not None:
+            # Apply aggregation eligibility gates per the v2 contract:
+            # 1. Primary-key columns are always restricted to count/count_distinct
+            #    (regardless of type or any explicit whitelist).
+            # 2. An explicit allowed_aggregations whitelist on a non-PK column
+            #    overrides type defaults.
+            # 3. Otherwise, built-in aggregations are gated by type defaults;
+            #    custom model-level aggregations are allowed without further
+            #    type restriction.
+            if measure_def.primary_key:
+                if aggregation_name not in PRIMARY_KEY_AGGREGATIONS:
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' not allowed for "
+                        f"primary-key column '{measure_name}'. "
+                        f"Allowed: {sorted(PRIMARY_KEY_AGGREGATIONS)}"
+                    )
+            elif measure_def.allowed_aggregations is not None:
                 if aggregation_name not in measure_def.allowed_aggregations:
                     raise ValueError(
                         f"Aggregation '{aggregation_name}' not allowed for column "
                         f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
                     )
-            # Type-compatibility check: reject numeric-only aggregations
-            # (sum/avg/median/weighted_avg/percentile) on non-numeric columns.
-            if (
-                aggregation_name in NUMERIC_ONLY_AGGREGATIONS
-                and str(measure_def.type) == "string"
-            ):
-                raise ValueError(
-                    f"Aggregation '{aggregation_name}' is not applicable to "
-                    f"string column '{measure_name}' in model '{model.name}'. "
-                    f"Valid aggregations for string columns: count, "
-                    f"count_distinct, min, max, first, last."
-                )
+            else:
+                is_custom_agg = model.get_aggregation(aggregation_name) is not None
+                if not is_custom_agg:
+                    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(
+                        measure_def.type, frozenset()
+                    )
+                    if aggregation_name not in allowed:
+                        raise ValueError(
+                            f"Aggregation '{aggregation_name}' is not applicable to "
+                            f"{measure_def.type} column '{measure_name}' in model "
+                            f"'{model.name}'. Default aggregations: {sorted(allowed)}"
+                        )
             sql = measure_def.sql or measure_name
 
         # Validate aggregation exists

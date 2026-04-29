@@ -84,10 +84,10 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 |------|-------------------------------|
 | `number` | sum, avg, min, max, count, count_distinct, median, weighted_avg, percentile, first, last |
 | `string` | count, count_distinct, first, last, min, max |
-| `boolean` | count, count_distinct, sum |
+| `boolean` | count, count_distinct, sum, min, max, first, last |
 | `date` / `time` | count, count_distinct, first, last, min, max |
 
-Primary-key columns are always restricted to `count` / `count_distinct` regardless of type. An explicit `allowed_aggregations` whitelist on a column overrides both rules.
+Primary-key columns are always restricted to `count` / `count_distinct` regardless of type. An explicit `allowed_aggregations` whitelist on a column overrides the type-default map, but not the primary-key restriction.
 
 ## Measures (Named Formulas)
 
