@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from slayer.mcp.server import create_mcp_server
 from slayer.core.format import NumberFormat
@@ -18,8 +18,11 @@ logger = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):
+    # Allow legacy `fields` to flow through to SlayerQuery's v1→v2 migration.
+    model_config = ConfigDict(extra="allow")
+
     source_model: str
-    fields: Optional[List[Dict[str, Any]]] = None
+    measures: Optional[List[Dict[str, Any]]] = None
     dimensions: Optional[List[Dict[str, Any]]] = None
     time_dimensions: Optional[List[Dict[str, Any]]] = None
     filters: Optional[List[str]] = None

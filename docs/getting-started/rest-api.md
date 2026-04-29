@@ -132,7 +132,7 @@ const res = await fetch("http://localhost:5143/query", {
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({
     source_model: "orders",
-    fields: ["*:count"],
+    measures: ["*:count"],
     dimensions: ["status"],
   }),
 });

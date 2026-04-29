@@ -270,7 +270,7 @@ class SlayerQuery(BaseModel):
     Use ``measures`` for computed/aggregated values and ``filters`` for
     conditions::
 
-        measures=[{"formula": "count"}, {"formula": "revenue / count", "name": "aov"}]
+        measures=[{"formula": "*:count"}, {"formula": "revenue:sum / *:count", "name": "aov"}]
         filters=["status == 'completed'", "amount > 100"]
     """
 

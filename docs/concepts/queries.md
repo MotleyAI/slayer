@@ -303,13 +303,13 @@ The main query uses a `ModelExtension` to add a join to the named sub-query. Que
 
 ### ModelExtension
 
-Extend a model inline with extra dimensions, measures, or joins — without modifying the stored model:
+Extend a model inline with extra columns, measures, or joins — without modifying the stored model:
 
 ```json
 {
   "source_model": {
     "source_name": "orders",
-    "dimensions": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+    "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
     "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
   },
   "dimensions": ["tier"],
@@ -317,7 +317,7 @@ Extend a model inline with extra dimensions, measures, or joins — without modi
 }
 ```
 
-`ModelExtension` fields: `source_name` (required — model to extend), `dimensions`, `measures`, `joins` (all optional — merged with the source model's).
+`ModelExtension` fields: `source_name` (required — model to extend), `columns`, `measures`, `joins` (all optional — merged with the source model's).
 
 ### Multi-hop dimensions
 

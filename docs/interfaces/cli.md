@@ -69,7 +69,7 @@ slayer query @query.json
 slayer query '{"source_model": "orders", "measures": ["*:count"]}' --format json
 
 # Preview SQL without executing
-slayer query '{"source_model": "orders", "measures": ["count"]}' --dry-run
+slayer query '{"source_model": "orders", "measures": ["*:count"]}' --dry-run
 
 # Show execution plan
 slayer query @query.json --explain

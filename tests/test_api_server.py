@@ -5,9 +5,10 @@ import tempfile
 import pytest
 from fastapi.testclient import TestClient
 
-from slayer.api.server import create_app
+from slayer.api.server import QueryRequest, create_app
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -176,3 +177,23 @@ class TestQuery:
         ))
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
+
+    def test_request_measures_payload_reaches_slayer_query(self) -> None:
+        """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
+        req = QueryRequest.model_validate(
+            {"source_model": "orders", "measures": [{"formula": "*:count"}]}
+        )
+        slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
+        assert slayer_query.measures is not None
+        assert len(slayer_query.measures) == 1
+        assert slayer_query.measures[0].formula == "*:count"
+
+    def test_request_legacy_fields_payload_migrates(self) -> None:
+        """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
+        req = QueryRequest.model_validate(
+            {"source_model": "orders", "fields": [{"formula": "*:count"}]}
+        )
+        slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
+        assert slayer_query.measures is not None
+        assert len(slayer_query.measures) == 1
+        assert slayer_query.measures[0].formula == "*:count"
