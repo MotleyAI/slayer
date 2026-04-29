@@ -19,13 +19,15 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 
 - **SlayerModel** — maps a table/subquery to dimensions and measures. Defined in YAML or auto-generated.
 - **SlayerQuery** — specifies model, fields, dimensions, time_dimensions, filters, order, limit
+- **NamedQuery** — a stored, runnable multistage query (list of SlayerQuery stages plus optional top-level variables). Stored at `<storage>/queries/<name>.yaml` (YAML) or in a `queries` table (SQLite). Names share a single namespace with SlayerModel.
 - **DatasourceConfig** — DB connection details with `${ENV_VAR}` resolution
 
 ## MCP Tools
 
-Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data)
-Querying: `query`
+Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data), `list_queries`, `inspect_query`
+Querying: `query`, `run_named_query`
 Model editing: `create_model`, `edit_model`, `delete_model`
+Named query editing: `save_query`, `delete_query`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`
 Ingestion: `ingest_datasource_models`
 

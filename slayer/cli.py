@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from typing import Any, Dict, Optional
 
 from slayer.async_utils import run_sync
 from slayer.storage.base import default_storage_path, storage_base_dir
@@ -231,6 +232,75 @@ examples:
     models_delete_parser = models_subparsers.add_parser("delete", help="Delete a model")
     models_delete_parser.add_argument("name", help="Model name")
 
+    # ── queries (named multistage queries) ────────────────────────────
+    queries_parser = subparsers.add_parser(
+        "queries",
+        help="Manage stored named queries (multistage)",
+        epilog="""\
+examples:
+  slayer queries list
+  slayer queries show monthly_top_stores
+  slayer queries save query.yaml
+  slayer queries run monthly_top_stores --variables top_pct=0.25
+  slayer queries inspect monthly_top_stores
+  slayer queries delete monthly_top_stores
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(queries_parser)
+    queries_subparsers = queries_parser.add_subparsers(dest="queries_command")
+
+    queries_subparsers.add_parser("list", help="List all named queries")
+
+    queries_show_parser = queries_subparsers.add_parser(
+        "show", help="Show a named query definition (YAML)"
+    )
+    queries_show_parser.add_argument("name", help="NamedQuery name")
+
+    queries_save_parser = queries_subparsers.add_parser(
+        "save", help="Save (or replace) a named query from a YAML/JSON file"
+    )
+    queries_save_parser.add_argument(
+        "file",
+        help="Path to YAML or JSON NamedQuery definition. Name comes from the file body.",
+    )
+
+    queries_delete_parser = queries_subparsers.add_parser(
+        "delete", help="Delete a named query"
+    )
+    queries_delete_parser.add_argument("name", help="NamedQuery name")
+
+    queries_run_parser = queries_subparsers.add_parser(
+        "run", help="Run a stored named query"
+    )
+    queries_run_parser.add_argument("name", help="NamedQuery name")
+    queries_run_parser.add_argument(
+        "--variables",
+        default=None,
+        help="Variable values, comma-separated key=value pairs (e.g., top_pct=0.25,region=eu)",
+    )
+    queries_run_parser.add_argument(
+        "--format",
+        choices=["json", "table"],
+        default="table",
+        help="Output format (default: table)",
+    )
+    queries_run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate SQL without executing",
+    )
+
+    queries_inspect_parser = queries_subparsers.add_parser(
+        "inspect", help="Show stages and inferred final-stage column schema"
+    )
+    queries_inspect_parser.add_argument("name", help="NamedQuery name")
+    queries_inspect_parser.add_argument(
+        "--variables",
+        default=None,
+        help="Variable values, comma-separated key=value pairs",
+    )
+
     # ── datasources ───────────────────────────────────────────────────
     datasources_parser = subparsers.add_parser(
         "datasources",
@@ -361,6 +431,8 @@ examples:
         _run_import_dbt(args)
     elif args.command == "models":
         _run_models(args)
+    elif args.command == "queries":
+        _run_queries(args)
     elif args.command == "datasources":
         _run_datasources(args)
     elif args.command == "help":
@@ -622,6 +694,160 @@ def _run_models(args):
 
     else:
         print("Usage: slayer models {list,show,create,delete}")
+        sys.exit(1)
+
+
+def _parse_variables(spec: Optional[str]) -> Dict[str, Any]:
+    """Parse a comma-separated ``key=value`` string into a dict.
+
+    Values are coerced to int/float when parseable, else kept as strings.
+    Used by ``slayer queries run`` and ``slayer queries inspect``.
+    """
+    if not spec:
+        return {}
+    out: Dict[str, Any] = {}
+    for pair in spec.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise ValueError(f"--variables item '{pair}' must be in key=value form")
+        key, _, raw = pair.partition("=")
+        key = key.strip()
+        raw = raw.strip()
+        try:
+            value: Any = int(raw)
+        except ValueError:
+            try:
+                value = float(raw)
+            except ValueError:
+                value = raw
+        out[key] = value
+    return out
+
+
+def _run_queries(args):
+    import json
+    import yaml
+
+    from slayer.core.models import NamedQuery
+    from slayer.core.named_query_ops import save_named_query
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+
+    if args.queries_command == "list":
+        names = run_sync(storage.list_queries())
+        if not names:
+            print("No named queries found.")
+            return
+        for name in names:
+            q = run_sync(storage.get_query(name))
+            desc = f"  — {q.description}" if q and q.description else ""
+            print(f"{name}{desc}")
+
+    elif args.queries_command == "show":
+        q = run_sync(storage.get_query(args.name))
+        if q is None:
+            print(f"NamedQuery '{args.name}' not found.")
+            sys.exit(1)
+        data = q.model_dump(mode="json", exclude_none=True)
+        print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
+
+    elif args.queries_command == "save":
+        with open(args.file) as f:
+            text = f.read()
+        # Accept either YAML or JSON; YAML is a superset of JSON.
+        data = yaml.safe_load(text)
+        named = NamedQuery.model_validate(data)
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            run_sync(save_named_query(named, storage=storage, engine=engine))
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+        print(f"Saved named query '{named.name}'.")
+
+    elif args.queries_command == "delete":
+        deleted = run_sync(storage.delete_query(args.name))
+        if deleted:
+            print(f"Deleted named query '{args.name}'.")
+        else:
+            print(f"NamedQuery '{args.name}' not found.")
+            sys.exit(1)
+
+    elif args.queries_command == "run":
+        variables = _parse_variables(args.variables)
+        engine = SlayerQueryEngine(storage=storage)
+
+        # If --dry-run, mark the final stage so SQL is generated but not executed.
+        if args.dry_run:
+            named = run_sync(storage.get_query(args.name))
+            if named is None:
+                print(f"NamedQuery '{args.name}' not found.")
+                sys.exit(1)
+            stages = list(named.stages)
+            stages[-1] = stages[-1].model_copy(update={"dry_run": True})
+            named_dr = named.model_copy(update={"stages": stages})
+            result = engine.execute_sync(query=named_dr, variables=variables)
+            print(result.sql)
+            return
+
+        result = engine.execute_sync(query=args.name, variables=variables)
+
+        if args.format == "json":
+            print(json.dumps(result.data, indent=2, default=str))
+        else:
+            if not result.data:
+                print("No results.")
+                return
+            header = " | ".join(result.columns)
+            separator = " | ".join("-" * len(c) for c in result.columns)
+            print(header)
+            print(separator)
+            for row in result.data:
+                print(" | ".join(str(row.get(c, "")) for c in result.columns))
+            print(f"\n{result.row_count} row(s)")
+
+    elif args.queries_command == "inspect":
+        named = run_sync(storage.get_query(args.name))
+        if named is None:
+            print(f"NamedQuery '{args.name}' not found.")
+            sys.exit(1)
+        variables = _parse_variables(args.variables)
+        # Fill placeholders for unsupplied vars so introspection succeeds.
+        unsupplied = named.unsupplied_variables() - set(variables.keys())
+        for v in unsupplied:
+            variables[v] = 0
+        # Mark the final stage dry_run.
+        stages = list(named.stages)
+        stages[-1] = stages[-1].model_copy(update={"dry_run": True})
+        probe = named.model_copy(update={"stages": stages})
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            response = engine.execute_sync(query=probe, variables=variables)
+        except Exception as e:
+            print(f"Inspection failed: {e}")
+            sys.exit(1)
+        attrs = response.attributes
+        columns = []
+        for col_name in response.columns:
+            kind = "dimension" if col_name in attrs.dimensions else (
+                "measure" if col_name in attrs.measures else "unknown"
+            )
+            columns.append({"name": col_name, "kind": kind})
+        out = {
+            "name": named.name,
+            "description": named.description,
+            "stages": [s.model_dump(mode="json", exclude_none=True) for s in named.stages],
+            "variables": named.variables,
+            "missing_variables": sorted(named.unsupplied_variables()),
+            "columns": columns,
+        }
+        print(json.dumps(out, indent=2, default=str))
+
+    else:
+        print("Usage: slayer queries {list,show,save,delete,run,inspect}")
         sys.exit(1)
 
 

@@ -12,7 +12,7 @@ files or older code that lacked sync).
 from typing import List, Optional, Set
 
 from slayer.core.enums import JoinType
-from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasourceConfig, ModelJoin, NamedQuery, SlayerModel
 from slayer.storage.base import StorageBackend
 
 
@@ -152,6 +152,25 @@ class JoinSyncStorage(StorageBackend):
     async def list_models(self) -> List[str]:
         await self._ensure_reconciled()
         return await self._inner.list_models()
+
+    async def _persist_model(self, model: SlayerModel) -> None:
+        # Only invoked when callers go through the ABC concrete save_model on
+        # this wrapper. Our own save_model override delegates to inner.save_model
+        # (which runs collision check there), so this path is rarely taken;
+        # provide it anyway so the wrapper is fully substitutable.
+        await self._inner._persist_model(model)
+
+    async def _persist_query(self, query: NamedQuery) -> None:
+        await self._inner._persist_query(query)
+
+    async def get_query(self, name: str) -> Optional[NamedQuery]:
+        return await self._inner.get_query(name)
+
+    async def list_queries(self) -> List[str]:
+        return await self._inner.list_queries()
+
+    async def delete_query(self, name: str) -> bool:
+        return await self._inner.delete_query(name)
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         return await self._inner.save_datasource(datasource)

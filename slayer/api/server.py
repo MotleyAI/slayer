@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 from slayer.mcp.server import create_mcp_server
 from slayer.core.format import NumberFormat
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, NamedQuery, SlayerModel
+from slayer.core.named_query_ops import save_named_query
 from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -54,6 +55,10 @@ class IngestRequest(BaseModel):
     include_tables: Optional[List[str]] = None
     exclude_tables: Optional[List[str]] = None
     schema_name: Optional[str] = None
+
+
+class RunNamedQueryRequest(BaseModel):
+    variables: Optional[Dict[str, Any]] = None
 
 
 def create_app(storage: StorageBackend) -> FastAPI:
@@ -184,6 +189,112 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 status_code=404, detail=f"Datasource '{name}' not found"
             )
         return {"status": "deleted", "name": name}
+
+    @app.get("/queries")
+    async def list_queries() -> List[Dict[str, Any]]:
+        result = []
+        for name in await storage.list_queries():
+            q = await storage.get_query(name)
+            entry: Dict[str, Any] = {"name": name}
+            if q and q.description:
+                entry["description"] = q.description
+            result.append(entry)
+        return result
+
+    @app.get("/queries/{name}")
+    async def get_query(name: str) -> Dict[str, Any]:
+        q = await storage.get_query(name)
+        if q is None:
+            raise HTTPException(status_code=404, detail=f"NamedQuery '{name}' not found")
+        return q.model_dump(mode="json", exclude_none=True)
+
+    @app.post("/queries")
+    async def create_query(query: NamedQuery) -> Dict[str, str]:
+        try:
+            await save_named_query(query, storage=storage, engine=engine)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "created", "name": query.name}
+
+    @app.put("/queries/{name}")
+    async def update_query(name: str, query: NamedQuery) -> Dict[str, str]:
+        if query.name != name:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Path name '{name}' does not match body name '{query.name}'",
+            )
+        try:
+            await save_named_query(query, storage=storage, engine=engine)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"status": "updated", "name": name}
+
+    @app.delete("/queries/{name}")
+    async def delete_query(name: str) -> Dict[str, Any]:
+        deleted = await storage.delete_query(name)
+        if not deleted:
+            raise HTTPException(
+                status_code=404, detail=f"NamedQuery '{name}' not found"
+            )
+        return {"status": "deleted", "name": name}
+
+    @app.post("/queries/{name}/run")
+    async def run_query(name: str, request: Optional[RunNamedQueryRequest] = None) -> QueryResponse:
+        try:
+            variables = request.variables if request else None
+            result = await engine.execute(query=name, variables=variables)
+        except ValueError as e:
+            raise HTTPException(status_code=404 if "not found" in str(e) else 400, detail=str(e))
+
+        attrs = result.attributes
+
+        def _convert_meta(d: dict) -> Dict[str, FieldMetadataResponse]:
+            return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
+
+        attributes = None
+        if attrs and (attrs.dimensions or attrs.measures):
+            attributes = AttributesResponse(
+                dimensions=_convert_meta(attrs.dimensions),
+                measures=_convert_meta(attrs.measures),
+            )
+        return QueryResponse(
+            data=result.data,
+            row_count=result.row_count,
+            columns=result.columns,
+            attributes=attributes,
+        )
+
+    @app.get("/queries/{name}/inspect")
+    async def inspect_query(name: str) -> Dict[str, Any]:
+        q = await storage.get_query(name)
+        if q is None:
+            raise HTTPException(status_code=404, detail=f"NamedQuery '{name}' not found")
+        # Fill placeholders for unsupplied variables and run a dry-run probe
+        # so we can attach the final-stage result schema.
+        runtime = {v: 0 for v in q.unsupplied_variables()}
+        stages = list(q.stages)
+        stages[-1] = stages[-1].model_copy(update={"dry_run": True})
+        probe = q.model_copy(update={"stages": stages})
+        try:
+            response = await engine.execute(query=probe, variables=runtime)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Inspection failed: {e}")
+        attrs = response.attributes
+        columns: List[Dict[str, Any]] = []
+        for col in response.columns:
+            kind = "dimension" if col in attrs.dimensions else (
+                "measure" if col in attrs.measures else "unknown"
+            )
+            columns.append({"name": col, "kind": kind})
+        return {
+            "name": q.name,
+            "description": q.description,
+            "stages": [s.model_dump(mode="json", exclude_none=True) for s in q.stages],
+            "variables": q.variables,
+            "missing_variables": sorted(q.unsupplied_variables()),
+            "columns": columns,
+            "sql": response.sql,
+        }
 
     @app.post("/ingest")
     async def ingest(request: IngestRequest) -> Dict[str, Any]:

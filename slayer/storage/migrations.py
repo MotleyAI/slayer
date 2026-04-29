@@ -18,6 +18,7 @@ CURRENT_VERSIONS: Dict[str, int] = {
     "SlayerModel": 1,
     "SlayerQuery": 1,
     "DatasourceConfig": 1,
+    "NamedQuery": 1,
 }
 
 # Registry: (entity_name, source_version) -> converter producing source_version+1.

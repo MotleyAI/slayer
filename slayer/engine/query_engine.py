@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field as PydanticField, model_validator
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import DatasourceConfig, Dimension, Measure, NamedQuery, SlayerModel
 from slayer.core.query import ColumnRef, Field, SlayerQuery, TimeDimension
 from slayer.engine.enriched import (
     CrossModelMeasure,
@@ -160,7 +160,19 @@ class SlayerQueryEngine:
         self.storage = storage
         self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
 
-    async def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+    async def execute(
+        self,
+        query: "SlayerQuery | NamedQuery | dict | list[SlayerQuery | dict] | str",
+        variables: Optional[Dict[str, Any]] = None,
+    ) -> SlayerResponse:
+        # String input → load a stored NamedQuery and run its stages.
+        if isinstance(query, str):
+            named = await self.storage.get_query(query)
+            if named is None:
+                raise ValueError(f"NamedQuery '{query}' not found")
+            return await self._execute_named_query(named, runtime_variables=variables)
+        if isinstance(query, NamedQuery):
+            return await self._execute_named_query(query, runtime_variables=variables)
         # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
             queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
@@ -338,11 +350,67 @@ class SlayerQueryEngine:
                 result[em.source_measure_name or em.name] = raw_types[em.alias]
         return result
 
-    def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+    def execute_sync(
+        self,
+        query: "SlayerQuery | NamedQuery | dict | list[SlayerQuery | dict] | str",
+        variables: Optional[Dict[str, Any]] = None,
+    ) -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
         from slayer.async_utils import run_sync
 
-        return run_sync(self.execute(query))
+        return run_sync(self.execute(query=query, variables=variables))
+
+    async def _execute_named_query(
+        self,
+        named: NamedQuery,
+        runtime_variables: Optional[Dict[str, Any]] = None,
+    ) -> SlayerResponse:
+        """Expand a NamedQuery into its stages with merged variable defaults
+        and run them through the existing list-execution path.
+
+        Variable precedence: stage.variables > runtime variables > NamedQuery.variables.
+        """
+        runtime = runtime_variables or {}
+        # NamedQuery defaults < runtime overrides; stage.variables wins everything.
+        merged_top = {**named.variables, **runtime}
+        expanded: list = []
+        for stage in named.stages:
+            stage_vars = stage.variables or {}
+            merged = {**merged_top, **stage_vars}
+            expanded.append(stage.model_copy(update={"variables": merged}))
+        return await self.execute(query=expanded)
+
+    async def validate_named_query(self, named: NamedQuery) -> None:
+        """Save-time integrity check.
+
+        Runs the NamedQuery through ``execute()`` with ``dry_run=True`` on the
+        final stage so SQL is generated without hitting the database. Variables
+        referenced but not supplied (by stage or top-level) are auto-filled
+        with the placeholder ``0``, which is safe for most filter shapes
+        (numeric comparisons; equality with quoted strings — ``name = '0'`` is
+        still valid SQL). If a NamedQuery uses variables in positions where
+        ``0`` does not parse, callers can supply concrete values via
+        ``NamedQuery.variables`` before saving.
+
+        Raises if any stage fails to plan/generate SQL.
+        """
+        placeholders = {v: 0 for v in named.unsupplied_variables()}
+        augmented_top_vars = {**named.variables, **placeholders}
+        augmented = named.model_copy(update={"variables": augmented_top_vars})
+
+        # Build expanded stages with merged variables, mark the final stage
+        # dry_run so no real query hits the database.
+        runtime = {}  # no extra runtime vars during validation
+        merged_top = {**augmented.variables, **runtime}
+        expanded: list = []
+        for i, stage in enumerate(augmented.stages):
+            stage_vars = stage.variables or {}
+            merged = {**merged_top, **stage_vars}
+            updates: Dict[str, Any] = {"variables": merged}
+            if i == len(augmented.stages) - 1:
+                updates["dry_run"] = True
+            expanded.append(stage.model_copy(update=updates))
+        await self.execute(query=expanded)
 
     def create_model_from_query_sync(
         self, query: "SlayerQuery | list[SlayerQuery]", name: str,

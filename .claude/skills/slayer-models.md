@@ -103,7 +103,14 @@ Via MCP, agents can edit models incrementally:
 
 ## Storage Backends
 
-- `YAMLStorage(base_dir="./data")` — models as YAML files in `data/models/`, datasources in `data/datasources/`
-- `SQLiteStorage(db_path="./slayer.db")` — everything in a single SQLite file
-- Both implement `StorageBackend` protocol: `save_model()`, `get_model()`, `list_models()`, `delete_model()`, same for datasources
+- `YAMLStorage(base_dir="./data")` — models as YAML files in `data/models/`, named queries in `data/queries/`, datasources in `data/datasources/`
+- `SQLiteStorage(db_path="./slayer.db")` — everything in a single SQLite file (`models`, `queries`, `datasources` tables)
+- Both implement `StorageBackend` protocol: `save_model()`, `get_model()`, `list_models()`, `delete_model()`; `save_query()`, `get_query()`, `list_queries()`, `delete_query()`; same for datasources. Public `save_model` / `save_query` are concrete on the ABC — they enforce the bidirectional name-collision check between models and queries before delegating to the abstract `_persist_model` / `_persist_query` primitives that backends implement
 - Use `resolve_storage("path")` factory for auto-detection (directory → YAML, .db → SQLite, URI schemes for custom backends)
+
+## Named Queries
+
+- `NamedQuery` is a stored multistage query (a named list of `SlayerQuery` stages plus optional top-level `variables`). See `slayer-query.md` for query construction details
+- `NamedQuery.name` shares a single namespace with `SlayerModel.name` — saving in either direction rejects collisions (raised by the ABC's concrete `save_*` methods, so the rule lives in one place)
+- Save flow: use `slayer.core.named_query_ops.save_named_query(query, storage=, engine=)` — it dry-runs the stages first (placeholder `0` for any unsupplied `{var}`) and only persists if validation passes
+- MCP tools: `list_queries`, `inspect_query`, `run_named_query`, `save_query`, `delete_query`. CLI: `slayer queries {list,show,save,delete,run,inspect}`. HTTP: `/queries` REST endpoints

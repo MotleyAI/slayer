@@ -4565,13 +4565,13 @@ class TestCteNameSanitization:
 class TestGetColumnTypesSql:
     """get_column_types must build valid SQL for expression measures."""
 
-    async def test_expression_measure_sql_not_corrupted(self) -> None:
+    async def test_expression_measure_sql_not_corrupted(self, tmp_path) -> None:
         """Expression measures like COALESCE(amount, 0) must not get model.name prepended."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from slayer.storage.yaml_storage import YAMLStorage
 
-        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        storage = YAMLStorage(base_dir=str(tmp_path))
         model = SlayerModel(
             name="orders",
             sql_table="public.orders",
@@ -4609,14 +4609,14 @@ class TestGetColumnTypesSql:
         # Expression should appear as-is
         assert "COALESCE(amount, 0)" in sql
 
-    async def test_cross_model_measures_probed_via_engine(self) -> None:
+    async def test_cross_model_measures_probed_via_engine(self, tmp_path) -> None:
         """Cross-model measures should be probed via the engine's enrich+generate pipeline."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
         from slayer.storage.yaml_storage import YAMLStorage
 
-        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        storage = YAMLStorage(base_dir=str(tmp_path))
         model = SlayerModel(
             name="orders",
             sql_table="public.orders",

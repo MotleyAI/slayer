@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, NamedQuery, SlayerModel
 
 
 def storage_base_dir(path: str) -> str:
@@ -53,10 +53,49 @@ class StorageBackend(ABC):
     ``async def`` with synchronous code inside — this is fine for
     fast local I/O. Implementations with true async I/O (e.g., asyncpg
     for Postgres) can ``await`` as needed.
+
+    The public ``save_model``/``save_query`` methods are concrete on this
+    base class so the bidirectional name-collision check between models and
+    named queries lives in exactly one place. Backends implement only the
+    raw-write primitives ``_persist_model`` / ``_persist_query``.
     """
 
+    # ------------------------------------------------------------------
+    # Public methods with shared invariants (concrete, do NOT override
+    # unless your backend wraps another StorageBackend, in which case the
+    # inner backend's collision check still runs).
+    # ------------------------------------------------------------------
+
+    async def save_model(self, model: SlayerModel) -> None:
+        """Persist *model*. Rejects names that collide with a stored
+        :class:`NamedQuery` (model and query namespaces are unified)."""
+        if model.name in set(await self.list_queries()):
+            raise ValueError(
+                f"Cannot save SlayerModel '{model.name}': a NamedQuery with "
+                f"that name already exists. Model and named-query names share "
+                f"a single namespace."
+            )
+        await self._persist_model(model)
+
+    async def save_query(self, query: NamedQuery) -> None:
+        """Persist *query*. Rejects names that collide with a stored
+        :class:`SlayerModel`."""
+        if query.name in set(await self.list_models()):
+            raise ValueError(
+                f"Cannot save NamedQuery '{query.name}': a SlayerModel with "
+                f"that name already exists. Model and named-query names share "
+                f"a single namespace."
+            )
+        await self._persist_query(query)
+
+    # ------------------------------------------------------------------
+    # Abstract primitives — backend implementations.
+    # ------------------------------------------------------------------
+
     @abstractmethod
-    async def save_model(self, model: SlayerModel) -> None: ...
+    async def _persist_model(self, model: SlayerModel) -> None:
+        """Raw write of *model*. Called by :meth:`save_model` after the
+        collision check has passed."""
 
     @abstractmethod
     async def get_model(self, name: str) -> Optional[SlayerModel]: ...
@@ -66,6 +105,20 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def delete_model(self, name: str) -> bool: ...
+
+    @abstractmethod
+    async def _persist_query(self, query: NamedQuery) -> None:
+        """Raw write of *query*. Called by :meth:`save_query` after the
+        collision check has passed."""
+
+    @abstractmethod
+    async def get_query(self, name: str) -> Optional[NamedQuery]: ...
+
+    @abstractmethod
+    async def list_queries(self) -> List[str]: ...
+
+    @abstractmethod
+    async def delete_query(self, name: str) -> bool: ...
 
     @abstractmethod
     async def save_datasource(self, datasource: DatasourceConfig) -> None: ...

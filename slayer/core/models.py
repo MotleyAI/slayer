@@ -3,12 +3,13 @@
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
 from slayer.core.format import NumberFormat
+from slayer.core.query import SlayerQuery
 from slayer.storage.migrations import migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
@@ -278,6 +279,79 @@ class SlayerModel(BaseModel):
             if a.name == name:
                 return a
         return None
+
+
+_NAMED_QUERY_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+class NamedQuery(BaseModel):
+    """A stored, runnable multistage query.
+
+    ``stages`` is the same list of :class:`SlayerQuery` objects that the
+    runtime accepts via ``engine.execute(query=[...])``: stage *N+1* may
+    reference stage *N*'s ``name`` via ``source_model``. The final stage is
+    the main query whose result is returned.
+
+    Top-level ``variables`` provide defaults for ``{var}`` placeholders inside
+    stage filters. Per-stage ``stage.variables`` override the top-level dict.
+    Saved queries may carry unresolved variables; callers supply them at run
+    time. Save-time integrity is checked via a dry-run execution (handled by
+    the engine, not this validator).
+    """
+
+    version: int = 1
+    name: str
+    description: Optional[str] = None
+    stages: List[SlayerQuery]
+    variables: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_schema_migrations(cls, data: Any) -> Any:
+        return _migrate_schema("NamedQuery", data)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        if not _NAMED_QUERY_NAME_PATTERN.match(v):
+            raise ValueError(
+                f"Invalid NamedQuery name '{v}': must contain only letters, "
+                f"digits, and underscores, and start with a letter or underscore"
+            )
+        return _validate_model_name(v, "NamedQuery")
+
+    @model_validator(mode="after")
+    def _validate_stages(self) -> "NamedQuery":
+        if not self.stages:
+            raise ValueError("NamedQuery.stages must be non-empty")
+        seen: Set[str] = set()
+        for i, stage in enumerate(self.stages[:-1]):
+            if not stage.name:
+                raise ValueError(
+                    f"NamedQuery '{self.name}': stage {i} must have a `name` "
+                    f"(only the final stage may be anonymous)"
+                )
+            if stage.name in seen:
+                raise ValueError(
+                    f"NamedQuery '{self.name}': duplicate stage name '{stage.name}'"
+                )
+            seen.add(stage.name)
+        return self
+
+    def referenced_variables(self) -> Set[str]:
+        """All ``{var}`` placeholders referenced across every stage's filters."""
+        names: Set[str] = set()
+        for stage in self.stages:
+            names |= stage.referenced_variables()
+        return names
+
+    def unsupplied_variables(self) -> Set[str]:
+        """Variables referenced by any stage that are not satisfied by either
+        that stage's own ``variables`` or this NamedQuery's top-level ``variables``."""
+        unsupplied: Set[str] = set()
+        for stage in self.stages:
+            unsupplied |= stage.unsupplied_variables(extra=self.variables)
+        return unsupplied
 
 
 class DatasourceConfig(BaseModel):

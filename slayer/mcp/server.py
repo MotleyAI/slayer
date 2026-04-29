@@ -12,8 +12,10 @@ from slayer.core.models import (
     Dimension,
     Measure,
     ModelJoin,
+    NamedQuery,
     SlayerModel,
 )
+from slayer.core.named_query_ops import save_named_query as _save_named_query
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
@@ -1665,6 +1667,157 @@ def create_mcp_server(storage: StorageBackend):
         lines.append("")
         lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Named queries (stored multistage queries)
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def list_queries() -> str:
+        """List all stored named queries.
+
+        Returns a JSON array of {name, description}. NamedQueries are stored
+        multistage queries that can be run by name via run_named_query().
+        """
+        names = await storage.list_queries()
+        out = []
+        for n in names:
+            try:
+                q = await storage.get_query(n)
+            except Exception:
+                logger.warning("Failed to load named query '%s', skipping", n, exc_info=True)
+                continue
+            if q is not None:
+                out.append({"name": q.name, "description": q.description})
+        return json.dumps(out, indent=2)
+
+    @mcp.tool()
+    async def inspect_query(
+        name: str,
+        variables: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Inspect a stored named query: returns its stages plus the result-schema
+        of the final stage (columns with types and descriptions, where available).
+
+        Args:
+            name: NamedQuery name (from list_queries).
+            variables: Optional values for any unresolved {var} placeholders. If
+                omitted, missing variables are filled with the placeholder ``0``
+                so introspection still succeeds.
+        """
+        q = await storage.get_query(name)
+        if q is None:
+            return f"NamedQuery '{name}' not found."
+
+        runtime = dict(variables or {})
+        # Fill placeholders for any still-unsupplied vars so the dry-run plans cleanly.
+        unsupplied = q.unsupplied_variables() - set(runtime.keys())
+        for v in unsupplied:
+            runtime[v] = 0
+
+        try:
+            response = await engine.execute(query=name, variables=runtime)
+        except Exception as e:
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                return _friendly_db_error(e)
+            return f"Inspection failed: {e}"
+
+        # SlayerResponse.attributes carries dim/measure metadata for the final stage.
+        attrs = response.attributes
+        columns: List[Dict[str, Any]] = []
+        for col_name in response.columns:
+            fm = attrs.get(col_name)
+            entry: Dict[str, Any] = {"name": col_name}
+            kind = "dimension" if col_name in attrs.dimensions else (
+                "measure" if col_name in attrs.measures else "unknown"
+            )
+            entry["kind"] = kind
+            if fm:
+                if fm.label:
+                    entry["label"] = fm.label
+                if fm.format:
+                    entry["format"] = fm.format.model_dump(mode="json", exclude_none=True)
+            columns.append(entry)
+
+        result = {
+            "name": q.name,
+            "description": q.description,
+            "stages": [s.model_dump(mode="json", exclude_none=True) for s in q.stages],
+            "variables": q.variables,
+            "missing_variables": sorted(q.unsupplied_variables()),
+            "columns": columns,
+        }
+        if response.sql:
+            result["sql"] = response.sql
+        return json.dumps(result, indent=2, default=str)
+
+    @mcp.tool()
+    async def run_named_query(
+        name: str,
+        variables: Optional[Dict[str, Any]] = None,
+        format: str = "markdown",
+    ) -> str:
+        """Run a stored named query.
+
+        Args:
+            name: NamedQuery name (from list_queries).
+            variables: Values for any {var} placeholders referenced by the
+                query. Stage variables override these; top-level NamedQuery
+                variables are used as defaults below these.
+            format: Output format — "markdown" (default), "json", or "csv".
+        """
+        fmt = format.lower().strip()
+        if fmt not in ("json", "csv", "markdown"):
+            raise ValueError(
+                f"Invalid format '{format}'. Must be one of: json, csv, markdown"
+            )
+        try:
+            response = await engine.execute(query=name, variables=variables)
+        except Exception as e:
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                return _friendly_db_error(e)
+            raise
+        return _format_output(result=response, fmt=fmt)
+
+    @mcp.tool()
+    async def save_query(query: Dict[str, Any]) -> str:
+        """Save a named query (upsert).
+
+        Validates the NamedQuery via dry-run execution before persisting; any
+        unresolved ``{var}`` placeholders are auto-filled with ``0`` for the
+        validation pass. The save is rejected if the dry-run fails or if a
+        stored SlayerModel already uses the same name.
+
+        Args:
+            query: NamedQuery JSON: {name, description?, stages: [SlayerQuery, ...],
+                variables?: {var: value, ...}}.
+        """
+        try:
+            named = NamedQuery.model_validate(query)
+        except Exception as e:
+            return f"Invalid NamedQuery: {e}"
+        existed = await storage.get_query(named.name) is not None
+        try:
+            await _save_named_query(named, storage=storage, engine=engine)
+        except ValueError as e:
+            return f"Save failed: {e}"
+        except Exception as e:
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                return _friendly_db_error(e)
+            return f"Save failed: {e}"
+        verb = "replaced" if existed else "saved"
+        return f"NamedQuery '{named.name}' {verb}."
+
+    @mcp.tool()
+    async def delete_query(name: str) -> str:
+        """Delete a stored named query.
+
+        Args:
+            name: NamedQuery name to delete.
+        """
+        if await storage.delete_query(name):
+            return f"NamedQuery '{name}' deleted."
+        return f"NamedQuery '{name}' not found."
 
     return mcp
 

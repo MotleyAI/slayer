@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 import logging
 import re
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, BeforeValidator, field_validator, model_validator
 
@@ -20,6 +20,28 @@ logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([^}]*)\}")
+
+
+def _iter_variable_matches(text: str) -> Iterator[Tuple[re.Match, str, str]]:
+    """Walk all {variable}/{{/}} placeholders in *text* in order.
+
+    Yields ``(match, kind, value)`` where ``kind`` is one of:
+
+    - ``"escape"``: ``{{`` or ``}}`` — *value* is the literal ``{`` or ``}``
+    - ``"valid"``:  ``{var_name}`` — *value* is the variable name
+    - ``"invalid"``: ``{...}`` whose contents are not a valid identifier —
+      *value* is the bad inner text
+    """
+    for m in _VAR_PATTERN.finditer(text):
+        full = m.group(0)
+        if full == "{{":
+            yield m, "escape", "{"
+        elif full == "}}":
+            yield m, "escape", "}"
+        elif m.group(1) is not None:
+            yield m, "valid", m.group(1)
+        else:
+            yield m, "invalid", m.group(2)
 
 
 def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
@@ -37,34 +59,41 @@ def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
         substitute_variables("amount > {min_amount}", {"min_amount": 100})
         → "amount > 100"
     """
-    def _replace(match: re.Match) -> str:
-        full = match.group(0)
-        if full == "{{":
-            return "{"
-        if full == "}}":
-            return "}"
-        # Group 1: valid variable name
-        valid_name = match.group(1)
-        if valid_name is not None:
-            if valid_name not in variables:
+    out: List[str] = []
+    last = 0
+    for match, kind, value in _iter_variable_matches(filter_str):
+        out.append(filter_str[last:match.start()])
+        if kind == "escape":
+            out.append(value)
+        elif kind == "valid":
+            if value not in variables:
                 raise ValueError(
-                    f"Undefined variable '{valid_name}' in filter: {filter_str!r}. "
+                    f"Undefined variable '{value}' in filter: {filter_str!r}. "
                     f"Available variables: {sorted(variables.keys())}"
                 )
-            value = variables[valid_name]
-            if not isinstance(value, (str, int, float)):
+            resolved = variables[value]
+            if not isinstance(resolved, (str, int, float)):
                 raise ValueError(
-                    f"Variable '{valid_name}' must be a string or number, got {type(value).__name__}"
+                    f"Variable '{value}' must be a string or number, got {type(resolved).__name__}"
                 )
-            return str(value)
-        # Group 2: invalid variable name (matched {something} but name was invalid)
-        bad_name = match.group(2)
-        raise ValueError(
-            f"Invalid variable name '{bad_name}' in filter: {filter_str!r}. "
-            f"Variable names must contain only letters, digits, and underscores."
-        )
+            out.append(str(resolved))
+        else:  # invalid
+            raise ValueError(
+                f"Invalid variable name '{value}' in filter: {filter_str!r}. "
+                f"Variable names must contain only letters, digits, and underscores."
+            )
+        last = match.end()
+    out.append(filter_str[last:])
+    return "".join(out)
 
-    return _VAR_PATTERN.sub(_replace, filter_str)
+
+def referenced_variables_in(text: str) -> Set[str]:
+    """Return the set of valid {var} placeholders referenced in *text*.
+
+    Escaped braces (``{{`` / ``}}``) and invalid names are skipped — invalid
+    names will be reported at substitution time, not enumeration time.
+    """
+    return {value for _, kind, value in _iter_variable_matches(text) if kind == "valid"}
 
 
 class ColumnRef(BaseModel):
@@ -328,6 +357,18 @@ class SlayerQuery(BaseModel):
     whole_periods_only: bool = False
     dry_run: bool = False  # Generate SQL without executing
     explain: bool = False  # Run EXPLAIN ANALYZE on the generated SQL
+
+    def referenced_variables(self) -> Set[str]:
+        """All {var} placeholder names referenced in this query's filters."""
+        names: Set[str] = set()
+        for f in self.filters or []:
+            names |= referenced_variables_in(f)
+        return names
+
+    def unsupplied_variables(self, extra: Optional[Dict[str, Any]] = None) -> Set[str]:
+        """Variables referenced but not present in self.variables nor *extra*."""
+        supplied = set((self.variables or {}).keys()) | set((extra or {}).keys())
+        return self.referenced_variables() - supplied
 
     def snap_to_whole_periods(self) -> "SlayerQuery":
         """Adjust date filters to align with period boundaries when whole_periods_only=True.

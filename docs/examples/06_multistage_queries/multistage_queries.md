@@ -1,5 +1,7 @@
 # Multi-stage queries, made easy
 
+> Want to **save** a multistage query by name and re-run it later (with optional runtime variables)? See [09_named_queries](../09_named_queries/named_queries.md). The pattern below is the unstored, runtime-only form; named queries are exactly the same shape, persisted.
+
 Most semantic layers and BI tools basically parameterize a GROUP BY, maybe with a couple of twists. But what if you need something more?
 
 - **Example 1:** Average monthly revenue per store. First calculate total revenue, grouped by store and month; then average the result across months per store.

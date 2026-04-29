@@ -107,6 +107,41 @@ outer = SlayerQuery(source_model="monthly", fields=["*:count"])
 engine.execute(query=[inner, outer])
 ```
 
+## Named Queries (stored multistage queries)
+
+Save a multistage query under a name and re-run it later. `stages` is the same list shape as the runtime list above; `variables` are top-level defaults for `{var}` placeholders that callers can override at run time.
+
+```python
+from slayer.core.models import NamedQuery
+from slayer.core.named_query_ops import save_named_query
+
+named = NamedQuery(
+    name="monthly_top",
+    description="Monthly revenue, top quartile only.",
+    variables={"top_pct": 0.25},
+    stages=[
+        SlayerQuery(name="monthly", source_model="orders", fields=["revenue:sum"], time_dimensions=[...]),
+        SlayerQuery(source_model="monthly", filters=["revenue_sum > {threshold}"]),
+    ],
+)
+await save_named_query(named, storage=storage, engine=engine)  # validates via dry-run
+
+# Run by name — engine resolves it to the saved stages
+await engine.execute(query="monthly_top", variables={"threshold": 1500})
+```
+
+**Variable precedence**: `stage.variables` > runtime `variables` arg > `NamedQuery.variables` (top-level defaults).
+
+**Save-time validation**: `save_named_query` does a dry-run pass; any unresolved `{var}` placeholders are auto-filled with `0` so a parameterised query saves successfully.
+
+**Name collision**: `NamedQuery.name` and `SlayerModel.name` share a single namespace; saving in either direction rejects collisions.
+
+**MCP tools**: `list_queries`, `inspect_query`, `run_named_query`, `save_query`, `delete_query`. `inspect_query` returns the saved stages plus the final-stage column schema (computed via dry-run probe).
+
+**CLI**: `slayer queries {list,show,save,delete,run,inspect}`. `run --variables k=v,k=v` for runtime overrides.
+
+**HTTP**: `GET/POST/PUT/DELETE /queries`, `POST /queries/{name}/run`, `GET /queries/{name}/inspect`.
+
 ## Result Format
 
 Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Response includes `attributes` with nested `dimensions` and `measures` dicts, each mapping column aliases to `FieldMetadata` objects (label, format).
