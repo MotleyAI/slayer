@@ -59,13 +59,13 @@ Here is the nested-aggregation example, written out in full. The inner query com
   {
     "name": "monthly_store_revenue",
     "source_model": "orders",
-    "fields": ["order_total:sum"],
+    "measures": ["order_total:sum"],
     "dimensions": ["stores.name"],
     "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly_store_revenue",
-    "fields": ["order_total_sum:avg"],
+    "measures": ["order_total_sum:avg"],
     "dimensions": ["stores.name"]
   }
 ]

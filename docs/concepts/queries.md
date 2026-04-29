@@ -7,9 +7,9 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
-| `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds dimensions/measures/joins) |
-| `fields` | list[Field] | No | Data columns — measures, arithmetic, transforms. See [Field Formulas](formulas.md#field-formulas). |
-| `dimensions` | list[ColumnRef] | No | Dimensions to group by. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
+| `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds columns/measures/joins) |
+| `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. See [Formulas](formulas.md). |
+| `dimensions` | list[ColumnRef] | No | Columns to group by. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
 | `filters` | list[str] | No | Conditions as formula strings. Supports `{variable}` placeholders. See [Filters](#filters). |
@@ -37,7 +37,7 @@ A reference to a model dimension. Supports dotted names for joined models.
 | `name` | string | Dimension name. Supports dotted paths for joined models (auto-resolved via join graph). |
 | `label` | string | Optional human-readable display name |
 
-For computed dimensions (SQL expressions like CASE), use [ModelExtension](#modelextension) on the query's `model` field. For derived metrics, use [Field formulas](formulas.md#field-formulas) in `fields`.
+For computed columns (SQL expressions like CASE), use [ModelExtension](#modelextension) on the query's `source_model` field. For derived metrics, use [formulas](formulas.md) in `measures`.
 
 Via MCP, simple dimensions are passed as strings: `dimensions=["status"]`
 
@@ -129,11 +129,11 @@ Multiple entries in the `filters` list are combined with AND.
 
 ### Filtering on Computed Columns
 
-Filters can reference names of computed fields — transforms and arithmetic expressions defined in `fields`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "*:count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
+Filters can reference names of computed measures — transforms and arithmetic expressions defined in `measures`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "*:count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
 
 ```json
 {
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "change(revenue:sum)", "name": "rev_change"}
   ],
@@ -164,7 +164,7 @@ Filters support `{variable_name}` placeholders, substituted from the query's `va
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count"],
+  "measures": ["*:count"],
   "filters": ["status = '{status}' AND amount > {min_amount}"],
   "variables": {"status": "completed", "min_amount": 100}
 }
@@ -186,7 +186,7 @@ This produces the filter `status = 'completed' AND amount > 100`.
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count"],
+  "measures": ["*:count"],
   "dimensions": ["status"]
 }
 ```
@@ -196,7 +196,7 @@ This produces the filter `status = 'completed' AND amount > 100`.
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue:sum"],
+  "measures": ["revenue:sum"],
   "time_dimensions": [{
     "dimension": "created_at",
     "granularity": "month",
@@ -210,7 +210,7 @@ This produces the filter `status = 'completed' AND amount > 100`.
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue:sum"],
+  "measures": ["revenue:sum"],
   "dimensions": ["customer_name"],
   "order": [{"column": "revenue:sum", "direction": "desc"}],
   "limit": 5
@@ -222,7 +222,7 @@ This produces the filter `status = 'completed' AND amount > 100`.
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count"],
+  "measures": ["*:count"],
   "filters": ["status = 'completed' or status = 'pending'"]
 }
 ```
@@ -232,7 +232,7 @@ This produces the filter `status = 'completed' AND amount > 100`.
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "*:count",
     "revenue:sum",
     {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
@@ -250,7 +250,7 @@ When models have [joins](models.md#joins), you can reference measures from joine
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "*:count",
     "customers.score:avg"
   ],
@@ -269,12 +269,12 @@ Pass a list of queries to `execute()`. Earlier queries are named sub-queries, th
   {
     "name": "monthly",
     "source_model": "orders",
-    "fields": ["*:count", "amount:sum"],
+    "measures": ["*:count", "amount:sum"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   },
   {
     "source_model": "monthly",
-    "fields": ["*:count"]
+    "measures": ["*:count"]
   }
 ]
 ```
@@ -289,11 +289,11 @@ You can also join named queries to models:
     "name": "customer_scores",
     "source_model": "customers",
     "dimensions": ["id"],
-    "fields": ["score:avg"]
+    "measures": ["score:avg"]
   },
   {
     "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
-    "fields": ["*:count", "customer_scores.score_avg:avg"],
+    "measures": ["*:count", "customer_scores.score_avg:avg"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
   }
 ]
@@ -303,21 +303,21 @@ The main query uses a `ModelExtension` to add a join to the named sub-query. Que
 
 ### ModelExtension
 
-Extend a model inline with extra dimensions, measures, or joins — without modifying the stored model:
+Extend a model inline with extra columns, measures, or joins — without modifying the stored model:
 
 ```json
 {
   "source_model": {
     "source_name": "orders",
-    "dimensions": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+    "columns": [{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
     "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]
   },
   "dimensions": ["tier"],
-  "fields": ["*:count"]
+  "measures": ["*:count"]
 }
 ```
 
-`ModelExtension` fields: `source_name` (required — model to extend), `dimensions`, `measures`, `joins` (all optional — merged with the source model's).
+`ModelExtension` fields: `source_name` (required — model to extend), `columns`, `measures`, `joins` (all optional — merged with the source model's).
 
 ### Multi-hop dimensions
 
@@ -327,7 +327,7 @@ Dimensions from joined models can be referenced with dotted paths. SLayer auto-r
 {
   "source_model": "orders",
   "dimensions": ["customers.regions.name"],
-  "fields": ["*:count"]
+  "measures": ["*:count"]
 }
 ```
 

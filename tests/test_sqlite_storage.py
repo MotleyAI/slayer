@@ -6,7 +6,7 @@ import os
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage.sqlite_storage import SQLiteStorage
 
 
@@ -23,12 +23,10 @@ def sample_model() -> SlayerModel:
         name="test_model",
         sql_table="public.test_table",
         data_source="test_ds",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="name", sql="name", type=DataType.STRING),
-        ],
-        measures=[
-            Measure(name="revenue", sql="amount"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="revenue", sql="amount", type=DataType.NUMBER),
         ],
     )
 
@@ -53,7 +51,7 @@ class TestSQLiteModelStorage:
         assert loaded is not None
         assert loaded.name == "test_model"
         assert loaded.sql_table == "public.test_table"
-        assert len(loaded.dimensions) == 2
+        assert len(loaded.columns) == 3
 
     async def test_list_models(self, storage: SQLiteStorage, sample_model: SlayerModel) -> None:
         assert await storage.list_models() == []

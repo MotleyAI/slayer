@@ -3,8 +3,8 @@
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Aggregation, DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 
 
 class TestColumnRef:
@@ -102,19 +102,20 @@ class TestSlayerModel:
             name="test",
             sql_table="t",
             data_source="test",
-            dimensions=[Dimension(name="x", type=DataType.STRING)],
+            columns=[Column(name="x", type=DataType.STRING)],
         )
-        assert model.get_dimension("x") is not None
-        assert model.get_dimension("y") is None
+        assert model.get_column("x") is not None
+        assert model.get_column("y") is None
 
     def test_get_measure(self) -> None:
+        """``get_measure`` returns a ModelMeasure formula by name."""
         model = SlayerModel(
             name="test",
             sql_table="t",
             data_source="test",
-            measures=[Measure(name="revenue", sql="amount")],
+            measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")],
         )
-        assert model.get_measure("revenue") is not None
+        assert model.get_measure("aov") is not None
         assert model.get_measure("missing") is None
 
     def test_filter_bare_column_allowed(self) -> None:
@@ -167,22 +168,22 @@ class TestSlayerModel:
 
     def test_dimension_sql_multidot_auto_converted(self) -> None:
         """Multi-dot references in dimension sql are auto-converted."""
-        dim = Dimension(name="region_name", sql="customers.regions.name")
+        dim = Column(name="region_name", sql="customers.regions.name", type=DataType.NUMBER)
         assert dim.sql == "customers__regions.name"
 
     def test_dimension_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in dimension sql are left as-is."""
-        dim = Dimension(name="cust_name", sql="customers.name")
+        dim = Column(name="cust_name", sql="customers.name", type=DataType.NUMBER)
         assert dim.sql == "customers.name"
 
     def test_measure_sql_multidot_auto_converted(self) -> None:
         """Multi-dot references in measure sql are auto-converted."""
-        meas = Measure(name="region_count", sql="customers.regions.id")
+        meas = Column(name="region_count", sql="customers.regions.id", type=DataType.NUMBER)
         assert meas.sql == "customers__regions.id"
 
     def test_measure_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in measure sql are left as-is."""
-        meas = Measure(name="total", sql="orders.amount")
+        meas = Column(name="total", sql="orders.amount", type=DataType.NUMBER)
         assert meas.sql == "orders.amount"
 
     def test_filter_multidot_three_levels_auto_converted(self) -> None:
@@ -199,12 +200,12 @@ class TestSlayerModel:
 
     def test_dimension_name_allows_double_underscore(self) -> None:
         """__ is allowed in dimension names — used for flattened join paths in virtual models."""
-        dim = Dimension(name="stores__name")
+        dim = Column(name="stores__name")
         assert dim.name == "stores__name"
 
     def test_measure_name_allows_double_underscore(self) -> None:
         """__ is allowed in measure names — used for flattened join paths in virtual models."""
-        meas = Measure(name="stores__tax_rate_sum", sql="tax_rate")
+        meas = Column(name="stores__tax_rate_sum", sql="tax_rate", type=DataType.NUMBER)
         assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_rejects_double_underscore(self) -> None:
@@ -216,25 +217,25 @@ class TestSlayerModel:
         assert model.name == "my_model"
 
     def test_dimension_name_single_underscore_allowed(self) -> None:
-        dim = Dimension(name="customer_name")
+        dim = Column(name="customer_name")
         assert dim.name == "customer_name"
 
     def test_dimension_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in dimension names."""
         with pytest.raises(ValueError, match="must not contain '.'"):
-            Dimension(name="customers.name")
+            Column(name="customers.name")
 
     def test_measure_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in measure names."""
         with pytest.raises(ValueError, match="must not contain '.'"):
-            Measure(name="customers.name_sum", sql="name")
+            Column(name="customers.name_sum", sql="name", type=DataType.NUMBER)
 
     def test_dimension_name_without_dot_allowed(self) -> None:
-        dim = Dimension(name="region_name")
+        dim = Column(name="region_name")
         assert dim.name == "region_name"
 
     def test_measure_name_without_dot_allowed(self) -> None:
-        meas = Measure(name="order_total_sum", sql="total")
+        meas = Column(name="order_total_sum", sql="total", type=DataType.NUMBER)
         assert meas.name == "order_total_sum"
 
 
@@ -295,10 +296,10 @@ class TestStringCoercion:
     """Plain strings are accepted in fields and dimensions lists."""
 
     def test_fields_plain_strings(self) -> None:
-        query = SlayerQuery(source_model="orders", fields=["*:count", "revenue:sum"])
-        assert len(query.fields) == 2
-        assert query.fields[0] == Field(formula="*:count")
-        assert query.fields[1] == Field(formula="revenue:sum")
+        query = SlayerQuery(source_model="orders", measures=["*:count", "revenue:sum"])
+        assert len(query.measures) == 2
+        assert query.measures[0] == ModelMeasure(formula="*:count")
+        assert query.measures[1] == ModelMeasure(formula="revenue:sum")
 
     def test_dimensions_plain_strings(self) -> None:
         query = SlayerQuery(source_model="orders", dimensions=["status", "customers.name"])
@@ -311,11 +312,11 @@ class TestStringCoercion:
     def test_fields_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=["*:count", {"formula": "revenue:sum / *:count", "name": "aov"}],
+            measures=["*:count", {"formula": "revenue:sum / *:count", "name": "aov"}],
         )
-        assert len(query.fields) == 2
-        assert query.fields[0] == Field(formula="*:count")
-        assert query.fields[1] == Field(formula="revenue:sum / *:count", name="aov")
+        assert len(query.measures) == 2
+        assert query.measures[0] == ModelMeasure(formula="*:count")
+        assert query.measures[1] == ModelMeasure(formula="revenue:sum / *:count", name="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery(
@@ -331,15 +332,15 @@ class TestStringCoercion:
     def test_dict_syntax_still_works(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
-        assert query.fields[0] == Field(formula="*:count")
+        assert query.measures[0] == ModelMeasure(formula="*:count")
         assert query.dimensions[0].name == "status"
 
     def test_none_fields_and_dimensions(self) -> None:
         query = SlayerQuery(source_model="orders")
-        assert query.fields is None
+        assert query.measures is None
         assert query.dimensions is None
 
     def test_order_column_string(self) -> None:
@@ -373,7 +374,7 @@ class TestStringCoercion:
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             order=[{"column": "_count", "direction": "desc"}],
         )
@@ -386,7 +387,7 @@ class TestWholePeriodsOnly:
     def test_adds_lte_filter_when_none(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"),
                 granularity=TimeGranularity.MONTH,
@@ -400,7 +401,7 @@ class TestWholePeriodsOnly:
     def test_noop_when_false(self) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             whole_periods_only=False,
         )
         snapped = query.snap_to_whole_periods()
@@ -424,14 +425,14 @@ class TestCoerceFieldsAndDimensions:
             SlayerQuery(source_model="orders", dimensions="status")
 
     def test_fields_list_of_strings_coerced(self) -> None:
-        q = SlayerQuery(source_model="orders", fields=["*:count", "revenue:sum"])
-        assert q.fields[0].formula == "*:count"
-        assert q.fields[1].formula == "revenue:sum"
+        q = SlayerQuery(source_model="orders", measures=["*:count", "revenue:sum"])
+        assert q.measures[0].formula == "*:count"
+        assert q.measures[1].formula == "revenue:sum"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
-        q = SlayerQuery(source_model="orders", fields=[{"formula": "*:count", "name": "cnt"}])
-        assert q.fields[0].formula == "*:count"
-        assert q.fields[0].name == "cnt"
+        q = SlayerQuery(source_model="orders", measures=[{"formula": "*:count", "name": "cnt"}])
+        assert q.measures[0].formula == "*:count"
+        assert q.measures[0].name == "cnt"
 
     def test_dimensions_list_of_strings_coerced(self) -> None:
         q = SlayerQuery(source_model="orders", dimensions=["status", "region"])
@@ -440,7 +441,7 @@ class TestCoerceFieldsAndDimensions:
 
     def test_fields_none_accepted(self) -> None:
         q = SlayerQuery(source_model="orders", fields=None)
-        assert q.fields is None
+        assert q.measures is None
 
     def test_dimensions_none_accepted(self) -> None:
         q = SlayerQuery(source_model="orders", dimensions=None)
@@ -471,54 +472,54 @@ class TestAggregationValidation:
 
 class TestDimensionLabel:
     def test_label_optional(self) -> None:
-        d = Dimension(name="status", sql="status")
+        d = Column(name="status", sql="status", type=DataType.NUMBER)
         assert d.label is None
 
     def test_label_set(self) -> None:
-        d = Dimension(name="status", sql="status", label="Order Status")
+        d = Column(name="status", sql="status", label="Order Status", type=DataType.NUMBER)
         assert d.label == "Order Status"
 
     def test_label_in_model_dump(self) -> None:
-        d = Dimension(name="status", label="Order Status")
+        d = Column(name="status", label="Order Status")
         data = d.model_dump(exclude_none=True)
         assert data["label"] == "Order Status"
 
     def test_label_excluded_when_none(self) -> None:
-        d = Dimension(name="status")
+        d = Column(name="status")
         data = d.model_dump(exclude_none=True)
         assert "label" not in data
 
 
 class TestMeasureLabel:
     def test_label_optional(self) -> None:
-        m = Measure(name="revenue", sql="amount")
+        m = Column(name="revenue", sql="amount", type=DataType.NUMBER)
         assert m.label is None
 
     def test_label_set(self) -> None:
-        m = Measure(name="revenue", sql="amount", label="Total Revenue")
+        m = Column(name="revenue", sql="amount", label="Total Revenue", type=DataType.NUMBER)
         assert m.label == "Total Revenue"
 
 
 class TestMeasureFilter:
     def test_filter_optional(self) -> None:
-        m = Measure(name="revenue", sql="amount")
+        m = Column(name="revenue", sql="amount", type=DataType.NUMBER)
         assert m.filter is None
 
     def test_filter_set(self) -> None:
-        m = Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        m = Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         assert m.filter == "status = 'active'"
 
     def test_filter_multidot_autoconvert(self) -> None:
-        m = Measure(name="x", sql="amount", filter="a.b.c = 1")
+        m = Column(name="x", sql="amount", filter="a.b.c = 1", type=DataType.NUMBER)
         assert "a__b.c" in m.filter
 
     def test_filter_in_model_dump(self) -> None:
-        m = Measure(name="x", sql="amount", filter="status = 'active'")
+        m = Column(name="x", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         data = m.model_dump(exclude_none=True)
         assert data["filter"] == "status = 'active'"
 
     def test_filter_excluded_when_none(self) -> None:
-        m = Measure(name="x", sql="amount")
+        m = Column(name="x", sql="amount", type=DataType.NUMBER)
         data = m.model_dump(exclude_none=True)
         assert "filter" not in data
 
@@ -609,7 +610,7 @@ class TestSubstituteVariables:
         """Variables field is accepted on SlayerQuery."""
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             filters=["status = '{val}'"],
             variables={"val": "completed"},
         )
@@ -722,50 +723,50 @@ class TestStripSourceModelPrefix:
 
     def test_formula_self_ref_stripped(self) -> None:
         """orders.revenue:sum -> revenue:sum"""
-        q = SlayerQuery(source_model="orders", fields=["orders.revenue:sum"])
+        q = SlayerQuery(source_model="orders", measures=["orders.revenue:sum"])
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "revenue:sum"
+        assert stripped.measures[0].formula == "revenue:sum"
 
     def test_formula_star_count_stripped(self) -> None:
         """orders.*:count -> *:count"""
-        q = SlayerQuery(source_model="orders", fields=["orders.*:count"])
+        q = SlayerQuery(source_model="orders", measures=["orders.*:count"])
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "*:count"
+        assert stripped.measures[0].formula == "*:count"
 
     def test_formula_arithmetic_stripped(self) -> None:
         """orders.revenue:sum / orders.*:count -> revenue:sum / *:count"""
-        q = SlayerQuery(source_model="orders", fields=["orders.revenue:sum / orders.*:count"])
+        q = SlayerQuery(source_model="orders", measures=["orders.revenue:sum / orders.*:count"])
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "revenue:sum / *:count"
+        assert stripped.measures[0].formula == "revenue:sum / *:count"
 
     def test_formula_transform_stripped(self) -> None:
         """cumsum(orders.revenue:sum) -> cumsum(revenue:sum)"""
-        q = SlayerQuery(source_model="orders", fields=["cumsum(orders.revenue:sum)"])
+        q = SlayerQuery(source_model="orders", measures=["cumsum(orders.revenue:sum)"])
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "cumsum(revenue:sum)"
+        assert stripped.measures[0].formula == "cumsum(revenue:sum)"
 
     def test_formula_cross_model_self_ref_stripped(self) -> None:
         """orders.customers.score:avg -> customers.score:avg"""
-        q = SlayerQuery(source_model="orders", fields=["orders.customers.score:avg"])
+        q = SlayerQuery(source_model="orders", measures=["orders.customers.score:avg"])
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "customers.score:avg"
+        assert stripped.measures[0].formula == "customers.score:avg"
 
     def test_formula_cross_model_not_stripped(self) -> None:
         """customers.score:avg on source_model=orders stays unchanged"""
-        q = SlayerQuery(source_model="orders", fields=["customers.score:avg"])
+        q = SlayerQuery(source_model="orders", measures=["customers.score:avg"])
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "customers.score:avg"
+        assert stripped.measures[0].formula == "customers.score:avg"
 
     def test_formula_name_and_label_preserved(self) -> None:
         """Field name and label are preserved after formula stripping."""
         q = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "orders.revenue:sum", "name": "rev", "label": "Revenue"}],
+            measures=[{"formula": "orders.revenue:sum", "name": "rev", "label": "Revenue"}],
         )
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "revenue:sum"
-        assert stripped.fields[0].name == "rev"
-        assert stripped.fields[0].label == "Revenue"
+        assert stripped.measures[0].formula == "revenue:sum"
+        assert stripped.measures[0].name == "rev"
+        assert stripped.measures[0].label == "Revenue"
 
     # --- Filters ---
 
@@ -773,7 +774,7 @@ class TestStripSourceModelPrefix:
         """orders.status = 'active' -> status = 'active'"""
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             filters=["orders.status = 'active'"],
         )
         stripped = q.strip_source_model_prefix()
@@ -783,7 +784,7 @@ class TestStripSourceModelPrefix:
         """orders.customers.name = 'foo' -> customers.name = 'foo'"""
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             filters=["orders.customers.name = 'foo'"],
         )
         stripped = q.strip_source_model_prefix()
@@ -792,7 +793,7 @@ class TestStripSourceModelPrefix:
     def test_filter_no_prefix_unchanged(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             filters=["status = 'active'", "customers.name = 'foo'"],
         )
         stripped = q.strip_source_model_prefix()
@@ -802,7 +803,7 @@ class TestStripSourceModelPrefix:
         """change(orders.revenue:sum) > 0 -> change(revenue:sum) > 0"""
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             filters=["change(orders.revenue:sum) > 0"],
         )
         stripped = q.strip_source_model_prefix()
@@ -813,7 +814,7 @@ class TestStripSourceModelPrefix:
     def test_order_self_ref_stripped(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             order=[{"column": "orders.revenue_sum", "direction": "desc"}],
         )
         stripped = q.strip_source_model_prefix()
@@ -824,7 +825,7 @@ class TestStripSourceModelPrefix:
     def test_order_no_prefix_unchanged(self) -> None:
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             order=[{"column": "revenue_sum", "direction": "asc"}],
         )
         stripped = q.strip_source_model_prefix()
@@ -840,7 +841,7 @@ class TestStripSourceModelPrefix:
         """
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             order=[{"column": "orders.revenue:sum", "direction": "desc"}],
         )
         # Before stripping, raw_formula captured the rewritten input
@@ -855,7 +856,7 @@ class TestStripSourceModelPrefix:
         """Multi-hop source-prefixed colon syntax: raw_formula gets prefix stripped."""
         q = SlayerQuery(
             source_model="orders",
-            fields=["*:count"],
+            measures=["*:count"],
             order=[{"column": "orders.customers.score:sum", "direction": "asc"}],
         )
         assert q.order[0].raw_formula == "orders.customers.score:sum"
@@ -946,7 +947,7 @@ class TestStripSourceModelPrefix:
         """reorders.revenue:sum should NOT be stripped when source_model=orders"""
         q = SlayerQuery(
             source_model="orders",
-            fields=["reorders.revenue:sum"],
+            measures=["reorders.revenue:sum"],
         )
         stripped = q.strip_source_model_prefix()
-        assert stripped.fields[0].formula == "reorders.revenue:sum"
+        assert stripped.measures[0].formula == "reorders.revenue:sum"

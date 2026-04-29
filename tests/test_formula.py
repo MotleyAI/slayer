@@ -13,7 +13,8 @@ from slayer.core.formula import (
     parse_filter,
     parse_formula,
 )
-from slayer.core.models import Dimension, Measure, SlayerModel
+from slayer.core.enums import DataType
+from slayer.core.models import Column, SlayerModel
 from slayer.engine.enrichment import _collect_needed_paths, extract_filter_transforms
 
 
@@ -607,8 +608,10 @@ class TestCollectNeededPathsExtraAggNames:
         model = SlayerModel(
             name="orders",
             sql_table="orders",
-            dimensions=[Dimension(name="status", sql="status", type="string")],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
         )
         # Filter uses a custom aggregation in function style: custom_total(revenue) > 100
         # Without extra_agg_names, parse_filter won't rewrite it → potential misparse
@@ -629,8 +632,10 @@ class TestCollectNeededPathsExtraAggNames:
         model = SlayerModel(
             name="orders",
             sql_table="orders",
-            dimensions=[Dimension(name="status", sql="status", type="string")],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
         )
         paths = _collect_needed_paths(
             model=model,

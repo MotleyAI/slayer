@@ -9,7 +9,7 @@ import pytest
 import sqlalchemy as sa
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -31,21 +31,19 @@ def _build_orders_model(ds_name: str) -> SlayerModel:
         sql_table="orders",
         data_source=ds_name,
         default_time_dimension="created_at",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Dimension(name="shop_id", sql="shop_id", type=DataType.NUMBER),
-            Dimension(name="category", sql="category", type=DataType.STRING),
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Dimension(name="completed_at", sql="completed_at", type=DataType.TIMESTAMP),
-            Dimension(name="cancelled_at", sql="cancelled_at", type=DataType.TIMESTAMP),
-        ],
-        measures=[
-            Measure(name="total_cost", sql="cost"),
-            Measure(name="avg_cost", sql="cost"),
-            Measure(name="min_cost", sql="cost"),
-            Measure(name="max_cost", sql="cost"),
-            Measure(name="latest_cost", sql="cost"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="shop_id", sql="shop_id", type=DataType.NUMBER),
+            Column(name="category", sql="category", type=DataType.STRING),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="completed_at", sql="completed_at", type=DataType.TIMESTAMP),
+            Column(name="cancelled_at", sql="cancelled_at", type=DataType.TIMESTAMP),
+            Column(name="total_cost", sql="cost", type=DataType.NUMBER),
+            Column(name="avg_cost", sql="cost", type=DataType.NUMBER),
+            Column(name="min_cost", sql="cost", type=DataType.NUMBER),
+            Column(name="max_cost", sql="cost", type=DataType.NUMBER),
+            Column(name="latest_cost", sql="cost", type=DataType.NUMBER),
         ],
     )
 
@@ -55,12 +53,11 @@ def _build_shops_model(ds_name: str) -> SlayerModel:
         name="shops",
         sql_table="shops",
         data_source=ds_name,
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="name", sql="name", type=DataType.STRING),
-            Dimension(name="region_id", sql="region_id", type=DataType.NUMBER),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
         ],
-        measures=[],
     )
 
 
@@ -69,13 +66,12 @@ def _build_customers_model(ds_name: str) -> SlayerModel:
         name="customers",
         sql_table="customers",
         data_source=ds_name,
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="name", sql="name", type=DataType.STRING),
-            Dimension(name="segment", sql="segment", type=DataType.STRING),
-            Dimension(name="primary_shop_id", sql="primary_shop_id", type=DataType.NUMBER),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="segment", sql="segment", type=DataType.STRING),
+            Column(name="primary_shop_id", sql="primary_shop_id", type=DataType.NUMBER),
         ],
-        measures=[],
     )
 
 
@@ -148,7 +144,7 @@ async def _create_env(order_count: int) -> BenchEnv:
 
     # Warmup: run a simple query to prime DB caches and connection pool
     await slayer_engine.execute(query=SlayerQuery(
-        source_model="orders", fields=[{"formula": "*:count"}],
+        source_model="orders", measures=[{"formula": "*:count"}],
     ))
 
     return slayer_engine, dataset

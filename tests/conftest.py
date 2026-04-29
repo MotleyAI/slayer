@@ -5,7 +5,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -15,14 +15,12 @@ def sample_model() -> SlayerModel:
         name="orders",
         sql_table="public.orders",
         data_source="test_ds",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="status", sql="status", type=DataType.STRING),
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-        ],
-        measures=[
-            Measure(name="revenue", sql="amount"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="revenue", sql="amount", type=DataType.NUMBER),
         ],
     )
 

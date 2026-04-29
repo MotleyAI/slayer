@@ -9,8 +9,8 @@ pytest.importorskip("duckdb")
 import duckdb
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -69,28 +69,27 @@ async def duckdb_env(tmp_path):
         name="orders",
         sql_table="orders",
         data_source="testduckdb",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="status", sql="status", type=DataType.STRING),
-            Dimension(name="amount", sql="amount", type=DataType.NUMBER),
-            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-        ],
-        measures=[
-            Measure(name="total", sql="amount"),
-            Measure(name="avg_amount", sql="amount"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+
+            Column(name="total", sql="amount", type=DataType.NUMBER),
+            Column(name="avg_amount", sql="amount", type=DataType.NUMBER),
         ],
     )
     customers_model = SlayerModel(
         name="customers",
         sql_table="customers",
         data_source="testduckdb",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="name", sql="name", type=DataType.STRING),
-            Dimension(name="region", sql="region", type=DataType.STRING),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="region", sql="region", type=DataType.STRING),
+
         ],
-        measures=[],
     )
     await storage.save_model(orders_model)
     await storage.save_model(customers_model)
@@ -101,18 +100,18 @@ async def duckdb_env(tmp_path):
 @pytest.mark.integration
 class TestDuckDBQueries:
     async def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "*:count"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
     async def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "total:sum"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     async def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount:avg"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
         result = await duckdb_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -120,7 +119,7 @@ class TestDuckDBQueries:
     async def test_group_by_status(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
         result = await duckdb_env.execute(query=query)
@@ -132,7 +131,7 @@ class TestDuckDBQueries:
     async def test_filter_equals(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             filters=["status == 'completed'"],
         )
         result = await duckdb_env.execute(query=query)
@@ -141,7 +140,7 @@ class TestDuckDBQueries:
     async def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             filters=["amount > 100"],
         )
         result = await duckdb_env.execute(query=query)
@@ -150,7 +149,7 @@ class TestDuckDBQueries:
     async def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             order=[{"column": {"name": "count"}, "direction": "desc"}],
         )
@@ -160,7 +159,7 @@ class TestDuckDBQueries:
     async def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             limit=2,
         )
@@ -170,7 +169,7 @@ class TestDuckDBQueries:
     async def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}, {"formula": "total:sum"}],
+            measures=[{"formula": "*:count"}, {"formula": "total:sum"}],
             dimensions=[{"name": "status"}],
         )
         result = await duckdb_env.execute(query=query)
@@ -182,7 +181,7 @@ class TestDuckDBQueries:
         """DuckDB supports DATE_TRUNC natively."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         )
         result = await duckdb_env.execute(query=query)
@@ -191,7 +190,7 @@ class TestDuckDBQueries:
     async def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             time_dimensions=[{
                 "dimension": {"name": "created_at"},
                 "granularity": "month",
@@ -206,7 +205,7 @@ class TestDuckDBQueries:
     async def test_composite_filter(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             filters=["status == 'completed' or status == 'pending'"],
         )
         result = await duckdb_env.execute(query=query)
@@ -222,9 +221,9 @@ class TestDuckDBQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -242,9 +241,9 @@ class TestDuckDBQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="change(total:sum)", name="amount_change"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="change(total:sum)", name="amount_change"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -261,9 +260,9 @@ class TestDuckDBQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="change_pct(total:sum)", name="pct"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="change_pct(total:sum)", name="pct"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -281,10 +280,10 @@ class TestDuckDBQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="time_shift(total:sum, -1, 'month')", name="prev"),
-                Field(formula="time_shift(total:sum, 1, 'month')", name="next"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev"),
+                ModelMeasure(formula="time_shift(total:sum, 1, 'month')", name="next"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -344,19 +343,19 @@ def duckdb_ingest_env(tmp_path):
 
 @pytest.mark.integration
 class TestDuckDBIngestion:
-    def test_orders_has_own_dimensions_only(self, duckdb_ingest_env) -> None:
-        """After ingestion, models only have their own columns as dimensions."""
+    def test_orders_has_own_columns_only(self, duckdb_ingest_env) -> None:
+        """After ingestion, models only have their own columns (no flattened joined dims)."""
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
-        dim_names = [d.name for d in orders.dimensions]
-        # Should have own columns only (no flattened joined dims)
-        assert "id" in dim_names
-        assert "customer_id" in dim_names
-        # Float-like columns (DECIMAL) get measures only, no dimension
-        assert "amount" not in dim_names
-        # Joined dimensions are resolved via join graph, not pre-flattened
-        assert not any("." in name for name in dim_names)
+        col_names = [c.name for c in orders.columns]
+        # Should have own columns only.
+        assert "id" in col_names
+        assert "customer_id" in col_names
+        # In v2, every non-joined column appears once (numeric columns included).
+        assert "amount" in col_names
+        # Joined dimensions are resolved via join graph, not pre-flattened.
+        assert not any("." in name for name in col_names)
 
     def test_orders_uses_sql_table_with_joins(self, duckdb_ingest_env) -> None:
         models, _ = duckdb_ingest_env
@@ -379,18 +378,19 @@ class TestDuckDBIngestion:
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    def test_orders_has_own_measures_only(self, duckdb_ingest_env) -> None:
-        """After ingestion, models only have measures for their own columns."""
+    def test_orders_has_no_named_measures_after_ingest(self, duckdb_ingest_env) -> None:
+        """After ingestion, model.measures (formula list) is empty in v2.
+
+        v1 generated row-level measures from each non-ID column. In v2, those
+        live on ``columns`` instead and ``measures`` (named formulas) is an
+        opt-in library users populate themselves.
+        """
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
-
-        measure_names = [m.name for m in orders.measures]
-        # One measure per non-ID column; no auto-created 'count'
-        assert "amount" in measure_names
-        assert "count" not in measure_names
-        assert "amount_sum" not in measure_names
-        # No dotted measure names from joined models
-        assert not any("." in name for name in measure_names)
+        assert orders.measures == []
+        # The 'amount' column lives on .columns now.
+        col_names = [c.name for c in orders.columns]
+        assert "amount" in col_names
 
     async def test_rollup_query_group_by_customer(self, duckdb_ingest_env) -> None:
         """Query orders grouped by rolled-up customer name."""
@@ -405,7 +405,7 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = await engine.execute(query=query)
@@ -428,7 +428,7 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
+            measures=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = await engine.execute(query=query)
