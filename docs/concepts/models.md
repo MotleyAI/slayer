@@ -282,13 +282,13 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `version` | int | No | `1` | Schema version stamp (see [Schema versioning](#schema-versioning)) |
+| `version` | int | No | `2` | Schema version stamp (see [Schema versioning](#schema-versioning)) |
 | `name` | string | Yes | — | Unique model name |
 | `sql_table` | string | One of | — | Database table (e.g. `public.orders`) |
 | `sql` | string | these | — | Custom SQL subquery |
 | `data_source` | string | Yes | — | Datasource name |
-| `dimensions` | list | No | `[]` | Dimension definitions |
-| `measures` | list | No | `[]` | Measure definitions |
+| `columns` | list | No | `[]` | Column definitions (`Column`) — usable as group-by keys or aggregation sources, gated per query |
+| `measures` | list | No | `[]` | Library of named formulas (`ModelMeasure`) — referenced by bare name in queries |
 | `joins` | list | No | `[]` | JOIN relationships to other models |
 | `filters` | list[str] | No | `[]` | Model-level WHERE filters (always applied, e.g., `"deleted_at IS NULL"`) |
 | `description` | string | No | — | Helps agents and users understand the model |
@@ -298,10 +298,10 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field that records the schema it was written against. The current schema is `1`.
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field that records the schema it was written against. The current schema is `2` for `SlayerModel` and `SlayerQuery`, and `1` for `DatasourceConfig`.
 
 ```yaml
-version: 1
+version: 2
 name: orders
 sql_table: public.orders
 ...
@@ -309,7 +309,7 @@ sql_table: public.orders
 
 Behaviour:
 
-- **On save**, SLayer always writes the current schema version. New objects default `version` to `1`.
+- **On save**, SLayer always writes the current schema version. New `SlayerModel` and `SlayerQuery` objects default `version` to `2`; new `DatasourceConfig` objects default to `1`.
 - **On load**, if the file's version is older than the current schema, SLayer runs a chain of pure dict→dict converters before Pydantic validates the data. This means hand-edited or older files keep working when the schema evolves.
 - **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis (unknown fields are ignored). It is not downgraded.
 - **Round-tripping** an older file (load → save) upgrades it on disk to the current schema.

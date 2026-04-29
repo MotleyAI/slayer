@@ -4594,3 +4594,33 @@ class TestGetColumnTypesSql:
         # Both measures should have types (cross-model included)
         assert result.get("revenue") == "number", f"Missing revenue type: {result}"
         assert result.get("customer_score") == "number", f"Missing customer_score type: {result}"
+
+    def test_explicit_empty_allowed_aggregations_skips_probe(self) -> None:
+        """An explicit empty allowed_aggregations must NOT fall back to type defaults."""
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(
+                    name="opaque",
+                    sql="amount",
+                    type=DataType.NUMBER,
+                    allowed_aggregations=[],
+                ),
+            ],
+        )
+        engine = SlayerQueryEngine(storage=storage)
+        probe = engine._build_type_probe_query(model)
+        formulas = [m.formula for m in probe.measures]
+        assert any(f and f.startswith("revenue:") for f in formulas), (
+            f"Expected 'revenue' to be probed, got {formulas}"
+        )
+        assert not any(f and f.startswith("opaque:") for f in formulas), (
+            f"Empty allowed_aggregations must skip probe, got {formulas}"
+        )

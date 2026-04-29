@@ -285,7 +285,7 @@ class SlayerQueryEngine:
         for c in model.columns:
             if c.hidden or c.primary_key:
                 continue
-            if c.allowed_aggregations:
+            if c.allowed_aggregations is not None:
                 allowed = list(c.allowed_aggregations)
             else:
                 allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.type, frozenset()))

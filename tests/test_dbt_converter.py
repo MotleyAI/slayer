@@ -353,6 +353,44 @@ DbtMeasure(name="total_amount", agg="sum", expr="amount")
         assert "completed" in filtered[0].filter
         assert filtered[0].label == "Completed Amount"
 
+    def test_filtered_metric_collision_with_existing_column_skipped(self) -> None:
+        """Filtered metric whose name collides with an existing column on the model
+        must NOT silently produce a duplicate column. Skip + emit a warning instead."""
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    dimensions=[
+                        # A dimension named "status" — becomes a Column on the slayer model.
+                        DbtDimension(name="status", type="categorical"),
+                    ],
+                    measures=[
+                        DbtMeasure(name="total_amount", agg="sum", expr="amount"),
+                    ],
+                ),
+            ],
+            metrics=[
+                DbtMetric(
+                    # Collides with the existing "status" dimension column.
+                    name="status",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="total_amount"),
+                    filter="{{Dimension('order_id__status')}} = 'completed'",
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        # Exactly one column named "status" — no duplicate appended.
+        assert [c.name for c in orders.columns].count("status") == 1
+        # And a warning was emitted explaining why.
+        warning_msgs = [w.message for w in result.warnings]
+        assert any("status" in m and "collide" in m.lower() for m in warning_msgs), (
+            f"Expected collision warning, got: {warning_msgs}"
+        )
+
     def test_unfiltered_simple_metric_no_extra_measure(self) -> None:
         """Simple metric without filter doesn't add anything."""
         project = DbtProject(

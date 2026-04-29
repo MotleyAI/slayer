@@ -502,6 +502,16 @@ class DbtToSlayerConverter:
             allowed_aggregations=[mapped_agg] if self.strict_aggregations else None,
             filter=slayer_filter,
         )
+        if any(c.name == filtered_column.name for c in slayer_model.columns):
+            self._warnings.append(ConversionWarning(
+                model_name=slayer_model.name,
+                metric_name=metric.name,
+                message=(
+                    f"Filtered metric '{metric.name}' collides with an existing column "
+                    f"on model '{slayer_model.name}'. Skipped."
+                ),
+            ))
+            return None
         slayer_model.columns.append(filtered_column)
         return None  # Handled as a column, no query needed
 
