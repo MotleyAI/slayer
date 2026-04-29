@@ -2,8 +2,6 @@
 run, variable precedence, and bidirectional collision rejection — exercised
 end-to-end against an in-process DuckDB database."""
 
-import tempfile
-
 import pytest
 
 pytest.importorskip("duckdb")
@@ -47,8 +45,7 @@ async def duckdb_env(tmp_path):
     )
     conn.close()
 
-    tmpdir = tempfile.mkdtemp()
-    storage = YAMLStorage(base_dir=tmpdir)
+    storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(DatasourceConfig(
         name="duck", type="duckdb", database=str(db_path),
     ))
@@ -141,7 +138,7 @@ class TestNamedQueryEndToEnd:
                 ),
             ],
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             await save_named_query(bad, storage=storage, engine=engine)
         # And nothing was persisted
         assert await storage.get_query("invalid") is None

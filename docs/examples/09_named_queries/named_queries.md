@@ -44,7 +44,7 @@ When you `save_query`, SLayer runs a **dry-run execution pass** to verify the qu
 
 ### MCP
 
-```
+```text
 save_query(query={"name": "monthly_top_stores", "stages": [...], "variables": {...}})
 list_queries()
 inspect_query(name="monthly_top_stores")
@@ -79,7 +79,7 @@ slayer queries run monthly_top_stores --variables threshold=0 --dry-run
 
 ### HTTP
 
-```
+```http
 GET    /queries                        → [{"name": "...", "description": "..."}]
 GET    /queries/{name}                 → full NamedQuery JSON
 POST   /queries                        → create / replace (validates via dry run)

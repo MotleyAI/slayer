@@ -58,6 +58,13 @@ class StorageBackend(ABC):
     base class so the bidirectional name-collision check between models and
     named queries lives in exactly one place. Backends implement only the
     raw-write primitives ``_persist_model`` / ``_persist_query``.
+
+    The collision check is a preflight read followed by a separate write,
+    not an atomic transaction — it assumes single-writer semantics. Two
+    concurrent writers can both pass the check and end up with a name
+    collision; if you need stronger guarantees, serialise saves at a higher
+    layer. Per-backend atomic enforcement is intentionally not done here so
+    the rule lives in this ABC alone, regardless of backend.
     """
 
     # ------------------------------------------------------------------

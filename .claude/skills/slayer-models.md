@@ -112,5 +112,5 @@ Via MCP, agents can edit models incrementally:
 
 - `NamedQuery` is a stored multistage query (a named list of `SlayerQuery` stages plus optional top-level `variables`). See `slayer-query.md` for query construction details
 - `NamedQuery.name` shares a single namespace with `SlayerModel.name` — saving in either direction rejects collisions (raised by the ABC's concrete `save_*` methods, so the rule lives in one place)
-- Save flow: use `slayer.core.named_query_ops.save_named_query(query, storage=, engine=)` — it dry-runs the stages first (placeholder `0` for any unsupplied `{var}`) and only persists if validation passes
+- Save flow: use `slayer.core.named_query_ops.save_named_query(query, storage=storage, engine=engine)` — it dry-runs the stages first (placeholder `0` for any unsupplied `{var}`) and only persists if validation passes
 - MCP tools: `list_queries`, `inspect_query`, `run_named_query`, `save_query`, `delete_query`. CLI: `slayer queries {list,show,save,delete,run,inspect}`. HTTP: `/queries` REST endpoints

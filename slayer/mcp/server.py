@@ -1709,14 +1709,20 @@ def create_mcp_server(storage: StorageBackend):
         if q is None:
             return f"NamedQuery '{name}' not found."
 
-        runtime = dict(variables or {})
+        supplied = dict(variables or {})
+        runtime = dict(supplied)
         # Fill placeholders for any still-unsupplied vars so the dry-run plans cleanly.
         unsupplied = q.unsupplied_variables() - set(runtime.keys())
         for v in unsupplied:
             runtime[v] = 0
 
+        # Mark the final stage dry_run so introspection plans without hitting the DB.
+        stages = list(q.stages)
+        stages[-1] = stages[-1].model_copy(update={"dry_run": True})
+        probe = q.model_copy(update={"stages": stages})
+
         try:
-            response = await engine.execute(query=name, variables=runtime)
+            response = await engine.execute(query=probe, variables=runtime)
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                 return _friendly_db_error(e)
@@ -1744,7 +1750,7 @@ def create_mcp_server(storage: StorageBackend):
             "description": q.description,
             "stages": [s.model_dump(mode="json", exclude_none=True) for s in q.stages],
             "variables": q.variables,
-            "missing_variables": sorted(q.unsupplied_variables()),
+            "missing_variables": sorted(q.unsupplied_variables() - set(supplied.keys())),
             "columns": columns,
         }
         if response.sql:

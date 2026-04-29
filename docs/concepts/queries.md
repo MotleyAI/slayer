@@ -262,7 +262,7 @@ This generates a sub-query for the joined measure, scoped to shared dimensions, 
 
 ### Query lists
 
-Pass a list of queries to `execute()`. Earlier queries are named sub-queries, the last is the main query. Named queries can be referenced by `source_model` name or joined via `joins`.
+Pass a list of queries to `execute()`. Earlier queries are named sub-queries; later stages reference them via `source_model`. The last query is the main query, and stages can also be combined via explicit `joins`.
 
 > To **save** a query list under a name and re-run it later (with optional runtime variables for `{var}` placeholders), use the `NamedQuery` storage entity — see [docs/examples/09_named_queries](../examples/09_named_queries/named_queries.md). The structure of `stages` matches the list shape below exactly.
 

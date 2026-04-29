@@ -400,8 +400,7 @@ class SlayerQueryEngine:
 
         # Build expanded stages with merged variables, mark the final stage
         # dry_run so no real query hits the database.
-        runtime = {}  # no extra runtime vars during validation
-        merged_top = {**augmented.variables, **runtime}
+        merged_top = dict(augmented.variables)
         expanded: list = []
         for i, stage in enumerate(augmented.stages):
             stage_vars = stage.variables or {}

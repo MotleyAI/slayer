@@ -308,7 +308,7 @@ class NamedQuery(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
-        return _migrate_schema("NamedQuery", data)
+        return _migrate_schema(entity="NamedQuery", data=data)
 
     @field_validator("name")
     @classmethod

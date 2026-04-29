@@ -196,7 +196,7 @@ class TestNamedQueryStorage:
     async def test_round_trip(
         self, any_storage: StorageBackend, sample_named_query: NamedQuery
     ) -> None:
-        await any_storage._persist_query(sample_named_query)
+        await any_storage.save_query(sample_named_query)
         loaded = await any_storage.get_query("monthly_top")
         assert loaded is not None
         assert loaded.name == "monthly_top"
@@ -209,13 +209,13 @@ class TestNamedQueryStorage:
         self, any_storage: StorageBackend, sample_named_query: NamedQuery
     ) -> None:
         assert await any_storage.list_queries() == []
-        await any_storage._persist_query(sample_named_query)
+        await any_storage.save_query(sample_named_query)
         assert await any_storage.list_queries() == ["monthly_top"]
 
     async def test_delete_query(
         self, any_storage: StorageBackend, sample_named_query: NamedQuery
     ) -> None:
-        await any_storage._persist_query(sample_named_query)
+        await any_storage.save_query(sample_named_query)
         assert await any_storage.delete_query("monthly_top") is True
         assert await any_storage.get_query("monthly_top") is None
         assert await any_storage.delete_query("nonexistent") is False

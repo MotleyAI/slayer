@@ -814,7 +814,8 @@ def _run_queries(args):
         if named is None:
             print(f"NamedQuery '{args.name}' not found.")
             sys.exit(1)
-        variables = _parse_variables(args.variables)
+        supplied = _parse_variables(args.variables)
+        variables = dict(supplied)
         # Fill placeholders for unsupplied vars so introspection succeeds.
         unsupplied = named.unsupplied_variables() - set(variables.keys())
         for v in unsupplied:
@@ -841,7 +842,7 @@ def _run_queries(args):
             "description": named.description,
             "stages": [s.model_dump(mode="json", exclude_none=True) for s in named.stages],
             "variables": named.variables,
-            "missing_variables": sorted(named.unsupplied_variables()),
+            "missing_variables": sorted(named.unsupplied_variables() - set(supplied.keys())),
             "columns": columns,
         }
         print(json.dumps(out, indent=2, default=str))
