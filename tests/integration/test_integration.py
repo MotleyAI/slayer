@@ -1813,3 +1813,85 @@ async def test_label_propagation_enrichment(integration_env):
     rev_meta = result.attributes.measures.get("orders.labeled_rev_sum")
     assert rev_meta is not None
     assert rev_meta.label == "Total Revenue"
+
+
+# ---------------------------------------------------------------------------
+# Median / percentile via SQLite Python UDFs
+#
+# SQLite has no native MEDIAN/PERCENTILE_CONT. SLayer registers Python
+# aggregates on each new SQLite connection (slayer/sql/sqlite_udfs.py); these
+# tests exercise them end-to-end through the engine.
+# ---------------------------------------------------------------------------
+
+
+async def test_median_sqlite(integration_env):
+    """Median of order amounts: [25, 50, 75, 100, 200, 300] -> 87.5."""
+    engine = integration_env
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        fields=[Field(formula="total_amount:median")],
+    ))
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
+
+
+async def test_percentile_sqlite_quartiles(integration_env):
+    """P25 and P75 of [25, 50, 75, 100, 200, 300] with linear interpolation."""
+    engine = integration_env
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        fields=[
+            Field(formula="total_amount:percentile(p=0.25)"),
+            Field(formula="total_amount:percentile(p=0.75)"),
+        ],
+    ))
+    assert response.row_count == 1
+    row = response.data[0]
+    assert row["orders.total_amount_percentile_p_0_25"] == pytest.approx(56.25)
+    assert row["orders.total_amount_percentile_p_0_75"] == pytest.approx(175.0)
+
+
+async def test_median_grouped_sqlite(integration_env):
+    """Median per status — confirms UDFs reset state between groups.
+
+    completed: [100, 200, 300] -> 200
+    pending:   [25, 50]        -> 37.5
+    cancelled: [75]            -> 75
+    """
+    engine = integration_env
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        fields=[Field(formula="total_amount:median")],
+        dimensions=[ColumnRef(name="status")],
+    ))
+    by_status = {
+        row["orders.status"]: row["orders.total_amount_median"]
+        for row in response.data
+    }
+    assert by_status["completed"] == pytest.approx(200)
+    assert by_status["pending"] == pytest.approx(37.5)
+    assert by_status["cancelled"] == pytest.approx(75)
+
+
+async def test_median_empty_result_sqlite(integration_env):
+    """Median on a filter that matches no rows yields NULL."""
+    engine = integration_env
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        fields=[Field(formula="total_amount:median")],
+        filters=["status == 'nonexistent'"],
+    ))
+    assert response.row_count == 1
+    assert response.data[0]["orders.total_amount_median"] is None
+
+
+async def test_sqlite_udf_pool_reuse(integration_env):
+    """Two queries in a row must both resolve median — confirms the connect
+    event re-registers UDFs on every new pooled connection (not just the first).
+    """
+    engine = integration_env
+    q = SlayerQuery(source_model="orders", fields=[Field(formula="total_amount:median")])
+    r1 = await engine.execute(q)
+    r2 = await engine.execute(q)
+    assert r1.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
+    assert r2.data[0]["orders.total_amount_median"] == pytest.approx(87.5)

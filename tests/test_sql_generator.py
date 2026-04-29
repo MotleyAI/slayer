@@ -1186,6 +1186,120 @@ class TestMultiDialectGeneration:
             assert "INTERVAL" in sql_upper
 
 
+class TestMedianPercentilePerDialect:
+    """Per-dialect SQL emission for median and percentile aggregations.
+
+    These pin the dialect-specific output of `_build_median` and
+    `_build_percentile` and assert that MySQL raises ``NotImplementedError``
+    (no native function, no Python-UDF mechanism).
+    """
+
+    def _measure(
+        self,
+        *,
+        agg: str,
+        agg_kwargs: dict[str, str] | None = None,
+    ) -> EnrichedMeasure:
+        return EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias=f"amount_{agg}",
+            aggregation=agg,
+            agg_kwargs=agg_kwargs or {},
+        )
+
+    # --- median ------------------------------------------------------------
+
+    def test_build_median_postgres(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        inner = sqlglot.parse_one("amount", dialect="postgres")
+        sql = gen._build_median(inner).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)"
+
+    def test_build_median_sqlite_uses_udf_call(self) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        inner = sqlglot.parse_one("amount", dialect="sqlite")
+        sql = gen._build_median(inner).sql(dialect="sqlite")
+        # sqlglot rewrites MEDIAN(x) to PERCENTILE_CONT(x, 0.5) for SQLite,
+        # which our percentile_cont UDF handles. SQLite UDF lookup is
+        # case-insensitive.
+        assert sql == "PERCENTILE_CONT(amount, 0.5)"
+
+    def test_build_median_clickhouse_unchanged(self) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        inner = sqlglot.parse_one("amount", dialect="clickhouse")
+        sql = gen._build_median(inner).sql(dialect="clickhouse")
+        # ClickHouse has native median(); sqlglot transpiles to its parametric form.
+        assert sql == "quantile(0.5)(amount)"
+
+    def test_build_median_duckdb(self) -> None:
+        gen = SQLGenerator(dialect="duckdb")
+        inner = sqlglot.parse_one("amount", dialect="duckdb")
+        sql = gen._build_median(inner).sql(dialect="duckdb")
+        # sqlglot translates PERCENTILE_CONT to DuckDB's QUANTILE_CONT.
+        assert "QUANTILE_CONT" in sql or "PERCENTILE_CONT" in sql
+
+    def test_build_median_mysql_raises(self) -> None:
+        gen = SQLGenerator(dialect="mysql")
+        inner = sqlglot.parse_one("amount", dialect="mysql")
+        with pytest.raises(NotImplementedError, match="MySQL"):
+            gen._build_median(inner)
+
+    # --- percentile --------------------------------------------------------
+
+    def test_build_percentile_postgres(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.95"})
+        sql = gen._build_percentile(m).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY amount)"
+
+    def test_build_percentile_sqlite(self) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
+        sql = gen._build_percentile(m).sql(dialect="sqlite")
+        assert sql == "PERCENTILE_CONT(amount, 0.5)"
+
+    def test_build_percentile_clickhouse_emits_quantile(self) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.75"})
+        sql = gen._build_percentile(m).sql(dialect="clickhouse")
+        # ClickHouse parametric aggregate syntax.
+        assert sql == "quantile(0.75)(amount)"
+
+    def test_build_percentile_clickhouse_param_substitution(self) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        for p in ("0.05", "0.25", "0.5", "0.95"):
+            m = self._measure(agg="percentile", agg_kwargs={"p": p})
+            sql = gen._build_percentile(m).sql(dialect="clickhouse")
+            assert sql == f"quantile({p})(amount)"
+
+    def test_build_percentile_duckdb(self) -> None:
+        gen = SQLGenerator(dialect="duckdb")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
+        sql = gen._build_percentile(m).sql(dialect="duckdb")
+        # sqlglot rewrites the WITHIN GROUP form to DuckDB's QUANTILE_CONT.
+        assert "QUANTILE_CONT" in sql
+
+    def test_build_percentile_mysql_raises(self) -> None:
+        gen = SQLGenerator(dialect="mysql")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
+        with pytest.raises(NotImplementedError, match="MySQL"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_missing_p_raises(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg="percentile", agg_kwargs={})
+        with pytest.raises(ValueError, match="requires parameter 'p'"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_unsafe_p_rejected(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5); DROP TABLE x; --"})
+        with pytest.raises(ValueError, match="Unsafe value"):
+            gen._build_percentile(m)
+
+
 class TestPathAliasJoinInference:
     """Test that __-delimited path aliases in inline SQL cause multi-hop join inference via graph walk."""
 

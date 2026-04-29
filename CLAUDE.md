@@ -107,7 +107,13 @@ SLayer uses sqlglot for dialect-aware SQL generation. Databases are supported at
 **Tier 2 — code-covered** (unit tests for SQL generation, no live instance verification):
 - Snowflake, BigQuery, Redshift, Trino/Presto, Databricks/Spark, MS SQL Server, Oracle
 
-Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch) and `_build_time_offset_expr` (date arithmetic for shifted CTEs). Calendar-based time shifts use timestamp offset inside DATE_TRUNC with simple equality joins (no per-dialect join logic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_offset_expr` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrised tests in `TestMultiDialectGeneration`.
+Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific SQL lives in `generator.py` — mainly `_build_date_trunc` (SQLite branch), `_build_time_offset_expr` (date arithmetic for shifted CTEs), `_build_median`, and `_build_percentile`. Calendar-based time shifts use timestamp offset inside DATE_TRUNC with simple equality joins (no per-dialect join logic). All other SQL differences are handled by sqlglot transpilation. When adding a new dialect: add it to `_dialect_for_type`, add a `_build_time_offset_expr` branch if it doesn't use Postgres-style `INTERVAL`, and add parametrised tests in `TestMultiDialectGeneration`.
+
+**Aggregation caveats:**
+- **SQLite**: `median`, `percentile_cont`, `percentile_disc` are provided via Python aggregate UDFs registered on every new connection (`slayer/sql/sqlite_udfs.py`); SQLite has no native equivalent.
+- **ClickHouse**: `percentile` emits the parametric `quantile(p)(x)` syntax; `median` uses native `median(x)`.
+- **MySQL**: `median` and `percentile` are not supported — MySQL has no native function and no Python-UDF mechanism. The generator raises `NotImplementedError` at SQL generation time. Use MariaDB or compute client-side.
+- **Postgres / DuckDB**: native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` (DuckDB via sqlglot's `QUANTILE_CONT` translation).
 
 ## Testing
 

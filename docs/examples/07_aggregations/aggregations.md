@@ -61,8 +61,18 @@ These are always available — no definition needed:
 | `count_distinct` | COUNT(DISTINCT expr) |
 | `first` / `last` | Value from the earliest/latest record per group (by time) |
 | `weighted_avg` | SUM(expr \* weight) / SUM(weight) |
-| `median` | PERCENTILE_CONT(0.5) |
-| `percentile` | PERCENTILE_CONT(p) — specify `p` as an argument |
+| `median` | PERCENTILE_CONT(0.5) — see database support below |
+| `percentile` | PERCENTILE_CONT(p) — specify `p` as an argument; see database support below |
+
+### Database support for `median` / `percentile`
+
+| Engine | Supported? | How |
+|---|---|---|
+| Postgres | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`. |
+| DuckDB | yes | sqlglot translates to native `MEDIAN(x)` / `QUANTILE_CONT(x, p ORDER BY x)`. |
+| SQLite | yes | Python aggregate UDFs registered on every connection by SLayer. |
+| ClickHouse | yes | Native `median(x)` and parametric `quantile(p)(x)`. |
+| MySQL | **no** | No native function and no Python-UDF mechanism — SLayer raises `NotImplementedError`. Use MariaDB or compute client-side. |
 
 ## Custom aggregations
 
