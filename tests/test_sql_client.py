@@ -1,6 +1,17 @@
-"""Tests for SQL client type code mapping."""
+"""Tests for SQL client helpers (type code mapping, retry-warning formatting)."""
 
-from slayer.sql.client import _map_type_code
+import logging
+
+import pytest
+import sqlalchemy.exc
+
+from slayer.sql import client as sql_client
+from slayer.sql.client import (
+    _execute_with_retry_async,
+    _execute_with_retry_sync,
+    _execute_with_retry_threaded,
+    _map_type_code,
+)
 
 
 class TestMapTypeCode:
@@ -84,3 +95,117 @@ class TestMapTypeCode:
     def test_mysql_decimal_oid(self) -> None:
         """MySQL MYSQL_TYPE_DECIMAL = 0."""
         assert _map_type_code(0, db_type="mysql") == "number"
+
+
+def _make_op_error() -> sqlalchemy.exc.OperationalError:
+    """A minimal OperationalError that mimics a transient driver failure."""
+    return sqlalchemy.exc.OperationalError(
+        "SELECT 1", {}, Exception("database is locked"),
+    )
+
+
+class TestRetryEmptySqlExcerpt:
+    """Empty/whitespace SQL must not raise IndexError when the retry warning fires.
+
+    Regression test for the bug where `(sql or "").strip().splitlines()[0]`
+    crashed inside the except handler, masking the real transient DB error.
+    """
+
+    @pytest.mark.parametrize("sql", ["", "   \n  "])
+    async def test_async_empty_sql_logs_placeholder_and_retries(
+        self,
+        sql: str,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        calls = {"n": 0}
+
+        async def fake_execute(**kwargs: object) -> list:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _make_op_error()
+            return [{"ok": 1}]
+
+        monkeypatch.setattr(sql_client, "_execute_sql_async", fake_execute)
+
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+            result = await _execute_with_retry_async(
+                sql=sql,
+                engine=None,
+                db_type="postgres",
+                initial_delay=0.0,
+                max_delay=0.0,
+            )
+
+        assert result == [{"ok": 1}]
+        assert calls["n"] == 2
+        assert any(
+            "Transient DB error" in rec.getMessage() and "<empty sql>" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    @pytest.mark.parametrize("sql", ["", "   \n  "])
+    async def test_threaded_empty_sql_logs_placeholder_and_retries(
+        self,
+        sql: str,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        calls = {"n": 0}
+
+        def fake_execute(*args: object, **kwargs: object) -> list:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _make_op_error()
+            return [{"ok": 1}]
+
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
+
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+            result = await _execute_with_retry_threaded(
+                sql=sql,
+                connection_string="sqlite:///:memory:",
+                db_type="sqlite",
+                initial_delay=0.0,
+                max_delay=0.0,
+            )
+
+        assert result == [{"ok": 1}]
+        assert calls["n"] == 2
+        assert any(
+            "Transient DB error" in rec.getMessage() and "<empty sql>" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    @pytest.mark.parametrize("sql", ["", "   \n  "])
+    def test_sync_empty_sql_logs_placeholder_and_retries(
+        self,
+        sql: str,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        calls = {"n": 0}
+
+        def fake_execute(*args: object, **kwargs: object) -> list:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _make_op_error()
+            return [{"ok": 1}]
+
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
+
+        with caplog.at_level(logging.WARNING, logger="slayer.sql.client"):
+            result = _execute_with_retry_sync(
+                sql=sql,
+                connection_string="sqlite:///:memory:",
+                db_type="sqlite",
+                initial_delay=0.0,
+                max_delay=0.0,
+            )
+
+        assert result == [{"ok": 1}]
+        assert calls["n"] == 2
+        assert any(
+            "Transient DB error" in rec.getMessage() and "<empty sql>" in rec.getMessage()
+            for rec in caplog.records
+        )
