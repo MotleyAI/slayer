@@ -25,7 +25,7 @@ At query time, you pick the aggregation with colon syntax:
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue:sum", "revenue:avg", "price:min", "price:max"],
+  "measures": ["revenue:sum", "revenue:avg", "price:min", "price:max"],
   "dimensions": ["status"]
 }
 ```
@@ -38,7 +38,7 @@ COUNT(\*) doesn't aggregate a specific column — it counts rows. In SLayer, `*`
 
 ```json
 {
-  "fields": ["*:count", "revenue:sum"]
+  "measures": ["*:count", "revenue:sum"]
 }
 ```
 
@@ -119,7 +119,7 @@ SLayer validates this at query time and at model creation — if you try `custom
 
 ```json
 {
-  "fields": ["balance:last", "balance:first"],
+  "measures": ["balance:last", "balance:first"],
   "time_dimensions": [{"dimension": "updated_at", "granularity": "month"}]
 }
 ```
@@ -140,7 +140,7 @@ Don't confuse the `last` *aggregation* (`balance:last`) with the `last()` *trans
 
 ```json
 {
-  "fields": [
+  "measures": [
     "latency:median",
     "latency:percentile(p=0.95)",
     "latency:percentile(p=0.25)"

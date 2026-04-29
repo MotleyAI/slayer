@@ -15,8 +15,8 @@ from typing import Any, Callable, Dict, Tuple
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: Dict[str, int] = {
-    "SlayerModel": 1,
-    "SlayerQuery": 1,
+    "SlayerModel": 2,
+    "SlayerQuery": 2,
     "DatasourceConfig": 1,
 }
 
@@ -76,3 +76,10 @@ def migrate(entity: str, data: Any) -> Any:
         data["version"] = current
     data.setdefault("version", target)
     return data
+
+
+# Register concrete migrations. The import is deferred to the bottom of this
+# module to avoid a circular import (the v2 module imports BUILTIN_AGGREGATIONS
+# from slayer.core.enums and must register against the register_migration
+# decorator defined above).
+from slayer.storage import v2_migration  # noqa: E402, F401

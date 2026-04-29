@@ -6,7 +6,7 @@ import pytest
 
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -36,8 +36,10 @@ class TestLocalMode:
             name="orders",
             sql_table="public.orders",
             data_source="test_ds",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
         ))
         await storage.save_datasource(DatasourceConfig(
             name="test_ds",
@@ -46,7 +48,7 @@ class TestLocalMode:
         ))
         # This will fail at SQL execution (no actual table), but proves local dispatch works
         from slayer.core.query import SlayerQuery
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "revenue:sum"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "revenue:sum"}])
         with pytest.raises(Exception):
             client.query_sync(query)
 
@@ -56,15 +58,17 @@ class TestLocalMode:
             name="orders",
             sql_table="public.orders",
             data_source="test_ds",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
         ))
         await storage.save_datasource(DatasourceConfig(
             name="test_ds",
             type="sqlite",
             database=":memory:",
         ))
-        query_dict = {"source_model": "orders", "fields": ["revenue:sum"]}
+        query_dict = {"source_model": "orders", "measures": ["revenue:sum"]}
         with pytest.raises(Exception):
             client.query_sync(query_dict)
 
@@ -74,15 +78,17 @@ class TestLocalMode:
             name="orders",
             sql_table="public.orders",
             data_source="test_ds",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
         ))
         await storage.save_datasource(DatasourceConfig(
             name="test_ds",
             type="sqlite",
             database=":memory:",
         ))
-        query_dict = {"source_model": "orders", "fields": ["revenue:sum"]}
+        query_dict = {"source_model": "orders", "measures": ["revenue:sum"]}
         sql = client.sql_sync(query_dict)
         assert isinstance(sql, str)
         assert "SELECT" in sql

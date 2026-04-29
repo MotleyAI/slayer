@@ -5,7 +5,7 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Dimension, Measure, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.storage.join_sync import JoinSyncStorage, _mirror_inner_joins
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -16,13 +16,15 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 def _model(name: str, *, joins: list[ModelJoin] | None = None) -> SlayerModel:
-    """Minimal model with one dimension and one measure."""
+    """Minimal model with one PK column and one numeric column."""
     return SlayerModel(
         name=name,
         sql_table=name,
         data_source="test",
-        dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-        measures=[Measure(name="amount", sql="amount")],
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+        ],
         joins=joins or [],
     )
 
@@ -81,11 +83,10 @@ class TestMirrorInnerJoins:
             name="employees",
             sql_table="employees",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="manager_id", sql="manager_id", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="manager_id", sql="manager_id", type=DataType.NUMBER),
             ],
-            measures=[],
             joins=[ModelJoin(target_model="employees", join_pairs=[["manager_id", "id"]], join_type=JoinType.INNER)],
         )
         await raw_storage.save_model(model)

@@ -19,7 +19,7 @@ client = SlayerClient(url="http://localhost:5143")
 
 query = {
     "source_model": "orders",
-    "fields": ["*:count", "revenue:sum"],
+    "measures": ["*:count", "revenue:sum"],
     "dimensions": ["status"],
     "limit": 10,
 }

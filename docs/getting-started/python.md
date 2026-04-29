@@ -140,7 +140,7 @@ engine = SlayerQueryEngine(storage=storage)
 print(storage.list_models())
 
 # Should return data
-result = engine.execute(query={"source_model": "orders", "fields": ["*:count"]})
+result = engine.execute(query={"source_model": "orders", "measures": ["*:count"]})
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 

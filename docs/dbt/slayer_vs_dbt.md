@@ -31,13 +31,13 @@ Example — account balances rolled up to customer-level monthly totals:
   {
     "name": "latest_balance_per_account",
     "source_model": "account_snapshots",
-    "fields": ["balance:last(snapshot_date)"],
+    "measures": ["balance:last(snapshot_date)"],
     "dimensions": ["account_id", "customer_id"],
     "time_dimensions": [{"dimension": "snapshot_date", "granularity": "month"}]
   },
   {
     "source_model": "latest_balance_per_account",
-    "fields": ["balance_last:sum"],
+    "measures": ["balance_last:sum"],
     "dimensions": ["customer_id"],
     "time_dimensions": [{"dimension": "snapshot_date", "granularity": "month"}]
   }
@@ -86,7 +86,7 @@ dbt requires separate metric type definitions for each analytical pattern:
 
 SLayer handles all of these inline in a single query:
 ```json
-"fields": [
+"measures": [
   "revenue:sum",
   {"formula": "revenue:sum / *:count", "name": "aov"},
   {"formula": "cumsum(revenue:sum)", "name": "running"},

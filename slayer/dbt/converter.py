@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Dimension, Measure, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import convert_dbt_filter
 from slayer.dbt.models import (
@@ -67,8 +67,8 @@ def _map_agg(dbt_agg: str) -> str:
     return mapped
 
 
-def _convert_dimension(dim: DbtDimension) -> Dimension:
-    """Convert a dbt dimension to a SLayer dimension."""
+def _convert_dimension(dim: DbtDimension) -> Column:
+    """Convert a dbt dimension to a SLayer column."""
     if dim.type == "time":
         data_type = DataType.TIMESTAMP
     else:
@@ -76,7 +76,7 @@ def _convert_dimension(dim: DbtDimension) -> Dimension:
 
     sql = dim.expr if dim.expr and dim.expr != dim.name else None
 
-    return Dimension(
+    return Column(
         name=dim.name,
         sql=sql,
         type=data_type,
@@ -88,12 +88,13 @@ def _convert_dimension(dim: DbtDimension) -> Dimension:
 def _convert_measures(
     dbt_measures: List[DbtMeasure],
     strict_aggregations: bool,
-) -> List[Measure]:
-    """Convert dbt measures to SLayer measures with consolidation.
+) -> List[Column]:
+    """Convert dbt measures to SLayer columns with consolidation.
 
-    Measures with the same expr are consolidated into one SLayer measure
+    Measures with the same expr are consolidated into one SLayer column
     with multiple allowed_aggregations. Original name:agg pairs are listed
-    in the description.
+    in the description. dbt measures imply numeric data, so the resulting
+    columns get DataType.NUMBER.
     """
     # Group by effective expr (expr or name if expr is None)
     groups: Dict[str, List[DbtMeasure]] = defaultdict(list)
@@ -101,7 +102,7 @@ def _convert_measures(
         key = m.expr or m.name
         groups[key].append(m)
 
-    result: List[Measure] = []
+    result: List[Column] = []
     for expr_key, measures_in_group in groups.items():
         if len(measures_in_group) == 1:
             m = measures_in_group[0]
@@ -114,15 +115,16 @@ def _convert_measures(
                 desc += "."
             desc = f"{desc} Default aggregation: {m.agg}".strip()
 
-            result.append(Measure(
+            result.append(Column(
                 name=m.name,
                 sql=sql,
+                type=DataType.NUMBER,
                 description=desc,
                 label=m.label,
                 allowed_aggregations=allowed,
             ))
         else:
-            # Consolidate: multiple dbt measures → one SLayer measure
+            # Consolidate: multiple dbt measures → one SLayer column
             aggs = []
             name_agg_pairs = []
             labels = []
@@ -138,9 +140,8 @@ def _convert_measures(
                 if m.description:
                     descriptions.append(m.description)
 
-            # Use the first dbt measure's name as the SLayer measure name;
-            # fall back to expr_key if no name is available. Keep the SQL
-            # expression whenever it differs from the chosen name.
+            # Use the first dbt measure's name; fall back to expr_key. Keep the
+            # SQL expression whenever it differs from the chosen name.
             measure_name = measures_in_group[0].name or expr_key
             sql = expr_key if expr_key != measure_name else None
 
@@ -148,9 +149,10 @@ def _convert_measures(
             if descriptions:
                 desc = f"{descriptions[0]}. {desc}"
 
-            result.append(Measure(
+            result.append(Column(
                 name=measure_name,
                 sql=sql,
+                type=DataType.NUMBER,
                 description=desc,
                 label=labels[0] if labels else None,
                 allowed_aggregations=aggs if strict_aggregations else None,
@@ -306,17 +308,13 @@ class DbtToSlayerConverter:
         if rm.description:
             model.description = rm.description
 
-        # Overlay column-level descriptions from dbt manifest onto dims/measures.
+        # Overlay column-level descriptions from dbt manifest onto columns.
         col_descriptions = {c.name: c.description for c in rm.columns if c.description}
         if col_descriptions:
-            for d in model.dimensions:
-                desc = col_descriptions.get(d.name)
-                if desc and not d.description:
-                    d.description = desc
-            for m in model.measures:
-                desc = col_descriptions.get(m.name)
-                if desc and not m.description:
-                    m.description = desc
+            for c in model.columns:
+                desc = col_descriptions.get(c.name)
+                if desc and not c.description:
+                    c.description = desc
 
         return model
 
@@ -352,48 +350,52 @@ class DbtToSlayerConverter:
         if sm.defaults and sm.defaults.agg_time_dimension:
             default_time_dim = sm.defaults.agg_time_dimension
 
-        # Convert dimensions
-        dimensions = [_convert_dimension(d) for d in sm.dimensions]
+        # Convert dimensions to columns
+        cols: List[Column] = [_convert_dimension(d) for d in sm.dimensions]
 
-        # Add primary key dimension for primary/unique entities
-        entity_dim_names = {d.name for d in dimensions}
+        # Add primary key column for primary/unique entities
+        entity_col_names = {c.name for c in cols}
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
-                dim_name = entity.expr or entity.name
-                if dim_name not in entity_dim_names:
-                    dimensions.append(Dimension(
-                        name=dim_name,
+                col_name = entity.expr or entity.name
+                if col_name not in entity_col_names:
+                    cols.append(Column(
+                        name=col_name,
                         type=DataType.NUMBER,
                         primary_key=True,
                         description=entity.description,
                     ))
                 else:
-                    # Mark existing dimension as primary key
-                    for d in dimensions:
-                        if d.name == dim_name:
-                            d.primary_key = True
+                    for c in cols:
+                        if c.name == col_name:
+                            c.primary_key = True
 
         # Also handle primary_entity shorthand
         if sm.primary_entity:
             pe_name = sm.primary_entity
-            # Find entity to get expr
             pe_expr = pe_name
             for e in sm.entities:
                 if e.name == pe_name:
                     pe_expr = e.expr or e.name
                     break
-            if pe_expr not in entity_dim_names:
-                dimensions.append(Dimension(
+            if pe_expr not in entity_col_names:
+                cols.append(Column(
                     name=pe_expr,
                     type=DataType.NUMBER,
                     primary_key=True,
                 ))
 
-        # Convert measures (with consolidation)
-        measures = _convert_measures(
+        # Append converted measures (consolidated). Avoid name collisions with
+        # already-added entity/dimension columns by skipping duplicates.
+        existing_names = {c.name for c in cols}
+        for m_col in _convert_measures(
             dbt_measures=sm.measures,
             strict_aggregations=self.strict_aggregations,
-        )
+        ):
+            if m_col.name in existing_names:
+                continue
+            cols.append(m_col)
+            existing_names.add(m_col.name)
 
         # Resolve joins from foreign entities
         joins = self.entity_registry.resolve_joins_for_model(sm)
@@ -405,8 +407,7 @@ class DbtToSlayerConverter:
             data_source=self.data_source,
             description=sm.description,
             default_time_dimension=default_time_dim,
-            dimensions=dimensions,
-            measures=measures,
+            columns=cols,
             joins=joins,
         )
 
@@ -490,16 +491,17 @@ class DbtToSlayerConverter:
 
         sql = dbt_measure.expr if dbt_measure.expr and dbt_measure.expr != dbt_measure.name else None
 
-        filtered_measure = Measure(
+        filtered_column = Column(
             name=metric.name,
             sql=sql or dbt_measure.name,
+            type=DataType.NUMBER,
             description=metric.description or f"Filtered metric: {metric.name}",
             label=metric.label,
             allowed_aggregations=[mapped_agg] if self.strict_aggregations else None,
             filter=slayer_filter,
         )
-        slayer_model.measures.append(filtered_measure)
-        return None  # Handled as a measure, no query needed
+        slayer_model.columns.append(filtered_column)
+        return None  # Handled as a column, no query needed
 
     def _convert_derived_metric(self, metric: DbtMetric) -> Optional[dict]:
         """Convert a derived metric to a SlayerQuery dict."""
@@ -538,7 +540,7 @@ class DbtToSlayerConverter:
         query = {
             "name": metric.name,
             "description": metric.description or f"Derived metric: {metric.name}",
-            "fields": [{"formula": formula, "name": metric.name}],
+            "measures": [{"formula": formula, "name": metric.name}],
         }
         if source_model:
             query["source_model"] = source_model
@@ -567,7 +569,7 @@ class DbtToSlayerConverter:
         query = {
             "name": metric.name,
             "description": metric.description or f"Ratio metric: {metric.name}",
-            "fields": [{"formula": f"{num_formula} / {den_formula}", "name": metric.name}],
+            "measures": [{"formula": f"{num_formula} / {den_formula}", "name": metric.name}],
         }
         if source_model:
             query["source_model"] = source_model
@@ -592,7 +594,7 @@ class DbtToSlayerConverter:
         query = {
             "name": metric.name,
             "description": metric.description or f"Cumulative metric: {metric.name}",
-            "fields": [{"formula": f"cumsum({measure_ref})", "name": metric.name}],
+            "measures": [{"formula": f"cumsum({measure_ref})", "name": metric.name}],
         }
         if source_model:
             query["source_model"] = source_model
@@ -650,15 +652,15 @@ class DbtToSlayerConverter:
             for m in sm.measures:
                 if m.name == measure_name:
                     mapped_agg = _map_agg(m.agg)
-                    # After consolidation, the SLayer measure might have a different name
-                    # (expr-based). Check if it was consolidated.
+                    # After consolidation, the SLayer column might have a
+                    # different name (expr-based). Check if it was consolidated.
                     slayer_model = self._models_by_name.get(sm.name)
                     if slayer_model:
-                        for slayer_m in slayer_model.measures:
-                            if slayer_m.name == measure_name:
+                        for slayer_c in slayer_model.columns:
+                            if slayer_c.name == measure_name:
                                 return f"{measure_name}:{mapped_agg}"
                             # Check if consolidated under expr name
-                            if slayer_m.sql == (m.expr or m.name) and slayer_m.name != measure_name:
-                                return f"{slayer_m.name}:{mapped_agg}"
+                            if slayer_c.sql == (m.expr or m.name) and slayer_c.name != measure_name:
+                                return f"{slayer_c.name}:{mapped_agg}"
                     return f"{measure_name}:{mapped_agg}"
         return None

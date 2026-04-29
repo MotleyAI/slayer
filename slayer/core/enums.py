@@ -147,3 +147,33 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "median", "weighted_avg", "percentile",
 })
+
+
+# Default aggregations applicable to a column based on its data type, when the
+# column has no explicit ``allowed_aggregations`` whitelist. Used by the engine
+# to gate ``column:agg`` expressions (e.g., ``revenue:sum`` requires ``sum`` to
+# be eligible for the ``revenue`` column's data type).
+DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
+    DataType.NUMBER: frozenset({
+        "sum", "avg", "min", "max", "count", "count_distinct",
+        "median", "weighted_avg", "percentile", "first", "last",
+    }),
+    DataType.STRING: frozenset({
+        "count", "count_distinct", "first", "last", "min", "max",
+    }),
+    DataType.BOOLEAN: frozenset({
+        "count", "count_distinct", "sum",
+    }),
+    DataType.DATE: frozenset({
+        "count", "count_distinct", "first", "last", "min", "max",
+    }),
+    DataType.TIMESTAMP: frozenset({
+        "count", "count_distinct", "first", "last", "min", "max",
+    }),
+}
+
+# Primary-key columns are always restricted to row-counting aggregations,
+# regardless of data type. (You can ``count`` customer_ids, but not ``sum`` them.)
+PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct",
+})

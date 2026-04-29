@@ -1,6 +1,8 @@
 # Models
 
-A model maps a database table (or SQL subquery) to queryable **dimensions** and **measures**. Models are defined as YAML files or created via the API/MCP.
+A model maps a database table (or SQL subquery) to queryable **columns** and **measures**. Models are defined as YAML files or created via the API/MCP.
+
+In v2 the schema unifies what were previously separate `dimensions` and `measures` lists into a single `columns` list. Each column carries a data type, can be used as a group-by key OR as the input to an aggregation (gated by `allowed_aggregations` and the type/PK eligibility rules), and may carry a `filter` that applies inside CASE-WHEN at aggregation time. The new `measures` list is repurposed to hold **named formulas** — a library of saved metrics queries can reference by bare name.
 
 ## YAML Structure
 
@@ -13,44 +15,58 @@ data_source: my_postgres        # Required: datasource name
 hidden: false                   # Optional: hide from listings
 default_time_dimension: created_at  # Optional: default for time-dependent formulas
 
-dimensions:
+columns:
   - name: id                    # Required
-    description: "Order ID"     # Optional — clarifies meaning when column names are technical
-    sql: "id"                   # SQL expression (bare column name)
+    description: "Order ID"     # Optional
+    sql: "id"                   # SQL expression (bare column name); defaults to name
     type: number                # Required: string, number, boolean, time, date
-    primary_key: true           # Optional
+    primary_key: true           # Optional — restricts aggregation to count/count_distinct
     hidden: false               # Optional
 
-measures:
-  - name: revenue               # Required
-    description: "Order amount" # Optional — explains what this measure computes
-    sql: "amount"               # SQL expression (bare column name or expression)
+  - name: status
+    type: string
 
-  - name: quantity
-    sql: "qty"
-    allowed_aggregations: [sum, avg, min, max]  # Optional whitelist
+  - name: revenue
+    description: "Order amount"
+    sql: "amount"
+    type: number
+    allowed_aggregations: [sum, avg]   # Optional whitelist (overrides type-default eligibility)
+
+  - name: completed_revenue
+    sql: "amount"
+    type: number
+    filter: "status = 'completed'"     # Applied as CASE WHEN inside aggregation
+
+measures:                       # Optional: library of named formulas
+  - name: aov
+    description: "Average order value"
+    formula: "revenue:sum / *:count"
+    label: "AOV"
 
 aggregations:                   # Optional: custom aggregation definitions
   - name: weighted_avg
     formula: "sum({expr} * {weight}) / sum({weight})"
 ```
 
-## Dimensions
+## Columns
 
-Dimensions are the columns you group by and filter on.
+Each column carries the metadata needed to use it either as a GROUP BY key (a "dimension") or as an aggregation source (a "measure"). The role is decided per query.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | — | Unique dimension name |
-| `description` | string | No | — | Clarifies meaning for agents and users, especially for technical column names |
-| `label` | string | No | — | Human-readable display name (e.g., "Order Date"). Distinct from `name` (technical) and `description` (explanatory). Propagated to query results and MCP summaries. |
-| `sql` | string | No | — | SQL expression |
-| `type` | string | No | `string` | Data type |
-| `primary_key` | bool | No | `false` | Is this a primary key? |
+| `name` | string | Yes | — | Unique column name within the model. Must not contain `.` |
+| `description` | string | No | — | Clarifies meaning for agents and users |
+| `label` | string | No | — | Human-readable display name. Propagated to query results and MCP summaries |
+| `sql` | string | No | (bare column name) | SQL expression — defaults to the column's name |
+| `type` | string | No | `string` | Data type: `string`, `number`, `boolean`, `time`, `date` |
+| `primary_key` | bool | No | `false` | Is this a primary key? Restricts aggregation to `count` / `count_distinct` |
 | `hidden` | bool | No | `false` | Hide from listings |
+| `format` | dict | No | — | Optional `NumberFormat` used by response metadata |
+| `allowed_aggregations` | list[str] | No | — | Whitelist of permitted aggregations (overrides the type-default map) |
+| `filter` | string | No | — | SQL condition applied inside CASE-WHEN at aggregation time. See [Filtered Columns](#filtered-columns) below |
 | `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"source": "CRM", "team": "analytics"}`) |
 
-### Dimension Types
+### Column Data Types
 
 | Type | Description | SQL Examples |
 |------|-------------|--------------|
@@ -60,52 +76,68 @@ Dimensions are the columns you group by and filter on.
 | `time` | Timestamp | TIMESTAMP, DATETIME |
 | `date` | Date only | DATE |
 
-## Measures
+### Aggregation Eligibility
 
-Measures are named row-level SQL expressions. They define *what* to compute, not *how* to aggregate — aggregation is specified at query time using colon syntax.
+A column with no explicit `allowed_aggregations` whitelist gets a default set based on its data type (`slayer/core/enums.py:DEFAULT_AGGREGATIONS_BY_TYPE`):
+
+| Type | Default eligible aggregations |
+|------|-------------------------------|
+| `number` | sum, avg, min, max, count, count_distinct, median, weighted_avg, percentile, first, last |
+| `string` | count, count_distinct, first, last, min, max |
+| `boolean` | count, count_distinct, sum |
+| `date` / `time` | count, count_distinct, first, last, min, max |
+
+Primary-key columns are always restricted to `count` / `count_distinct` regardless of type. An explicit `allowed_aggregations` whitelist on a column overrides both rules.
+
+## Measures (Named Formulas)
+
+`SlayerModel.measures` is a library of named formulas. Each measure has the same shape as an inline `SlayerQuery.measures` entry: `{formula, name, label, description}`. Queries can reference them by bare name in any formula context.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | — | Unique measure name |
-| `description` | string | No | — | Explains what this measure computes, shown in models_summary and inspect_model |
-| `label` | string | No | — | Human-readable display name (e.g., "Total Revenue"). Propagated to query results and MCP summaries. |
-| `sql` | string | Yes | — | SQL expression (bare column name or expression) |
-| `allowed_aggregations` | list[str] | No | — | Whitelist of allowed aggregation types (validated at model creation and query time) |
-| `filter` | string | No | — | SQL condition applied before aggregation. See [Filtered Measures](#filtered-measures) below. |
-| `hidden` | bool | No | `false` | Hide from listings |
-| `meta` | dict | No | — | Arbitrary JSON metadata |
+| `formula` | string | Yes | — | Formula string (e.g., `"revenue:sum / *:count"`, `"cumsum(revenue:sum)"`) |
+| `name` | string | No | (auto-derived) | Measure name; queries reference this by bare name |
+| `label` | string | No | — | Human-readable display name |
+| `description` | string | No | — | Explanatory text |
 
-### Filtered Measures
+Column and measure names share a namespace within a model — a model cannot have a column named `aov` and a measure named `aov` at the same time (validated at save time).
 
-A measure can have a `filter` — a SQL condition that restricts which rows are included when aggregating. This is useful for defining business metrics that apply to a subset of data:
+### Filtered Columns
+
+A column can have a `filter` — a SQL condition applied via `CASE WHEN` inside an aggregation. Useful for business metrics that apply to a subset of rows:
 
 ```yaml
-measures:
+columns:
   - name: active_revenue
     sql: amount
+    type: number
     filter: "status = 'active'"
   - name: completed_count
     sql: id
+    type: number
     filter: "status = 'completed'"
 ```
 
-When queried, the filter is applied via `CASE WHEN` inside the aggregation:
+When queried, the filter wraps the column inside the aggregation:
 - `active_revenue:sum` generates `SUM(CASE WHEN status = 'active' THEN amount END)`
 - `completed_count:count` generates `COUNT(CASE WHEN status = 'completed' THEN id END)`
 
-Filters can reference dimensions from joined models using dot syntax:
+The filter has no effect when the column is used as a group-by dimension — it only fires inside aggregations.
+
+Filters can reference columns on joined models using dot syntax:
 
 ```yaml
 joins:
   - target_model: categories
     join_pairs: [["category_id", "id"]]
-measures:
+columns:
   - name: electronics_revenue
     sql: amount
+    type: number
     filter: "categories.type = 'electronics'"
 ```
 
-Multiple filtered and unfiltered measures can coexist in the same query. Filtered measures can be combined in arithmetic formulas:
+Multiple filtered and unfiltered columns can coexist in the same query. Filtered columns can be combined in arithmetic formulas:
 
 ```json
 {"formula": "active_revenue:sum / total_revenue:sum", "name": "active_share"}
