@@ -333,7 +333,8 @@ async def _execute_with_retry_async(
             # warning is actionable. `exc.orig` carries the driver's
             # exception (e.g. sqlite3.OperationalError("database is locked"));
             # without it the warning was uninformative.
-            sql_excerpt = (sql or "").strip().splitlines()[0][:120]
+            sql_lines = (sql or "").strip().splitlines()
+            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
             logger.warning(
                 "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
                 attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
@@ -393,7 +394,8 @@ async def _execute_with_retry_threaded(
             # warning is actionable. `exc.orig` carries the driver's
             # exception (e.g. sqlite3.OperationalError("database is locked"));
             # without it the warning was uninformative.
-            sql_excerpt = (sql or "").strip().splitlines()[0][:120]
+            sql_lines = (sql or "").strip().splitlines()
+            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
             logger.warning(
                 "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
                 attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
@@ -428,7 +430,8 @@ def _execute_with_retry_sync(
         except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
             if attempt == max_attempts - 1:
                 raise
-            sql_excerpt = (sql or "").strip().splitlines()[0][:120]
+            sql_lines = (sql or "").strip().splitlines()
+            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
             logger.warning(
                 "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
                 attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
