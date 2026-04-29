@@ -1267,12 +1267,12 @@ class TestMedianPercentilePerDialect:
         # ClickHouse parametric aggregate syntax.
         assert sql == "quantile(0.75)(amount)"
 
-    def test_build_percentile_clickhouse_param_substitution(self) -> None:
+    @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
+    def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
         gen = SQLGenerator(dialect="clickhouse")
-        for p in ("0.05", "0.25", "0.5", "0.95"):
-            m = self._measure(agg="percentile", agg_kwargs={"p": p})
-            sql = gen._build_percentile(m).sql(dialect="clickhouse")
-            assert sql == f"quantile({p})(amount)"
+        m = self._measure(agg="percentile", agg_kwargs={"p": p})
+        sql = gen._build_percentile(m).sql(dialect="clickhouse")
+        assert sql == f"quantile({p})(amount)"
 
     def test_build_percentile_duckdb(self) -> None:
         gen = SQLGenerator(dialect="duckdb")

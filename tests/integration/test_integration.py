@@ -24,6 +24,7 @@ from slayer.core.query import (
     TimeDimension,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.sql.client import _sync_engines
 from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
@@ -1886,12 +1887,16 @@ async def test_median_empty_result_sqlite(integration_env):
 
 
 async def test_sqlite_udf_pool_reuse(integration_env):
-    """Two queries in a row must both resolve median — confirms the connect
-    event re-registers UDFs on every new pooled connection (not just the first).
+    """Confirms the connect event re-registers UDFs on every new pooled
+    connection (not just the first). We dispose the cached SA engine between
+    the two executes so the second one opens a brand-new physical DBAPI
+    connection, which forces the connect listener to fire again.
     """
     engine = integration_env
     q = SlayerQuery(source_model="orders", fields=[Field(formula="total_amount:median")])
     r1 = await engine.execute(q)
+    for sa_engine in _sync_engines.values():
+        sa_engine.dispose()
     r2 = await engine.execute(q)
     assert r1.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
     assert r2.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
