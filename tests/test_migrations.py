@@ -34,6 +34,15 @@ def test_migrate_v1_noop_stamps_version() -> None:
     assert out["name"] == "foo"
 
 
+def test_migrate_does_not_mutate_input_dict() -> None:
+    """migrate() must never mutate the caller's payload."""
+    payload = {"name": "foo"}  # no "version" key
+    out = mig.migrate("SlayerModel", payload)
+    assert "version" not in payload
+    assert out["version"] == 1
+    assert out is not payload
+
+
 def test_migrate_forward_version_passes_through() -> None:
     """A dict from a newer SLayer should not be downgraded or rejected."""
     out = mig.migrate("SlayerModel", {"version": 99, "name": "foo", "future": True})
