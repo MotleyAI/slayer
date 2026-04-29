@@ -121,8 +121,8 @@ def create_app(storage: StorageBackend) -> FastAPI:
         if model is None:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
         data = model.model_dump(exclude_none=True)
-        if "dimensions" in data:
-            data["dimensions"] = [d for d in data["dimensions"] if not d.get("hidden")]
+        if "columns" in data:
+            data["columns"] = [c for c in data["columns"] if not c.get("hidden")]
         if "measures" in data:
             data["measures"] = [m for m in data["measures"] if not m.get("hidden")]
         return data

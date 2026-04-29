@@ -297,7 +297,7 @@ DbtMeasure(name="revenue", agg="sum", expr="amount")
         result = DbtToSlayerConverter(
             project=project, data_source="test", strict_aggregations=False,
         ).convert()
-        m = result.models[0].columns[0]
+        m = next(c for c in result.models[0].columns if c.name == "revenue")
         assert m.allowed_aggregations is None
 
 

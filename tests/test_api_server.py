@@ -116,10 +116,7 @@ class TestModels:
         resp = client.get("/models/orders")
         data = resp.json()
         col_names = [c["name"] for c in data["columns"]]
-        # The API may or may not strip hidden columns from the response —
-        # at minimum, the model itself round-trips, so check the visible ones.
-        assert "id" in col_names
-        assert "revenue" in col_names
+        assert col_names == ["id", "revenue"]
 
 
 class TestDatasources:

@@ -423,12 +423,6 @@ class TestStringAggregationRejection:
     async def _run(self, env, formula: str) -> None:
         from slayer.core.query import SlayerQuery
 
-        # Ensure the `status` column is also exposed as a measure (auto-ingest
-        # convention). The fixture only declares amount/quantity as measures,
-        # so add `status` explicitly.
-        env["model"].columns.append(Column(name="status", sql="status", type=DataType.NUMBER))
-        await env["storage"].save_model(env["model"])
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "fields": [{"formula": formula}],
@@ -444,9 +438,6 @@ class TestStringAggregationRejection:
         """min/max work on strings (alphabetical ordering) — should pass."""
         from slayer.core.query import SlayerQuery
 
-        env["model"].columns.append(Column(name="status", sql="status", type=DataType.NUMBER))
-        await env["storage"].save_model(env["model"])
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "fields": [{"formula": "status:min"}, {"formula": "status:max"}],
@@ -457,9 +448,6 @@ class TestStringAggregationRejection:
     async def test_count_and_count_distinct_allowed_on_string(self, env) -> None:
         """count/count_distinct always work regardless of type."""
         from slayer.core.query import SlayerQuery
-
-        env["model"].columns.append(Column(name="status", sql="status", type=DataType.NUMBER))
-        await env["storage"].save_model(env["model"])
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
