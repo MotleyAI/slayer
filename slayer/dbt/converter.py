@@ -365,6 +365,7 @@ class DbtToSlayerConverter:
                         primary_key=True,
                         description=entity.description,
                     ))
+                    entity_col_names.add(col_name)
                 else:
                     for c in cols:
                         if c.name == col_name:
@@ -384,6 +385,7 @@ class DbtToSlayerConverter:
                     type=DataType.NUMBER,
                     primary_key=True,
                 ))
+                entity_col_names.add(pe_expr)
 
         # Append converted measures (consolidated). Avoid name collisions with
         # already-added entity/dimension columns by skipping duplicates.

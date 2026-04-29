@@ -300,6 +300,22 @@ DbtMeasure(name="revenue", agg="sum", expr="amount")
         m = next(c for c in result.models[0].columns if c.name == "revenue")
         assert m.allowed_aggregations is None
 
+    def test_primary_entity_does_not_duplicate_pk_column(self) -> None:
+        """When primary_entity resolves to the same column the entity loop already
+        appended, the shorthand block must not append it a second time."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                primary_entity="order_id",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        id_cols = [c for c in result.models[0].columns if c.name == "id"]
+        assert len(id_cols) == 1
+        assert id_cols[0].primary_key is True
+
 
 class TestSimpleMetricConversion:
     def test_filtered_metric_becomes_measure(self) -> None:

@@ -323,6 +323,20 @@ def test_model_v1_to_v2_legacy_type_alias_respects_explicit_whitelist() -> None:
     assert m.columns[0].allowed_aggregations == ["sum", "avg"]
 
 
+def test_model_v1_detector_handles_non_list_measures() -> None:
+    """Malformed `measures` (e.g. a dict) must not crash the v1 detector — it
+    should fall through so Pydantic raises the regular validation error."""
+    with pytest.raises(Exception) as exc_info:
+        SlayerModel.model_validate({
+            "version": 1,
+            "name": "orders",
+            "measures": {"name": "revenue"},  # dict, not list
+        })
+    # The error should come from Pydantic validation, not a KeyError: 0
+    # raised inside the v1 detector while subscripting raw_measures[0].
+    assert not isinstance(exc_info.value, KeyError) or exc_info.value.args != (0,)
+
+
 def test_model_v2_input_is_noop() -> None:
     """A v2 dict passes through migrate() unchanged at the version walker."""
     m = SlayerModel.model_validate({

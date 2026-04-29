@@ -103,7 +103,7 @@ def _looks_like_v1_model(data: dict) -> bool:
     if "dimensions" in data:
         return True
     raw_measures = data.get("measures")
-    if not raw_measures:
+    if not isinstance(raw_measures, (list, tuple)) or not raw_measures:
         return False
     first = raw_measures[0]
     if not isinstance(first, dict):
