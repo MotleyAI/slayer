@@ -69,7 +69,7 @@ These are always available — no definition needed:
 | Engine | Supported? | How |
 |---|---|---|
 | Postgres | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`. |
-| DuckDB | yes | sqlglot translates to native `MEDIAN(x)` / `QUANTILE_CONT(x, p ORDER BY x)`. |
+| DuckDB | yes | sqlglot rewrites ordered-set percentiles to DuckDB's `QUANTILE_CONT(x, p ORDER BY x)` syntax. |
 | SQLite | yes | Python aggregate UDFs registered on every connection by SLayer. |
 | ClickHouse | yes | Native `median(x)` and parametric `quantile(p)(x)`. |
 | MySQL | **no** | No native function and no Python-UDF mechanism — SLayer raises `NotImplementedError`. Use MariaDB or compute client-side. |

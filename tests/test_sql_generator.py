@@ -1299,6 +1299,44 @@ class TestMedianPercentilePerDialect:
         with pytest.raises(ValueError, match="Unsafe value"):
             gen._build_percentile(m)
 
+    def test_build_percentile_uses_model_level_default_p(self) -> None:
+        """Model-level Aggregation(name='percentile', params=[p=...]) supplies the default."""
+        gen = SQLGenerator(dialect="postgres")
+        agg_def = Aggregation(
+            name="percentile",
+            params=[AggregationParam(name="p", sql="0.9")],
+        )
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_percentile",
+            aggregation="percentile",
+            agg_kwargs={},
+            aggregation_def=agg_def,
+        )
+        sql = gen._build_percentile(m).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)"
+
+    def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
+        """Query-time agg_kwargs win over the model-level default."""
+        gen = SQLGenerator(dialect="postgres")
+        agg_def = Aggregation(
+            name="percentile",
+            params=[AggregationParam(name="p", sql="0.9")],
+        )
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_percentile",
+            aggregation="percentile",
+            agg_kwargs={"p": "0.25"},
+            aggregation_def=agg_def,
+        )
+        sql = gen._build_percentile(m).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY amount)"
+
 
 class TestPathAliasJoinInference:
     """Test that __-delimited path aliases in inline SQL cause multi-hop join inference via graph walk."""

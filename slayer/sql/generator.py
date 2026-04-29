@@ -1405,6 +1405,11 @@ class SQLGenerator:
         contribute NULL and are ignored by the aggregate.
         """
         p = measure.agg_kwargs.get("p")
+        if p is None and measure.aggregation_def:
+            for param in measure.aggregation_def.params:
+                if param.name == "p":
+                    p = param.sql
+                    break
         if p is None:
             raise ValueError(
                 "Aggregation 'percentile' requires parameter 'p'. "

@@ -32,7 +32,7 @@ syntax works everywhere:
 | Engine | `median` | `percentile(p=...)` | How |
 |---|---|---|---|
 | Postgres | yes | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`. |
-| DuckDB | yes | yes | sqlglot translates to native `MEDIAN(x)` / `QUANTILE_CONT(x, p ORDER BY x)`. |
+| DuckDB | yes | yes | sqlglot rewrites ordered-set percentiles to DuckDB's `QUANTILE_CONT(x, p ORDER BY x)` syntax. |
 | SQLite | yes | yes | Python aggregate UDFs registered on every connection — see "SQLite caveats" below. |
 | ClickHouse | yes | yes | Native `median(x)` and parametric `quantile(p)(x)`. |
 | MySQL | **no** | **no** | No native function and no Python-UDF mechanism — SLayer raises `NotImplementedError`. Use MariaDB or compute client-side. |
@@ -74,7 +74,7 @@ If you need percentiles on MySQL, the recommended options are:
 1. Add the mapping to `slayer/engine/query_engine.py:_dialect_for_type()`.
 2. If the dialect doesn't accept Postgres-style `INTERVAL` for date arithmetic,
    add a branch in `_build_time_offset_expr` in `slayer/sql/generator.py`.
-3. Add parametrised tests in `TestMultiDialectGeneration` in
+3. Add parameterized tests in `TestMultiDialectGeneration` in
    `tests/test_sql_generator.py`.
 4. For median/percentile, decide whether the native syntax already works
    (sqlglot may handle it) or whether a branch in `_build_median` /

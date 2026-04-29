@@ -6,6 +6,7 @@ Usage in verify.py:
 
 import json
 import os
+import statistics
 import sys
 import urllib.request
 
@@ -179,17 +180,16 @@ def check_median_percentile(measure="quantity"):
 
     Compares against reference values computed in Python from the seed data so
     this works for any database whose dialect SLayer supports for these aggs.
-    Skip on MySQL (and any dialect where SLayer raises) since the API will
-    return an error.
+    Do not call from MySQL examples — SLayer raises NotImplementedError for
+    median/percentile on MySQL and the API will surface that as an error.
     """
     print("\nMedian / percentile:")
 
     # Reference values from the seed (orders[3] is quantity in the tuple).
     quantities = [o[3] for o in ORDERS]
-    import statistics
     expected_median = statistics.median(quantities)
-    expected_p25 = _percentile_cont(quantities, 0.25)
-    expected_p75 = _percentile_cont(quantities, 0.75)
+    expected_p25 = _percentile_cont(values=quantities, p=0.25)
+    expected_p75 = _percentile_cont(values=quantities, p=0.75)
 
     result = api(
         "POST",
