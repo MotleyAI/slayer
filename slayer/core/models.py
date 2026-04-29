@@ -220,7 +220,7 @@ class SlayerModel(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
-        return _migrate_schema("SlayerModel", data)
+        return _migrate_schema(entity="SlayerModel", data=data)
 
     @field_validator("name")
     @classmethod
@@ -370,7 +370,7 @@ class DatasourceConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations_and_aliases(cls, data: Any) -> Any:
-        data = _migrate_schema("DatasourceConfig", data)
+        data = _migrate_schema(entity="DatasourceConfig", data=data)
         if isinstance(data, dict) and "user" in data and "username" not in data:
             data["username"] = data.pop("user")
         return data

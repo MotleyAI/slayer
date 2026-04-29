@@ -335,7 +335,7 @@ class SlayerQuery(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
-        return _migrate_schema("SlayerQuery", data)
+        return _migrate_schema(entity="SlayerQuery", data=data)
 
     @field_validator("name")
     @classmethod

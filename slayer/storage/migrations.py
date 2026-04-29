@@ -63,6 +63,7 @@ def migrate(entity: str, data: Any) -> Any:
         return data
     if entity not in CURRENT_VERSIONS:
         raise KeyError(f"Unknown entity '{entity}' in migrate()")
+    data = dict(data)  # never mutate caller's payload
     target = CURRENT_VERSIONS[entity]
     current = int(data.get("version", 1))
     while current < target:
