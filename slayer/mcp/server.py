@@ -603,7 +603,7 @@ def create_mcp_server(storage: StorageBackend):
     @mcp.tool()
     async def query(
         source_model: str,
-        fields: Optional[List[Dict[str, str]]] = None,
+        measures: Optional[List[Dict[str, str]]] = None,
         dimensions: Optional[List[str]] = None,
         filters: Optional[List[str]] = None,
         time_dimensions: Optional[List[Dict[str, Any]]] = None,
@@ -616,26 +616,26 @@ def create_mcp_server(storage: StorageBackend):
         explain: bool = False,
         format: str = "markdown",
     ) -> str:
-        """Query data from a semantic model. Call inspect_model first to see available fields and dimensions.
+        """Query data from a semantic model. Call inspect_model first to see available columns and measures.
 
         Args:
             source_model: Name of the model to query (from models_summary).
-            fields: Data columns to return. Each is a formula: {"formula": "count"} (measure),
-                {"formula": "revenue / count", "name": "aov"} (arithmetic),
-                {"formula": "cumsum(revenue)"} (cumulative sum), {"formula": "change(revenue)"} (diff from previous row),
-                {"formula": "change_pct(revenue)"} (% change), {"formula": "time_shift(revenue, -1)"} (previous period via self-join),
-                {"formula": "time_shift(revenue, -1, 'year')"} (year-over-year), {"formula": "lag(revenue, 1)"} (previous row via window function),
-                {"formula": "lead(revenue, 1)"} (next row via window function), {"formula": "last(revenue)"} (most recent),
-                {"formula": "rank(revenue)"} (ranking).
+            measures: Aggregated values to return. Each is a formula: {"formula": "*:count"},
+                {"formula": "revenue:sum / *:count", "name": "aov"} (arithmetic),
+                {"formula": "cumsum(revenue:sum)"} (cumulative sum), {"formula": "change(revenue:sum)"} (diff from previous row),
+                {"formula": "change_pct(revenue:sum)"} (% change), {"formula": "time_shift(revenue:sum, -1)"} (previous period via self-join),
+                {"formula": "time_shift(revenue:sum, -1, 'year')"} (year-over-year), {"formula": "lag(revenue:sum, 1)"} (previous row via window function),
+                {"formula": "lead(revenue:sum, 1)"} (next row via window function), {"formula": "last(revenue:sum)"} (most recent),
+                {"formula": "rank(revenue:sum)"} (ranking). A bare name like {"formula": "aov"} resolves to a saved ModelMeasure on the model.
             dimensions: List of dimension names to group by, e.g. ["status", "region"].
             filters: Filter conditions as formula strings. Examples: "status == 'completed'",
                 "amount > 100", "status in ('a', 'b')", "status is None",
                 "name like '%acme%'". Filters on measures are automatically routed to HAVING.
                 Supports and/or: "status == 'a' or status == 'b'".
-                Filters can also reference computed field names or contain inline transforms:
-                "change(revenue) > 0", "last(change(revenue)) < 0".
+                Filters can also reference computed measure names or contain inline transforms:
+                "change(revenue:sum) > 0", "last(change(revenue:sum)) < 0".
             time_dimensions: Time grouping. Format: {"dimension": "created_at", "granularity": "day|week|month|quarter|year", "date_range": ["2024-01-01", "2024-12-31"]}.
-            order: Sorting. Format: {"column": "field_name", "direction": "asc|desc"}.
+            order: Sorting. Format: {"column": "measure_or_dim_name", "direction": "asc|desc"}.
             limit: Max rows to return.
             offset: Number of rows to skip.
             whole_periods_only: When true, snap date filters to time bucket boundaries based on granularity, exclude the current incomplete time bucket.
@@ -644,7 +644,7 @@ def create_mcp_server(storage: StorageBackend):
             explain: When true, run EXPLAIN ANALYZE and return the query plan.
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
 
-        Example: query(source_model="orders", fields=[{"formula": "count"}], dimensions=["status"], filters=["status == 'completed'"])
+        Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
         """
         data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
@@ -665,8 +665,8 @@ def create_mcp_server(storage: StorageBackend):
             data["dry_run"] = True
         if explain:
             data["explain"] = True
-        if fields:
-            data["fields"] = fields
+        if measures:
+            data["measures"] = measures
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):

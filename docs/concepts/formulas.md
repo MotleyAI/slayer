@@ -16,13 +16,13 @@ price:weighted_avg(weight=quantity)  — weighted average with kwargs
 customers.score:avg  — cross-model: AVG of "score" from the joined "customers" model
 ```
 
-Colon syntax is used everywhere measures appear: in `fields`, in arithmetic expressions, in transform function arguments, and in filters.
+Colon syntax is used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters.
 
 ---
 
 ## Field Formulas
 
-Field formulas define what data columns a query returns. They go in the `fields` parameter:
+Measure formulas define what aggregated values a query returns. They go in the `measures` parameter:
 
 ```json
 "measures": [

@@ -425,7 +425,7 @@ class TestStringAggregationRejection:
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": formula}],
+            "measures": [{"formula": formula}],
         })
         await env["engine"].execute(query=q)
 
@@ -440,7 +440,7 @@ class TestStringAggregationRejection:
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "status:min"}, {"formula": "status:max"}],
+            "measures": [{"formula": "status:min"}, {"formula": "status:max"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
@@ -451,7 +451,7 @@ class TestStringAggregationRejection:
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
+            "measures": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -462,7 +462,7 @@ class TestStringAggregationRejection:
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
+            "measures": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -478,7 +478,7 @@ class TestPrimaryKeyAggregationRule:
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "id:sum"}],
+            "measures": [{"formula": "id:sum"}],
         })
         with pytest.raises(ValueError, match="primary-key column"):
             await env["engine"].execute(query=q)
@@ -489,7 +489,7 @@ class TestPrimaryKeyAggregationRule:
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "id:count"}],
+            "measures": [{"formula": "id:count"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data

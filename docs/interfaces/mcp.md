@@ -86,7 +86,7 @@ claude mcp list
 | Param | Type | Description |
 |-------|------|-------------|
 | `source_model` | string | Model name (required) |
-| `fields` | list | Data columns: measures with colon aggregation, arithmetic, transforms. E.g. `["*:count", {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}, "cumsum(revenue:sum)"]`. Each field has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(revenue:sum))"` |
+| `measures` | list | Aggregated values: column-aggregations, arithmetic, transforms. E.g. `["*:count", {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}, "cumsum(revenue:sum)"]`. Each entry has an optional `label` for human-readable display. Supports nesting: `"change(cumsum(revenue:sum))"`. Bare names resolve to saved `ModelMeasure` formulas on the model. |
 | `dimensions` | list | Dimension names, e.g. `["status"]`. When using the engine directly, dimensions accept an optional `label` via `{"name": "status", "label": "Order Status"}`. |
 | `filters` | list[str] | Filter formula strings, e.g. `["status = 'active'", "amount > 100"]`. Supports operators (`=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`), boolean logic (`AND`, `OR`, `NOT`), and inline transform expressions (`"change(revenue:sum) > 0"`). Filters on measures are automatically routed to HAVING. |
 | `time_dimensions` | list[dict] | Time grouping. Each entry supports an optional `label` for display. |
@@ -116,7 +116,7 @@ Available topics and what they cover (content lives in `slayer/help/topics/*.md`
 | Topic | Covers |
 |-------|--------|
 | `queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
-| `formulas` | The [formula mini-language](../concepts/formulas.md) shared by `fields` and `filters`; colon syntax; arithmetic; nesting |
+| `formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
 | `aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
 | `transforms` | `cumsum`, `time_shift`, `change`, `lag`, `rank`, `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
 | `time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |

@@ -182,7 +182,7 @@ class TestDatasources:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"source_model": "nonexistent", "fields": [{"formula": "*:count"}]})
+        resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "*:count"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -208,7 +208,7 @@ class TestQuery:
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "fields": [{"formula": "*:count"}]}
+            {"source_model": "orders", "measures": [{"formula": "*:count"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.measures is not None
