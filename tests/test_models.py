@@ -118,6 +118,20 @@ class TestSlayerModel:
         assert model.get_measure("aov") is not None
         assert model.get_measure("missing") is None
 
+    def test_model_measure_name_cannot_shadow_transform(self) -> None:
+        """A ``ModelMeasure`` named after a built-in transform (``cumsum`` etc.)
+        would shadow the transform in formulas like ``cumsum(...)``. Reject at
+        model-validation time.
+        """
+        with pytest.raises(ValueError, match="reserved"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                measures=[ModelMeasure(name="cumsum", formula="revenue:sum")],
+            )
+
     def test_filter_bare_column_allowed(self) -> None:
         """Bare column names in model filters are valid."""
         model = SlayerModel(
