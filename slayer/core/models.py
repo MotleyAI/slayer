@@ -280,14 +280,29 @@ class SlayerModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_column_measure_disjoint(self) -> "SlayerModel":
-        """Column and measure names must not overlap within a model.
+        """Names within ``columns`` and within ``measures`` must each be unique,
+        and the two lists must not overlap.
 
         A query formula like ``{"formula": "revenue"}`` resolves by looking up
-        the name in both lists; allowing collisions would make resolution
-        ambiguous.
+        the name in both lists; allowing duplicates within a list or collisions
+        across lists would make resolution ambiguous.
         """
-        col_names = {c.name for c in self.columns}
-        measure_names = {m.name for m in self.measures if m.name is not None}
+        col_names_seq = [c.name for c in self.columns]
+        col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
+        if col_dupes:
+            raise ValueError(
+                f"Model '{self.name}': duplicate column names: {col_dupes}. "
+                f"Each column name must be unique within a model."
+            )
+        measure_names_seq = [m.name for m in self.measures if m.name is not None]
+        measure_dupes = sorted({n for n in measure_names_seq if measure_names_seq.count(n) > 1})
+        if measure_dupes:
+            raise ValueError(
+                f"Model '{self.name}': duplicate measure names: {measure_dupes}. "
+                f"Each named ModelMeasure must have a unique name within a model."
+            )
+        col_names = set(col_names_seq)
+        measure_names = set(measure_names_seq)
         overlap = sorted(col_names & measure_names)
         if overlap:
             raise ValueError(
