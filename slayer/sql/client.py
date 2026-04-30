@@ -6,9 +6,11 @@ import time
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
+import sqlalchemy.event as sa_event
 import sqlalchemy.exc
 
 from slayer.core.models import DatasourceConfig
+from slayer.sql.sqlite_udfs import register_sqlite_udfs
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +34,17 @@ def _get_sync_engine(connection_string: str) -> sa.Engine:
     """Get or create a cached sync engine (with connection pool).
 
     Sync engines are safe to cache globally — they're not tied to an event loop.
+    For SQLite, we attach a ``connect`` event listener that registers Python
+    aggregate UDFs (median/percentile_cont/percentile_disc) on every new
+    connection — SQLite has no native equivalents.
     """
     if connection_string not in _sync_engines:
-        _sync_engines[connection_string] = sa.create_engine(
-            connection_string, pool_pre_ping=True,
-        )
+        engine = sa.create_engine(connection_string, pool_pre_ping=True)
+        if engine.dialect.name == "sqlite":
+            @sa_event.listens_for(engine, "connect")
+            def _register_udfs(dbapi_connection, _connection_record):
+                register_sqlite_udfs(dbapi_connection)
+        _sync_engines[connection_string] = engine
     return _sync_engines[connection_string]
 
 

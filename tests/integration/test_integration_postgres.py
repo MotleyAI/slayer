@@ -733,3 +733,49 @@ class TestRollupIngestion:
         for orig, loaded_j in zip(orders.joins, loaded.joins):
             assert orig.target_model == loaded_j.target_model
             assert orig.join_pairs == loaded_j.join_pairs
+
+
+@pytest.mark.integration
+class TestPostgresMedianPercentile:
+    """Live execution of median/percentile against Postgres.
+
+    Postgres has native ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)``;
+    these tests pin the round-trip so the dialect-aware ``_build_percentile``
+    refactor doesn't silently regress.
+    """
+
+    async def test_median(self, pg_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "total:median"}])
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
+
+    async def test_percentile_quartiles(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                {"formula": "total:percentile(p=0.25)"},
+                {"formula": "total:percentile(p=0.75)"},
+            ],
+        )
+        result = await pg_env.execute(query=query)
+        row = result.data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
+
+    async def test_median_grouped(self, pg_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150
+        # pending:   [50, 300]       -> 175
+        # cancelled: [75]            -> 75
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "total:median"}],
+            dimensions=[{"name": "status"}],
+        )
+        result = await pg_env.execute(query=query)
+        by_status = {
+            r["orders.status"]: float(r["orders.total_median"]) for r in result.data
+        }
+        assert by_status["completed"] == pytest.approx(150)
+        assert by_status["pending"] == pytest.approx(175)
+        assert by_status["cancelled"] == pytest.approx(75)
