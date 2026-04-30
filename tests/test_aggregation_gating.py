@@ -170,3 +170,33 @@ class TestCrossModelGating:
             measures=[{"formula": "customers.name:name_concat", "name": "result"}],
         )
         assert "STRING_AGG" in sql.upper()
+
+
+class TestCrossModelColumnFilter:
+    """Codex Major 2: a Column.filter on a joined column must apply when
+    that column is referenced cross-model (e.g. ``customers.completed_rev:sum``).
+    """
+
+    async def test_cross_model_column_filter_applied(self) -> None:
+        """When a joined-model column has ``filter``, it should appear inside
+        the aggregation as a CASE-WHEN — same as for local measures.
+        """
+        customers = _customers_model(
+            extra_columns=[
+                Column(
+                    name="completed_rev",
+                    sql="amount",
+                    type=DataType.NUMBER,
+                    filter="status = 'completed'",
+                ),
+            ]
+        )
+        sql = await _generate_sql(
+            orders=_orders_model(),
+            customers=customers,
+            measures=[
+                {"formula": "customers.completed_rev:sum", "name": "result"}
+            ],
+        )
+        assert "CASE" in sql.upper()
+        assert "completed" in sql.lower()
