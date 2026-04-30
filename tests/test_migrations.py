@@ -438,7 +438,9 @@ def test_query_v1_to_v2_inline_slayer_model_dict_is_left_for_model_migration() -
 
 
 def test_model_v1_to_v2_source_queries_nested_rename() -> None:
-    """source_queries on a SlayerModel are SlayerQuery dicts; nested fields→measures."""
+    """``source_queries`` entries are migrated in place at model-load time
+    so re-saving the model doesn't persist the v1 ``fields`` key.
+    """
     m = SlayerModel.model_validate({
         "version": 1,
         "name": "saved",
@@ -449,11 +451,59 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
             "fields": [{"formula": "revenue:sum", "name": "rev"}],
         }],
     })
-    # source_queries content is opaque (List[Any]); the SlayerQuery rename
-    # happens when the elements get model_validate'd downstream. Here we just
-    # confirm the migration didn't crash on the field.
     assert m.source_queries is not None
     assert len(m.source_queries) == 1
+    inner = m.source_queries[0]
+    # After migration, the inner query is v2-shaped: 'fields' renamed to
+    # 'measures', no 'fields' key remains, version bumped to 2.
+    assert "fields" not in inner
+    assert inner["measures"] == [{"formula": "revenue:sum", "name": "rev"}]
+    assert inner.get("version") == 2
+
+
+def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
+    """A nested SlayerQuery whose source_model is an inline ModelExtension
+    also gets recursively migrated (extension dimensions+measures merged).
+    """
+    m = SlayerModel.model_validate({
+        "version": 1,
+        "name": "saved",
+        "data_source": "demo",
+        "source_queries": [{
+            "version": 1,
+            "source_model": {
+                "source_name": "orders",
+                "dimensions": [{"name": "status", "type": "string"}],
+                "measures": [{"name": "revenue", "sql": "amount", "type": "number"}],
+            },
+            "fields": [{"formula": "revenue:sum"}],
+        }],
+    })
+    inner = m.source_queries[0]
+    src = inner["source_model"]
+    assert "dimensions" not in src
+    # Merged into columns (status from dimensions + revenue from measures)
+    col_names = sorted(c["name"] for c in src["columns"])
+    assert col_names == ["revenue", "status"]
+
+
+def test_model_v2_input_with_source_queries_preserved() -> None:
+    """v2 input with already-v2 source_queries entries is left alone."""
+    m = SlayerModel.model_validate({
+        "version": 2,
+        "name": "saved",
+        "data_source": "demo",
+        "columns": [],
+        "measures": [],
+        "source_queries": [{
+            "version": 2,
+            "source_model": "orders",
+            "measures": [{"formula": "revenue:sum", "name": "rev"}],
+        }],
+    })
+    inner = m.source_queries[0]
+    assert inner["measures"] == [{"formula": "revenue:sum", "name": "rev"}]
+    assert "fields" not in inner
 
 
 async def test_v1_yaml_round_trip_to_v2() -> None:

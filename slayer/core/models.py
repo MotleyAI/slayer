@@ -161,6 +161,23 @@ class ModelMeasure(BaseModel):
             )
         return v
 
+    @field_validator("name")
+    @classmethod
+    def _reject_transform_shadowing(cls, v: Optional[str]) -> Optional[str]:
+        """A saved measure named after a built-in transform (``cumsum`` etc.)
+        would shadow the transform when written as ``cumsum(...)`` in another
+        formula. Reject these names at construction time.
+        """
+        if v is None:
+            return v
+        from slayer.core.formula import ALL_TRANSFORMS
+        if v in ALL_TRANSFORMS:
+            raise ValueError(
+                f"ModelMeasure name '{v}' is a reserved transform name. "
+                f"Reserved: {', '.join(sorted(ALL_TRANSFORMS))}"
+            )
+        return v
+
 
 class AggregationParam(BaseModel):
     """A named parameter for an aggregation formula."""
@@ -266,14 +283,29 @@ class SlayerModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_column_measure_disjoint(self) -> "SlayerModel":
-        """Column and measure names must not overlap within a model.
+        """Names within ``columns`` and within ``measures`` must each be unique,
+        and the two lists must not overlap.
 
         A query formula like ``{"formula": "revenue"}`` resolves by looking up
-        the name in both lists; allowing collisions would make resolution
-        ambiguous.
+        the name in both lists; allowing duplicates within a list or collisions
+        across lists would make resolution ambiguous.
         """
-        col_names = {c.name for c in self.columns}
-        measure_names = {m.name for m in self.measures if m.name is not None}
+        col_names_seq = [c.name for c in self.columns]
+        col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
+        if col_dupes:
+            raise ValueError(
+                f"Model '{self.name}': duplicate column names: {col_dupes}. "
+                f"Each column name must be unique within a model."
+            )
+        measure_names_seq = [m.name for m in self.measures if m.name is not None]
+        measure_dupes = sorted({n for n in measure_names_seq if measure_names_seq.count(n) > 1})
+        if measure_dupes:
+            raise ValueError(
+                f"Model '{self.name}': duplicate measure names: {measure_dupes}. "
+                f"Each named ModelMeasure must have a unique name within a model."
+            )
+        col_names = set(col_names_seq)
+        measure_names = set(measure_names_seq)
         overlap = sorted(col_names & measure_names)
         if overlap:
             raise ValueError(
@@ -285,19 +317,64 @@ class SlayerModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_allowed_aggregations(self) -> "SlayerModel":
-        """Validate that allowed_aggregations on columns reference valid names."""
+        """Enforce the intersection contract on ``Column.allowed_aggregations``.
+
+        A whitelist entry is accepted iff:
+
+        1. It is a known aggregation name (built-in or custom on this model).
+        2. **PK rule** — if the column is a primary key, the entry must be in
+           ``PRIMARY_KEY_AGGREGATIONS`` (``count`` / ``count_distinct`` only),
+           regardless of type or whether the entry is a custom aggregation.
+        3. **Type-default rule** — for non-PK columns, built-in aggregations
+           must be eligible under ``DEFAULT_AGGREGATIONS_BY_TYPE`` for the
+           column's type. Custom aggregations bypass this check (their formula
+           determines applicability).
+
+        Together these turn the whitelist into a guaranteed subset of the
+        type/PK eligibility set, so query-time gating reduces to a whitelist
+        membership check.
+        """
+        from slayer.core.enums import (
+            DEFAULT_AGGREGATIONS_BY_TYPE,
+            PRIMARY_KEY_AGGREGATIONS,
+        )
+
         custom_agg_names = {a.name for a in self.aggregations}
         valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
         for c in self.columns:
-            if c.allowed_aggregations is not None:
-                for agg_name in c.allowed_aggregations:
-                    if agg_name not in valid_names:
+            if c.allowed_aggregations is None:
+                continue
+            for agg_name in c.allowed_aggregations:
+                if agg_name not in valid_names:
+                    raise ValueError(
+                        f"Column '{c.name}': allowed_aggregations contains "
+                        f"'{agg_name}', which is not a built-in aggregation "
+                        f"or defined in this model's aggregations. "
+                        f"Valid: {sorted(valid_names)}"
+                    )
+                if c.primary_key:
+                    if agg_name not in PRIMARY_KEY_AGGREGATIONS:
                         raise ValueError(
-                            f"Column '{c.name}': allowed_aggregations contains "
-                            f"'{agg_name}', which is not a built-in aggregation "
-                            f"or defined in this model's aggregations. "
-                            f"Valid: {sorted(valid_names)}"
+                            f"Column '{c.name}': '{agg_name}' is not allowed "
+                            f"on a primary-key column. PK columns can only be "
+                            f"aggregated with {sorted(PRIMARY_KEY_AGGREGATIONS)}."
                         )
+                    continue
+                if agg_name in custom_agg_names:
+                    # Custom aggregations are exempt from type-default eligibility;
+                    # the formula determines applicability.
+                    continue
+                allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(
+                    c.type, frozenset()
+                )
+                if agg_name not in allowed_for_type:
+                    raise ValueError(
+                        f"Column '{c.name}': aggregation '{agg_name}' is not "
+                        f"applicable to {c.type} columns. allowed_aggregations "
+                        f"must be a subset of the type-default set "
+                        f"{sorted(allowed_for_type)} (plus any custom "
+                        f"aggregations defined on this model)."
+                    )
         return self
 
     def get_column(self, name: str) -> Optional[Column]:

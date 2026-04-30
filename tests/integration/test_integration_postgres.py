@@ -746,14 +746,14 @@ class TestPostgresMedianPercentile:
 
     async def test_median(self, pg_env: SlayerQueryEngine) -> None:
         # amounts = [100, 200, 50, 150, 75, 300] -> median 125
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "total:median"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:median"}])
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
     async def test_percentile_quartiles(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[
+            measures=[
                 {"formula": "total:percentile(p=0.25)"},
                 {"formula": "total:percentile(p=0.75)"},
             ],
@@ -769,7 +769,7 @@ class TestPostgresMedianPercentile:
         # cancelled: [75]            -> 75
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "total:median"}],
+            measures=[{"formula": "total:median"}],
             dimensions=[{"name": "status"}],
         )
         result = await pg_env.execute(query=query)

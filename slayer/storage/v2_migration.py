@@ -116,39 +116,53 @@ def _looks_like_v1_model(data: dict) -> bool:
 def _model_v1_to_v2(data: dict) -> dict:
     """Merge v1 ``dimensions`` + ``measures`` into v2 ``columns``; reset ``measures``.
 
-    See module docstring for the rationale.
+    Also recursively migrates ``source_queries`` entries so re-saves don't
+    persist v1 inner shapes. See module docstring for the rationale.
     """
-    if not _looks_like_v1_model(data):
-        # Already v2 shape (or empty fresh-construction). Don't clobber the
-        # caller's columns/measures.
-        return data
+    if _looks_like_v1_model(data):
+        columns: list[dict] = []
+        seen: set[str] = set()
+        collisions: list[str] = []
 
-    columns: list[dict] = []
-    seen: set[str] = set()
-    collisions: list[str] = []
+        # (a) v1 Dimensions → Columns. All v1 Dimension fields are valid Column
+        #     fields; defaults (allowed_aggregations=None, filter=None) are correct.
+        for dim in data.pop("dimensions", None) or []:
+            if isinstance(dim, dict):
+                _record(dict(dim), columns, seen, collisions)
 
-    # (a) v1 Dimensions → Columns. All v1 Dimension fields are valid Column
-    #     fields; defaults (allowed_aggregations=None, filter=None) are correct.
-    for dim in data.pop("dimensions", None) or []:
-        if isinstance(dim, dict):
-            _record(dict(dim), columns, seen, collisions)
+        # (b) v1 Measures → Columns (with measure-specific defaults).
+        for meas in data.pop("measures", None) or []:
+            if isinstance(meas, dict):
+                _record(_migrate_measure_dict(dict(meas)), columns, seen, collisions)
 
-    # (b) v1 Measures → Columns (with measure-specific defaults).
-    for meas in data.pop("measures", None) or []:
-        if isinstance(meas, dict):
-            _record(_migrate_measure_dict(dict(meas)), columns, seen, collisions)
+        if collisions:
+            raise ValueError(
+                f"Migrating model '{data.get('name', '<unknown>')}' to v2: name "
+                f"collision between v1 dimension and measure: {sorted(collisions)}. "
+                f"Rename one before migrating."
+            )
 
-    if collisions:
-        raise ValueError(
-            f"Migrating model '{data.get('name', '<unknown>')}' to v2: name "
-            f"collision between v1 dimension and measure: {sorted(collisions)}. "
-            f"Rename one before migrating."
-        )
+        data["columns"] = columns
+        # The new measures field is the formula list — empty after migration.
+        # Users can populate it post-migration with named formulas
+        # (was Query.fields).
+        data["measures"] = []
 
-    data["columns"] = columns
-    # The new measures field is the formula list — empty after migration. Users
-    # can populate it post-migration with named formulas (was Query.fields).
-    data["measures"] = []
+    # Recursively migrate nested source_queries regardless of whether the
+    # outer model is v1-shaped: a v1 model can have already-merged columns
+    # but still carry v1 SlayerQuery dicts under source_queries.
+    raw_source_queries = data.get("source_queries")
+    if isinstance(raw_source_queries, list):
+        migrated_sq: list = []
+        for q in raw_source_queries:
+            if isinstance(q, dict) and int(q.get("version") or 1) < 2:
+                migrated = _query_v1_to_v2(dict(q))
+                migrated["version"] = 2
+                migrated_sq.append(migrated)
+            else:
+                migrated_sq.append(q)
+        data["source_queries"] = migrated_sq
+
     return data
 
 
