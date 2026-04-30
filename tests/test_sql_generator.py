@@ -4655,7 +4655,7 @@ class TestGetColumnTypesSql:
 
         from slayer.storage.yaml_storage import YAMLStorage
 
-        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         model = SlayerModel(
             name="orders",
             sql_table="public.orders",
@@ -4700,7 +4700,7 @@ class TestGetColumnTypesSql:
         from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
         from slayer.storage.yaml_storage import YAMLStorage
 
-        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         model = SlayerModel(
             name="orders",
             sql_table="public.orders",
@@ -4751,7 +4751,7 @@ class TestGetColumnTypesSql:
         """An explicit empty allowed_aggregations must NOT fall back to type defaults."""
         from slayer.storage.yaml_storage import YAMLStorage
 
-        storage = YAMLStorage(base_dir="/tmp/slayer_test_nonexistent")
+        storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         model = SlayerModel(
             name="orders",
             sql_table="public.orders",
