@@ -158,6 +158,23 @@ class ModelMeasure(BaseModel):
             )
         return v
 
+    @field_validator("name")
+    @classmethod
+    def _reject_transform_shadowing(cls, v: Optional[str]) -> Optional[str]:
+        """A saved measure named after a built-in transform (``cumsum`` etc.)
+        would shadow the transform when written as ``cumsum(...)`` in another
+        formula. Reject these names at construction time.
+        """
+        if v is None:
+            return v
+        from slayer.core.formula import ALL_TRANSFORMS
+        if v in ALL_TRANSFORMS:
+            raise ValueError(
+                f"ModelMeasure name '{v}' is a reserved transform name. "
+                f"Reserved: {', '.join(sorted(ALL_TRANSFORMS))}"
+            )
+        return v
+
 
 class AggregationParam(BaseModel):
     """A named parameter for an aggregation formula."""

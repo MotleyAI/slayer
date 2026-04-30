@@ -102,6 +102,18 @@ Primary-key columns are always restricted to `count` / `count_distinct` regardle
 
 Column and measure names share a namespace within a model — a model cannot have a column named `aov` and a measure named `aov` at the same time (validated at save time).
 
+A query can use a saved measure name in any formula position — root, inside a transform, or inside arithmetic:
+
+```json
+"measures": [
+  {"formula": "aov"},
+  {"formula": "cumsum(aov)"},
+  {"formula": "aov * 1.1", "name": "aov_with_markup"}
+]
+```
+
+Bare references are inline-expanded into the saved formula's text at parse time, so the SQL is identical to writing the formula longhand. Saved formulas can reference other saved formulas; cycles (`a → b → a`) are detected and rejected with the chain in the error message. Names that would shadow built-in transforms (`cumsum`, `change`, `change_pct`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`) are rejected at model construction time.
+
 ### Filtered Columns
 
 A column can have a `filter` — a SQL condition applied via `CASE WHEN` inside an aggregation. Useful for business metrics that apply to a subset of rows:

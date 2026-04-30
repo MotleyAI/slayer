@@ -9,7 +9,7 @@ transformation step in the query pipeline.
 """
 
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Mapping, Optional, Set, Tuple
 
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
@@ -163,6 +163,11 @@ async def enrich_query(
         named_queries=named_queries,
     )
 
+    # Saved-formula library for bare-name resolution. Only the source model's
+    # named measures are in scope here; cross-model references (`other.aov`)
+    # remain handled by the cross-model resolver.
+    named_measures = {m.name: m.formula for m in model.measures if m.name}
+
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(
         query=query,
@@ -309,7 +314,11 @@ async def enrich_query(
         filter_sql = None
         filter_columns: List[str] = []
         if measure_def and measure_def.filter:
-            parsed = parse_filter(measure_def.filter, extra_agg_names=custom_agg_names)
+            parsed = parse_filter(
+                measure_def.filter,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
             resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
@@ -570,7 +579,11 @@ async def enrich_query(
 
     # Process each query field
     for qfield in query.measures or []:
-        spec = parse_formula(qfield.formula, extra_agg_names=custom_agg_names)
+        spec = parse_formula(
+            qfield.formula,
+            extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
         field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
             "*", ""
         )
@@ -641,7 +654,11 @@ async def enrich_query(
     for item in query.order or []:
         if not item.raw_formula:
             continue
-        spec = parse_formula(item.raw_formula, extra_agg_names=custom_agg_names)
+        spec = parse_formula(
+            item.raw_formula,
+            extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
         if isinstance(spec, AggregatedMeasureRef):
             canonical = _canonical_agg_name(
                 measure_name=spec.measure_name,
@@ -686,9 +703,14 @@ async def enrich_query(
     for f_str in all_filter_strs:
         rewritten, extra_fields = extract_filter_transforms(
             f_str, counter=ft_counter, extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
         )
         for name, formula in extra_fields:
-            spec = parse_formula(formula, extra_agg_names=custom_agg_names)
+            spec = parse_formula(
+                formula,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
             await _flatten_spec(spec, name)
         processed_filters.append(rewritten)
 
@@ -1026,19 +1048,26 @@ def extract_filter_transforms(
     filter_str: str,
     counter: Optional[List[int]] = None,
     extra_agg_names: Optional[frozenset[str]] = None,
+    named_measures: Optional[Mapping[str, str]] = None,
 ) -> tuple:
     """Extract transform function calls from a filter string.
 
     Returns (rewritten_filter, [(name, formula), ...]) where transform
     calls are replaced with generated field names.
+
+    Bare references to ``named_measures`` keys are inline-expanded before
+    transform extraction so that filters like ``change(aov) > 0`` work when
+    ``aov`` is a saved formula.
     """
     import ast as _ast
 
-    from slayer.core.formula import _preprocess_agg_refs
+    from slayer.core.formula import _expand_named_measures, _preprocess_agg_refs
 
     if counter is None:
         counter = [0]
 
+    if named_measures:
+        filter_str = _expand_named_measures(filter_str, named_measures)
     preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)
     funcstyle_rewritten = preprocessed  # capture after funcstyle rewrite, before further preprocessing
     preprocessed = _preprocess_like(preprocessed)

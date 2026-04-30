@@ -87,12 +87,12 @@ class TestNamedMeasureSQL:
         saved_query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "cumsum(aov)", "name": "result"}],
-            time_dimensions=[{"name": "created_at", "granularity": "month"}],
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         )
         inline_query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": f"cumsum({formula})", "name": "result"}],
-            time_dimensions=[{"name": "created_at", "granularity": "month"}],
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
         )
 
         saved_sql = await _generate(saved_query, with_saved)

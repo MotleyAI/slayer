@@ -60,6 +60,34 @@ each other. Arbitrary nesting is allowed:
 Each level of nesting becomes an additional CTE in the generated SQL. Turn on
 `show_sql=true` if you need to see the shape.
 
+## Saved formulas (named measures)
+
+A model's `measures` list is a library of named formulas. Queries reference
+them by **bare name** in any formula position — root, inside transforms,
+inside arithmetic:
+
+```yaml
+# model
+measures:
+  - {name: aov, formula: "revenue:sum / *:count"}
+  - {name: aov_pct, formula: "change_pct(aov)"}
+```
+
+```json
+{
+  "source_model": "orders",
+  "measures": [
+    {"formula": "aov"},
+    {"formula": "cumsum(aov)"},
+    {"formula": "aov * 1.1", "name": "aov_with_markup"}
+  ]
+}
+```
+
+Bare references are inline-expanded at parse time. Saved formulas can
+reference other saved formulas; cycles raise. Names matching built-in
+transforms (`cumsum`, `change`, `time_shift`, …) are rejected at model save.
+
 ## Filter formulas
 
 The same parser powers `filters`. Left and right of an operator can be a
