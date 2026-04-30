@@ -118,6 +118,26 @@ class TestModels:
         col_names = [c["name"] for c in data["columns"]]
         assert col_names == ["id", "revenue"]
 
+    def test_all_named_measures_returned_from_get(self, client: TestClient) -> None:
+        """``ModelMeasure`` has no ``hidden`` field; every saved measure must come
+        back from ``/models/{name}``.
+        """
+        model = {
+            "name": "orders",
+            "sql_table": "t",
+            "data_source": "test",
+            "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
+            "measures": [
+                {"name": "aov", "formula": "amount:sum / *:count"},
+                {"name": "revenue", "formula": "amount:sum"},
+            ],
+        }
+        client.post("/models", json=model)
+        resp = client.get("/models/orders")
+        data = resp.json()
+        names = [m["name"] for m in data["measures"]]
+        assert names == ["aov", "revenue"]
+
 
 class TestDatasources:
     def test_list_empty(self, client: TestClient) -> None:

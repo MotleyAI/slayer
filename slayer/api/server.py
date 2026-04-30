@@ -123,8 +123,6 @@ def create_app(storage: StorageBackend) -> FastAPI:
         data = model.model_dump(exclude_none=True)
         if "columns" in data:
             data["columns"] = [c for c in data["columns"] if not c.get("hidden")]
-        if "measures" in data:
-            data["measures"] = [m for m in data["measures"] if not m.get("hidden")]
         return data
 
     @app.post("/models")
