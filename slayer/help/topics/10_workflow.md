@@ -12,7 +12,7 @@ tool-by-tool documentation, which covers what each one does in isolation.
 ```
 
 `models_summary` gives one line per model with just names + descriptions of
-its fields and the list of joined models — pick the right one without the
+its columns and measures and the list of joined models — pick the right one without the
 weight of a full `inspect_model` call.
 
 `inspect_model` with `num_rows` returns live sample data — helpful for guessing

@@ -170,13 +170,13 @@ def test_every_json_snippet_parses_as_slayer_query() -> None:
 
 
 def _collect_field_formulas(query_dict: dict) -> list[str]:
-    """Pull every formula string out of the `fields` list of a parsed query dict."""
+    """Pull every formula string out of the `measures` list of a parsed query dict."""
     formulas: list[str] = []
-    for field in query_dict.get("fields", []) or []:
-        if isinstance(field, str):
-            formulas.append(field)
-        elif isinstance(field, dict) and "formula" in field:
-            formulas.append(field["formula"])
+    for entry in query_dict.get("measures", []) or []:
+        if isinstance(entry, str):
+            formulas.append(entry)
+        elif isinstance(entry, dict) and "formula" in entry:
+            formulas.append(entry["formula"])
     return formulas
 
 
@@ -186,7 +186,15 @@ def _collect_filter_strings(query_dict: dict) -> list[str]:
 
 
 def test_every_field_formula_parses() -> None:
-    """Every field formula in every snippet must parse via parse_formula."""
+    """Every measure formula in every snippet must parse via parse_formula.
+
+    Help-doc snippets sometimes reference saved ModelMeasures by bare name
+    (e.g. ``{"formula": "aov"}``). These names aren't defined in the snippet
+    itself, so we pass a permissive ``named_measures`` that maps the doc-
+    convention name(s) to a stand-in formula. Add new doc-only saved-measure
+    names here if the help corpus grows.
+    """
+    DOC_SAVED_MEASURES = {"aov": "revenue:sum / *:count"}
     failures: list[str] = []
     for label, body in _all_topic_bodies():
         for offset, snippet in _json_snippets(body):
@@ -200,7 +208,7 @@ def test_every_field_formula_parses() -> None:
                     continue
                 for formula in _collect_field_formulas(q):
                     try:
-                        parse_formula(formula)
+                        parse_formula(formula, named_measures=DOC_SAVED_MEASURES)
                     except Exception as exc:
                         failures.append(f"{label} @ {offset}: parse_formula({formula!r}) — {exc}")
     assert not failures, "Formulas that failed to parse:\n" + "\n".join(failures)

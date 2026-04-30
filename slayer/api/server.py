@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):
-    # Allow legacy `fields` to flow through to SlayerQuery's v1→v2 migration.
+    # Allow extra keys (e.g. forward-compat fields a newer client might send)
+    # to pass through to SlayerQuery's pre-validate hook.
     model_config = ConfigDict(extra="allow")
 
     source_model: str

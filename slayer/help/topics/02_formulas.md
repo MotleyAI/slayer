@@ -1,6 +1,6 @@
 # Formulas
 
-Formulas are the mini-language used inside `fields` (what to compute) and
+Formulas are the mini-language used inside `measures` (what to compute) and
 `filters` (conditions). Parsed with Python's `ast` module — so operator
 precedence matches Python.
 
@@ -34,7 +34,7 @@ Inside a field, use a dict to name the result:
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "*:count",
     {"formula": "revenue:sum / *:count", "name": "aov", "label": "AOV"}
   ]
@@ -49,7 +49,7 @@ each other. Arbitrary nesting is allowed:
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     {"formula": "change(cumsum(revenue:sum))", "name": "cumsum_delta"},
     {"formula": "cumsum(revenue:sum / *:count)", "name": "running_aov"}
   ],

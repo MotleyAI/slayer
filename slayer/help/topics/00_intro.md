@@ -7,14 +7,16 @@ SLayer generates and executes the query against your database.
 ## Core entities
 
 - **datasource** — a database connection (postgres, mysql, sqlite, duckdb, …).
-- **model** — a named mapping from a table (or SQL subquery) to queryable fields.
+- **model** — a named mapping from a table (or SQL subquery) to queryable columns and measures.
 - **dimension** — a column to group/filter by (e.g. `status`, `created_at`).
-- **measure** — a named row-level SQL expression on a model (e.g. `{"name": "adams_revenue", "sql": "amount", "filter": "customers.name='Adam'"}`).
-  Not an aggregate — aggregation is chosen at query time. 
-- **aggregation** — how a measure is rolled up: `sum`, `avg`, `count`, `weighted_avg`, …
+- **column** — a row-level SQL expression on a model (e.g. `{"name": "amount", "sql": "amount", "type": "number"}`).
+  Used either as a group-by dimension or as the input to an aggregation; not an aggregate itself.
+- **aggregation** — how a column is rolled up: `sum`, `avg`, `count`, `weighted_avg`, …
   Applied via colon syntax: `revenue:sum`.
-- **field** — one output column of a query. A formula over measures and aggregations; normal arithmetic expressions work. 
-  It's fine to have a query with just dimensions and no fields.
+- **measure** — one output value of a query. A formula over aggregated columns and arithmetic;
+  e.g. `"revenue:sum / *:count"`. Models can also store named measures for reuse —
+  queries reference them by bare name (`{"formula": "aov"}`).
+  It's fine to have a query with just dimensions and no measures.
 - **filter** — a condition that restricts rows (WHERE or HAVING, routed automatically).
 - **join** — a LEFT-JOIN relationship between two models. Joins let you reach
   another model's dimensions/measures via dotted paths like `customers.regions.name`.
@@ -26,7 +28,7 @@ SLayer generates and executes the query against your database.
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count", "revenue:sum / orders.amount:sum"],
+  "measures": ["*:count", "revenue:sum / orders.amount:sum"],
   "dimensions": ["status"],
   "filters": ["status <> 'cancelled'", "customers.regions.name='Asia'"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
@@ -62,7 +64,7 @@ You can add ad hoc measures, dimensions, etc to the source_model, like
    `customers.regions.name` on a query of `orders` auto-walks the join graph
    (`orders → customers → regions`). Don't try to add SQL joins yourself.
 
-4. **Filters on measures or computed fields route themselves.** `"amount > 100"`
+4. **Filters on measures or computed measures route themselves.** `"amount > 100"`
    becomes WHERE; `"revenue:sum > 1000"` becomes HAVING; `"change(revenue:sum) > 0"`
    becomes a post-filter on an outer wrapper query. Write the condition; SLayer
    decides where it lands.

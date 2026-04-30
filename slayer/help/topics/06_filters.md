@@ -22,7 +22,7 @@ Combine with `and`, `or`, `not` inside a **single** string:
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count"],
+  "measures": ["*:count"],
   "filters": ["status = 'completed' or status = 'pending'"]
 }
 ```
@@ -32,7 +32,7 @@ Multiple entries in the `filters` list are AND-ed:
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count"],
+  "measures": ["*:count"],
   "filters": ["status = 'completed'", "amount > 100"]
 }
 ```
@@ -47,14 +47,14 @@ Multiple entries in the `filters` list are AND-ed:
 
 Inner and outer filters can mix in one query — SLayer splits them.
 
-## Filtering on computed fields
+## Filtering on computed measures
 
-Reference a named field from `fields` by its `name`:
+Reference a named measure from `measures` by its `name`:
 
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "change(revenue:sum)", "name": "rev_change"}
   ],
@@ -63,12 +63,12 @@ Reference a named field from `fields` by its `name`:
 }
 ```
 
-Or write the transform **inline** in the filter — no need to add it to `fields`:
+Or write the transform **inline** in the filter — no need to add it to `measures`:
 
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue:sum"],
+  "measures": ["revenue:sum"],
   "filters": ["last(change(revenue:sum)) < 0"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
 }
@@ -109,6 +109,6 @@ These are WHERE-only. They do not reference measures or transforms.
 
 ## See also
 
-- `help(topic='formulas')` — parsing rules shared with `fields`.
+- `help(topic='formulas')` — parsing rules shared with `measures`.
 - `help(topic='transforms')` — the transforms you can wrap in a filter.
 - `help(topic='queries')` — where filters sit in the evaluation order.

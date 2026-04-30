@@ -49,7 +49,7 @@ common workflows:
   slayer serve
 
   # 2. Query from the command line
-  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
 
   # 3. Start the MCP server for AI agents
   slayer mcp
@@ -119,13 +119,13 @@ examples:
         epilog="""\
 examples:
   # Inline JSON
-  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
 
   # From a file
   slayer query @query.json
 
   # Preview SQL without executing
-  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}' --dry-run
+  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}' --dry-run
 
   # Show execution plan
   slayer query @query.json --explain

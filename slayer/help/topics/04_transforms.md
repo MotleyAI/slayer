@@ -1,7 +1,7 @@
 # Transforms
 
 Transforms are functions applied to aggregated measures, producing computed
-fields: `cumsum(revenue:sum)`, `change(revenue:sum)`, etc. Each transform
+measures: `cumsum(revenue:sum)`, `change(revenue:sum)`, etc. Each transform
 becomes an extra CTE in the generated SQL.
 
 ## The transform family
@@ -56,7 +56,7 @@ Self-join transforms cannot wrap other self-join or change transforms.
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "cumsum(change(revenue:sum))", "name": "cumsum_delta"}
   ],
@@ -79,7 +79,7 @@ top-N.
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "first(revenue:sum)", "name": "initial_revenue"},
     {"formula": "last(revenue:sum)", "name": "latest_revenue"}

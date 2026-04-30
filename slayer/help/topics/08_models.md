@@ -1,6 +1,6 @@
 # Models
 
-A model maps a database table (or SQL subquery) to queryable fields. This page
+A model maps a database table (or SQL subquery) to queryable columns and measures. This page
 covers the concepts; for the schema of `create_model` / `edit_model`, see
 those tools' own documentation.
 
