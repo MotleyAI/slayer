@@ -128,15 +128,16 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
 
 # Built-in aggregation SQL formulas (for aggregations that use a template).
 # {value} = measure's SQL expression; {param_name} = parameter values.
+# Note: percentile is dialect-dependent (no single template works on
+# SQLite/ClickHouse/MySQL) and lives in generator._build_percentile instead.
 BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
     "weighted_avg": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
-    "percentile": "PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {value})",
 }
 
 # Built-in aggregations that require specific parameters.
+# Percentile's required-param check lives in generator._build_percentile.
 BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "weighted_avg": ["weight"],
-    "percentile": ["p"],
 }
 
 # Aggregations that only make sense on numeric-valued measures. Applying them
@@ -146,4 +147,34 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
 # in this set.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "median", "weighted_avg", "percentile",
+})
+
+
+# Default aggregations applicable to a column based on its data type, when the
+# column has no explicit ``allowed_aggregations`` whitelist. Used by the engine
+# to gate ``column:agg`` expressions (e.g., ``revenue:sum`` requires ``sum`` to
+# be eligible for the ``revenue`` column's data type).
+DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
+    DataType.NUMBER: frozenset({
+        "sum", "avg", "min", "max", "count", "count_distinct",
+        "median", "weighted_avg", "percentile", "first", "last",
+    }),
+    DataType.STRING: frozenset({
+        "count", "count_distinct", "first", "last", "min", "max",
+    }),
+    DataType.BOOLEAN: frozenset({
+        "count", "count_distinct", "sum", "min", "max", "first", "last",
+    }),
+    DataType.DATE: frozenset({
+        "count", "count_distinct", "first", "last", "min", "max",
+    }),
+    DataType.TIMESTAMP: frozenset({
+        "count", "count_distinct", "first", "last", "min", "max",
+    }),
+}
+
+# Primary-key columns are always restricted to row-counting aggregations,
+# regardless of data type. (You can ``count`` customer_ids, but not ``sum`` them.)
+PRIMARY_KEY_AGGREGATIONS: frozenset[str] = frozenset({
+    "count", "count_distinct",
 })

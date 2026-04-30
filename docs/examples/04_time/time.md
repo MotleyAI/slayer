@@ -29,7 +29,7 @@ Here is a complete example query for “monthly revenue for the last year by reg
 ```json
 {
   "source_model": "my_model",
-  "fields": [
+  "measures": [
     "revenue:sum",
     "time_shift(revenue:sum, -1, 'year')"
   ],

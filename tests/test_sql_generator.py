@@ -7,8 +7,8 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Aggregation, AggregationParam, Dimension, Measure, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator, _validate_agg_param_value
@@ -64,16 +64,15 @@ def orders_model() -> SlayerModel:
         name="orders",
         sql_table="public.orders",
         data_source="test",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="status", sql="status", type=DataType.STRING),
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-        ],
-        measures=[
-            Measure(name="revenue", sql="amount"),
-            Measure(name="avg_revenue", sql="amount"),
-            Measure(name="distinct_customers", sql="customer_id"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+
+            Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            Column(name="avg_revenue", sql="amount", type=DataType.NUMBER),
+            Column(name="distinct_customers", sql="customer_id", type=DataType.NUMBER),
         ],
     )
 
@@ -100,20 +99,19 @@ class TestBasicQueries:
             name="policy",
             sql_table="policy",
             data_source="test",
-            dimensions=[
-                Dimension(name="status", type=DataType.STRING),
-            ],
-            measures=[
-                Measure(name="num_policies", sql="1", allowed_aggregations=["sum"]),
+            columns=[
+                Column(name="status", type=DataType.STRING),
+
+                Column(name="num_policies", sql="1", allowed_aggregations=["sum"], type=DataType.NUMBER),
             ],
         )
-        query = SlayerQuery(source_model="policy", fields=[Field(formula="num_policies:sum")])
+        query = SlayerQuery(source_model="policy", measures=[ModelMeasure(formula="num_policies:sum")])
         sql = await _generate(generator, query, model)
         assert "SUM(1)" in sql
         assert '"1"' not in sql
 
     async def test_simple_count(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="*:count")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
         sql = await _generate(generator, query, orders_model)
         assert "COUNT(*)" in sql
         assert "public.orders" in sql
@@ -121,7 +119,7 @@ class TestBasicQueries:
     async def test_star_rejects_non_count_aggregation(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="*:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:sum")])
         with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
             await _generate(generator, query, orders_model)
 
@@ -134,7 +132,7 @@ class TestBasicQueries:
     async def test_dimension_with_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count"), Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -146,7 +144,7 @@ class TestBasicQueries:
     async def test_limit_and_offset(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             limit=10,
             offset=20,
         )
@@ -157,7 +155,7 @@ class TestBasicQueries:
     async def test_order_by(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column=ColumnRef(name="count", model="orders"), direction="desc")],
         )
@@ -170,7 +168,7 @@ class TestTimeDimensions:
     async def test_time_dimension_with_granularity(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
@@ -182,7 +180,7 @@ class TestTimeDimensions:
     async def test_time_dimension_with_date_range(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             time_dimensions=[
                 TimeDimension(
                     dimension=ColumnRef(name="created_at"),
@@ -201,7 +199,7 @@ class TestFilters:
     async def test_equals_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status == 'active'"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -211,7 +209,7 @@ class TestFilters:
     async def test_in_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status in ('active', 'pending')"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -222,7 +220,7 @@ class TestFilters:
     async def test_gt_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["customer_id > 100"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -232,7 +230,7 @@ class TestFilters:
     async def test_contains_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status like '%act%'"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -242,7 +240,7 @@ class TestFilters:
     async def test_is_null_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status IS NULL"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -251,7 +249,7 @@ class TestFilters:
     async def test_is_not_null_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status IS NOT NULL"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -262,7 +260,7 @@ class TestFilters:
         """Python-style 'is None' still works for backward compatibility."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status is None"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -272,7 +270,7 @@ class TestFilters:
         """SQL single = works as equality."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status = 'active'"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -282,7 +280,7 @@ class TestFilters:
         """SQL <> works as not-equals."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status <> 'cancelled'"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -295,7 +293,7 @@ class TestFilters:
         """= inside a string literal is not converted to ==."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status = 'x=y'"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -307,7 +305,7 @@ class TestFilters:
         """<> inside a string literal is not converted to !=."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status = 'foo<>bar'"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -316,7 +314,7 @@ class TestFilters:
     async def test_composite_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["status == 'active' or customer_id > 10"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -325,7 +323,7 @@ class TestFilters:
     async def test_measure_filter_goes_to_having(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
             filters=["revenue_sum > 1000"],
         )
@@ -338,14 +336,13 @@ class TestFilters:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="order_status", sql="status_col", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="order_status", sql="status_col", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["order_status == 'active'"],
         )
         sql = await _generate(generator, query, model)
@@ -355,7 +352,7 @@ class TestFilters:
     async def test_date_range_filter(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             filters=["created_at >= '2024-01-01' and created_at <= '2024-06-30'"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -365,17 +362,17 @@ class TestFilters:
 
 class TestMeasureTypes:
     async def test_count_distinct(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="distinct_customers:count_distinct")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="distinct_customers:count_distinct")])
         sql = await _generate(generator, query, orders_model)
         assert "COUNT(DISTINCT" in sql
 
     async def test_average(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="avg_revenue:avg")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="avg_revenue:avg")])
         sql = await _generate(generator, query, orders_model)
         assert "AVG(" in sql
 
     async def test_sum(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="revenue:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="revenue:sum")])
         sql = await _generate(generator, query, orders_model)
         assert "SUM(" in sql
 
@@ -386,12 +383,12 @@ class TestSubquery:
             name="recent_orders",
             sql="SELECT * FROM public.orders WHERE created_at > '2024-01-01'",
             data_source="test",
-            dimensions=[Dimension(name="status", sql="status", type=DataType.STRING)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="recent_orders",
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _generate(generator, query, model)
@@ -406,17 +403,16 @@ class TestBareColumnNames:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[
-                Measure(name="revenue", sql="amount"),
+            columns=[
+                Column(name="status", sql="status", type=DataType.STRING),
+
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _generate(gen, query, model)
@@ -431,14 +427,14 @@ class TestBareColumnNames:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            measures=[
-                Measure(name="total", sql="amount"),
+            columns=[
+                Column(name="total", sql="amount", type=DataType.NUMBER),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="total:sum")],
+            measures=[ModelMeasure(formula="total:sum")],
         )
         sql = await _generate(gen, query, model)
         assert "SUM" in sql
@@ -450,7 +446,7 @@ class TestDialects:
         gen = SQLGenerator(dialect="mysql")
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
@@ -465,7 +461,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="revenue:sum / *:count", name="aov")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "base" in sql.lower()
@@ -477,7 +473,7 @@ class TestFields:
         """Without fields, no CTE is generated."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "WITH" not in sql
@@ -486,7 +482,7 @@ class TestFields:
         """LIMIT applies to the outer query, not the CTE."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="revenue:sum / *:count", name="aov")],
             limit=5,
         )
         sql = await _generate(generator, query, orders_model)
@@ -500,7 +496,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="rev_running")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="cumsum(revenue:sum)", name="rev_running")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "SUM(" in sql
@@ -514,7 +510,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1)", name="rev_prev")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1)", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -527,7 +523,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="lag(revenue:sum, 1)", name="rev_prev")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="lag(revenue:sum, 1)", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "LAG(" in sql
@@ -538,7 +534,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="lead(revenue:sum, 1)", name="rev_next")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="lead(revenue:sum, 1)", name="rev_next")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "LEAD(" in sql
@@ -549,7 +545,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = await _generate(generator, query, orders_model)
         # change is desugared into time_shift + expression
@@ -564,7 +560,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="change_pct(revenue:sum)", name="rev_pct")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change_pct(revenue:sum)", name="rev_pct")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -575,7 +571,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
-            fields=[Field(formula="revenue:sum"), Field(formula="rank(revenue:sum)", name="rev_rank")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="rank(revenue:sum)", name="rev_rank")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "RANK()" in sql
@@ -586,7 +582,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="last(revenue:sum)", name="latest_rev")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="last(revenue:sum)", name="latest_rev")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "FIRST_VALUE(" in sql
@@ -595,11 +591,11 @@ class TestFields:
     async def test_last_measure_type(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """A measure with last aggregation should use ROW_NUMBER + conditional aggregate."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="balance"))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="balance:last")],
+            measures=[ModelMeasure(formula="balance:last")],
         )
         sql = await _generate(generator, query, orders_model)
         # ROW_NUMBER ranked subquery for latest row per group
@@ -613,12 +609,12 @@ class TestFields:
     async def test_last_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """last(ordered_at) should ORDER BY the explicit time column, not the default."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="balance"))
-        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="balance:last(ordered_at)")],
+            measures=[ModelMeasure(formula="balance:last(ordered_at)")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "ROW_NUMBER()" in sql
@@ -628,12 +624,12 @@ class TestFields:
     async def test_first_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """first(ordered_at) should ORDER BY the explicit time column ASC."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="balance"))
-        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="balance:first(ordered_at)")],
+            measures=[ModelMeasure(formula="balance:first(ordered_at)")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "ROW_NUMBER()" in sql
@@ -643,15 +639,15 @@ class TestFields:
     async def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Two last measures with different explicit time cols get separate ROW_NUMBER columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="balance"))
-        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
-        orders_model.dimensions.append(Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        orders_model.columns.append(Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[
-                Field(formula="revenue:last(ordered_at)"),
-                Field(formula="balance:last(updated_at)"),
+            measures=[
+                ModelMeasure(formula="revenue:last(ordered_at)"),
+                ModelMeasure(formula="balance:last(updated_at)"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -669,14 +665,14 @@ class TestFields:
     async def test_mixed_explicit_and_default_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """One last with explicit time, one last with default — separate ROW_NUMBER columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="balance"))
-        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[
-                Field(formula="revenue:last"),
-                Field(formula="balance:last(ordered_at)"),
+            measures=[
+                ModelMeasure(formula="revenue:last"),
+                ModelMeasure(formula="balance:last(ordered_at)"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -688,14 +684,14 @@ class TestFields:
     async def test_same_explicit_time_column_shared(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Two first/last measures with the same explicit time col share one ROW_NUMBER."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="balance"))
-        orders_model.dimensions.append(Dimension(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[
-                Field(formula="revenue:last(ordered_at)"),
-                Field(formula="balance:first(ordered_at)"),
+            measures=[
+                ModelMeasure(formula="revenue:last(ordered_at)"),
+                ModelMeasure(formula="balance:first(ordered_at)"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -712,7 +708,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -731,7 +727,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
         # Base CTE should have original date range
@@ -752,7 +748,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_yoy")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_yoy")],
         )
         sql = await _generate(generator, query, orders_model)
         # Shifted CTE should use INTERVAL for year shift
@@ -771,7 +767,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(revenue:sum)", name="rev_change")],
         )
         sql = await _generate(generator, query, orders_model)
         # change desugars to time_shift + expression; shifted CTE uses INTERVAL
@@ -784,7 +780,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'month')", name="rev_prev")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "shifted_" in sql
@@ -802,7 +798,7 @@ class TestFields:
                     date_range=["2024-03-01", "2024-03-31"],
                 )
             ],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, 1, 'month')", name="rev_next")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, 1, 'month')", name="rev_next")],
         )
         sql = await _generate(generator, query, orders_model)
         # Forward shift uses negative INTERVAL
@@ -821,7 +817,7 @@ class TestFields:
                     date_range=["2024-07-01", "2024-09-30"],
                 )
             ],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'quarter')", name="prev_q")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'quarter')", name="prev_q")],
         )
         sql = await _generate(generator, query, orders_model)
         # Quarter = 3 months; shifted CTE uses INTERVAL
@@ -835,7 +831,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="change(time_shift(revenue:sum, -1, 'year'))", name="x")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(time_shift(revenue:sum, -1, 'year'))", name="x")],
         )
         with pytest.raises(ValueError, match="Nesting.*not supported"):
             await _generate(generator, query, orders_model)
@@ -846,7 +842,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(revenue:sum)", name="rev_change")],
             filters=["rev_change < 0"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -860,7 +856,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             filters=["last(change(revenue:sum)) < 0"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -877,7 +873,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="change(revenue:sum)", name="rev_change")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="change(revenue:sum)", name="rev_change")],
             filters=["status == 'completed'", "rev_change > 0"],
         )
         sql = await _generate(generator, query, orders_model)
@@ -891,7 +887,7 @@ class TestFields:
         """Transforms requiring time should fail if no time dimension available."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="cumsum(revenue:sum)", name="x")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
             await _generate(generator, query, orders_model)
@@ -907,7 +903,7 @@ class TestFields:
         orders_model.default_time_dimension = "created_at"
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum"), Field(formula="cumsum(revenue:sum)", name="x")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="cumsum(revenue:sum)", name="x")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
             await _generate(generator, query, orders_model)
@@ -915,7 +911,7 @@ class TestFields:
     async def test_field_plain_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "COUNT(*)" in sql
@@ -924,7 +920,7 @@ class TestFields:
         """Fields referencing measures auto-add them to the base query."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="revenue:sum / *:count", name="aov")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -935,7 +931,7 @@ class TestFields:
         """Fields can be used alongside explicit measures."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count"), Field(formula="revenue:sum"), Field(formula="revenue:sum / *:count", name="aov")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="revenue:sum / *:count", name="aov")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _generate(generator, query, orders_model)
@@ -953,17 +949,16 @@ class TestTransformRequiresTimeDimension:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.DATE),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             default_time_dimension="created_at",
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="cumsum(revenue:sum)")],
+            measures=[ModelMeasure(formula="cumsum(revenue:sum)")],
             dimensions=[ColumnRef(name="status")],
             # No time_dimensions — only default_time_dimension on model
         )
@@ -976,17 +971,16 @@ class TestTransformRequiresTimeDimension:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.DATE),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             default_time_dimension="created_at",
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="lag(revenue:sum)")],
+            measures=[ModelMeasure(formula="lag(revenue:sum)")],
             dimensions=[ColumnRef(name="status")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
@@ -998,16 +992,15 @@ class TestTransformRequiresTimeDimension:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="created_at", sql="created_at", type=DataType.DATE),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.DATE),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="cumsum(revenue:sum)")],
+            measures=[ModelMeasure(formula="cumsum(revenue:sum)")],
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(dimension="created_at", granularity="month")],
         )
@@ -1023,9 +1016,9 @@ class TestNestedFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[
-                Field(formula="revenue:sum"),
-                Field(formula="cumsum(change(revenue:sum))", name="delta"),
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="cumsum(change(revenue:sum))", name="delta"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1041,9 +1034,9 @@ class TestNestedFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[
-                Field(formula="revenue:sum"),
-                Field(formula="change(cumsum(revenue:sum))", name="delta"),
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="change(cumsum(revenue:sum))", name="delta"),
             ],
         )
         with pytest.raises(ValueError, match="not found"):
@@ -1055,10 +1048,10 @@ class TestNestedFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[
-                Field(formula="*:count"),
-                Field(formula="revenue:sum"),
-                Field(formula="cumsum(revenue:sum) / *:count", name="avg_cumsum"),
+            measures=[
+                ModelMeasure(formula="*:count"),
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="cumsum(revenue:sum) / *:count", name="avg_cumsum"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1109,13 +1102,12 @@ class TestMultiDialectGeneration:
             sql_table="public.orders",
             data_source="test",
             default_time_dimension="created_at",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            ],
-            measures=[
-                Measure(name="revenue", sql="amount"),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
             ],
         )
         return model
@@ -1143,7 +1135,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count"), Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
         )
         sql = await _generate(gen, query, orders_model)
@@ -1156,7 +1148,7 @@ class TestMultiDialectGeneration:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
         )
         sql = await _generate(gen, query, orders_model)
@@ -1172,7 +1164,7 @@ class TestMultiDialectGeneration:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum"), Field(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="time_shift(revenue:sum, -1, 'year')", name="rev_prev_year")],
         )
         sql = await _generate(gen, query, orders_model)
         assert "shifted_" in sql
@@ -1186,6 +1178,158 @@ class TestMultiDialectGeneration:
             assert "INTERVAL" in sql_upper
 
 
+class TestMedianPercentilePerDialect:
+    """Per-dialect SQL emission for median and percentile aggregations.
+
+    These pin the dialect-specific output of `_build_median` and
+    `_build_percentile` and assert that MySQL raises ``NotImplementedError``
+    (no native function, no Python-UDF mechanism).
+    """
+
+    def _measure(
+        self,
+        *,
+        agg: str,
+        agg_kwargs: dict[str, str] | None = None,
+    ) -> EnrichedMeasure:
+        return EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias=f"amount_{agg}",
+            aggregation=agg,
+            agg_kwargs=agg_kwargs or {},
+        )
+
+    # --- median ------------------------------------------------------------
+
+    def test_build_median_postgres(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        inner = sqlglot.parse_one("amount", dialect="postgres")
+        sql = gen._build_median(inner).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount)"
+
+    def test_build_median_sqlite_uses_udf_call(self) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        inner = sqlglot.parse_one("amount", dialect="sqlite")
+        sql = gen._build_median(inner).sql(dialect="sqlite")
+        # sqlglot rewrites MEDIAN(x) to PERCENTILE_CONT(x, 0.5) for SQLite,
+        # which our percentile_cont UDF handles. SQLite UDF lookup is
+        # case-insensitive.
+        assert sql == "PERCENTILE_CONT(amount, 0.5)"
+
+    def test_build_median_clickhouse_unchanged(self) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        inner = sqlglot.parse_one("amount", dialect="clickhouse")
+        sql = gen._build_median(inner).sql(dialect="clickhouse")
+        # ClickHouse has native median(); sqlglot transpiles to its parametric form.
+        assert sql == "quantile(0.5)(amount)"
+
+    def test_build_median_duckdb(self) -> None:
+        gen = SQLGenerator(dialect="duckdb")
+        inner = sqlglot.parse_one("amount", dialect="duckdb")
+        sql = gen._build_median(inner).sql(dialect="duckdb")
+        # sqlglot translates PERCENTILE_CONT to DuckDB's QUANTILE_CONT.
+        assert "QUANTILE_CONT" in sql or "PERCENTILE_CONT" in sql
+
+    def test_build_median_mysql_raises(self) -> None:
+        gen = SQLGenerator(dialect="mysql")
+        inner = sqlglot.parse_one("amount", dialect="mysql")
+        with pytest.raises(NotImplementedError, match="MySQL"):
+            gen._build_median(inner)
+
+    # --- percentile --------------------------------------------------------
+
+    def test_build_percentile_postgres(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.95"})
+        sql = gen._build_percentile(m).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY amount)"
+
+    def test_build_percentile_sqlite(self) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
+        sql = gen._build_percentile(m).sql(dialect="sqlite")
+        assert sql == "PERCENTILE_CONT(amount, 0.5)"
+
+    def test_build_percentile_clickhouse_emits_quantile(self) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.75"})
+        sql = gen._build_percentile(m).sql(dialect="clickhouse")
+        # ClickHouse parametric aggregate syntax.
+        assert sql == "quantile(0.75)(amount)"
+
+    @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
+    def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        m = self._measure(agg="percentile", agg_kwargs={"p": p})
+        sql = gen._build_percentile(m).sql(dialect="clickhouse")
+        assert sql == f"quantile({p})(amount)"
+
+    def test_build_percentile_duckdb(self) -> None:
+        gen = SQLGenerator(dialect="duckdb")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
+        sql = gen._build_percentile(m).sql(dialect="duckdb")
+        # sqlglot rewrites the WITHIN GROUP form to DuckDB's QUANTILE_CONT.
+        assert "QUANTILE_CONT" in sql
+
+    def test_build_percentile_mysql_raises(self) -> None:
+        gen = SQLGenerator(dialect="mysql")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
+        with pytest.raises(NotImplementedError, match="MySQL"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_missing_p_raises(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg="percentile", agg_kwargs={})
+        with pytest.raises(ValueError, match="requires parameter 'p'"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_unsafe_p_rejected(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg="percentile", agg_kwargs={"p": "0.5); DROP TABLE x; --"})
+        with pytest.raises(ValueError, match="Unsafe value"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_uses_model_level_default_p(self) -> None:
+        """Model-level Aggregation(name='percentile', params=[p=...]) supplies the default."""
+        gen = SQLGenerator(dialect="postgres")
+        agg_def = Aggregation(
+            name="percentile",
+            params=[AggregationParam(name="p", sql="0.9")],
+        )
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_percentile",
+            aggregation="percentile",
+            agg_kwargs={},
+            aggregation_def=agg_def,
+        )
+        sql = gen._build_percentile(m).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)"
+
+    def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
+        """Query-time agg_kwargs win over the model-level default."""
+        gen = SQLGenerator(dialect="postgres")
+        agg_def = Aggregation(
+            name="percentile",
+            params=[AggregationParam(name="p", sql="0.9")],
+        )
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_percentile",
+            aggregation="percentile",
+            agg_kwargs={"p": "0.25"},
+            aggregation_def=agg_def,
+        )
+        sql = gen._build_percentile(m).sql(dialect="postgres")
+        assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY amount)"
+
+
 class TestPathAliasJoinInference:
     """Test that __-delimited path aliases in inline SQL cause multi-hop join inference via graph walk."""
 
@@ -1195,17 +1339,17 @@ class TestPathAliasJoinInference:
         s = YAMLStorage(base_dir=str(tmp_path))
         await s.save_model(SlayerModel(
             name="regions", sql_table="regions", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
-                Dimension(name="population", sql="population", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="population", sql="population", type=DataType.NUMBER),
             ],
         ))
         await s.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="region_id", sql="region_id", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
         ))
@@ -1218,17 +1362,17 @@ class TestPathAliasJoinInference:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Dimension(
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(
                     name="is_us",
                     sql="CASE WHEN customers__regions.name = 'US' THEN 1 ELSE 0 END",
                     type=DataType.NUMBER,
                 ),
+
             ],
-            measures=[],
             joins=[
                 ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
             ],
@@ -1244,7 +1388,7 @@ class TestPathAliasJoinInference:
         """Inline dimension SQL like 'customers__regions.name' should infer joins for both tables."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="is_us")],
         )
         enriched = await engine._enrich(query=query, model=chained_model)
@@ -1256,16 +1400,16 @@ class TestPathAliasJoinInference:
         """Inline time dimension SQL referencing path alias should also trigger join inference."""
         await storage.save_model(SlayerModel(
             name="orgs", sql_table="orgs", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="signup_date", sql="signup_date", type=DataType.TIMESTAMP),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="signup_date", sql="signup_date", type=DataType.TIMESTAMP),
             ],
         ))
         await storage.save_model(SlayerModel(
             name="users", sql_table="users", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="org_id", sql="org_id", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="org_id", sql="org_id", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="orgs", join_pairs=[["org_id", "id"]])],
         ))
@@ -1273,16 +1417,16 @@ class TestPathAliasJoinInference:
             name="events",
             sql_table="events",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="user_id", sql="user_id", type=DataType.NUMBER),
-                Dimension(
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="user_id", sql="user_id", type=DataType.NUMBER),
+                Column(
                     name="user_signup_date",
                     sql="users__orgs.signup_date",
                     type=DataType.TIMESTAMP,
                 ),
+
             ],
-            measures=[],
             joins=[
                 ModelJoin(target_model="users", join_pairs=[["user_id", "id"]]),
             ],
@@ -1296,7 +1440,7 @@ class TestPathAliasJoinInference:
                     granularity=TimeGranularity.MONTH,
                 )
             ],
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
         )
         enriched = await engine._enrich(query=query, model=model)
         join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
@@ -1307,12 +1451,12 @@ class TestPathAliasJoinInference:
         self, engine: SlayerQueryEngine, chained_model: SlayerModel
     ) -> None:
         """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
-        chained_model.measures.append(
-            Measure(name="region_pop_sum", sql="customers__regions.population")
+        chained_model.columns.append(
+            Column(name="region_pop_sum", sql="customers__regions.population", type=DataType.NUMBER)
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="region_pop_sum:sum")],
+            measures=[ModelMeasure(formula="region_pop_sum:sum")],
         )
         enriched = await engine._enrich(query=query, model=chained_model)
         join_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
@@ -1329,14 +1473,13 @@ class TestAggParamSanitization:
             name="sales",
             sql_table="public.sales",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="region", sql="region", type=DataType.STRING),
-            ],
-            measures=[
-                Measure(name="price", sql="price"),
-                Measure(name="revenue", sql="amount"),
-                Measure(name="quantity", sql="quantity"),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="region", sql="region", type=DataType.STRING),
+
+                Column(name="price", sql="price", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
             ],
         )
 
@@ -1347,7 +1490,7 @@ class TestAggParamSanitization:
     async def test_weighted_avg_valid_column_param(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="sales",
-            fields=[Field(formula="price:weighted_avg(weight=quantity)")],
+            measures=[ModelMeasure(formula="price:weighted_avg(weight=quantity)")],
         )
         sql = await _generate(gen, query, agg_model)
         assert "SUM(" in sql
@@ -1356,7 +1499,7 @@ class TestAggParamSanitization:
     async def test_percentile_valid_numeric_param(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="sales",
-            fields=[Field(formula="revenue:percentile(p=0.95)")],
+            measures=[ModelMeasure(formula="revenue:percentile(p=0.95)")],
         )
         sql = await _generate(gen, query, agg_model)
         assert "PERCENTILE_CONT" in sql
@@ -1365,7 +1508,7 @@ class TestAggParamSanitization:
     async def test_qualified_column_param(self, gen: SQLGenerator, agg_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="sales",
-            fields=[Field(formula="price:weighted_avg(weight=sales.quantity)")],
+            measures=[ModelMeasure(formula="price:weighted_avg(weight=sales.quantity)")],
         )
         sql = await _generate(gen, query, agg_model)
         assert "SUM(" in sql
@@ -1403,7 +1546,7 @@ class TestAggParamSanitization:
         ]
         query = SlayerQuery(
             source_model="sales",
-            fields=[Field(formula="price:custom_weighted")],
+            measures=[ModelMeasure(formula="price:custom_weighted")],
         )
         # Should succeed — model-level defaults are trusted
         sql = await _generate(gen, query, agg_model)
@@ -1434,40 +1577,44 @@ class TestFilteredMeasures:
     """Tests for measure-level filter (CASE WHEN wrapping)."""
 
     async def test_filtered_sum(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        orders_model.measures.append(
-            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_revenue:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="active_revenue:sum")])
         sql = await _generate(generator, query, orders_model)
         assert "CASE WHEN" in sql
         assert "THEN" in sql
         assert "SUM(" in sql
 
     async def test_filtered_count_star(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        """COUNT(*) with filter becomes COUNT(CASE WHEN filter THEN 1 END)."""
-        orders_model.measures.append(
-            Measure(name="active_count", sql=None, filter="status = 'active'")
+        """COUNT on a filtered column becomes COUNT(CASE WHEN filter THEN col END).
+
+        v2 unified Column with `sql=None` defaults to the bare column name, so
+        the generated SQL counts ``orders.active_count`` rows matching the filter
+        rather than literal 1. Either form is correct for ``count`` aggregation.
+        """
+        orders_model.columns.append(
+            Column(name="active_count", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_count:count")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="active_count:count")])
         sql = await _generate(generator, query, orders_model)
         assert "CASE WHEN" in sql
-        assert "THEN 1" in sql
         assert "COUNT(" in sql
         # Should NOT be COUNT(*)
         assert "COUNT(*)" not in sql
 
     async def test_filtered_avg(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        orders_model.measures.append(
-            Measure(name="active_avg", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_avg", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="active_avg:avg")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="active_avg:avg")])
         sql = await _generate(generator, query, orders_model)
         assert "CASE WHEN" in sql
         assert "AVG(" in sql
 
     async def test_unfiltered_measure_no_case(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Measures without filter should not have CASE WHEN."""
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="revenue:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="revenue:sum")])
         sql = await _generate(generator, query, orders_model)
         assert "CASE WHEN" not in sql
         assert "SUM(" in sql
@@ -1479,15 +1626,15 @@ class TestFilteredMeasures:
         filter BOTH the numerator and the denominator. Otherwise SUM({weight})
         in the denominator sums all weights regardless of filter, producing a
         wrong (under-weighted) result."""
-        orders_model.dimensions.append(
-            Dimension(name="quantity", sql="quantity", type=DataType.NUMBER)
+        orders_model.columns.append(
+            Column(name="quantity", sql="quantity", type=DataType.NUMBER)
         )
-        orders_model.measures.append(
-            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="active_revenue:weighted_avg(weight=quantity)")],
+            measures=[ModelMeasure(formula="active_revenue:weighted_avg(weight=quantity)")],
         )
         sql = await _generate(generator, query, orders_model)
         # Both the value (amount) and the weight (quantity) must be inside CASE WHEN.
@@ -1501,12 +1648,12 @@ class TestFilteredMeasures:
 
     async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Query with both filtered and unfiltered measures."""
-        orders_model.measures.append(
-            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum"), Field(formula="active_revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="active_revenue:sum")],
         )
         sql = await _generate(generator, query, orders_model)
         # Should have one CASE WHEN (for active_revenue) and one plain SUM (for revenue)
@@ -1518,15 +1665,15 @@ class TestFilteredMeasures:
     ) -> None:
         """Filtered last measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(
-            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        orders_model.columns.append(
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
-            fields=[Field(formula="completed_balance:last")],
+            measures=[ModelMeasure(formula="completed_balance:last")],
         )
         sql = await _generate(generator, query, orders_model)
         # Should have a dedicated filtered ROW_NUMBER column
@@ -1547,15 +1694,15 @@ class TestFilteredMeasures:
     ) -> None:
         """Filtered first measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(
-            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        orders_model.columns.append(
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
-            fields=[Field(formula="completed_balance:first")],
+            measures=[ModelMeasure(formula="completed_balance:first")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "_first_rn_f0" in sql
@@ -1568,13 +1715,13 @@ class TestFilteredMeasures:
     ) -> None:
         """Unfiltered last measure uses the shared ROW_NUMBER, no _rn_f columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="amount"))
+        orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.NUMBER))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
-            fields=[Field(formula="balance:last")],
+            measures=[ModelMeasure(formula="balance:last")],
         )
         sql = await _generate(generator, query, orders_model)
         assert "_last_rn" in sql
@@ -1585,18 +1732,18 @@ class TestFilteredMeasures:
     ) -> None:
         """Both filtered and unfiltered last measures get separate ROW_NUMBER columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(Measure(name="balance", sql="amount"))
-        orders_model.measures.append(
-            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.NUMBER))
+        orders_model.columns.append(
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
-            fields=[
-                Field(formula="balance:last"),
-                Field(formula="completed_balance:last"),
+            measures=[
+                ModelMeasure(formula="balance:last"),
+                ModelMeasure(formula="completed_balance:last"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1618,26 +1765,24 @@ class TestFilteredMeasures:
             name="customers",
             sql_table="public.customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
             ],
         )
         orders = SlayerModel(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            ],
-            measures=[
-                Measure(
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+
+                Column(
                     name="active_balance",
                     sql="amount",
-                    filter="customers.status = 'active'",
-                ),
+                    filter="customers.status = 'active'", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
             default_time_dimension="created_at",
@@ -1653,7 +1798,7 @@ class TestFilteredMeasures:
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
-            fields=[Field(formula="active_balance:last")],
+            measures=[ModelMeasure(formula="active_balance:last")],
         )
         enriched = await enrich_query(
             query=query,
@@ -1697,26 +1842,24 @@ class TestFilteredMeasures:
             name="customers",
             sql_table="public.customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
             ],
         )
         orders = SlayerModel(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            ],
-            measures=[
-                Measure(
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+
+                Column(
                     name="active_balance",
                     sql="amount",
-                    filter="customers.status = 'active'",
-                ),
+                    filter="customers.status = 'active'", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
             default_time_dimension="created_at",
@@ -1732,7 +1875,7 @@ class TestFilteredMeasures:
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
-            fields=[Field(formula="active_balance:last")],
+            measures=[ModelMeasure(formula="active_balance:last")],
         )
         enriched = await enrich_query(
             query=query,
@@ -1794,23 +1937,21 @@ class TestFilteredMeasures:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="url", sql="url", type=DataType.STRING),
-            ],
-            measures=[
-                Measure(
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="url", sql="url", type=DataType.STRING),
+
+                Column(
                     name="vendor_revenue",
                     sql="amount",
                     # The dot inside the literal is what would trip the regex.
-                    filter="url LIKE 'foo.bar%'",
-                ),
+                    filter="url LIKE 'foo.bar%'", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="foo", join_pairs=[["id", "id"]])],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="vendor_revenue:sum")],
+            measures=[ModelMeasure(formula="vendor_revenue:sum")],
         )
         enriched = await enrich_query(
             query=query,
@@ -1836,20 +1977,20 @@ class TestFilteredMeasures:
         ROW_NUMBER column. Previously the map was keyed by source_measure:agg so
         the second one clobbered the first and both pointed at the same _rn alias."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.measures.append(
-            Measure(name="active_balance", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_balance", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
-        orders_model.measures.append(
-            Measure(name="completed_balance", sql="amount", filter="status = 'completed'")
+        orders_model.columns.append(
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
             ],
-            fields=[
-                Field(formula="active_balance:last"),
-                Field(formula="completed_balance:last"),
+            measures=[
+                ModelMeasure(formula="active_balance:last"),
+                ModelMeasure(formula="completed_balance:last"),
             ],
         )
         sql = await _generate(generator, query, orders_model)
@@ -1869,14 +2010,14 @@ class TestFilteredMeasures:
         / sub-query sources)."""
         from slayer.engine.enrichment import enrich_query
 
-        orders_model.measures.append(
-            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
         # Underlying model loaded under a different name than the query references.
         underlying = orders_model.model_copy(update={"name": "orders_underlying"})
         query = SlayerQuery(
             source_model="orders_alias",
-            fields=[Field(formula="active_revenue:sum")],
+            measures=[ModelMeasure(formula="active_revenue:sum")],
         )
         enriched = await enrich_query(
             query=query,
@@ -1904,13 +2045,13 @@ class TestFilteredMeasures:
         invalid because the source alias isn't in the FROM."""
         from slayer.engine.enrichment import enrich_query
 
-        orders_model.measures.append(
-            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
         underlying = orders_model.model_copy(update={"name": "orders_underlying"})
         query = SlayerQuery(
             source_model="orders_alias",
-            fields=[Field(formula="active_revenue:sum")],
+            measures=[ModelMeasure(formula="active_revenue:sum")],
         )
         enriched = await enrich_query(
             query=query,
@@ -1952,40 +2093,37 @@ class TestMeasureFilterInjection:
 
     async def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
         """Classic ``'; DROP TABLE ...`` payload is rejected before generation."""
-        orders_model.measures.append(
-            Measure(
+        orders_model.columns.append(
+            Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a'; DROP TABLE orders; --'",
-            )
+                filter="status = 'a'; DROP TABLE orders; --'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         with pytest.raises(ValueError, match="Invalid filter syntax"):
             await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
 
     async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
         """UNION SELECT payload is rejected before generation."""
-        orders_model.measures.append(
-            Measure(
+        orders_model.columns.append(
+            Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a' UNION SELECT * FROM users --'",
-            )
+                filter="status = 'a' UNION SELECT * FROM users --'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         with pytest.raises(ValueError, match="Invalid filter syntax"):
             await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
 
     async def test_block_comment_rejected(self, orders_model: SlayerModel) -> None:
         """``/* ... */`` comment injection is rejected before generation."""
-        orders_model.measures.append(
-            Measure(
+        orders_model.columns.append(
+            Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a' /* x */ OR 1=1",
-            )
+                filter="status = 'a' /* x */ OR 1=1", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         with pytest.raises(ValueError, match="Invalid filter syntax"):
             await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
 
@@ -2002,16 +2140,15 @@ class TestMeasureFilterInjection:
         This holds for every dialect; none of them accept ``\\'`` as the
         canonical escape for a literal apostrophe.
         """
-        orders_model.measures.append(
-            Measure(
+        orders_model.columns.append(
+            Column(
                 name="irish_names",
                 sql="amount",
                 # Runtime value of the literal:  O'Brien
-                filter="status = 'O\\'Brien'",
-            )
+                filter="status = 'O\\'Brien'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
-            source_model="orders", fields=[Field(formula="irish_names:sum")]
+            source_model="orders", measures=[ModelMeasure(formula="irish_names:sum")]
         )
         sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
         # The emitted literal must use doubled single quotes.
@@ -2043,15 +2180,14 @@ class TestMeasureFilterInjection:
         (DoS / error-leakage vector). After the fix: the backslash is doubled
         in the emitted literal and sqlglot tokenizes without error.
         """
-        orders_model.measures.append(
-            Measure(
+        orders_model.columns.append(
+            Column(
                 name="evil",
                 sql="amount",
                 # Runtime filter string:  status = 'a\'
-                filter="status = 'a\\\\'",
-            )
+                filter="status = 'a\\\\'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
         self._assert_round_trips_cleanly(sql, dialect)
         # Defence-in-depth: the payload ``a`` + trailing slash must be
@@ -2071,15 +2207,14 @@ class TestMeasureFilterInjection:
         self, orders_model: SlayerModel, dialect: str,
     ) -> None:
         """Backslashes mid-string also must not enable escape sequences."""
-        orders_model.measures.append(
-            Measure(
+        orders_model.columns.append(
+            Column(
                 name="evil",
                 sql="amount",
                 # Runtime filter string:  status = 'a\b'
-                filter="status = 'a\\\\b'",
-            )
+                filter="status = 'a\\\\b'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
         self._assert_round_trips_cleanly(sql, dialect)
 
@@ -2089,15 +2224,14 @@ class TestMeasureFilterInjection:
     ) -> None:
         """The ``LIKE`` path in ``_filter_node_to_sql`` goes through a separate
         helper (``_get_string_arg``); its backslash handling must match."""
-        orders_model.measures.append(
-            Measure(
+        orders_model.columns.append(
+            Column(
                 name="evil",
                 sql="amount",
                 # Runtime filter string:  status like 'a\'
-                filter="status like 'a\\\\'",
-            )
+                filter="status like 'a\\\\'", type=DataType.NUMBER)
         )
-        query = SlayerQuery(source_model="orders", fields=[Field(formula="evil:sum")])
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
         self._assert_round_trips_cleanly(sql, dialect)
 
@@ -2114,9 +2248,9 @@ class TestMeasureFilterInjection:
         """
         evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\' OR 1=1 --
         try:
-            orders_model.measures.append(Measure(name="evil", sql="amount", filter=evil))
+            orders_model.columns.append(Column(name="evil", sql="amount", filter=evil, type=DataType.NUMBER))
             query = SlayerQuery(
-                source_model="orders", fields=[Field(formula="evil:sum")]
+                source_model="orders", measures=[ModelMeasure(formula="evil:sum")]
             )
             sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
         except ValueError:
@@ -2128,11 +2262,11 @@ class TestMeasureFilterInjection:
     ) -> None:
         """Sanity: ordinary filters (no backslashes, no apostrophes) keep
         producing the same SQL shape after the escape-hardening change."""
-        orders_model.measures.append(
-            Measure(name="active_revenue", sql="amount", filter="status = 'active'")
+        orders_model.columns.append(
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
         )
         query = SlayerQuery(
-            source_model="orders", fields=[Field(formula="active_revenue:sum")]
+            source_model="orders", measures=[ModelMeasure(formula="active_revenue:sum")]
         )
         sql = await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
         assert "'active'" in sql
@@ -2153,21 +2287,20 @@ class TestAutoMoveDimensions:
     async def engine_and_model(self, storage):
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
-                Dimension(name="region", sql="region", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="region", sql="region", type=DataType.STRING),
+
             ],
-            measures=[],
         )
         await storage.save_model(orders)
         await storage.save_model(customers)
@@ -2176,89 +2309,90 @@ class TestAutoMoveDimensions:
 
     async def test_bare_local_dimension_moved(self, engine_and_model) -> None:
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["status", "revenue:sum"])
+        query = SlayerQuery(source_model="orders", measures=["status", "revenue:sum"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert len(result.fields) == 1
-        assert result.fields[0].formula == "revenue:sum"
+        assert len(result.measures) == 1
+        assert result.measures[0].formula == "revenue:sum"
         assert any(d.name == "status" for d in result.dimensions)
 
     async def test_cross_model_dimension_moved(self, engine_and_model) -> None:
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["customers.name", "revenue:sum"])
+        query = SlayerQuery(source_model="orders", measures=["customers.name", "revenue:sum"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert len(result.fields) == 1
+        assert len(result.measures) == 1
         assert any(d.full_name == "customers.name" for d in result.dimensions)
 
     async def test_colon_fields_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["revenue:sum", "*:count"])
+        query = SlayerQuery(source_model="orders", measures=["revenue:sum", "*:count"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert len(result.fields) == 2
+        assert len(result.measures) == 2
         assert not result.dimensions
 
     async def test_arithmetic_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["revenue:sum / *:count"])
+        query = SlayerQuery(source_model="orders", measures=["revenue:sum / *:count"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert len(result.fields) == 1
+        assert len(result.measures) == 1
 
-    async def test_bare_measure_name_kept(self, engine_and_model) -> None:
+    async def test_bare_named_measure_kept(self, engine_and_model) -> None:
+        """A bare ref to a model-level ``ModelMeasure`` name stays in measures."""
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["revenue", "revenue:sum"])
+        # Add a model-level measure formula named "aov".
+        model.measures.append(ModelMeasure(name="aov", formula="revenue:sum / *:count"))
+        query = SlayerQuery(source_model="orders", measures=["aov", "revenue:sum"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        # "revenue" is a measure, not a dimension — stays in fields
-        assert len(result.fields) == 2
+        # "aov" is a named formula — stays in measures, not auto-moved.
+        assert len(result.measures) == 2
 
     async def test_unknown_bare_name_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["nonexistent", "revenue:sum"])
+        query = SlayerQuery(source_model="orders", measures=["nonexistent", "revenue:sum"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert len(result.fields) == 2
+        assert len(result.measures) == 2
 
     async def test_invalid_cross_model_path_kept(self, engine_and_model) -> None:
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["customers.nonexistent", "revenue:sum"])
+        query = SlayerQuery(source_model="orders", measures=["customers.nonexistent", "revenue:sum"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert len(result.fields) == 2
+        assert len(result.measures) == 2
 
     async def test_no_fields_noop(self, engine_and_model) -> None:
         engine, model = engine_and_model
         query = SlayerQuery(source_model="orders", dimensions=["status"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert result.fields is None
+        assert result.measures is None
 
     async def test_appends_to_existing_dimensions(self, engine_and_model) -> None:
         engine, model = engine_and_model
-        query = SlayerQuery(source_model="orders", fields=["customer_id", "revenue:sum"], dimensions=["status"])
+        query = SlayerQuery(source_model="orders", measures=["customer_id", "revenue:sum"], dimensions=["status"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=model, named_queries={})
-        assert len(result.fields) == 1
+        assert len(result.measures) == 1
         dim_names = [d.name for d in result.dimensions]
         assert "status" in dim_names
         assert "customer_id" in dim_names
 
-    async def test_dotted_measure_not_moved_when_model_only_in_named_queries(self, storage) -> None:
-        """A dotted ref to a measure on a model only available via named_queries must stay in fields."""
+    async def test_dotted_named_measure_not_moved_via_named_queries(self, storage) -> None:
+        """A dotted ref to a ``ModelMeasure`` on a model loaded via a named query stays in measures."""
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[Dimension(name="status", sql="status", type=DataType.STRING)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
-        # customers NOT saved to storage — only available as a named query result
+        # customers NOT saved to storage — only available as a named query result.
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
             ],
-            measures=[Measure(name="name", sql="name")],  # "name" is BOTH dim and measure
+            measures=[ModelMeasure(name="name_count", formula="id:count_distinct")],
         )
         await storage.save_model(orders)
-        # Don't save customers to storage — simulate named-query-only model
 
         engine = SlayerQueryEngine(storage=storage)
-
-        # Mock _resolve_model to return customers for "customers" (simulating named_queries)
         original_resolve = engine._resolve_model
 
         async def patched_resolve(model_name, named_queries=None, _resolving=None):
@@ -2268,12 +2402,12 @@ class TestAutoMoveDimensions:
 
         engine._resolve_model = patched_resolve
 
-        query = SlayerQuery(source_model="orders", fields=["customers.name", "revenue:sum"])
+        query = SlayerQuery(source_model="orders", measures=["customers.name_count", "revenue:sum"])
         result = await engine._auto_move_fields_to_dimensions(query=query, model=orders, named_queries={})
-        # "customers.name" is both a dim and a measure — should stay in fields (not auto-moved)
-        assert len(result.fields) == 2, (
-            f"Expected 'customers.name' to stay in fields, but got {len(result.fields)} fields: "
-            f"{[f.formula for f in result.fields]}"
+        # "customers.name_count" is a named ModelMeasure — stays in measures, not auto-moved.
+        assert len(result.measures) == 2, (
+            f"Expected 'customers.name_count' to stay in measures, but got {len(result.measures)}: "
+            f"{[f.formula for f in result.measures]}"
         )
 
 
@@ -2292,11 +2426,10 @@ class TestInlineSQLJoins:
             name="orders_inline",
             sql="SELECT id, customer_id, amount FROM raw_orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="amount", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="amount", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -2306,11 +2439,10 @@ class TestInlineSQLJoins:
             name="orders_table",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="amount", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="amount", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -2318,7 +2450,7 @@ class TestInlineSQLJoins:
         """Sanity check: sql_table models emit LEFT JOIN correctly."""
         query = SlayerQuery(
             source_model="orders_table",
-            fields=["amount:sum"],
+            measures=["amount:sum"],
             dimensions=["customers.name"],
         )
         sql = await _generate(generator, query, table_orders)
@@ -2329,7 +2461,7 @@ class TestInlineSQLJoins:
         """Mirrors benchmark Q2/Q5: inline-SQL source with a cross-model dimension."""
         query = SlayerQuery(
             source_model="orders_inline",
-            fields=["amount:sum"],
+            measures=["amount:sum"],
             dimensions=["customers.name"],
         )
         sql = await _generate(generator, query, inline_orders)
@@ -2340,7 +2472,7 @@ class TestInlineSQLJoins:
         """Mirrors benchmark Q1: inline-SQL source with both cross-model dim and local measure."""
         query = SlayerQuery(
             source_model="orders_inline",
-            fields=["amount:avg"],
+            measures=["amount:avg"],
             dimensions=["customers.name"],
         )
         sql = await _generate(generator, query, inline_orders)
@@ -2367,20 +2499,18 @@ class TestSelfReferencingPaths:
     async def engine_and_models(self, storage):
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="amount", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="amount", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
-            ],
-            measures=[Measure(name="score", sql="score")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+Column(name="score", sql="score", type=DataType.NUMBER)],
         )
         await storage.save_model(orders)
         await storage.save_model(customers)
@@ -2404,10 +2534,10 @@ class TestSelfReferencingPaths:
     async def test_self_ref_measure_resolved_after_strip(self, engine_and_models) -> None:
         """'orders.customers.score:sum' is pre-stripped to 'customers.score:sum', then resolves."""
         engine, model = engine_and_models
-        query = SlayerQuery(source_model="orders", fields=["orders.customers.score:sum"])
+        query = SlayerQuery(source_model="orders", measures=["orders.customers.score:sum"])
         stripped = query.strip_source_model_prefix()
         # After stripping, the formula is "customers.score:sum"
-        assert stripped.fields[0].formula == "customers.score:sum"
+        assert stripped.measures[0].formula == "customers.score:sum"
         # Verify the engine can resolve the stripped cross-model measure
         result = await engine._resolve_cross_model_measure(
             spec_name="customers.score",
@@ -2436,15 +2566,14 @@ class TestConstantSQLFilters:
             name="premium",
             sql_table="Premium",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="has_premium", sql="1", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="amount", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="has_premium", sql="1", type=DataType.NUMBER),
+Column(name="amount", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="premium",
-            fields=[Field(formula="amount:sum")],
+            measures=[ModelMeasure(formula="amount:sum")],
             filters=["has_premium = '1'"],
         )
         sql = await _generate(generator, query, model)
@@ -2460,20 +2589,19 @@ class TestConstantSQLFilters:
             name="premium",
             sql_table="Premium",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="has_premium", sql="1", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="has_premium", sql="1", type=DataType.NUMBER),
             ],
         )
         policy_amount = SlayerModel(
             name="policy_amount",
             sql_table="Policy_Amount",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="premium_id", sql="premium_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="total", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="premium_id", sql="premium_id", type=DataType.NUMBER),
+Column(name="total", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="premium", join_pairs=[["premium_id", "id"]])],
         )
 
@@ -2484,7 +2612,7 @@ class TestConstantSQLFilters:
 
         query = SlayerQuery(
             source_model="policy_amount",
-            fields=[Field(formula="total:sum")],
+            measures=[ModelMeasure(formula="total:sum")],
             filters=["premium.has_premium = '1'"],
         )
         enriched = await enrich_query(
@@ -2504,15 +2632,14 @@ class TestConstantSQLFilters:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             filters=["safe_amount > 0"],
         )
         sql = await _generate(generator, query, model)
@@ -2527,20 +2654,19 @@ class TestConstantSQLFilters:
             name="customers",
             sql_table="customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
             ],
         )
         orders = SlayerModel(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -2551,7 +2677,7 @@ class TestConstantSQLFilters:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             filters=["customers.status = 'active'"],
         )
         enriched = await enrich_query(
@@ -2575,14 +2701,14 @@ class TestDimensionAggregation:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="order_id", sql="order_id", type=DataType.NUMBER, primary_key=True),
+            columns=[
+                Column(name="order_id", sql="order_id", type=DataType.NUMBER, primary_key=True),
+
             ],
-            measures=[],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="order_id:count_distinct")],
+            measures=[ModelMeasure(formula="order_id:count_distinct")],
         )
         sql = await _generate(generator, query, model)
         assert "COUNT(DISTINCT" in sql
@@ -2594,15 +2720,15 @@ class TestDimensionAggregation:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+
             ],
-            measures=[],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="customer_id:count")],
+            measures=[ModelMeasure(formula="customer_id:count")],
         )
         sql = await _generate(generator, query, model)
         assert "COUNT(" in sql
@@ -2614,15 +2740,15 @@ class TestDimensionAggregation:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+
             ],
-            measures=[],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="status:min")],
+            measures=[ModelMeasure(formula="status:min")],
         )
         sql = await _generate(generator, query, model)
         assert "MIN(" in sql
@@ -2633,17 +2759,17 @@ class TestDimensionAggregation:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+
             ],
-            measures=[],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="status:sum")],
+            measures=[ModelMeasure(formula="status:sum")],
         )
-        with pytest.raises(ValueError, match="not applicable to string dimension"):
+        with pytest.raises(ValueError, match="not applicable to string column"):
             await _generate(generator, query, model)
 
     async def test_sum_on_number_dimension_allowed(self, generator: SQLGenerator) -> None:
@@ -2652,43 +2778,19 @@ class TestDimensionAggregation:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="quantity", sql="qty", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="quantity", sql="qty", type=DataType.NUMBER),
+
             ],
-            measures=[],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="quantity:sum")],
+            measures=[ModelMeasure(formula="quantity:sum")],
         )
         sql = await _generate(generator, query, model)
         assert "SUM(" in sql
         assert "qty" in sql
-
-    async def test_measure_takes_precedence_over_dimension(self, generator: SQLGenerator) -> None:
-        """When measure and dimension share a name, the measure is used."""
-        model = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="revenue", sql="dim_revenue_col", type=DataType.NUMBER),
-            ],
-            measures=[
-                Measure(name="revenue", sql="measure_revenue_col"),
-            ],
-        )
-        query = SlayerQuery(
-            source_model="orders",
-            fields=[Field(formula="revenue:sum")],
-        )
-        sql = await _generate(generator, query, model)
-        # Should use the measure's SQL, not the dimension's
-        assert "measure_revenue_col" in sql
-        assert "dim_revenue_col" not in sql
-
 
     async def test_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
         """dimension:count_distinct inside a formula should work, not just as a standalone field."""
@@ -2696,18 +2798,17 @@ class TestDimensionAggregation:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[
-                Measure(name="revenue", sql="amount"),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
             ],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[
-                Field(formula="revenue:sum / customer_id:count_distinct", name="rev_per_customer"),
+            measures=[
+                ModelMeasure(formula="revenue:sum / customer_id:count_distinct", name="rev_per_customer"),
             ],
         )
         sql = await _generate(generator, query, model)
@@ -2723,11 +2824,10 @@ class TestDimensionAggregation:
             name="amounts",
             sql_table="amounts",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            ],
-            measures=[
-                Measure(name="total", sql="amount"),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+                Column(name="total", sql="amount", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="policies", join_pairs=[["policy_id", "id"]])],
         )
@@ -2735,11 +2835,11 @@ class TestDimensionAggregation:
             name="policies",
             sql_table="policies",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="policy_number", sql="policy_number", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="policy_number", sql="policy_number", type=DataType.STRING),
+
             ],
-            measures=[],
         )
 
         # Use a real query engine so resolve_cross_model_measure works
@@ -2752,8 +2852,8 @@ class TestDimensionAggregation:
 
             query = SlayerQuery(
                 source_model="amounts",
-                fields=[
-                    Field(formula="total:sum / policies.id:count_distinct", name="avg_per_policy"),
+                measures=[
+                    ModelMeasure(formula="total:sum / policies.id:count_distinct", name="avg_per_policy"),
                 ],
             )
             enriched = await engine._enrich(query=query, model=source, named_queries={})
@@ -2776,21 +2876,19 @@ class TestCrossModelCustomAggFuncStyle:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers",
             sql_table="customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            ],
-            measures=[Measure(name="score", sql="score")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+Column(name="score", sql="score", type=DataType.NUMBER)],
             aggregations=[
                 Aggregation(name="rolling_avg", formula="AVG({value})"),
             ],
@@ -2804,7 +2902,7 @@ class TestCrossModelCustomAggFuncStyle:
 
             query = SlayerQuery(
                 source_model="orders",
-                fields=["rolling_avg(customers.score)"],
+                measures=["rolling_avg(customers.score)"],
                 dimensions=[ColumnRef(name="status")],
             )
             enriched = await engine._enrich(query=query, model=orders, named_queries={})
@@ -2827,32 +2925,36 @@ class TestReachableAggDiscoveryUnbounded:
 
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+            ],
             joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
         )
         b = SlayerModel(
             name="b", sql_table="b", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+            ],
             joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
         )
         c = SlayerModel(
             name="c", sql_table="c", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+            ],
             joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
         )
         d = SlayerModel(
             name="d", sql_table="d", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+            ],
             joins=[ModelJoin(target_model="e", join_pairs=[["e_id", "id"]])],
         )
         e = SlayerModel(
             name="e", sql_table="e", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[Measure(name="score", sql="score")],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+Column(name="score", sql="score", type=DataType.NUMBER)],
             aggregations=[Aggregation(name="rolling_avg", formula="AVG({value})")],
         )
 
@@ -2866,7 +2968,7 @@ class TestReachableAggDiscoveryUnbounded:
             # function-style rewrite must still recognise it.
             query = SlayerQuery(
                 source_model="a",
-                fields=["rolling_avg(b.c.d.e.score)"],
+                measures=["rolling_avg(b.c.d.e.score)"],
             )
             enriched = await engine._enrich(query=query, model=a, named_queries={})
             sql = generator.generate(enriched=enriched)
@@ -2880,15 +2982,16 @@ class TestReachableAggDiscoveryUnbounded:
 
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[Measure(name="amount", sql="amount")],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+Column(name="amount", sql="amount", type=DataType.NUMBER)],
             aggregations=[Aggregation(name="rolling_a", formula="AVG({value})")],
             joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
         )
         b = SlayerModel(
             name="b", sql_table="b", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+            ],
             joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
         )
 
@@ -2897,7 +3000,7 @@ class TestReachableAggDiscoveryUnbounded:
             await storage.save_model(a)
             await storage.save_model(b)
             engine = SlayerQueryEngine(storage=storage)
-            query = SlayerQuery(source_model="a", fields=["rolling_a(amount)"])
+            query = SlayerQuery(source_model="a", measures=["rolling_a(amount)"])
             enriched = await engine._enrich(query=query, model=a, named_queries={})
             sql = generator.generate(enriched=enriched)
             _assert_valid_sql(sql, dialect=generator.dialect)
@@ -2917,12 +3020,11 @@ class TestTransformAmbiguousTimeDimension:
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -2930,7 +3032,7 @@ class TestTransformAmbiguousTimeDimension:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 source_model="orders",
-                fields=["cumsum(revenue:sum)"],
+                measures=["cumsum(revenue:sum)"],
                 time_dimensions=[
                     TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
                     TimeDimension(dimension="updated_at", granularity=TimeGranularity.MONTH),
@@ -2946,12 +3048,11 @@ class TestTransformAmbiguousTimeDimension:
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -2959,7 +3060,7 @@ class TestTransformAmbiguousTimeDimension:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 source_model="orders",
-                fields=["cumsum(revenue:sum)"],
+                measures=["cumsum(revenue:sum)"],
                 time_dimensions=[
                     TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH),
                     TimeDimension(dimension="updated_at", granularity=TimeGranularity.MONTH),
@@ -2987,13 +3088,12 @@ class TestParameterizedAggCanonicalDistinct:
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -3001,7 +3101,7 @@ class TestParameterizedAggCanonicalDistinct:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 source_model="orders",
-                fields=["*:count"],
+                measures=["*:count"],
                 dimensions=[ColumnRef(name="status")],
                 order=[
                     OrderItem(column="revenue:last(created_at)", direction="desc"),
@@ -3029,11 +3129,10 @@ class TestParameterizedAggCanonicalDistinct:
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -3041,9 +3140,9 @@ class TestParameterizedAggCanonicalDistinct:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 source_model="orders",
-                fields=[
-                    Field(formula="revenue:percentile(p=0.5)", name="p50"),
-                    Field(formula="revenue:percentile(p=0.95)", name="p95"),
+                measures=[
+                    ModelMeasure(formula="revenue:percentile(p=0.5)", name="p50"),
+                    ModelMeasure(formula="revenue:percentile(p=0.95)", name="p95"),
                 ],
                 dimensions=[ColumnRef(name="status")],
             )
@@ -3073,14 +3172,14 @@ class TestParameterizedAggCanonicalDistinct:
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_model(m)
             engine = SlayerQueryEngine(storage=storage)
-            query = SlayerQuery(source_model="orders", fields=["revenue:sum"])
+            query = SlayerQuery(source_model="orders", measures=["revenue:sum"])
             enriched = await engine._enrich(query=query, model=m, named_queries={})
             assert any(em.alias == "orders.revenue_sum" for em in enriched.measures)
 
@@ -3091,14 +3190,14 @@ class TestParameterizedAggCanonicalDistinct:
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_model(m)
             engine = SlayerQueryEngine(storage=storage)
-            query = SlayerQuery(source_model="orders", fields=["*:count"])
+            query = SlayerQuery(source_model="orders", measures=["*:count"])
             enriched = await engine._enrich(query=query, model=m, named_queries={})
             assert any(em.alias == "orders._count" for em in enriched.measures)
 
@@ -3116,31 +3215,30 @@ class TestMultiHopCrossModelMeasure:
             name="policy_coverage_detail",
             sql_table="policy_coverage_detail",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="coverage_code", sql="coverage_code", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="coverage_code", sql="coverage_code", type=DataType.STRING),
+
             ],
-            measures=[],
             joins=[ModelJoin(target_model="claim_coverage", join_pairs=[["id", "pcd_id"]])],
         )
         claim_cov = SlayerModel(
             name="claim_coverage",
             sql_table="claim_coverage",
             data_source="test",
-            dimensions=[
-                Dimension(name="pcd_id", sql="pcd_id", type=DataType.NUMBER, primary_key=True),
+            columns=[
+                Column(name="pcd_id", sql="pcd_id", type=DataType.NUMBER, primary_key=True),
+
             ],
-            measures=[],
             joins=[ModelJoin(target_model="claim_amount", join_pairs=[["claim_id", "claim_id"]])],
         )
         claim_amt = SlayerModel(
             name="claim_amount",
             sql_table="claim_amount",
             data_source="test",
-            dimensions=[
-                Dimension(name="claim_id", sql="claim_id", type=DataType.NUMBER, primary_key=True),
-            ],
-            measures=[Measure(name="total_claim_amount", sql="amount")],
+            columns=[
+                Column(name="claim_id", sql="claim_id", type=DataType.NUMBER, primary_key=True),
+Column(name="total_claim_amount", sql="amount", type=DataType.NUMBER)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3152,7 +3250,7 @@ class TestMultiHopCrossModelMeasure:
 
             query = SlayerQuery(
                 source_model="policy_coverage_detail",
-                fields=[Field(formula="claim_coverage.claim_amount.total_claim_amount:sum")],
+                measures=[ModelMeasure(formula="claim_coverage.claim_amount.total_claim_amount:sum")],
                 dimensions=[ColumnRef(name="coverage_code")],
             )
             enriched = await engine._enrich(query=query, model=pcd, named_queries={})
@@ -3168,24 +3266,27 @@ class TestMultiHopCrossModelMeasure:
 
         model_a = SlayerModel(
             name="a", sql_table="a_table", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                        Dimension(name="status", sql="status", type=DataType.STRING)],
-            measures=[], joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                        Column(name="status", sql="status", type=DataType.STRING),
+
+            ], joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
         )
         model_b = SlayerModel(
             name="b", sql_table="b_table", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[], joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+            ], joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
         )
         model_c = SlayerModel(
             name="c", sql_table="c_table", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[], joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+            ], joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
         )
         model_d = SlayerModel(
             name="d", sql_table="d_table", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[Measure(name="value", sql="val")],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+Column(name="value", sql="val", type=DataType.NUMBER)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3196,7 +3297,7 @@ class TestMultiHopCrossModelMeasure:
 
             query = SlayerQuery(
                 source_model="a",
-                fields=[Field(formula="b.c.d.value:sum")],
+                measures=[ModelMeasure(formula="b.c.d.value:sum")],
                 dimensions=[ColumnRef(name="status")],
             )
             enriched = await engine._enrich(query=query, model=model_a, named_queries={})
@@ -3211,15 +3312,15 @@ class TestMultiHopCrossModelMeasure:
 
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                        Dimension(name="status", sql="status", type=DataType.STRING)],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                        Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[Measure(name="score", sql="score")],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+Column(name="score", sql="score", type=DataType.NUMBER)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3230,7 +3331,7 @@ class TestMultiHopCrossModelMeasure:
 
             query = SlayerQuery(
                 source_model="orders",
-                fields=[Field(formula="customers.score:sum")],
+                measures=[ModelMeasure(formula="customers.score:sum")],
                 dimensions=[ColumnRef(name="status")],
             )
             enriched = await engine._enrich(query=query, model=orders, named_queries={})
@@ -3252,10 +3353,10 @@ class TestCrossModelRerootedSubquery:
         """Shared model definitions for re-rooting tests."""
         policy = SlayerModel(
             name="policy", sql_table="policy", data_source="test",
-            dimensions=[
-                Dimension(name="policy_identifier", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="policy_number", type=DataType.STRING),
-                Dimension(name="status_code", type=DataType.STRING),
+            columns=[
+                Column(name="policy_identifier", type=DataType.NUMBER, primary_key=True),
+                Column(name="policy_number", type=DataType.STRING),
+                Column(name="status_code", type=DataType.STRING),
             ],
             joins=[
                 ModelJoin(target_model="policy_amount", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
@@ -3264,11 +3365,10 @@ class TestCrossModelRerootedSubquery:
         )
         policy_amount = SlayerModel(
             name="policy_amount", sql_table="policy_amount", data_source="test",
-            dimensions=[
-                Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="effective_date", type=DataType.TIMESTAMP),
-            ],
-            measures=[Measure(name="total_policy_amount", sql="policy_amount")],
+            columns=[
+                Column(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+                Column(name="effective_date", type=DataType.TIMESTAMP),
+Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)],
             joins=[
                 ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
                 ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
@@ -3277,16 +3377,16 @@ class TestCrossModelRerootedSubquery:
         )
         premium = SlayerModel(
             name="premium", sql_table="premium", data_source="test",
-            dimensions=[
-                Dimension(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="has_premium", sql="1", type=DataType.STRING),
+            columns=[
+                Column(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+                Column(name="has_premium", sql="1", type=DataType.STRING),
             ],
         )
         agreement_party_role = SlayerModel(
             name="agreement_party_role", sql_table="agreement_party_role", data_source="test",
-            dimensions=[
-                Dimension(name="agreement_identifier", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="party_role_code", type=DataType.STRING),
+            columns=[
+                Column(name="agreement_identifier", type=DataType.NUMBER, primary_key=True),
+                Column(name="party_role_code", type=DataType.STRING),
             ],
         )
         return policy, policy_amount, premium, agreement_party_role
@@ -3311,7 +3411,7 @@ class TestCrossModelRerootedSubquery:
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 source_model="policy",
-                fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+                measures=[ModelMeasure(formula="policy_amount.total_policy_amount:sum")],
                 dimensions=[ColumnRef(name="policy_number")],
                 filters=[
                     "agreement_party_role.party_role_code = 'PH'",
@@ -3340,7 +3440,7 @@ class TestCrossModelRerootedSubquery:
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 source_model="policy",
-                fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+                measures=[ModelMeasure(formula="policy_amount.total_policy_amount:sum")],
                 dimensions=[ColumnRef(name="policy_number")],
             )
             enriched = await engine._enrich(query=query, model=policy, named_queries={})
@@ -3359,11 +3459,11 @@ class TestCrossModelRerootedSubquery:
         # Filter on 'warehouse' is reachable from orders but not customers.
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", type=DataType.STRING),
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", type=DataType.STRING),
+
             ],
-            measures=[],
             joins=[
                 ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
                 ModelJoin(target_model="warehouse", join_pairs=[["warehouse_id", "id"]]),
@@ -3371,22 +3471,21 @@ class TestCrossModelRerootedSubquery:
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            dimensions=[
-                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-            ],
-            measures=[Measure(name="score", sql="score")],
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+Column(name="score", sql="score", type=DataType.NUMBER)],
         )
         warehouse = SlayerModel(
             name="warehouse", sql_table="warehouse", data_source="test",
-            dimensions=[
-                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="region", type=DataType.STRING),
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="region", type=DataType.STRING),
             ],
         )
         async with self._setup_engine(orders, customers, warehouse) as engine:
             query = SlayerQuery(
                 source_model="orders",
-                fields=[Field(formula="customers.score:avg")],
+                measures=[ModelMeasure(formula="customers.score:avg")],
                 dimensions=[ColumnRef(name="status")],
                 filters=["warehouse.region = 'US'"],
             )
@@ -3409,7 +3508,7 @@ class TestCrossModelRerootedSubquery:
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 source_model="policy",
-                fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+                measures=[ModelMeasure(formula="policy_amount.total_policy_amount:sum")],
                 time_dimensions=[TimeDimension(
                     dimension=ColumnRef(name="policy_amount.effective_date"),
                     granularity=TimeGranularity.MONTH,
@@ -3428,14 +3527,16 @@ class TestCrossModelRerootedSubquery:
     async def test_rerooted_cross_model_in_formula(self, generator, _models):
         """Formula mixing local + cross-model measure uses re-rooted CTE."""
         policy, policy_amount, premium, agreement_party_role = _models
-        # Add a local measure to policy
+        # Add a local column on policy that the formula will aggregate
         policy_with_measure = policy.model_copy(update={
-            "measures": [Measure(name="number_of_policies", sql="1")],
+            "columns": list(policy.columns) + [
+                Column(name="number_of_policies", sql="1", type=DataType.NUMBER),
+            ],
         })
         async with self._setup_engine(policy_with_measure, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 source_model="policy",
-                fields=[Field(
+                measures=[ModelMeasure(
                     formula="number_of_policies:sum / policy_amount.total_policy_amount:sum",
                     name="ratio",
                 )],
@@ -3457,7 +3558,7 @@ class TestCrossModelRerootedSubquery:
             # policy_amount has a join to policy, so status_code is reachable
             query = SlayerQuery(
                 source_model="policy",
-                fields=[Field(formula="policy_amount.total_policy_amount:sum")],
+                measures=[ModelMeasure(formula="policy_amount.total_policy_amount:sum")],
                 dimensions=[ColumnRef(name="policy_number")],
                 filters=["status_code = 'ACTIVE'"],
             )
@@ -3475,27 +3576,25 @@ class TestCrossModelRerootedSubquery:
         """Function-style custom aggregation in filter must be recognised during rerooting."""
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            dimensions=[
-                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="amount", sql="amount")],
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", type=DataType.STRING),
+Column(name="amount", sql="amount", type=DataType.NUMBER)],
             aggregations=[Aggregation(name="custom_sum", formula="SUM({value})")],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            dimensions=[
-                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", type=DataType.STRING),
-            ],
-            measures=[Measure(name="lifetime_value", sql="lifetime_value")],
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", type=DataType.STRING),
+Column(name="lifetime_value", sql="lifetime_value", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]])],
         )
         async with self._setup_engine(orders, customers) as engine:
             query = SlayerQuery(
                 source_model="orders",
-                fields=[Field(formula="customers.lifetime_value:sum")],
+                measures=[ModelMeasure(formula="customers.lifetime_value:sum")],
                 dimensions=[ColumnRef(name="status")],
                 filters=["custom_sum(amount) > 0"],
             )
@@ -3513,16 +3612,15 @@ class TestOrderByCustomFieldName:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="customer_id:count_distinct", name="num_customers")],
+            measures=[ModelMeasure(formula="customer_id:count_distinct", name="num_customers")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
         )
@@ -3538,16 +3636,15 @@ class TestOrderByCustomFieldName:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="customer_id:count_distinct")],
+            measures=[ModelMeasure(formula="customer_id:count_distinct")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column=ColumnRef(name="customer_id_count_distinct"), direction="asc")],
         )
@@ -3565,19 +3662,18 @@ class TestOrderByCustomFieldName:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[
-                Field(formula="customer_id:count_distinct", name="num_customers"),
-                Field(formula="cumsum(revenue:sum)", name="running_rev"),
+            measures=[
+                ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+                ModelMeasure(formula="cumsum(revenue:sum)", name="running_rev"),
             ],
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(
@@ -3602,15 +3698,14 @@ class TestOrderByColonSyntax:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column="revenue:sum", direction="desc")],
         )
@@ -3624,15 +3719,14 @@ class TestOrderByColonSyntax:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column="*:count", direction="desc")],
         )
@@ -3649,22 +3743,20 @@ class TestOrderByColonSyntax:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers",
             sql_table="customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
-            ],
-            measures=[Measure(name="score", sql="score")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+Column(name="score", sql="score", type=DataType.NUMBER)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3675,7 +3767,7 @@ class TestOrderByColonSyntax:
 
             query = SlayerQuery(
                 source_model="orders",
-                fields=[Field(formula="customers.score:sum")],
+                measures=[ModelMeasure(formula="customers.score:sum")],
                 dimensions=[ColumnRef(name="status")],
                 order=[OrderItem(column="customers.score:sum", direction="desc")],
             )
@@ -3694,33 +3786,31 @@ class TestOrderByColonSyntax:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers",
             sql_table="customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
-            ],
-            measures=[Measure(name="score", sql="score")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+Column(name="score", sql="score", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
         )
         regions = SlayerModel(
             name="regions",
             sql_table="regions",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="region_name", sql="region_name", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="region_name", sql="region_name", type=DataType.STRING),
+
             ],
-            measures=[],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3732,7 +3822,7 @@ class TestOrderByColonSyntax:
 
             query = SlayerQuery(
                 source_model="orders",
-                fields=[Field(formula="customers.score:sum")],
+                measures=[ModelMeasure(formula="customers.score:sum")],
                 dimensions=[ColumnRef(name="customers.regions.region_name")],
                 order=[OrderItem(column="customers.score:sum", direction="asc")],
             )
@@ -3753,15 +3843,14 @@ class TestOrderByFormulaEnrichment:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
             dimensions=[ColumnRef(name="status")],
             order=[OrderItem(column="revenue:sum", direction="desc")],
         )
@@ -3776,18 +3865,17 @@ class TestOrderByFormulaEnrichment:
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", sql="status", type=DataType.STRING),
-                Dimension(name="ordered_at", sql="ordered_at", type=DataType.DATE),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="ordered_at", sql="ordered_at", type=DataType.DATE),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         query = SlayerQuery(
             source_model="orders",
-            fields=[
-                Field(formula="*:count"),
-                Field(formula="revenue:last(ordered_at)"),
+            measures=[
+                ModelMeasure(formula="*:count"),
+                ModelMeasure(formula="revenue:last(ordered_at)"),
             ],
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(dimension="ordered_at", granularity="month")],
@@ -3809,20 +3897,19 @@ class TestJoinType:
             name="customers",
             sql_table="customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
             ],
         )
         orders = SlayerModel(
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], join_type="inner")],
         )
 
@@ -3833,7 +3920,7 @@ class TestJoinType:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             dimensions=[ColumnRef(name="customers.name")],
         )
         enriched = await enrich_query(
@@ -3859,20 +3946,19 @@ class TestMeasureFilterCrossModelJoin:
             name="loss_payment",
             sql_table="Loss_Payment",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                Column(name="has_flag", sql="1", type=DataType.NUMBER),
             ],
         )
         claim_amount = SlayerModel(
             name="claim_amount",
             sql_table="Claim_Amount",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            ],
-            measures=[
-                Measure(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1"),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+                Column(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
         )
@@ -3884,7 +3970,7 @@ class TestMeasureFilterCrossModelJoin:
 
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_amt:sum")],
+            measures=[ModelMeasure(formula="loss_amt:sum")],
         )
         enriched = await enrich_query(
             query=query,
@@ -3906,20 +3992,19 @@ class TestMeasureFilterCrossModelJoin:
             name="customers",
             sql_table="customers",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="name", sql="name", type=DataType.STRING),
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
             ],
         )
         orders = SlayerModel(
             name="orders",
             sql_table="orders",
             data_source="test",
-            dimensions=[
-                Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            ],
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -3930,7 +4015,7 @@ class TestMeasureFilterCrossModelJoin:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[Field(formula="revenue:sum")],
+            measures=[ModelMeasure(formula="revenue:sum")],
             dimensions=[ColumnRef(name="customers.name")],
         )
         enriched = await enrich_query(
@@ -3954,13 +4039,12 @@ class TestIsolatedFilteredMeasureCTEs:
             name="claim_amount",
             sql_table="Claim_Amount",
             data_source="test",
-            dimensions=[
-                Dimension(name="claim_amount_id", sql="id", type=DataType.NUMBER, primary_key=True),
-            ],
-            measures=[
-                Measure(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1"),
-                Measure(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1"),
-                Measure(name="total_amount", sql="amount"),
+            columns=[
+                Column(name="claim_amount_id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+                Column(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.NUMBER),
+                Column(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.NUMBER),
+                Column(name="total_amount", sql="amount", type=DataType.NUMBER),
             ],
             joins=[
                 ModelJoin(target_model="loss_payment", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
@@ -3974,23 +4058,23 @@ class TestIsolatedFilteredMeasureCTEs:
         return {
             "loss_payment": SlayerModel(
                 name="loss_payment", sql_table="Loss_Payment", data_source="test",
-                dimensions=[
-                    Dimension(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
-                    Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+                columns=[
+                    Column(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                    Column(name="has_flag", sql="1", type=DataType.NUMBER),
                 ],
             ),
             "loss_reserve": SlayerModel(
                 name="loss_reserve", sql_table="Loss_Reserve", data_source="test",
-                dimensions=[
-                    Dimension(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
-                    Dimension(name="has_flag", sql="1", type=DataType.NUMBER),
+                columns=[
+                    Column(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
+                    Column(name="has_flag", sql="1", type=DataType.NUMBER),
                 ],
             ),
             "claim": SlayerModel(
                 name="claim", sql_table="Claim", data_source="test",
-                dimensions=[
-                    Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                    Dimension(name="claim_number", sql="claim_number", type=DataType.STRING),
+                columns=[
+                    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                    Column(name="claim_number", sql="claim_number", type=DataType.STRING),
                 ],
             ),
         }
@@ -4018,7 +4102,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """Two measures with different cross-model filters → separate CTEs, not intersecting JOINs."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_payment_amt:sum"), Field(formula="loss_reserve_amt:sum")],
+            measures=[ModelMeasure(formula="loss_payment_amt:sum"), ModelMeasure(formula="loss_reserve_amt:sum")],
             dimensions=[ColumnRef(name="claim.claim_number")],
         )
         enriched = await self._enrich(claim_amount_model, related_models, query)
@@ -4037,10 +4121,10 @@ class TestIsolatedFilteredMeasureCTEs:
         """Formula referencing isolated measures evaluates in the outer query."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[
-                Field(formula="loss_payment_amt:sum"),
-                Field(formula="loss_reserve_amt:sum"),
-                Field(formula="loss_payment_amt:sum + loss_reserve_amt:sum", name="total_loss"),
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_reserve_amt:sum"),
+                ModelMeasure(formula="loss_payment_amt:sum + loss_reserve_amt:sum", name="total_loss"),
             ],
             dimensions=[ColumnRef(name="claim.claim_number")],
         )
@@ -4059,7 +4143,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """Unfiltered measure stays in base, filtered goes to CTE."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="total_amount:sum"), Field(formula="loss_payment_amt:sum")],
+            measures=[ModelMeasure(formula="total_amount:sum"), ModelMeasure(formula="loss_payment_amt:sum")],
             dimensions=[ColumnRef(name="claim.claim_number")],
         )
         enriched = await self._enrich(claim_amount_model, related_models, query)
@@ -4077,7 +4161,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """When all measures are isolated, base query is just a dimension spine."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_payment_amt:sum")],
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
             dimensions=[ColumnRef(name="claim.claim_number")],
         )
         enriched = await self._enrich(claim_amount_model, related_models, query)
@@ -4096,7 +4180,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """When no dimensions exist, measure CTEs are CROSS JOINed to base (Bug Q6)."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_payment_amt:sum"), Field(formula="loss_reserve_amt:sum")],
+            measures=[ModelMeasure(formula="loss_payment_amt:sum"), ModelMeasure(formula="loss_reserve_amt:sum")],
         )
         enriched = await self._enrich(claim_amount_model, related_models, query)
         sql = generator.generate(enriched=enriched)
@@ -4117,7 +4201,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_payment_amt:sum")],
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
             # No dimensions on claim — only the filter references the claim join
             filters=["claim.claim_number = '12345'"],
         )
@@ -4139,7 +4223,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_payment_amt:sum")],
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
             dimensions=[ColumnRef(name="claim.claim_number")],
         )
         enriched = await self._enrich(claim_amount_model, related_models, query)
@@ -4216,7 +4300,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10)."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_payment_amt:sum")],
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
             # No dimensions — base has nothing to select
         )
         enriched = await self._enrich(claim_amount_model, related_models, query)
@@ -4232,7 +4316,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """HAVING filter on an isolated measure is correctly applied in the base CTE."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="loss_payment_amt:sum")],
+            measures=[ModelMeasure(formula="loss_payment_amt:sum")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             filters=["loss_payment_amt:sum > 1000"],
         )
@@ -4246,14 +4330,14 @@ class TestIsolatedFilteredMeasureCTEs:
         self, generator: SQLGenerator, claim_amount_model, related_models,
     ) -> None:
         """Same filtered measure with sum + avg must produce distinct CTEs, not collide."""
-        loss_m = claim_amount_model.get_measure("loss_payment_amt")
+        loss_m = claim_amount_model.get_column("loss_payment_amt")
         loss_m.allowed_aggregations = ["sum", "avg"]
 
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[
-                Field(formula="loss_payment_amt:sum"),
-                Field(formula="loss_payment_amt:avg"),
+            measures=[
+                ModelMeasure(formula="loss_payment_amt:sum"),
+                ModelMeasure(formula="loss_payment_amt:avg"),
             ],
             dimensions=[ColumnRef(name="claim.claim_number")],
         )
@@ -4277,11 +4361,11 @@ class TestIsolatedFilteredMeasureCTEs:
     def claim_amount_model_with_time(self, claim_amount_model):
         """Extend claim_amount_model with a timestamp dimension and first/last measures."""
         claim_amount_model.default_time_dimension = "created_at"
-        claim_amount_model.dimensions.append(
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        claim_amount_model.columns.append(
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
         )
-        claim_amount_model.measures.append(
-            Measure(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1"),
+        claim_amount_model.columns.append(
+            Column(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.NUMBER),
         )
         return claim_amount_model
 
@@ -4292,7 +4376,7 @@ class TestIsolatedFilteredMeasureCTEs:
         a ranked subquery — it should be a plain dimension spine."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="latest_payment:last")],
+            measures=[ModelMeasure(formula="latest_payment:last")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
@@ -4323,7 +4407,7 @@ class TestIsolatedFilteredMeasureCTEs:
         ranked subquery and produce valid SQL (not reference non-existent _last_rn)."""
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="latest_payment:last")],
+            measures=[ModelMeasure(formula="latest_payment:last")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
@@ -4361,9 +4445,9 @@ class TestIsolatedFilteredMeasureCTEs:
         # total_amount has no cross-model filter → stays in base
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[
-                Field(formula="total_amount:last"),
-                Field(formula="latest_payment:last"),
+            measures=[
+                ModelMeasure(formula="total_amount:last"),
+                ModelMeasure(formula="latest_payment:last"),
             ],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
@@ -4399,16 +4483,16 @@ class TestIsolatedFilteredMeasureCTEs:
     ) -> None:
         """Isolated first measure with explicit time_column uses correct ordering."""
         # Add a timestamp dimension and measure for the explicit time column
-        claim_amount_model_with_time.dimensions.append(
-            Dimension(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        claim_amount_model_with_time.columns.append(
+            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
         )
-        claim_amount_model_with_time.measures.append(
-            Measure(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1"),
+        claim_amount_model_with_time.columns.append(
+            Column(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.NUMBER),
         )
         # Explicit time column specified at query time: first(updated_at)
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[Field(formula="earliest_reserve:first(updated_at)")],
+            measures=[ModelMeasure(formula="earliest_reserve:first(updated_at)")],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
                 TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
@@ -4441,14 +4525,14 @@ class TestIsolatedFilteredMeasureCTEs:
     ) -> None:
         """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER in base."""
         # latest_payment already has cross-model filter; add another
-        claim_amount_model_with_time.measures.append(
-            Measure(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1"),
+        claim_amount_model_with_time.columns.append(
+            Column(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.NUMBER),
         )
         query = SlayerQuery(
             source_model="claim_amount",
-            fields=[
-                Field(formula="latest_payment:last"),
-                Field(formula="latest_reserve:last"),
+            measures=[
+                ModelMeasure(formula="latest_payment:last"),
+                ModelMeasure(formula="latest_reserve:last"),
             ],
             dimensions=[ColumnRef(name="claim.claim_number")],
             time_dimensions=[
@@ -4494,7 +4578,7 @@ class TestIsolatedFilteredMeasureCTEs:
         enriched = EnrichedQuery(
             model_name="orders",
             sql_table="Orders",
-            dimensions=[dim],
+            columns=[dim],
             time_dimensions=[],
             measures=[],
             cross_model_measures=[
@@ -4576,10 +4660,10 @@ class TestGetColumnTypesSql:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[
-                Measure(name="revenue", sql="amount"),
-                Measure(name="safe_amount", sql="COALESCE(amount, 0)"),
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.NUMBER),
             ],
         )
         with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=model):
@@ -4621,10 +4705,10 @@ class TestGetColumnTypesSql:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[
-                Measure(name="revenue", sql="amount"),
-                Measure(name="customer_score", sql="customers.score"),
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="customer_score", sql="customers.score", type=DataType.NUMBER),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
@@ -4662,3 +4746,33 @@ class TestGetColumnTypesSql:
         # Both measures should have types (cross-model included)
         assert result.get("revenue") == "number", f"Missing revenue type: {result}"
         assert result.get("customer_score") == "number", f"Missing customer_score type: {result}"
+
+    def test_explicit_empty_allowed_aggregations_skips_probe(self, tmp_path) -> None:
+        """An explicit empty allowed_aggregations must NOT fall back to type defaults."""
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(
+                    name="opaque",
+                    sql="amount",
+                    type=DataType.NUMBER,
+                    allowed_aggregations=[],
+                ),
+            ],
+        )
+        engine = SlayerQueryEngine(storage=storage)
+        probe = engine._build_type_probe_query(model)
+        formulas = [m.formula for m in probe.measures]
+        assert any(f and f.startswith("revenue:") for f in formulas), (
+            f"Expected 'revenue' to be probed, got {formulas}"
+        )
+        assert not any(f and f.startswith("opaque:") for f in formulas), (
+            f"Empty allowed_aggregations must skip probe, got {formulas}"
+        )

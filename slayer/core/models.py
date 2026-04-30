@@ -3,14 +3,18 @@
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
 from slayer.core.format import NumberFormat
-from slayer.core.query import SlayerQuery
 from slayer.storage.migrations import migrate as _migrate_schema
+
+if TYPE_CHECKING:
+    from slayer.core.query import SlayerQuery
+
+_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +92,15 @@ def _fix_multidot_sql(sql: str, context: str) -> str:
     return result
 
 
-class Dimension(BaseModel):
+class Column(BaseModel):
+    """A row-level column on a model.
+
+    Carries the metadata needed to use the column either as a GROUP BY key
+    (a "dimension") or as the input to an aggregation (a "measure"). What it's
+    used as is decided per-query, gated by data type and ``allowed_aggregations``.
+
+    Replaces v1 ``Dimension`` and ``Measure`` (which were merged in v2).
+    """
     name: str
     sql: Optional[str] = None
     type: DataType = DataType.STRING
@@ -97,18 +109,56 @@ class Dimension(BaseModel):
     label: Optional[str] = None
     hidden: bool = False
     format: Optional[NumberFormat] = None
+    allowed_aggregations: Optional[List[str]] = None
+    filter: Optional[str] = None  # Applied inside CASE WHEN at aggregation time only
     meta: Optional[Dict[str, Any]] = None
 
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        return _validate_column_name(v, "Dimension")
+        return _validate_column_name(v, "Column")
 
     @field_validator("sql")
     @classmethod
     def _fix_multidot_sql(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
-            v = _fix_multidot_sql(v, context="Dimension sql")
+            v = _fix_multidot_sql(v, context="Column sql")
+        return v
+
+    @field_validator("filter")
+    @classmethod
+    def _fix_multidot_filter(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = _fix_multidot_sql(v, context="Column filter")
+        return v
+
+
+class ModelMeasure(BaseModel):
+    """A named formula on a model (or a query-level computed measure).
+
+    A formula is a string that evaluates to an aggregated value: a column-with-
+    aggregation reference (``"revenue:sum"``), arithmetic over such references
+    (``"revenue:sum / *:count"``), a transform call (``"cumsum(revenue:sum)"``),
+    or a bare reference to another ``ModelMeasure`` by name. See
+    ``slayer/core/formula.py`` for full grammar.
+
+    Stored in ``SlayerModel.measures`` for reuse, and in ``SlayerQuery.measures``
+    for inline / query-specific definitions. The shape is identical in both
+    contexts; the difference is scope.
+    """
+    formula: str
+    name: Optional[str] = None
+    label: Optional[str] = None
+    description: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not _NAME_PATTERN.match(v):
+            raise ValueError(
+                f"Invalid name '{v}': must contain only letters, digits, "
+                f"and underscores, and start with a letter or underscore"
+            )
         return v
 
 
@@ -156,37 +206,6 @@ class Aggregation(BaseModel):
         return self
 
 
-class Measure(BaseModel):
-    name: str
-    sql: Optional[str] = None
-    description: Optional[str] = None
-    label: Optional[str] = None
-    hidden: bool = False
-    allowed_aggregations: Optional[List[str]] = None
-    filter: Optional[str] = None
-    format: Optional[NumberFormat] = None
-    meta: Optional[Dict[str, Any]] = None
-
-    @field_validator("name")
-    @classmethod
-    def _validate_name(cls, v: str) -> str:
-        return _validate_column_name(v, "Measure")
-
-    @field_validator("sql")
-    @classmethod
-    def _fix_multidot_sql(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None:
-            v = _fix_multidot_sql(v, context="Measure sql")
-        return v
-
-    @field_validator("filter")
-    @classmethod
-    def _fix_multidot_filter(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None:
-            v = _fix_multidot_sql(v, context="Measure filter")
-        return v
-
-
 class ModelJoin(BaseModel):
     """A join relationship to another model."""
     target_model: str                               # Name of the joined model
@@ -207,14 +226,14 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 1
+    version: int = 2
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
     source_queries: Optional[List] = None  # List of SlayerQuery dicts — saved query structure
     data_source: str = ""
-    dimensions: List[Dimension] = Field(default_factory=list)
-    measures: List[Measure] = Field(default_factory=list)
+    columns: List[Column] = Field(default_factory=list)
+    measures: List[ModelMeasure] = Field(default_factory=list)
     aggregations: List[Aggregation] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -246,29 +265,48 @@ class SlayerModel(BaseModel):
         return [_fix_multidot_sql(f, context="Model filter") for f in v]
 
     @model_validator(mode="after")
+    def _validate_column_measure_disjoint(self) -> "SlayerModel":
+        """Column and measure names must not overlap within a model.
+
+        A query formula like ``{"formula": "revenue"}`` resolves by looking up
+        the name in both lists; allowing collisions would make resolution
+        ambiguous.
+        """
+        col_names = {c.name for c in self.columns}
+        measure_names = {m.name for m in self.measures if m.name is not None}
+        overlap = sorted(col_names & measure_names)
+        if overlap:
+            raise ValueError(
+                f"Model '{self.name}': name collision between columns and "
+                f"measures: {overlap}. Each name must be unique within a model "
+                f"(columns and measures share a namespace)."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_allowed_aggregations(self) -> "SlayerModel":
-        """Validate that allowed_aggregations on measures reference valid names."""
+        """Validate that allowed_aggregations on columns reference valid names."""
         custom_agg_names = {a.name for a in self.aggregations}
         valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
-        for m in self.measures:
-            if m.allowed_aggregations is not None:
-                for agg_name in m.allowed_aggregations:
+        for c in self.columns:
+            if c.allowed_aggregations is not None:
+                for agg_name in c.allowed_aggregations:
                     if agg_name not in valid_names:
                         raise ValueError(
-                            f"Measure '{m.name}': allowed_aggregations contains "
+                            f"Column '{c.name}': allowed_aggregations contains "
                             f"'{agg_name}', which is not a built-in aggregation "
                             f"or defined in this model's aggregations. "
                             f"Valid: {sorted(valid_names)}"
                         )
         return self
 
-    def get_dimension(self, name: str) -> Optional[Dimension]:
-        for d in self.dimensions:
-            if d.name == name:
-                return d
+    def get_column(self, name: str) -> Optional[Column]:
+        for c in self.columns:
+            if c.name == name:
+                return c
         return None
 
-    def get_measure(self, name: str) -> Optional[Measure]:
+    def get_measure(self, name: str) -> Optional[ModelMeasure]:
         for m in self.measures:
             if m.name == name:
                 return m
@@ -302,7 +340,7 @@ class NamedQuery(BaseModel):
     version: int = 1
     name: str
     description: Optional[str] = None
-    stages: List[SlayerQuery]
+    stages: List["SlayerQuery"]
     variables: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")

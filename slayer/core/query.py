@@ -14,6 +14,7 @@ from typing import Annotated, Any, Dict, Iterator, List, Optional, Set, Tuple
 from pydantic import BaseModel, BeforeValidator, field_validator, model_validator
 
 from slayer.core.enums import TimeGranularity
+from slayer.core.models import ModelMeasure
 from slayer.storage.migrations import migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
@@ -220,40 +221,12 @@ class OrderItem(BaseModel):
         return data
 
 
-class Field(BaseModel):
-    """A computed field defined by a formula.
-
-    The formula is parsed to determine the field type:
-    - "count" → plain measure reference
-    - "revenue / count" → arithmetic expression
-    - "cumsum(revenue)" → transform function call
-    - "time_shift(revenue, -1)" → previous row's value (compiles to LAG)
-    - "time_shift(revenue, -1, 'year')" → year-over-year (calendar-based)
-    - "last(revenue)" → most recent value
-    - "change(revenue / count)" → transform wrapping an expression
-
-    Available functions: cumsum, time_shift, change, change_pct, rank, last.
-    """
-
-    formula: str  # e.g., "count", "revenue / count", "cumsum(revenue)"
-    name: Optional[str] = None  # Technical column name (auto-generated if omitted)
-    label: Optional[str] = None  # Human-readable label for output
-    description: Optional[str] = None
-
-    @field_validator("name")
-    @classmethod
-    def _validate_name(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and not _NAME_PATTERN.match(v):
-            raise ValueError(f"Invalid name '{v}': must contain only letters, digits, and underscores, and start with a letter or underscore")
-        return v
-
-
-def _coerce_fields(v: Any) -> Any:
-    """Allow plain strings in the fields list: "count" → {"formula": "count"}."""
+def _coerce_measures(v: Any) -> Any:
+    """Allow plain strings in the measures list: "count" → {"formula": "count"}."""
     if v is None:
         return v
     if not isinstance(v, (list, tuple)):
-        raise TypeError(f"'fields' must be a list, got {type(v).__name__}")
+        raise TypeError(f"'measures' must be a list, got {type(v).__name__}")
     return [{"formula": item} if isinstance(item, str) else item for item in v]
 
 
@@ -267,15 +240,16 @@ def _coerce_dimensions(v: Any) -> Any:
 
 
 class ModelExtension(BaseModel):
-    """Extend an existing model with extra dimensions, measures, or joins.
+    """Extend an existing model with extra columns, measures, or joins.
 
-    Used inline on a query to add computed dimensions (SQL expressions),
-    extra joins, or additional measures without modifying the stored model.
+    Used inline on a query to add computed columns (SQL expressions),
+    extra joins, or additional measure formulas without modifying the
+    stored model.
     """
-    source_name: str                    # Model/query to extend
-    dimensions: Optional[List] = None   # Extra Dimension objects
-    measures: Optional[List] = None     # Extra Measure objects
-    joins: Optional[List] = None        # Extra ModelJoin objects
+    source_name: str                                # Model/query to extend
+    columns: Optional[List] = None                  # Extra Column objects
+    measures: Optional[List[ModelMeasure]] = None   # Extra ModelMeasure formulas
+    joins: Optional[List] = None                    # Extra ModelJoin objects
 
 
 def _get_source_model_name(source_model: object) -> Optional[str]:
@@ -322,15 +296,17 @@ class SlayerQuery(BaseModel):
     This is intentionally minimal — just names and references, no SQL.
     The query engine enriches it into an EnrichedQuery for execution.
 
-    Use `fields` for data columns and `filters` for conditions:
-        fields=[{"formula": "count"}, {"formula": "revenue / count", "name": "aov"}]
+    Use ``measures`` for computed/aggregated values and ``filters`` for
+    conditions::
+
+        measures=[{"formula": "*:count"}, {"formula": "revenue:sum / *:count", "name": "aov"}]
         filters=["status == 'completed'", "amount > 100"]
     """
 
-    version: int = 1
+    version: int = 2
     name: Optional[str] = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
-    fields: Annotated[Optional[List[Field]], BeforeValidator(_coerce_fields)] = None
+    measures: Annotated[Optional[List[ModelMeasure]], BeforeValidator(_coerce_measures)] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -455,19 +431,19 @@ class SlayerQuery(BaseModel):
             if order_changed:
                 updates["order"] = new_order
 
-        # Fields (formula strings)
-        if self.fields:
-            new_fields = []
-            fields_changed = False
-            for f in self.fields:
+        # Measures (formula strings)
+        if self.measures:
+            new_measures = []
+            measures_changed = False
+            for f in self.measures:
                 new_formula = pattern.sub("", f.formula)
                 if new_formula != f.formula:
-                    new_fields.append(f.model_copy(update={"formula": new_formula}))
-                    fields_changed = True
+                    new_measures.append(f.model_copy(update={"formula": new_formula}))
+                    measures_changed = True
                 else:
-                    new_fields.append(f)
-            if fields_changed:
-                updates["fields"] = new_fields
+                    new_measures.append(f)
+            if measures_changed:
+                updates["measures"] = new_measures
 
         # Filters
         if self.filters:

@@ -4,7 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from slayer.mcp.server import create_mcp_server
 from slayer.core.format import NumberFormat
@@ -19,8 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):
+    # Allow legacy `fields` to flow through to SlayerQuery's v1→v2 migration.
+    model_config = ConfigDict(extra="allow")
+
     source_model: str
-    fields: Optional[List[Dict[str, Any]]] = None
+    measures: Optional[List[Dict[str, Any]]] = None
     dimensions: Optional[List[Dict[str, Any]]] = None
     time_dimensions: Optional[List[Dict[str, Any]]] = None
     filters: Optional[List[str]] = None
@@ -123,8 +126,8 @@ def create_app(storage: StorageBackend) -> FastAPI:
         if model is None:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
         data = model.model_dump(exclude_none=True)
-        if "dimensions" in data:
-            data["dimensions"] = [d for d in data["dimensions"] if not d.get("hidden")]
+        if "columns" in data:
+            data["columns"] = [c for c in data["columns"] if not c.get("hidden")]
         if "measures" in data:
             data["measures"] = [m for m in data["measures"] if not m.get("hidden")]
         return data

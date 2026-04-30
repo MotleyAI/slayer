@@ -11,7 +11,12 @@ transformation step in the query pipeline.
 import re
 from typing import Dict, List, Optional, Set, Tuple
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, NUMERIC_ONLY_AGGREGATIONS
+from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
+    DEFAULT_AGGREGATIONS_BY_TYPE,
+    DataType,
+    PRIMARY_KEY_AGGREGATIONS,
+)
 from slayer.core.formula import (
     ALL_TRANSFORMS,
     AggregatedMeasureRef,
@@ -236,7 +241,7 @@ async def enrich_query(
             known_aliases[alias_key] = alias
             return
 
-        # Resolve measure SQL
+        # Resolve column SQL
         measure_def = None
         if measure_name == "*":
             if aggregation_name != "count":
@@ -245,44 +250,45 @@ async def enrich_query(
                 )
             sql = None
         else:
-            measure_def = model.get_measure(measure_name)
-            if measure_def is not None:
-                if measure_def.allowed_aggregations is not None:
-                    if aggregation_name not in measure_def.allowed_aggregations:
-                        raise ValueError(
-                            f"Aggregation '{aggregation_name}' not allowed for measure "
-                            f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
-                        )
-                # Type-compatibility check: reject numeric-only aggregations
-                # (sum/avg/median/weighted_avg/percentile) on measures backed by a
-                # non-numeric column. Type is inferred from a same-named dimension,
-                # which covers the common auto-ingestion case (one measure per
-                # column, both sharing the column name).
-                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS:
-                    matching_dim = model.get_dimension(measure_name)
-                    if matching_dim is not None and str(matching_dim.type) == "string":
+            measure_def = model.get_column(measure_name)
+            if measure_def is None:
+                raise ValueError(
+                    f"Column '{measure_name}' not found in model '{model.name}'"
+                )
+            # Apply aggregation eligibility gates per the v2 contract:
+            # 1. Primary-key columns are always restricted to count/count_distinct
+            #    (regardless of type or any explicit whitelist).
+            # 2. An explicit allowed_aggregations whitelist on a non-PK column
+            #    overrides type defaults.
+            # 3. Otherwise, built-in aggregations are gated by type defaults;
+            #    custom model-level aggregations are allowed without further
+            #    type restriction.
+            if measure_def.primary_key:
+                if aggregation_name not in PRIMARY_KEY_AGGREGATIONS:
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' not allowed for "
+                        f"primary-key column '{measure_name}'. "
+                        f"Allowed: {sorted(PRIMARY_KEY_AGGREGATIONS)}"
+                    )
+            elif measure_def.allowed_aggregations is not None:
+                if aggregation_name not in measure_def.allowed_aggregations:
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' not allowed for column "
+                        f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                    )
+            else:
+                is_custom_agg = model.get_aggregation(aggregation_name) is not None
+                if not is_custom_agg:
+                    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(
+                        measure_def.type, frozenset()
+                    )
+                    if aggregation_name not in allowed:
                         raise ValueError(
                             f"Aggregation '{aggregation_name}' is not applicable to "
-                            f"string measure '{measure_name}' in model '{model.name}'. "
-                            f"Valid aggregations for string columns: count, "
-                            f"count_distinct, min, max, first, last."
+                            f"{measure_def.type} column '{measure_name}' in model "
+                            f"'{model.name}'. Default aggregations: {sorted(allowed)}"
                         )
-                sql = measure_def.sql
-            else:
-                # Fall back: allow aggregating a dimension (e.g. pk:count_distinct)
-                dim_def = model.get_dimension(measure_name)
-                if dim_def is None:
-                    raise ValueError(
-                        f"Measure or dimension '{measure_name}' not found in model '{model.name}'"
-                    )
-                sql = dim_def.sql or measure_name
-                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS and str(dim_def.type) == "string":
-                    raise ValueError(
-                        f"Aggregation '{aggregation_name}' is not applicable to "
-                        f"string dimension '{measure_name}' in model '{model.name}'. "
-                        f"Valid aggregations for string columns: count, "
-                        f"count_distinct, min, max, first, last."
-                    )
+            sql = measure_def.sql or measure_name
 
         # Validate aggregation exists
         aggregation_def = model.get_aggregation(aggregation_name)
@@ -563,7 +569,7 @@ async def enrich_query(
         raise ValueError(f"Unsupported field spec: {spec!r}")
 
     # Process each query field
-    for qfield in query.fields or []:
+    for qfield in query.measures or []:
         spec = parse_formula(qfield.formula, extra_agg_names=custom_agg_names)
         field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
             "*", ""
@@ -748,7 +754,7 @@ async def _resolve_dimensions(
     dimensions = []
     for dim_ref in query.dimensions or []:
         if dim_ref.model is None:
-            dim_def = model.get_dimension(dim_ref.name)
+            dim_def = model.get_column(dim_ref.name)
             effective_model = model_name_str
         else:
             parts = dim_ref.model.split(".") + [dim_ref.name]
@@ -782,7 +788,7 @@ async def _resolve_time_dimensions(
     time_dimensions = []
     for td in query.time_dimensions or []:
         if td.dimension.model is None:
-            dim_def = model.get_dimension(td.dimension.name)
+            dim_def = model.get_column(td.dimension.name)
             td_model_name = model_name_str
         else:
             parts = td.dimension.model.split(".") + [td.dimension.name]
@@ -843,7 +849,7 @@ def _resolve_last_agg_time(
         td = time_dimensions[0]
         return f"{td.model_name}.{td.sql or td.name}"
     if query.filters:
-        time_dim_names = {d.name for d in model.dimensions if d.type in (DataType.TIMESTAMP, DataType.DATE)}
+        time_dim_names = {c.name for c in model.columns if c.type in (DataType.TIMESTAMP, DataType.DATE)}
         for f_str in query.filters or []:
             for td_name in time_dim_names:
                 if td_name in f_str:
@@ -1101,7 +1107,7 @@ async def resolve_filter_columns(
         resolved_columns = []
         for col_name in dict.fromkeys(f.columns):
             if "." not in col_name:
-                dim = model.get_dimension(col_name)
+                dim = model.get_column(col_name)
                 if dim:
                     sql_expr = dim.sql or col_name
                     qualified = f"{model_name}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
@@ -1142,7 +1148,7 @@ async def resolve_filter_columns(
                     current_model = target_model
 
                 if resolved and current_model:
-                    dim = current_model.get_dimension(dim_name)
+                    dim = current_model.get_column(dim_name)
                     if dim:
                         sql_expr = dim.sql or dim_name
                         table_alias = "__".join(path_parts)

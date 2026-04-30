@@ -9,10 +9,10 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field as PydanticField, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
-from slayer.core.models import DatasourceConfig, Dimension, Measure, NamedQuery, SlayerModel
-from slayer.core.query import ColumnRef, Field, SlayerQuery, TimeDimension
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, NamedQuery, SlayerModel
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
@@ -140,10 +140,10 @@ def _infer_aggregated_format(
     if aggregation in ("avg", "weighted_avg", "median"):
         return NumberFormat(type=NumberFormatType.FLOAT)
 
-    # sum, min, max, first, last: inherit from source measure
-    source_measure = model.get_measure(measure_name)
-    if source_measure and source_measure.format:
-        return source_measure.format
+    # sum, min, max, first, last: inherit from source column's format
+    source_col = model.get_column(measure_name)
+    if source_col and source_col.format:
+        return source_col.format
 
     return None
 
@@ -285,35 +285,42 @@ class SlayerQueryEngine:
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
     def _build_type_probe_query(self, model: SlayerModel) -> SlayerQuery:
-        """Build a SlayerQuery for type-probing all of a model's measures.
+        """Build a SlayerQuery for type-probing all of a model's columns.
 
-        Uses :max aggregation by default (works on all column types).
-        Falls back to the first allowed aggregation if max is restricted.
+        Picks an aggregation per column from its effective allowed set:
+        explicit ``allowed_aggregations`` if present, otherwise the type
+        default. Prefers ``max`` (preserves the column's SQL type for orderable
+        types) and falls back to the first allowed aggregation otherwise.
+        Skips primary-key columns (they're identifiers, not values to probe).
         """
-        fields = []
-        for m in model.measures:
-            if m.hidden:
+        measures: List[ModelMeasure] = []
+        for c in model.columns:
+            if c.hidden or c.primary_key:
                 continue
-            agg = "max"
-            if m.allowed_aggregations and "max" not in m.allowed_aggregations:
-                agg = m.allowed_aggregations[0]
-            fields.append(Field(formula=f"{m.name}:{agg}"))
-        return SlayerQuery(source_model=model.name, fields=fields)
+            if c.allowed_aggregations is not None:
+                allowed = list(c.allowed_aggregations)
+            else:
+                allowed = sorted(DEFAULT_AGGREGATIONS_BY_TYPE.get(c.type, frozenset()))
+            if not allowed:
+                continue
+            agg = "max" if "max" in allowed else allowed[0]
+            measures.append(ModelMeasure(formula=f"{c.name}:{agg}"))
+        return SlayerQuery(source_model=model.name, measures=measures)
 
     async def get_column_types(self, model_name: str) -> Dict[str, str]:
-        """Infer column types for a model's measures via a type-probe query.
+        """Infer column types for a model's columns via a type-probe query.
 
         Builds a real query through the engine's enrich+generate pipeline
         so cross-model measures (with JOINs) are resolved correctly.
 
-        Returns {measure_name: type_category} where type_category is
+        Returns {column_name: type_category} where type_category is
         "number", "string", "time", or "boolean".
         """
         model = await self.storage.get_model(model_name)
         if model is None:
             return {}
-        measures = [m for m in model.measures if not m.hidden]
-        if not measures:
+        probeable = [c for c in model.columns if not c.hidden and not c.primary_key]
+        if not probeable:
             return {}
 
         try:
@@ -436,19 +443,19 @@ class SlayerQueryEngine:
                 named_queries=named_queries,
                 _resolving=_resolving,
             )
-            # Extend the base model with extra dims/measures/joins
+            # Extend the base model with extra columns/measures/joins
             from slayer.core.models import ModelJoin
 
-            extra_dims = [
-                Dimension.model_validate(d) if isinstance(d, dict) else d for d in (query_model.dimensions or [])
+            extra_cols = [
+                Column.model_validate(c) if isinstance(c, dict) else c for c in (query_model.columns or [])
             ]
             extra_measures = [
-                Measure.model_validate(m) if isinstance(m, dict) else m for m in (query_model.measures or [])
+                ModelMeasure.model_validate(m) if isinstance(m, dict) else m for m in (query_model.measures or [])
             ]
             extra_joins = [ModelJoin.model_validate(j) if isinstance(j, dict) else j for j in (query_model.joins or [])]
             return base.model_copy(
                 update={
-                    "dimensions": list(base.dimensions) + extra_dims,
+                    "columns": list(base.columns) + extra_cols,
                     "measures": list(base.measures) + extra_measures,
                     "joins": list(base.joins) + extra_joins,
                 }
@@ -533,8 +540,7 @@ class SlayerQueryEngine:
             name=name,
             source_queries=queries,
             data_source=virtual.data_source,
-            dimensions=virtual.dimensions,
-            measures=virtual.measures,
+            columns=virtual.columns,
             description=description,
         )
         if save:
@@ -620,11 +626,11 @@ class SlayerQueryEngine:
         # has clean column names that work naturally in JOINs and references.
         virtual_name = override_name or inner_query.name or f"_subquery_{inner_model.name}"
 
-        # Build lookups for labels/descriptions from the source model
-        source_dim_label = {d.name: d.label for d in inner_model.dimensions if d.label}
-        source_dim_desc = {d.name: d.description for d in inner_model.dimensions if d.description}
-        source_measure_label = {m.name: m.label for m in inner_model.measures if m.label}
-        source_measure_desc = {m.name: m.description for m in inner_model.measures if m.description}
+        # Build lookups for labels/descriptions from the source model.
+        # In v2 there is no dim/measure split — every column carries both
+        # potential roles, so a single map per attribute is sufficient.
+        source_label = {c.name: c.label for c in inner_model.columns if c.label}
+        source_desc = {c.name: c.description for c in inner_model.columns if c.description}
 
         # Collect all inner aliases and their short names.
         # Short names must be valid SQL identifiers (no dots). We derive them
@@ -645,61 +651,55 @@ class SlayerQueryEngine:
             # Replace remaining dots with __ to encode the original join path
             return stripped.replace(".", "__")
 
-        # (inner_alias, short_name, data_type, is_measure, label, description, format)
+        # (inner_alias, short_name, data_type, label, description, format)
         column_map = []
         for d in enriched.dimensions:
             short = _alias_to_short(d.alias)
-            label = d.label or source_dim_label.get(d.name)
-            desc = source_dim_desc.get(d.name)
-            column_map.append((d.alias, short, d.type, False, label, desc, d.format))
+            label = d.label or source_label.get(d.name)
+            desc = source_desc.get(d.name)
+            column_map.append((d.alias, short, d.type, label, desc, d.format))
         for td in enriched.time_dimensions:
             short = _alias_to_short(td.alias)
-            label = td.label or source_dim_label.get(td.name)
-            desc = source_dim_desc.get(td.name)
-            column_map.append((td.alias, short, DataType.TIMESTAMP, False, label, desc, None))
+            label = td.label or source_label.get(td.name)
+            desc = source_desc.get(td.name)
+            column_map.append((td.alias, short, DataType.TIMESTAMP, label, desc, None))
         for m in enriched.measures:
             src_name = m.source_measure_name or m.name
-            label = m.label or source_measure_label.get(src_name)
-            desc = source_measure_desc.get(src_name)
+            label = m.label or source_label.get(src_name)
+            desc = source_desc.get(src_name)
             fmt = _infer_aggregated_format(
                 model=inner_model,
                 measure_name=src_name,
                 aggregation=m.aggregation,
             )
-            column_map.append((m.alias, m.name, DataType.NUMBER, True, label, desc, fmt))
+            column_map.append((m.alias, m.name, DataType.NUMBER, label, desc, fmt))
         for t in enriched.transforms:
             column_map.append(
-                (t.alias, t.name, DataType.NUMBER, True, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (t.alias, t.name, DataType.NUMBER, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for e in enriched.expressions:
             column_map.append(
-                (e.alias, e.name, DataType.NUMBER, True, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (e.alias, e.name, DataType.NUMBER, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for cm in enriched.cross_model_measures:
             short = _alias_to_short(cm.alias)
-            column_map.append((cm.alias, short, DataType.NUMBER, True, cm.label, None, cm.format))
+            column_map.append((cm.alias, short, DataType.NUMBER, cm.label, None, cm.format))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
-        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _, _ in column_map]
+        rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]
         wrapped_sql = f"SELECT {', '.join(rename_parts)} FROM ({inner_sql}) AS _inner"
 
-        dims = []
-        for _, short, dtype, _, label, desc, fmt in column_map:
-            dims.append(Dimension(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
-
-        # One measure per column. Aggregation is specified at query time
-        # using colon syntax (e.g., "order_total_sum:avg"). *:count is always
-        # available for COUNT(*) without a measure definition.
-        measures = []
-        for _, short, _, _, label, desc, fmt in column_map:
-            measures.append(Measure(name=short, sql=short, label=label, description=desc, format=fmt))
+        # One Column per result column — each is potentially both a dimension
+        # (group-by) or measure (with colon-aggregation) at query time.
+        cols: List[Column] = []
+        for _, short, dtype, label, desc, fmt in column_map:
+            cols.append(Column(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
 
         return SlayerModel(
             name=virtual_name,
             sql=wrapped_sql,
             data_source=inner_model.data_source,
-            dimensions=dims,
-            measures=measures,
+            columns=cols,
             default_time_dimension=inner_model.default_time_dimension,
         )
 
@@ -708,15 +708,15 @@ class SlayerQueryEngine:
         model: SlayerModel,
         parts: list[str],
         named_queries: dict = None,
-    ) -> "Dimension | None":
-        """Walk the join graph to resolve a multi-hop dimension.
+    ) -> "Column | None":
+        """Walk the join graph to resolve a multi-hop column reference.
 
         For "customers.regions.name", walks: model → customers → regions,
         then looks up "name" on the regions model.
         """
         current_model = model
         visited = {model.name}
-        # Walk intermediate models (all parts except the last, which is the dim name)
+        # Walk intermediate models (all parts except the last, which is the column name)
         for hop_name in parts[:-1]:
             if hop_name in visited:
                 raise ValueError(
@@ -739,9 +739,8 @@ class SlayerQueryEngine:
             visited.add(hop_name)
             current_model = target
 
-        # Look up the final dimension on the terminal model
-        dim_name = parts[-1]
-        return current_model.get_dimension(dim_name)
+        # Look up the final column on the terminal model
+        return current_model.get_column(parts[-1])
 
     async def _auto_move_fields_to_dimensions(
         self,
@@ -749,32 +748,32 @@ class SlayerQueryEngine:
         model: SlayerModel,
         named_queries: dict,
     ) -> SlayerQuery:
-        """Move bare (no-colon) field names to dimensions if they're valid dimensions but not measures.
+        """Move bare (no-colon) measure-formula entries to dimensions when they
+        name a column that isn't a (named) ModelMeasure formula.
 
-        LLMs frequently place dimension names in ``fields`` instead of
-        ``dimensions``.  When a field has no colon (no aggregation) and
-        resolves as a dimension (local or via the full join path) but
-        NOT as a measure, silently move it to ``dimensions`` with a
-        warning.
+        LLMs frequently place column names in ``measures`` instead of
+        ``dimensions``. When an entry has no colon (no aggregation) and
+        resolves as a column but NOT as a model-level ModelMeasure formula,
+        silently move it to ``dimensions`` with a warning.
         """
-        if not query.fields:
+        if not query.measures:
             return query
 
-        kept_fields = []
+        kept: List = []
         extra_dims = list(query.dimensions or [])
         moved = False
 
-        for f in query.fields:
+        for f in query.measures:
             formula = f.formula.strip()
             # Only consider bare names (no colon, no operators, no parens)
             if ":" not in formula and not any(c in formula for c in "+-*/()"):
                 if "." not in formula:
                     # Local reference
-                    is_dim = model.get_dimension(formula) is not None
-                    is_measure = model.get_measure(formula) is not None
-                    if is_dim and not is_measure:
+                    is_col = model.get_column(formula) is not None
+                    is_named_measure = model.get_measure(formula) is not None
+                    if is_col and not is_named_measure:
                         logger.warning(
-                            "Auto-moved '%s' from fields to dimensions (not a measure formula)",
+                            "Auto-moved '%s' from measures to dimensions (not a named measure formula)",
                             formula,
                         )
                         extra_dims.append(ColumnRef(name=formula))
@@ -784,13 +783,13 @@ class SlayerQueryEngine:
                     # Cross-model reference — walk the full join path
                     parts = formula.split(".")
                     try:
-                        dim_def = await self._resolve_dimension_via_joins(
+                        col_def = await self._resolve_dimension_via_joins(
                             model=model, parts=parts, named_queries=named_queries,
                         )
                     except ValueError:
-                        dim_def = None  # Circular join — leave in fields
-                    if dim_def is not None:
-                        # parts[-2] is the terminal model containing the dimension named by parts[-1]
+                        col_def = None  # Circular join — leave in measures
+                    if col_def is not None:
+                        # parts[-2] is the terminal model containing the column at parts[-1]
                         terminal_model_name = parts[-2]
                         try:
                             terminal_model = await self._resolve_model(
@@ -799,23 +798,23 @@ class SlayerQueryEngine:
                             )
                         except ValueError:
                             terminal_model = None
-                        is_measure = (
+                        is_named_measure = (
                             terminal_model.get_measure(parts[-1]) is not None
                             if terminal_model else False
                         )
-                        if not is_measure:
+                        if not is_named_measure:
                             logger.warning(
-                                "Auto-moved '%s' from fields to dimensions (not a measure formula)",
+                                "Auto-moved '%s' from measures to dimensions (not a named measure formula)",
                                 formula,
                             )
                             extra_dims.append(ColumnRef(name=formula))
                             moved = True
                             continue
-            kept_fields.append(f)
+            kept.append(f)
 
         if not moved:
             return query
-        return query.model_copy(update={"fields": kept_fields or None, "dimensions": extra_dims})
+        return query.model_copy(update={"measures": kept or None, "dimensions": extra_dims})
 
     async def _resolve_cross_model_measure(
         self,
@@ -870,31 +869,28 @@ class SlayerQueryEngine:
         target_model = current_model
         join = first_join  # For join_pairs: source model → first hop
 
-        # Find the measure (or dimension) in the target model
+        # Find the column in the target model
         if measure_name == "*":
-            from slayer.core.models import Measure
-
-            measure_def = Measure(name="*", sql=None)
+            measure_def = Column(name="*", sql=None)
         else:
-            measure_def = target_model.get_measure(measure_name)
-            if measure_def is None:
-                # Fall back: allow aggregating a dimension (e.g. policies.id:count_distinct)
-                from slayer.core.enums import NUMERIC_ONLY_AGGREGATIONS
-                from slayer.core.models import Measure
+            from slayer.core.enums import NUMERIC_ONLY_AGGREGATIONS
 
-                dim_def = target_model.get_dimension(measure_name)
-                if dim_def is None:
-                    raise ValueError(
-                        f"Measure or dimension '{measure_name}' not found in model '{target_model_name}'. "
-                        f"Available measures: {[m.name for m in target_model.measures]}, "
-                        f"dimensions: {[d.name for d in target_model.dimensions]}"
-                    )
-                if aggregation_name and aggregation_name in NUMERIC_ONLY_AGGREGATIONS and str(dim_def.type) == "string":
-                    raise ValueError(
-                        f"Aggregation '{aggregation_name}' is not applicable to "
-                        f"string dimension '{measure_name}' in model '{target_model_name}'."
-                    )
-                measure_def = Measure(name=measure_name, sql=dim_def.sql or measure_name)
+            col_def = target_model.get_column(measure_name)
+            if col_def is None:
+                raise ValueError(
+                    f"Column '{measure_name}' not found in model '{target_model_name}'. "
+                    f"Available columns: {[c.name for c in target_model.columns]}"
+                )
+            if (
+                aggregation_name
+                and aggregation_name in NUMERIC_ONLY_AGGREGATIONS
+                and str(col_def.type) == "string"
+            ):
+                raise ValueError(
+                    f"Aggregation '{aggregation_name}' is not applicable to "
+                    f"string column '{measure_name}' in model '{target_model_name}'."
+                )
+            measure_def = col_def
 
         # The cross-model sub-query starts FROM the source table with JOIN to
         # the target, so all source dimensions are available for grouping.
@@ -1044,8 +1040,8 @@ class SlayerQueryEngine:
             parsed = parse_filter(remapped, extra_agg_names=_custom_agg_names)
             for col in parsed.columns:
                 if "." not in col:
-                    dim = model.get_dimension(col)
-                    if dim:
+                    src_col = model.get_column(col)
+                    if src_col:
                         remapped = re.sub(
                             rf"(?<!\.)(?<!\w)\b{re.escape(col)}\b(?!\.)",
                             f"{source_model_name}.{col}",
@@ -1056,7 +1052,7 @@ class SlayerQueryEngine:
         # --- Build and enrich re-rooted query ---
         rerooted_query = SlayerQuery(
             source_model=target_model_name,
-            fields=[Field(formula=field_formula)],
+            measures=[ModelMeasure(formula=field_formula)],
             dimensions=rerooted_dims or None,
             time_dimensions=rerooted_time_dims or None,
             filters=rerooted_filters or None,

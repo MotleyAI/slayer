@@ -10,9 +10,8 @@ import duckdb
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
+    Column,
     DatasourceConfig,
-    Dimension,
-    Measure,
     NamedQuery,
     SlayerModel,
 )
@@ -53,13 +52,13 @@ async def duckdb_env(tmp_path):
         name="orders",
         sql_table="orders",
         data_source="duck",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="status", sql="status", type=DataType.STRING),
-            Dimension(name="amount", sql="amount", type=DataType.NUMBER),
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="total", sql="amount", type=DataType.NUMBER),
         ],
-        measures=[Measure(name="total", sql="amount")],
     ))
     engine = SlayerQueryEngine(storage=storage)
     return engine, storage
@@ -77,12 +76,12 @@ class TestNamedQueryEndToEnd:
                     name="completed_only",
                     source_model="orders",
                     filters=["status == 'completed'"],
-                    fields=[{"formula": "total:sum"}],
+                    measures=[{"formula": "total:sum"}],
                     dimensions=[{"name": "status"}],
                 ),
                 SlayerQuery(
                     source_model="completed_only",
-                    fields=[{"formula": "total_sum:avg"}],
+                    measures=[{"formula": "total_sum:avg"}],
                 ),
             ],
         )
@@ -106,7 +105,7 @@ class TestNamedQueryEndToEnd:
             stages=[
                 SlayerQuery(
                     source_model="orders",
-                    fields=[{"formula": "*:count"}],
+                    measures=[{"formula": "*:count"}],
                     filters=["amount > {min_amount}"],
                 ),
             ],
@@ -134,7 +133,7 @@ class TestNamedQueryEndToEnd:
             stages=[
                 SlayerQuery(
                     source_model="model_that_does_not_exist",
-                    fields=[{"formula": "*:count"}],
+                    measures=[{"formula": "*:count"}],
                 ),
             ],
         )
@@ -157,7 +156,7 @@ class TestNamedQueryEndToEnd:
             stages=[
                 SlayerQuery(
                     source_model="orders",
-                    fields=[{"formula": "*:count"}],
+                    measures=[{"formula": "*:count"}],
                     filters=["amount > {min_amount}"],
                 ),
             ],
@@ -181,7 +180,7 @@ class TestNamedQueryEndToEnd:
             stages=[
                 SlayerQuery(
                     source_model="orders",
-                    fields=[{"formula": "*:count"}],
+                    measures=[{"formula": "*:count"}],
                     filters=["amount > {min_amount}"],
                     variables={"min_amount": 100},  # stage wins
                 ),
@@ -210,7 +209,7 @@ class TestNamedQueryEndToEnd:
             stages=[
                 SlayerQuery(
                     source_model="orders",
-                    fields=[{"formula": "*:count"}],
+                    measures=[{"formula": "*:count"}],
                 ),
             ],
         )
@@ -219,7 +218,7 @@ class TestNamedQueryEndToEnd:
             name="my_query",
             sql_table="x",
             data_source="duck",
-            dimensions=[Dimension(name="x", sql="x", type=DataType.NUMBER)],
+            columns=[Column(name="x", sql="x", type=DataType.NUMBER, primary_key=True)],
         )
         with pytest.raises(ValueError, match="already exists|collide"):
             await storage.save_model(colliding)
@@ -231,7 +230,7 @@ class TestNamedQueryEndToEnd:
             stages=[
                 SlayerQuery(
                     source_model="orders",
-                    fields=[{"formula": "*:count"}],
+                    measures=[{"formula": "*:count"}],
                 ),
             ],
         )

@@ -9,8 +9,8 @@ pytest.importorskip("pytest_postgresql")
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasourceConfig, Dimension, Measure, SlayerModel
-from slayer.core.query import ColumnRef, Field, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -78,27 +78,26 @@ async def pg_env(postgresql):
         name="orders",
         sql_table="orders",
         data_source="testpg",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="status", sql="status", type=DataType.STRING),
-            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-        ],
-        measures=[
-            Measure(name="total", sql="amount"),
-            Measure(name="avg_amount", sql="amount"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+
+            Column(name="total", sql="amount", type=DataType.NUMBER),
+            Column(name="avg_amount", sql="amount", type=DataType.NUMBER),
         ],
     )
     customers_model = SlayerModel(
         name="customers",
         sql_table="customers",
         data_source="testpg",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="name", sql="name", type=DataType.STRING),
-            Dimension(name="region", sql="region", type=DataType.STRING),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="region", sql="region", type=DataType.STRING),
+
         ],
-        measures=[],
     )
     await storage.save_model(orders_model)
     await storage.save_model(customers_model)
@@ -109,18 +108,18 @@ async def pg_env(postgresql):
 @pytest.mark.integration
 class TestPostgresQueries:
     async def test_count_all(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "*:count"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
         result = await pg_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
     async def test_sum_measure(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "total:sum"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "total:sum"}])
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     async def test_avg_measure(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(source_model="orders", fields=[{"formula": "avg_amount:avg"}])
+        query = SlayerQuery(source_model="orders", measures=[{"formula": "avg_amount:avg"}])
         result = await pg_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -128,7 +127,7 @@ class TestPostgresQueries:
     async def test_group_by_status(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
         )
         result = await pg_env.execute(query=query)
@@ -140,7 +139,7 @@ class TestPostgresQueries:
     async def test_filter_equals(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             filters=["status == 'completed'"],
         )
         result = await pg_env.execute(query=query)
@@ -149,7 +148,7 @@ class TestPostgresQueries:
     async def test_filter_gt(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             filters=["amount > 100"],
         )
         result = await pg_env.execute(query=query)
@@ -158,7 +157,7 @@ class TestPostgresQueries:
     async def test_order_by_desc(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             order=[{"column": {"name": "count"}, "direction": "desc"}],
         )
@@ -168,7 +167,7 @@ class TestPostgresQueries:
     async def test_limit(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "status"}],
             limit=2,
         )
@@ -178,7 +177,7 @@ class TestPostgresQueries:
     async def test_multiple_measures(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}, {"formula": "total:sum"}],
+            measures=[{"formula": "*:count"}, {"formula": "total:sum"}],
             dimensions=[{"name": "status"}],
         )
         result = await pg_env.execute(query=query)
@@ -190,7 +189,7 @@ class TestPostgresQueries:
         """Postgres supports DATE_TRUNC — this should work unlike SQLite."""
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
         )
         result = await pg_env.execute(query=query)
@@ -199,7 +198,7 @@ class TestPostgresQueries:
     async def test_time_dimension_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             time_dimensions=[{
                 "dimension": {"name": "created_at"},
                 "granularity": "month",
@@ -214,7 +213,7 @@ class TestPostgresQueries:
     async def test_composite_filter(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             filters=["status == 'completed' or status == 'pending'"],
         )
         result = await pg_env.execute(query=query)
@@ -230,9 +229,9 @@ class TestPostgresQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev_month"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -250,9 +249,9 @@ class TestPostgresQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="change(total:sum)", name="amount_change"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="change(total:sum)", name="amount_change"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -269,9 +268,9 @@ class TestPostgresQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="change_pct(total:sum)", name="pct"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="change_pct(total:sum)", name="pct"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -289,10 +288,10 @@ class TestPostgresQueries:
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01", "2024-02-29"],
             )],
-            fields=[
-                Field(formula="total:sum"),
-                Field(formula="time_shift(total:sum, -1, 'month')", name="prev"),
-                Field(formula="time_shift(total:sum, 1, 'month')", name="next"),
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="time_shift(total:sum, -1, 'month')", name="prev"),
+                ModelMeasure(formula="time_shift(total:sum, 1, 'month')", name="next"),
             ],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
@@ -353,26 +352,24 @@ async def pg_cross_model_env(postgresql):
     run_sync(storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="testpg",
         default_time_dimension="created_at",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="status", sql="status", type=DataType.STRING),
-            Dimension(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Dimension(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Dimension(name="amount", sql="amount", type=DataType.NUMBER),
-        ],
-        measures=[
-            Measure(name="total", sql="amount"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+
+            Column(name="total", sql="amount", type=DataType.NUMBER),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     )))
     run_sync(storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="testpg",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="name", sql="name", type=DataType.STRING),
-        ],
-        measures=[
-            Measure(name="avg_score", sql="score"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+
+            Column(name="avg_score", sql="score", type=DataType.NUMBER),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -387,7 +384,7 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
             )],
-            fields=[Field(formula="*:count"), Field(formula="customers.avg_score:avg")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="customers.avg_score:avg")],
             order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
         )
         result = await pg_cross_model_env.execute(query=query)
@@ -407,9 +404,9 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
             )],
-            fields=[Field(formula="*:count"), Field(formula="total:sum")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
-        outer = SlayerQuery(source_model="monthly", fields=[Field(formula="*:count")])
+        outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="*:count")])
         result = await pg_cross_model_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
@@ -420,12 +417,12 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
             )],
-            fields=[Field(formula="*:count"), Field(formula="total:sum")],
+            measures=[ModelMeasure(formula="*:count"), ModelMeasure(formula="total:sum")],
         )
         saved = await pg_cross_model_env.create_model_from_query(query=source, name="pg_monthly")
         assert saved.source_queries is not None
         result = await pg_cross_model_env.execute(
-            query=SlayerQuery(source_model="pg_monthly", fields=[Field(formula="*:count")])
+            query=SlayerQuery(source_model="pg_monthly", measures=[ModelMeasure(formula="*:count")])
         )
         assert result.data[0]["pg_monthly._count"] == 3
 
@@ -435,10 +432,10 @@ class TestCrossModelAndMultistage:
         query = SlayerQuery(
             source_model=ModelExtension(
                 source_name="orders",
-                dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
+                columns=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
             ),
             dimensions=[ColumnRef(name="tier")],
-            fields=[Field(formula="*:count")],
+            measures=[ModelMeasure(formula="*:count")],
         )
         result = await pg_cross_model_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
@@ -499,19 +496,19 @@ def pg_ingest_env(postgresql):
 
 @pytest.mark.integration
 class TestRollupIngestion:
-    def test_orders_has_own_dimensions_only(self, pg_ingest_env) -> None:
-        """After ingestion, models only have their own columns as dimensions."""
+    def test_orders_has_own_columns_only(self, pg_ingest_env) -> None:
+        """After ingestion, models only have their own columns (no flattened joined dims)."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
-        dim_names = [d.name for d in orders.dimensions]
-        # Should have own columns only (no flattened joined dims)
-        assert "id" in dim_names
-        assert "customer_id" in dim_names
-        # Float-like columns (DECIMAL) get measures only, no dimension
-        assert "amount" not in dim_names
-        # Joined dimensions are resolved via join graph, not pre-flattened
-        assert not any("." in name for name in dim_names)
+        col_names = [c.name for c in orders.columns]
+        # Should have own columns only.
+        assert "id" in col_names
+        assert "customer_id" in col_names
+        # In v2, every non-joined column appears once (numeric columns included).
+        assert "amount" in col_names
+        # Joined dimensions are resolved via join graph, not pre-flattened.
+        assert not any("." in name for name in col_names)
 
     def test_orders_uses_sql_table_with_joins(self, pg_ingest_env) -> None:
         models, _, _ = pg_ingest_env
@@ -530,18 +527,17 @@ class TestRollupIngestion:
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    def test_orders_has_own_measures_only(self, pg_ingest_env) -> None:
-        """After ingestion, models only have measures for their own columns."""
+    def test_orders_has_no_named_measures_after_ingest(self, pg_ingest_env) -> None:
+        """v2 auto-ingest leaves model.measures (formula list) empty.
+
+        Row-level columns live on .columns; named-formula measures are an
+        opt-in library users populate themselves.
+        """
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
-
-        measure_names = [m.name for m in orders.measures]
-        # One measure per non-ID column; no auto-created 'count'
-        assert "amount" in measure_names
-        assert "count" not in measure_names
-        assert "amount_sum" not in measure_names
-        # No dotted measure names from joined models
-        assert not any("." in name for name in measure_names)
+        assert orders.measures == []
+        col_names = [c.name for c in orders.columns]
+        assert "amount" in col_names
 
     async def test_rollup_query_group_by_customer(self, pg_ingest_env) -> None:
         """Query orders grouped by rolled-up customer name."""
@@ -556,7 +552,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = await engine.execute(query=query)
@@ -579,7 +575,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}, {"formula": "amount:sum"}],
+            measures=[{"formula": "*:count"}, {"formula": "amount:sum"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = await engine.execute(query=query)
@@ -603,7 +599,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = await engine.execute(query=query)
@@ -626,7 +622,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = await engine.execute(query=query)
@@ -649,7 +645,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
         )
         result = await engine.execute(query=query)
         # No joined dimensions → SQL should not have LEFT JOIN
@@ -669,7 +665,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.name"}],
         )
         result = await engine.execute(query=query)
@@ -691,7 +687,7 @@ class TestRollupIngestion:
 
         query = SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "*:count"}],
+            measures=[{"formula": "*:count"}],
             dimensions=[{"name": "customers.regions.name"}],
         )
         result = await engine.execute(query=query)
@@ -737,3 +733,49 @@ class TestRollupIngestion:
         for orig, loaded_j in zip(orders.joins, loaded.joins):
             assert orig.target_model == loaded_j.target_model
             assert orig.join_pairs == loaded_j.join_pairs
+
+
+@pytest.mark.integration
+class TestPostgresMedianPercentile:
+    """Live execution of median/percentile against Postgres.
+
+    Postgres has native ``PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)``;
+    these tests pin the round-trip so the dialect-aware ``_build_percentile``
+    refactor doesn't silently regress.
+    """
+
+    async def test_median(self, pg_env: SlayerQueryEngine) -> None:
+        # amounts = [100, 200, 50, 150, 75, 300] -> median 125
+        query = SlayerQuery(source_model="orders", fields=[{"formula": "total:median"}])
+        result = await pg_env.execute(query=query)
+        assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
+
+    async def test_percentile_quartiles(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[
+                {"formula": "total:percentile(p=0.25)"},
+                {"formula": "total:percentile(p=0.75)"},
+            ],
+        )
+        result = await pg_env.execute(query=query)
+        row = result.data[0]
+        assert float(row["orders.total_percentile_p_0_25"]) == pytest.approx(81.25)
+        assert float(row["orders.total_percentile_p_0_75"]) == pytest.approx(187.5)
+
+    async def test_median_grouped(self, pg_env: SlayerQueryEngine) -> None:
+        # completed: [100, 150, 200] -> 150
+        # pending:   [50, 300]       -> 175
+        # cancelled: [75]            -> 75
+        query = SlayerQuery(
+            source_model="orders",
+            fields=[{"formula": "total:median"}],
+            dimensions=[{"name": "status"}],
+        )
+        result = await pg_env.execute(query=query)
+        by_status = {
+            r["orders.status"]: float(r["orders.total_median"]) for r in result.data
+        }
+        assert by_status["completed"] == pytest.approx(150)
+        assert by_status["pending"] == pytest.approx(175)
+        assert by_status["cancelled"] == pytest.approx(75)

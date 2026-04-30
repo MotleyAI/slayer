@@ -60,16 +60,16 @@ Execute a query from the terminal.
 
 ```bash
 # Inline JSON
-slayer query '{"source_model": "orders", "fields": ["*:count"], "dimensions": ["status"]}'
+slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
 
 # From a file
 slayer query @query.json
 
 # JSON output
-slayer query '{"source_model": "orders", "fields": ["*:count"]}' --format json
+slayer query '{"source_model": "orders", "measures": ["*:count"]}' --format json
 
 # Preview SQL without executing
-slayer query '{"source_model": "orders", "fields": ["count"]}' --dry-run
+slayer query '{"source_model": "orders", "measures": ["*:count"]}' --dry-run
 
 # Show execution plan
 slayer query @query.json --explain

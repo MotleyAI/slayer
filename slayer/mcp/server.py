@@ -2,16 +2,16 @@
 
 import json
 import logging
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import sqlalchemy as sa
 
 from slayer.core.models import (
     Aggregation,
+    Column,
     DatasourceConfig,
-    Dimension,
-    Measure,
     ModelJoin,
+    ModelMeasure,
     NamedQuery,
     SlayerModel,
 )
@@ -201,53 +201,56 @@ def _build_sample_query_args(
 ) -> Dict[str, Any]:
     """Build the ``SlayerQuery`` payload for ``inspect_model``'s sample data.
 
-    - First field is always ``*:count``.
-    - For each non-hidden measure:
+    - First entry is always ``*:count``.
+    - For each non-hidden, non-primary-key column:
       - If ``allowed_aggregations`` is restricted and doesn't include ``avg``,
-        use the first entry of ``allowed_aggregations``. Empty list → skip.
+        use the first safe entry (or skip if empty).
       - Else (avg is permitted): prefer ``avg``, but fall back to
-        ``count_distinct`` for non-numeric columns (using inferred types from
-        ``measure_types``, or dim-name heuristic as fallback).
-    - Groups by up to two non-primary-key, non-hidden dimensions so the sample
-      shows variation without exploding table width.
+        ``count_distinct`` for non-numeric columns (inferred from
+        ``measure_types`` or the column's own ``type``).
+    - Groups by up to two non-primary-key, non-hidden columns of non-numeric
+      type so the sample shows variation without exploding table width.
     """
     measure_types = measure_types or {}
-    # dim type lookup by name (fallback for when measure_types is unavailable)
-    dim_types = {d.name: str(d.type) for d in model.dimensions}
 
-    fields: List[Dict[str, str]] = [{"formula": "*:count"}]
-    for m in model.measures:
-        if m.hidden:
+    # Pick up to two categorical columns to group by first, so we don't also
+    # aggregate them as measures (count_distinct(status) grouped by status is
+    # always 1, which isn't useful sample data).
+    dims: List[Dict[str, str]] = []
+    dim_names: set[str] = set()
+    for c in model.columns:
+        if c.hidden or c.primary_key:
             continue
-        allowed = m.allowed_aggregations
+        if str(c.type) not in ("string", "boolean"):
+            continue
+        dims.append({"name": c.name})
+        dim_names.add(c.name)
+        if len(dims) >= 2:
+            break
+
+    measures: List[Dict[str, str]] = [{"formula": "*:count"}]
+    for c in model.columns:
+        if c.hidden or c.primary_key or c.name in dim_names:
+            continue
+        allowed = c.allowed_aggregations
         if allowed is not None and "avg" not in allowed:
             if not allowed:
                 continue
             safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
             agg = safe if safe else allowed[0]
         else:
-            # avg is permitted; drop to count_distinct for non-numeric columns
-            inferred = measure_types.get(m.name)
+            inferred = measure_types.get(c.name)
             if inferred and inferred != "number":
                 agg = "count_distinct"
-            elif dim_types.get(m.name) in ("string", "boolean", "date", "time"):
-                # Fallback heuristic: measure shares name with non-numeric dim
+            elif str(c.type) in ("string", "boolean", "date", "time"):
                 agg = "count_distinct"
             else:
                 agg = "avg"
-        fields.append({"formula": f"{m.name}:{agg}"})
-
-    dims: List[Dict[str, str]] = []
-    for d in model.dimensions:
-        if d.hidden or d.primary_key:
-            continue
-        dims.append({"name": d.name})
-        if len(dims) >= 2:
-            break
+        measures.append({"formula": f"{c.name}:{agg}"})
 
     return {
         "source_model": model.name,
-        "fields": fields,
+        "measures": measures,
         "dimensions": dims,
         "limit": num_rows,
     }
@@ -288,7 +291,7 @@ async def _get_row_count(
     try:
         q = SlayerQuery.model_validate({
             "source_model": model.name,
-            "fields": [{"formula": "*:count"}],
+            "measures": [{"formula": "*:count"}],
         })
         r = await engine.execute(query=q)
     except Exception:
@@ -357,32 +360,32 @@ async def _collect_dim_profile(
     are swallowed — that dim is simply omitted from the result.
     """
     eligible = [
-        d for d in model.dimensions
-        if not d.hidden and not d.primary_key
+        c for c in model.columns
+        if not c.hidden and not c.primary_key
     ][:max_dims]
-    categorical = [d for d in eligible if str(d.type) in ("string", "boolean")]
-    numeric_temporal = [d for d in eligible if str(d.type) in ("number", "date", "time")]
+    categorical = [c for c in eligible if str(c.type) in ("string", "boolean")]
+    numeric_temporal = [c for c in eligible if str(c.type) in ("number", "date", "time")]
 
     entries: Dict[str, _DimProfileEntry] = {}
 
     # --- categorical dims: one query per dim
-    for d in categorical:
+    for c in categorical:
         try:
             q = SlayerQuery.model_validate({
                 "source_model": model.name,
-                "dimensions": [{"name": d.name}],
-                "fields": [{"formula": "*:count"}],
+                "dimensions": [{"name": c.name}],
+                "measures": [{"formula": "*:count"}],
                 "limit": max_values + 1,
             })
             r = await engine.execute(query=q)
         except Exception:
             continue
-        value_key = f"{model.name}.{d.name}"
+        value_key = f"{model.name}.{c.name}"
         values = [row.get(value_key) for row in r.data]
         overflow = len(values) > max_values
-        entries[d.name] = _DimProfileEntry(
-            name=d.name,
-            type_str=str(d.type),
+        entries[c.name] = _DimProfileEntry(
+            name=c.name,
+            type_str=str(c.type),
             distinct_count=None if overflow else len(values),
             values=None if overflow else values,
             min_value=None,
@@ -391,33 +394,34 @@ async def _collect_dim_profile(
 
     # --- numeric/temporal dims: ONE batched query for all mins and maxes
     if numeric_temporal:
-        ext_measures = [
-            {"name": f"_slayer_range_{d.name}", "sql": d.sql if d.sql else d.name}
-            for d in numeric_temporal
+        ext_columns = [
+            {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name,
+             "type": str(c.type)}
+            for c in numeric_temporal
         ]
-        fields: List[Dict[str, str]] = []
-        for d in numeric_temporal:
-            fields.append({"formula": f"_slayer_range_{d.name}:min"})
-            fields.append({"formula": f"_slayer_range_{d.name}:max"})
+        measures_payload: List[Dict[str, str]] = []
+        for c in numeric_temporal:
+            measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
+            measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
         row: Dict[str, Any] = {}
         try:
             q = SlayerQuery.model_validate({
-                "source_model": {"source_name": model.name, "measures": ext_measures},
-                "fields": fields,
+                "source_model": {"source_name": model.name, "columns": ext_columns},
+                "measures": measures_payload,
             })
             r = await engine.execute(query=q)
             if r.data:
                 row = r.data[0]
         except Exception:
             row = {}
-        for d in numeric_temporal:
-            mn = row.get(f"{model.name}._slayer_range_{d.name}_min")
-            mx = row.get(f"{model.name}._slayer_range_{d.name}_max")
+        for c in numeric_temporal:
+            mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
+            mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
             if mn is None and mx is None:
                 continue  # query failed or empty table
-            entries[d.name] = _DimProfileEntry(
-                name=d.name,
-                type_str=str(d.type),
+            entries[c.name] = _DimProfileEntry(
+                name=c.name,
+                type_str=str(c.type),
                 distinct_count=None,
                 values=None,
                 min_value=mn,
@@ -425,37 +429,40 @@ async def _collect_dim_profile(
             )
 
     # Preserve declaration order in the rendered output
-    return [entries[d.name] for d in eligible if d.name in entries]
+    return [entries[c.name] for c in eligible if c.name in entries]
 
 
 async def _collect_measure_profile(
     model: SlayerModel,
     engine: SlayerQueryEngine,
 ) -> Dict[str, str]:
-    """Probe min/max for each non-hidden measure via a single batched query.
+    """Probe min/max for each non-hidden, non-primary-key column via a single
+    batched query.
 
-    Returns ``{measure_name: "min .. max"}`` for measures with data, or
-    ``{measure_name: "all NULL"}`` for measures where both min and max are NULL.
-    Measures whose ``allowed_aggregations`` excludes ``min`` are skipped.
+    Returns ``{column_name: "min .. max"}`` for columns with data, or
+    ``{column_name: "all NULL"}`` for columns where both min and max are NULL.
+    Skips primary-key columns (their values are identifiers, not values to
+    profile).
     """
-    measures = [m for m in model.measures if not m.hidden]
-    if not measures:
+    columns = [c for c in model.columns if not c.hidden and not c.primary_key]
+    if not columns:
         return {}
 
-    # Use ModelExtension with inline measures to bypass allowed_aggregations
-    ext_measures = [
-        {"name": f"_slayer_probe_{m.name}", "sql": m.sql if m.sql else m.name}
-        for m in measures
+    # Use ModelExtension with inline columns to bypass allowed_aggregations
+    ext_columns = [
+        {"name": f"_slayer_probe_{c.name}", "sql": c.sql if c.sql else c.name,
+         "type": str(c.type)}
+        for c in columns
     ]
-    fields: List[Dict[str, str]] = []
-    for m in measures:
-        fields.append({"formula": f"_slayer_probe_{m.name}:min"})
-        fields.append({"formula": f"_slayer_probe_{m.name}:max"})
+    measures_payload: List[Dict[str, str]] = []
+    for c in columns:
+        measures_payload.append({"formula": f"_slayer_probe_{c.name}:min"})
+        measures_payload.append({"formula": f"_slayer_probe_{c.name}:max"})
 
     try:
         q = SlayerQuery.model_validate({
-            "source_model": {"source_name": model.name, "measures": ext_measures},
-            "fields": fields,
+            "source_model": {"source_name": model.name, "columns": ext_columns},
+            "measures": measures_payload,
         })
         r = await engine.execute(query=q)
         row = r.data[0] if r.data else {}
@@ -463,13 +470,13 @@ async def _collect_measure_profile(
         return {}
 
     result: Dict[str, str] = {}
-    for m in measures:
-        mn = row.get(f"{model.name}._slayer_probe_{m.name}_min")
-        mx = row.get(f"{model.name}._slayer_probe_{m.name}_max")
+    for c in columns:
+        mn = row.get(f"{model.name}._slayer_probe_{c.name}_min")
+        mx = row.get(f"{model.name}._slayer_probe_{c.name}_max")
         if mn is None and mx is None:
-            result[m.name] = "all NULL"
+            result[c.name] = "all NULL"
         else:
-            result[m.name] = f"{mn} .. {mx}"
+            result[c.name] = f"{mn} .. {mx}"
     return result
 
 
@@ -510,12 +517,12 @@ async def _collect_reachable_fields(
         target = await storage.get_model(target_name)
         if target is None:
             continue
-        for d in target.dimensions:
-            if not d.hidden and not d.primary_key:
-                reachable_dims.add(f"{path}.{d.name}")
-        for m in target.measures:
-            if not m.hidden:
-                reachable_measures.add(f"{path}.{m.name}")
+        for c in target.columns:
+            if c.hidden:
+                continue
+            if not c.primary_key:
+                reachable_dims.add(f"{path}.{c.name}")
+            reachable_measures.add(f"{path}.{c.name}")
         for j in target.joins:
             sub_path = _derive_path(path, j)
             # Per-path cycle check: don't revisit any model already on this
@@ -531,34 +538,36 @@ async def _collect_reachable_fields(
 
 def _model_to_summary(model: SlayerModel) -> dict:
     """Convert a SlayerModel to a summary dict."""
-    dims = []
-    for d in model.dimensions:
-        if d.hidden:
+    columns = []
+    for c in model.columns:
+        if c.hidden:
             continue
-        entry = {"name": d.name, "type": str(d.type)}
-        if d.label:
-            entry["label"] = d.label
-        if d.description:
-            entry["description"] = d.description
-        dims.append(entry)
+        entry: dict = {"name": c.name, "type": str(c.type)}
+        if c.primary_key:
+            entry["primary_key"] = True
+        if c.label:
+            entry["label"] = c.label
+        if c.description:
+            entry["description"] = c.description
+        if c.filter:
+            entry["filter"] = c.filter
+        if c.allowed_aggregations is not None:
+            entry["allowed_aggregations"] = c.allowed_aggregations
+        columns.append(entry)
 
     measures = []
-    for m in model.measures:
-        if m.hidden:
-            continue
-        entry: dict = {"name": m.name}
-        if m.label:
-            entry["label"] = m.label
-        if m.description:
-            entry["description"] = m.description
-        if m.filter:
-            entry["filter"] = m.filter
+    for mm in model.measures:
+        entry = {"name": mm.name, "formula": mm.formula}
+        if mm.label:
+            entry["label"] = mm.label
+        if mm.description:
+            entry["description"] = mm.description
         measures.append(entry)
 
     return {
         "name": model.name,
         "description": model.description,
-        "dimensions": dims,
+        "columns": columns,
         "measures": measures,
     }
 
@@ -742,13 +751,13 @@ def create_mcp_server(storage: StorageBackend):
                         {
                             "name": m.name,
                             "description": m.description,
-                            "dimensions": [
-                                {"name": d.name, "description": d.description}
-                                for d in m.dimensions if not d.hidden
+                            "columns": [
+                                {"name": c.name, "type": str(c.type), "description": c.description}
+                                for c in m.columns if not c.hidden
                             ],
                             "measures": [
-                                {"name": meas.name, "description": meas.description}
-                                for meas in m.measures if not meas.hidden
+                                {"name": mm.name, "formula": mm.formula, "description": mm.description}
+                                for mm in m.measures
                             ],
                             "joins_to": sorted({j.target_model for j in m.joins}),
                         }
@@ -766,25 +775,25 @@ def create_mcp_server(storage: StorageBackend):
             if m.description:
                 model_lines.append(m.description)
 
-            dim_rows = [
-                {"name": d.name, "description": d.description}
-                for d in m.dimensions if not d.hidden
+            col_rows = [
+                {"name": c.name, "type": str(c.type), "description": c.description}
+                for c in m.columns if not c.hidden
             ]
-            model_lines.append(f"**Dimensions ({len(dim_rows)}):**")
+            model_lines.append(f"**Columns ({len(col_rows)}):**")
             model_lines.append("")
             model_lines.append(
-                _markdown_table(rows=dim_rows, columns=["name", "description"])
+                _markdown_table(rows=col_rows, columns=["name", "type", "description"])
             )
             model_lines.append("")
 
             measure_rows = [
-                {"name": meas.name, "description": meas.description}
-                for meas in m.measures if not meas.hidden
+                {"name": mm.name, "formula": mm.formula, "description": mm.description}
+                for mm in m.measures
             ]
             model_lines.append(f"**Measures ({len(measure_rows)}):**")
             model_lines.append("")
             model_lines.append(
-                _markdown_table(rows=measure_rows, columns=["name", "description"])
+                _markdown_table(rows=measure_rows, columns=["name", "formula", "description"])
             )
             model_lines.append("")
 
@@ -887,54 +896,60 @@ def create_mcp_server(storage: StorageBackend):
             e.name: _format_dim_profile_value(e) for e in profile_entries
         }
 
-        # Dimensions table
-        dim_rows: List[Dict[str, Any]] = []
-        for d in model.dimensions:
-            if d.hidden:
-                continue
-            dim_rows.append({
-                "name": d.name,
-                "type": str(d.type),
-                "primary_key": "yes" if d.primary_key else "",
-                "sql": d.sql if d.sql else d.name,
-                "label": d.label,
-                "description": d.description,
-                "sampled": profile_by_name.get(d.name),
-            })
-        dim_columns = ["name", "type", "primary_key", "sql", "label", "description", "sampled"]
-        if not show_sql:
-            dim_columns.remove("sql")
-        sections.append(
-            f"## Dimensions ({len(dim_rows)})\n\n"
-            + _markdown_table(rows=dim_rows, columns=dim_columns)
-        )
-
-        # Infer measure column types via LIMIT 0 probe + min/max profile
+        # Infer column types via LIMIT 0 probe + min/max profile
         measure_types = await engine.get_column_types(model_name=model.name)
         measure_profile = await _collect_measure_profile(model=model, engine=engine)
 
-        # Measures table
-        measure_rows: List[Dict[str, Any]] = []
-        for m in model.measures:
-            if m.hidden:
+        # Columns table (the unified row-level definitions — every column can
+        # be used as either a dimension or a measure, gated by data type and
+        # ``allowed_aggregations``).
+        col_rows: List[Dict[str, Any]] = []
+        for c in model.columns:
+            if c.hidden:
                 continue
-            aggs = ", ".join(m.allowed_aggregations) if m.allowed_aggregations else "all"
-            measure_rows.append({
-                "name": m.name,
-                "type": measure_types.get(m.name),
-                "values": measure_profile.get(m.name),
-                "sql": m.sql if m.sql else m.name,
+            aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
+            col_rows.append({
+                "name": c.name,
+                "type": str(c.type),
+                "primary_key": "yes" if c.primary_key else "",
+                "sql": c.sql if c.sql else c.name,
                 "allowed_aggregations": aggs,
-                "filter": m.filter,
-                "label": m.label,
-                "description": m.description,
+                "filter": c.filter,
+                "label": c.label,
+                "description": c.description,
+                "sampled": (
+                    profile_by_name.get(c.name)
+                    or measure_profile.get(c.name)
+                ),
             })
-        meas_columns = ["name", "type", "values", "sql", "allowed_aggregations", "filter", "label", "description"]
+        col_columns = [
+            "name", "type", "primary_key", "sql", "allowed_aggregations",
+            "filter", "label", "description", "sampled",
+        ]
         if not show_sql:
-            meas_columns = [c for c in meas_columns if c not in ("sql", "filter")]
+            col_columns = [c for c in col_columns if c not in ("sql", "filter")]
+        sections.append(
+            f"## Columns ({len(col_rows)})\n\n"
+            + _markdown_table(rows=col_rows, columns=col_columns)
+        )
+
+        # Measures (named formula library) — empty by default after a v1→v2
+        # migration; users populate this via ``edit_model`` to give recurring
+        # formulas a stable name.
+        measure_rows: List[Dict[str, Any]] = []
+        for mm in model.measures:
+            measure_rows.append({
+                "name": mm.name,
+                "formula": mm.formula,
+                "label": mm.label,
+                "description": mm.description,
+            })
         sections.append(
             f"## Measures ({len(measure_rows)})\n\n"
-            + _markdown_table(rows=measure_rows, columns=meas_columns)
+            + _markdown_table(
+                rows=measure_rows,
+                columns=["name", "formula", "label", "description"],
+            )
         )
 
         # Custom aggregations (if any)
@@ -1041,28 +1056,31 @@ def create_mcp_server(storage: StorageBackend):
                     "hidden": model.hidden,
                     "row_count": row_count,
                     **({"filters": model.filters} if show_sql else {}),
-                    "dimensions": [
+                    "columns": [
                         {
-                            "name": d.name,
-                            "type": str(d.type),
-                            "primary_key": d.primary_key,
-                            **({"sql": d.sql} if show_sql else {}),
-                            "label": d.label,
-                            "description": d.description,
-                            "sampled": profile_by_name.get(d.name),
+                            "name": c.name,
+                            "type": str(c.type),
+                            "primary_key": c.primary_key,
+                            **({"sql": c.sql} if show_sql else {}),
+                            "allowed_aggregations": c.allowed_aggregations,
+                            **({"filter": c.filter} if show_sql else {}),
+                            "label": c.label,
+                            "description": c.description,
+                            "sampled": (
+                                profile_by_name.get(c.name)
+                                or measure_profile.get(c.name)
+                            ),
                         }
-                        for d in model.dimensions if not d.hidden
+                        for c in model.columns if not c.hidden
                     ],
                     "measures": [
                         {
-                            "name": m.name,
-                            **({"sql": m.sql} if show_sql else {}),
-                            "allowed_aggregations": m.allowed_aggregations,
-                            **({"filter": m.filter} if show_sql else {}),
-                            "label": m.label,
-                            "description": m.description,
+                            "name": mm.name,
+                            "formula": mm.formula,
+                            "label": mm.label,
+                            "description": mm.description,
                         }
-                        for m in model.measures if not m.hidden
+                        for mm in model.measures
                     ],
                     "aggregations": [
                         {
@@ -1105,21 +1123,21 @@ def create_mcp_server(storage: StorageBackend):
         sql: Optional[str] = None,
         data_source: Optional[str] = None,
         description: Optional[str] = None,
-        dimensions: Optional[List[Dict[str, str]]] = None,
-        measures: Optional[List[Dict[str, Union[str, List[str]]]]] = None,
+        columns: Optional[List[Dict[str, Any]]] = None,
+        measures: Optional[List[Dict[str, str]]] = None,
         query: Optional[Dict] = None,
     ) -> str:
         """Create a new semantic model, either from a database table or from a query.
 
         **From a table** (provide sql_table or sql):
             create_model(name="orders", sql_table="public.orders", data_source="mydb",
-                         dimensions=[...], measures=[...])
+                         columns=[...], measures=[...])
 
         **From a query** (provide query):
             create_model(name="monthly_summary", query={"source_model": "orders",
-                         "fields": ["*:count", "amount:sum"],
+                         "measures": ["*:count", "amount:sum"],
                          "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]})
-            Dimensions and measures are auto-introspected from the query result.
+            Columns are auto-introspected from the query result.
 
         Args:
             name: Unique model name (lowercase, underscores).
@@ -1127,19 +1145,22 @@ def create_mcp_server(storage: StorageBackend):
             sql: Alternative to sql_table — a custom SQL expression for the model's source.
             data_source: Name of the datasource (from list_datasources).
             description: What this model represents.
-            dimensions: List of dimension definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
-                Types: string, number, time, date, boolean.
-            measures: List of measure definitions. Each: {"name": "total", "sql": "amount"}.
-                Optional: "allowed_aggregations": ["sum", "avg"] to restrict usable aggregations.
+            columns: List of column definitions. Each: {"name": "col", "sql": "col", "type": "string"}.
+                Types: string, number, time, date, boolean. Optional fields: ``primary_key``,
+                ``allowed_aggregations`` (whitelist), ``filter`` (CASE WHEN inside aggregation),
+                ``label``, ``description``, ``hidden``, ``meta``.
+            measures: List of named formula definitions on the model. Each:
+                {"name": "aov", "formula": "revenue:sum / *:count", "label": "..."}.
+                Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
             query: A SLayer query dict. When provided, the query's SQL becomes the model source
-                and dimensions/measures are auto-introspected. Mutually exclusive with
-                sql_table, sql, dimensions, and measures.
+                and columns are auto-introspected. Mutually exclusive with
+                sql_table, sql, columns, and measures.
         """
         if query is not None:
             table_params = {
                 k: v for k, v in {
                     "sql_table": sql_table, "sql": sql, "data_source": data_source,
-                    "dimensions": dimensions, "measures": measures,
+                    "columns": columns, "measures": measures,
                 }.items()
                 if v
             }
@@ -1151,17 +1172,17 @@ def create_mcp_server(storage: StorageBackend):
             try:
                 parsed_query = SlayerQuery.model_validate(query)
                 model = await engine.create_model_from_query(
-                    query=parsed_query, name=name, description=description,
+                    query=parsed_query, name=name, description=description or "",
                 )
             except Exception as e:
                 if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                     return _friendly_db_error(e)
                 return f"Error creating model from query: {e}"
-            dims = [d.name for d in model.dimensions]
+            cols = [c.name for c in model.columns]
             meas = [m.name for m in model.measures]
             return (
                 f"Model '{name}' created from query. "
-                f"Dimensions: {dims}. Measures: {meas}."
+                f"Columns: {cols}. Measures: {meas}."
             )
 
         data = _build_dict(
@@ -1170,7 +1191,7 @@ def create_mcp_server(storage: StorageBackend):
             sql=sql,
             data_source=data_source,
             description=description,
-            dimensions=dimensions,
+            columns=columns,
             measures=measures,
         )
         model = SlayerModel.model_validate(data)
@@ -1216,7 +1237,7 @@ def create_mcp_server(storage: StorageBackend):
             changes.append(f"created {label} '{entity_id}'")
         return None
 
-    VALID_REMOVE_KEYS = {"dimensions", "measures", "aggregations", "joins"}
+    VALID_REMOVE_KEYS = {"columns", "measures", "aggregations", "joins"}
 
     @mcp.tool()
     async def edit_model(
@@ -1227,7 +1248,7 @@ def create_mcp_server(storage: StorageBackend):
         sql_table: Optional[str] = None,
         sql: Optional[str] = None,
         hidden: Optional[bool] = None,
-        dimensions: Optional[List[Dict[str, Any]]] = None,
+        columns: Optional[List[Dict[str, Any]]] = None,
         measures: Optional[List[Dict[str, Any]]] = None,
         aggregations: Optional[List[Dict[str, Any]]] = None,
         joins: Optional[List[Dict[str, Any]]] = None,
@@ -1236,34 +1257,44 @@ def create_mcp_server(storage: StorageBackend):
         remove: Optional[Dict[str, List[str]]] = None,
         meta: Optional[Dict[str, Any]] = _UNSET,
     ) -> str:
-        """Edit an existing model in a single call — update metadata, upsert dimensions/measures/aggregations/joins,
+        """Edit an existing model in a single call — update metadata, upsert columns/measures/aggregations/joins,
         manage filters, and remove entities.
 
         Args:
             model_name: Name of the model to edit.
             description: New model description.
             data_source: New data source name.
-            default_time_dimension: Default time dimension for time-dependent transforms.
+            default_time_dimension: Default time dimension (a column of type date/time) for
+                time-dependent transforms.
             sql_table: Database table name.
             sql: Custom SQL expression for the model source.
             hidden: Whether this model is hidden from discovery.
             meta: Arbitrary JSON metadata for the model (replaces existing meta). Pass null/None to clear.
-            dimensions: Dimensions to create or update (upsert by name). Each dict: {"name": "col", "type": "string", "sql": "col", "description": "...", "primary_key": false, "hidden": false}.
-                If a dimension with this name exists, only the provided fields are updated; omitted fields keep current values.
+            columns: Columns to create or update (upsert by name). Each dict:
+                {"name": "col", "type": "string", "sql": "col", "description": "...",
+                 "primary_key": false, "hidden": false, "allowed_aggregations": ["sum", "avg"],
+                 "filter": "status = 'active'", "label": "..."}.
+                If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
-            measures: Measures to create or update (upsert by name). Each dict: {"name": "total", "sql": "amount", "description": "...", "hidden": false, "allowed_aggregations": ["sum", "avg"]}.
-                If a measure with this name exists, only the provided fields are updated.
-            aggregations: Aggregations to create or update (upsert by name). Each dict: {"name": "weighted_avg", "formula": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)", "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
-                If an aggregation with this name exists, only the provided fields are updated.
-            joins: Joins to create or update (upsert by target_model). Each dict: {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}.
-                If a join to this target_model exists, its join_pairs are updated.
-            add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates are ignored.
+            measures: Named formula measures to create or update (upsert by name). Each dict:
+                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...", "description": "..."}.
+                Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
+            aggregations: Aggregations to create or update (upsert by name). Each dict:
+                {"name": "weighted_avg", "formula": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+                 "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
+            joins: Joins to create or update (upsert by target_model). Each dict:
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}.
+            add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates ignored.
             remove_filters: SQL filter strings to remove (exact match).
-            remove: Named entities to delete, keyed by type: {"dimensions": ["name1"], "measures": ["name2"], "aggregations": ["name3"], "joins": ["target_model_name"]}.
-                Removals are processed before upserts, so you can remove and re-add in one call.
+            remove: Named entities to delete, keyed by type:
+                {"columns": ["col_name"], "measures": ["measure_name"],
+                 "aggregations": ["agg_name"], "joins": ["target_model_name"]}.
+                Removals are processed before upserts.
 
-        Example — update a dimension and add a measure:
-            edit_model(model_name="orders", dimensions=[{"name": "status", "type": "string"}], measures=[{"name": "profit", "sql": "revenue - cost"}])
+        Example — update a column and add a named measure:
+            edit_model(model_name="orders",
+                       columns=[{"name": "status", "type": "string"}],
+                       measures=[{"name": "aov", "formula": "revenue:sum / *:count"}])
         Example — remove a measure:
             edit_model(model_name="orders", remove={"measures": ["old_metric"]})
         """
@@ -1310,12 +1341,12 @@ def create_mcp_server(storage: StorageBackend):
                         f"Must be one of: {', '.join(sorted(VALID_REMOVE_KEYS))}."
                     )
 
-            for name in remove.get("dimensions", []):
-                match = next((d for d in model.dimensions if d.name == name), None)
+            for name in remove.get("columns", []):
+                match = next((c for c in model.columns if c.name == name), None)
                 if match is None:
-                    return f"Dimension '{name}' not found on model '{model_name}'."
-                model.dimensions.remove(match)
-                changes.append(f"removed dimension '{name}'")
+                    return f"Column '{name}' not found on model '{model_name}'."
+                model.columns.remove(match)
+                changes.append(f"removed column '{name}'")
 
             for name in remove.get("measures", []):
                 match = next((m for m in model.measures if m.name == name), None)
@@ -1339,17 +1370,17 @@ def create_mcp_server(storage: StorageBackend):
                 changes.append(f"removed join to '{target}'")
 
         # --- Phase 3: Entity upserts ---
-        for spec in dimensions or []:
+        for spec in columns or []:
             err = _upsert_entity(
-                entity_list=model.dimensions, spec=spec, entity_cls=Dimension,
-                id_field="name", changes=changes, label="dimension",
+                entity_list=model.columns, spec=spec, entity_cls=Column,
+                id_field="name", changes=changes, label="column",
             )
             if err:
                 return err
 
         for spec in measures or []:
             err = _upsert_entity(
-                entity_list=model.measures, spec=spec, entity_cls=Measure,
+                entity_list=model.measures, spec=spec, entity_cls=ModelMeasure,
                 id_field="name", changes=changes, label="measure",
             )
             if err:
@@ -1484,7 +1515,7 @@ def create_mcp_server(storage: StorageBackend):
         else:
             lines.append(f"Ingested {len(models)} model(s):")
             for m in models:
-                lines.append(f"- {m.name} ({len(m.dimensions)} dims, {len(m.measures)} measures)")
+                lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
             lines.append("")
             lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
 

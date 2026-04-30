@@ -25,7 +25,7 @@ Colon syntax is used everywhere measures appear: in `fields`, in arithmetic expr
 Field formulas define what data columns a query returns. They go in the `fields` parameter:
 
 ```json
-"fields": [
+"measures": [
   "*:count",
   {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
   "cumsum(revenue:sum)",
@@ -84,7 +84,7 @@ Functions apply window operations to measures:
 Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa):
 
 ```json
-"fields": [
+"measures": [
   {"formula": "cumsum(change(revenue:sum))", "name": "cumsum_delta"},
   "last(change(revenue:sum))",
   {"formula": "cumsum(revenue:sum / *:count)", "name": "running_aov"},
@@ -106,7 +106,7 @@ The ranking granularity depends on the query's dimensions and time dimensions. E
 {
   "source_model": "orders",
   "dimensions": ["customer_name"],
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "rank(revenue:sum)", "name": "rnk"}
   ],
@@ -134,7 +134,7 @@ Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at ra
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "first(revenue:sum)", "name": "initial_revenue"},
     {"formula": "last(revenue:sum)", "name": "latest_revenue"}

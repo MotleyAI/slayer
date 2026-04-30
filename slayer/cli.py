@@ -570,7 +570,7 @@ def _run_ingest(args):
     )
     for model in models:
         run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
 def _run_import_dbt(args):
@@ -625,7 +625,7 @@ def _run_import_dbt(args):
             hidden_count += 1
         print(
             f"Imported model: {model.name}{suffix} "
-            f"({len(model.dimensions)} dims, {len(model.measures)} measures)"
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
     # Save queries to queries.yaml if any
@@ -1056,7 +1056,7 @@ def _run_datasources_create(args, storage):
 
     for model in models:
         run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
 def _run_datasources_create_demo(args, storage):
@@ -1135,7 +1135,7 @@ def _run_datasources_create_demo(args, storage):
         if model.name in DEFAULT_TIME_DIMENSIONS:
             model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
         run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
 if __name__ == "__main__":

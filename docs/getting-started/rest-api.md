@@ -60,7 +60,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": ["*:count"],
+    "measures": ["*:count"],
     "dimensions": ["status"]
   }'
 ```
@@ -86,7 +86,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": ["revenue:sum"],
+    "measures": ["revenue:sum"],
     "time_dimensions": [{"dimension": "created_at", "granularity": "month", "date_range": ["2024-01-01", "2024-12-31"]}]
   }'
 
@@ -95,7 +95,7 @@ curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
     "source_model": "orders",
-    "fields": ["revenue:sum"],
+    "measures": ["revenue:sum"],
     "dimensions": ["customers.name"],
     "order": [{"column": "revenue:sum", "direction": "desc"}],
     "limit": 5
@@ -132,7 +132,7 @@ const res = await fetch("http://localhost:5143/query", {
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({
     source_model: "orders",
-    fields: ["*:count"],
+    measures: ["*:count"],
     dimensions: ["status"],
   }),
 });
@@ -141,7 +141,7 @@ const {data} = await res.json();
 
 **Go:**
 ```go
-body := `{"source_model": "orders", "fields": ["*:count"]}`
+body := `{"source_model": "orders", "measures": ["*:count"]}`
 resp, _ := http.Post("http://localhost:5143/query", "application/json", strings.NewReader(body))
 ```
 

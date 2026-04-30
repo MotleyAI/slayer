@@ -25,7 +25,7 @@ At query time, you pick the aggregation with colon syntax:
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue:sum", "revenue:avg", "price:min", "price:max"],
+  "measures": ["revenue:sum", "revenue:avg", "price:min", "price:max"],
   "dimensions": ["status"]
 }
 ```
@@ -38,7 +38,7 @@ COUNT(\*) doesn't aggregate a specific column — it counts rows. In SLayer, `*`
 
 ```json
 {
-  "fields": ["*:count", "revenue:sum"]
+  "measures": ["*:count", "revenue:sum"]
 }
 ```
 
@@ -61,8 +61,18 @@ These are always available — no definition needed:
 | `count_distinct` | COUNT(DISTINCT expr) |
 | `first` / `last` | Value from the earliest/latest record per group (by time) |
 | `weighted_avg` | SUM(expr \* weight) / SUM(weight) |
-| `median` | PERCENTILE_CONT(0.5) |
-| `percentile` | PERCENTILE_CONT(p) — specify `p` as an argument |
+| `median` | PERCENTILE_CONT(0.5) — see database support below |
+| `percentile` | PERCENTILE_CONT(p) — specify `p` as an argument; see database support below |
+
+### Database support for `median` / `percentile`
+
+| Engine | Supported? | How |
+|---|---|---|
+| Postgres | yes | Native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)`. |
+| DuckDB | yes | sqlglot rewrites ordered-set percentiles to DuckDB's `QUANTILE_CONT(x, p ORDER BY x)` syntax. |
+| SQLite | yes | Python aggregate UDFs registered on every connection by SLayer. |
+| ClickHouse | yes | Native `median(x)` and parametric `quantile(p)(x)`. |
+| MySQL | **no** | No native function and no Python-UDF mechanism — SLayer raises `NotImplementedError`. Use MariaDB or compute client-side. |
 
 ## Custom aggregations
 
@@ -119,7 +129,7 @@ SLayer validates this at query time and at model creation — if you try `custom
 
 ```json
 {
-  "fields": ["balance:last", "balance:first"],
+  "measures": ["balance:last", "balance:first"],
   "time_dimensions": [{"dimension": "updated_at", "granularity": "month"}]
 }
 ```
@@ -140,7 +150,7 @@ Don't confuse the `last` *aggregation* (`balance:last`) with the `last()` *trans
 
 ```json
 {
-  "fields": [
+  "measures": [
     "latency:median",
     "latency:percentile(p=0.95)",
     "latency:percentile(p=0.25)"

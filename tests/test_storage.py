@@ -7,13 +7,7 @@ from contextlib import contextmanager
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import (
-    DatasourceConfig,
-    Dimension,
-    Measure,
-    NamedQuery,
-    SlayerModel,
-)
+from slayer.core.models import Column, DatasourceConfig, NamedQuery, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -32,12 +26,10 @@ def sample_model() -> SlayerModel:
         name="test_model",
         sql_table="public.test_table",
         data_source="test_ds",
-        dimensions=[
-            Dimension(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="name", sql="name", type=DataType.STRING),
-        ],
-        measures=[
-            Measure(name="revenue", sql="amount"),
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="revenue", sql="amount", type=DataType.NUMBER),
         ],
     )
 
@@ -62,8 +54,8 @@ class TestModelStorage:
         assert loaded is not None
         assert loaded.name == "test_model"
         assert loaded.sql_table == "public.test_table"
-        assert len(loaded.dimensions) == 2
-        assert len(loaded.measures) == 1
+        assert len(loaded.columns) == 3
+        assert loaded.measures == []
 
     async def test_list_models(self, storage: YAMLStorage, sample_model: SlayerModel) -> None:
         assert await storage.list_models() == []
@@ -182,11 +174,11 @@ def sample_named_query() -> NamedQuery:
             SlayerQuery(
                 name="monthly_revenue",
                 source_model="orders",
-                fields=["revenue:sum"],
+                measures=["revenue:sum"],
             ),
             SlayerQuery(
                 source_model="monthly_revenue",
-                fields=["revenue_sum:avg"],
+                measures=["revenue_sum:avg"],
             ),
         ],
     )
@@ -255,7 +247,7 @@ class TestBidirectionalCollision:
             name="shared_name",
             sql_table="public.something",
             data_source="x",
-            dimensions=[Dimension(name="id", sql="id", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
         )
         with pytest.raises(ValueError, match="already exists|collide"):
             await any_storage.save_model(colliding_model)

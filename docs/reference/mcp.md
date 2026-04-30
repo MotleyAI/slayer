@@ -134,7 +134,7 @@ To explore first without auto-ingesting:
 1. list_datasources()                              # pick a datasource
 2. models_summary(datasource_name="mydb")      # discover its models
 3. inspect_model(model_name="orders")          # see schema + sample data
-4. query(source_model="orders", fields=["count"], dimensions=["status"], limit=10)
+4. query(source_model="orders", measures=["*:count"], dimensions=["status"], limit=10)
 ```
 
 ### Customize a model

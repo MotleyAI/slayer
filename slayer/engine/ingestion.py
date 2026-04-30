@@ -15,7 +15,7 @@ import sqlalchemy as sa
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import DatasourceConfig, Dimension, Measure, ModelJoin, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 
 logger = logging.getLogger(__name__)
 
@@ -499,59 +499,49 @@ def _columns_to_model(
     sql_table: Optional[str] = None,
     joins: Optional[List[ModelJoin]] = None,
 ) -> SlayerModel:
-    """Generate a SlayerModel from introspected (column_name, DataType, is_pk, is_float) tuples."""
-    dimensions = []
-    measures = []
-    numeric_columns: List[tuple] = []
-    non_numeric_columns: List[str] = []
+    """Generate a SlayerModel from introspected (column_name, DataType, is_pk, is_float) tuples.
+
+    In v2 every Column is potentially both a dimension and a measure — what it's
+    used as is decided per query. This function emits one Column per non-joined
+    column, with format inferred from the column's data type.
+    """
+    cols: List[Column] = []
 
     _INT_FORMAT = NumberFormat(type=NumberFormatType.INTEGER)
     _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
     for col_name, data_type, is_pk, is_float in columns:
-        # Skip joined columns — their dimensions/measures live on the target
-        # model and are resolved via the join graph at query time.
+        # Skip joined columns — they live on the target model and are
+        # resolved via the join graph at query time.
         if "." in col_name:
             continue
 
-        # Float-like columns get measures only, no dimension
-        if not is_float:
-            dim_format = _INT_FORMAT if (data_type in _NUMERIC_TYPES) else None
-            dimensions.append(
-                Dimension(
-                    name=col_name,
-                    sql=col_name,
-                    type=data_type,
-                    primary_key=is_pk,
-                    format=dim_format,
-                )
-            )
+        # Avoid name collision with the magic "*:count" / "_count" alias used
+        # for COUNT(*) by renaming a literal "_count" column.
+        column_name = "count_col" if col_name == "_count" else col_name
 
-        if is_pk or _is_id_column(col_name):
-            continue
-        if data_type in _NUMERIC_TYPES:
-            numeric_columns.append((col_name, is_float))
+        if is_float:
+            fmt = _FLOAT_FORMAT
+        elif data_type in _NUMERIC_TYPES:
+            fmt = _INT_FORMAT
         else:
-            non_numeric_columns.append(col_name)
+            fmt = None
 
-    # One measure per non-ID column. Aggregation is specified at query time
-    # using colon syntax (e.g., "revenue:sum", "customer_id:count_distinct").
-    # *:count is always available for COUNT(*) without any measure definition.
-    for col_name, is_float in numeric_columns:
-        measure_name = "count_col" if col_name == "_count" else col_name
-        measure_format = _FLOAT_FORMAT if is_float else _INT_FORMAT
-        measures.append(Measure(name=measure_name, sql=col_name, format=measure_format))
-
-    for col_name in non_numeric_columns:
-        measure_name = "count_col" if col_name == "_count" else col_name
-        measures.append(Measure(name=measure_name, sql=col_name))
+        cols.append(
+            Column(
+                name=column_name,
+                sql=col_name,
+                type=data_type,
+                primary_key=is_pk,
+                format=fmt,
+            )
+        )
 
     return SlayerModel(
         name=name,
         sql_table=sql_table,
         data_source=data_source,
-        dimensions=dimensions,
-        measures=measures,
+        columns=cols,
         joins=joins or [],
     )
 
