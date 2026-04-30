@@ -30,7 +30,7 @@ columns:
     description: "Order amount"
     sql: "amount"
     type: number
-    allowed_aggregations: [sum, avg]   # Optional whitelist (overrides type-default eligibility)
+    allowed_aggregations: [sum, avg]   # Optional whitelist (must be a subset of the type-default eligibility set)
 
   - name: completed_revenue
     sql: "amount"
@@ -62,7 +62,7 @@ Each column carries the metadata needed to use it either as a GROUP BY key (a "d
 | `primary_key` | bool | No | `false` | Is this a primary key? Restricts aggregation to `count` / `count_distinct` |
 | `hidden` | bool | No | `false` | Hide from listings |
 | `format` | dict | No | — | Optional `NumberFormat` used by response metadata |
-| `allowed_aggregations` | list[str] | No | — | Whitelist of permitted aggregations (overrides the type-default map) |
+| `allowed_aggregations` | list[str] | No | — | Whitelist of permitted aggregations. Must be a subset of the type-default eligibility set (or be a custom aggregation defined on this model). Validated at model construction time |
 | `filter` | string | No | — | SQL condition applied inside CASE-WHEN at aggregation time. See [Filtered Columns](#filtered-columns) below |
 | `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"source": "CRM", "team": "analytics"}`) |
 
@@ -87,7 +87,9 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 | `boolean` | count, count_distinct, sum, min, max, first, last |
 | `date` / `time` | count, count_distinct, first, last, min, max |
 
-Primary-key columns are always restricted to `count` / `count_distinct` regardless of type. An explicit `allowed_aggregations` whitelist on a column overrides the type-default map, but not the primary-key restriction.
+Primary-key columns are always restricted to `count` / `count_distinct` regardless of type.
+
+When `allowed_aggregations` is set, it intersects with the type-default set: every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model). Whitelist entries that violate the type-default or PK rule are rejected at model construction time. This means at query time, a single whitelist-membership check is sufficient — no separate type-default re-check is needed.
 
 ## Measures (Named Formulas)
 
