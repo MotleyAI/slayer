@@ -253,6 +253,174 @@ class TestSlayerModel:
         assert meas.name == "order_total_sum"
 
 
+class TestAllowedAggregationsBuildTimeValidation:
+    """Build-time validation of ``Column.allowed_aggregations``.
+
+    The intersection contract: a whitelist entry must satisfy
+    (1) the PK rule (only ``count`` / ``count_distinct`` for PKs),
+    (2) type-default eligibility (``DEFAULT_AGGREGATIONS_BY_TYPE[col.type]``).
+    Custom aggregations defined on the model bypass type/PK eligibility
+    (their formula determines applicability), but they still must be a
+    known custom name.
+    """
+
+    def test_pk_column_with_disallowed_aggregation_in_whitelist_rejected(self) -> None:
+        with pytest.raises(ValueError, match="primary[- ]key|count"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(
+                        name="id",
+                        type=DataType.NUMBER,
+                        primary_key=True,
+                        allowed_aggregations=["sum"],
+                    ),
+                ],
+            )
+
+    def test_pk_column_with_count_only_whitelist_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="id",
+                    type=DataType.NUMBER,
+                    primary_key=True,
+                    allowed_aggregations=["count", "count_distinct"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["count", "count_distinct"]
+
+    def test_string_column_with_sum_in_whitelist_rejected(self) -> None:
+        with pytest.raises(ValueError, match="not applicable|string"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(
+                        name="status",
+                        type=DataType.STRING,
+                        allowed_aggregations=["sum"],
+                    ),
+                ],
+            )
+
+    def test_string_column_with_min_max_in_whitelist_accepted(self) -> None:
+        """String ``min``/``max`` are intentionally type-eligible."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="status",
+                    type=DataType.STRING,
+                    allowed_aggregations=["min", "max", "count"],
+                ),
+            ],
+        )
+        assert "min" in (model.columns[0].allowed_aggregations or [])
+        assert "max" in (model.columns[0].allowed_aggregations or [])
+
+    def test_date_column_with_min_max_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="ordered_on",
+                    type=DataType.DATE,
+                    allowed_aggregations=["min", "max"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["min", "max"]
+
+    def test_timestamp_column_with_min_max_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="ordered_at",
+                    type=DataType.TIMESTAMP,
+                    allowed_aggregations=["min", "max"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["min", "max"]
+
+    def test_custom_aggregation_in_whitelist_bypasses_type_check(self) -> None:
+        """A custom-aggregation entry is exempt from type-default eligibility.
+        Its applicability depends on the custom formula, not the type-default map.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            aggregations=[
+                Aggregation(
+                    name="custom_concat",
+                    formula="STRING_AGG({value}, ',')",
+                ),
+            ],
+            columns=[
+                Column(
+                    name="status",
+                    type=DataType.STRING,
+                    allowed_aggregations=["custom_concat"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["custom_concat"]
+
+    def test_unknown_aggregation_in_whitelist_still_rejected(self) -> None:
+        """Existing behavior — keep it."""
+        with pytest.raises(ValueError, match="not a built-in aggregation"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(
+                        name="revenue",
+                        type=DataType.NUMBER,
+                        allowed_aggregations=["bogus_agg"],
+                    ),
+                ],
+            )
+
+    def test_pk_column_with_custom_agg_rejected(self) -> None:
+        """Even custom aggregations cannot be whitelisted on a PK column —
+        the PK rule (count/count_distinct only) is absolute.
+        """
+        with pytest.raises(ValueError, match="primary[- ]key|count"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                aggregations=[
+                    Aggregation(name="custom_sum", formula="SUM({value})"),
+                ],
+                columns=[
+                    Column(
+                        name="id",
+                        type=DataType.NUMBER,
+                        primary_key=True,
+                        allowed_aggregations=["custom_sum"],
+                    ),
+                ],
+            )
+
+
 class TestDatasourceConfig:
     def test_postgres_connection_string(self) -> None:
         ds = DatasourceConfig(
