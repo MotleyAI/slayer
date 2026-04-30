@@ -253,6 +253,73 @@ class TestSlayerModel:
         assert meas.name == "order_total_sum"
 
 
+class TestWithinListDuplicateNames:
+    """Duplicate names within ``columns`` or within ``measures`` are rejected.
+
+    Codex's Major 4: today only cross-list overlap is validated, so two
+    columns named ``revenue`` (or two measures named ``aov``) silently pass
+    and ``get_column`` / ``get_measure`` return the first match.
+    """
+
+    def test_duplicate_column_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="duplicate.*column|column.*duplicate"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                    Column(name="revenue", sql="net_amount", type=DataType.NUMBER),
+                ],
+            )
+
+    def test_duplicate_measure_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="duplicate.*measure|measure.*duplicate"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                measures=[
+                    ModelMeasure(name="aov", formula="amount:sum / *:count"),
+                    ModelMeasure(name="aov", formula="amount:avg"),
+                ],
+            )
+
+    def test_unnamed_measures_do_not_collide(self) -> None:
+        """Multiple measures without a ``name`` are fine — the collision rule
+        only applies to named ones (queries reference saved formulas by name).
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            measures=[
+                ModelMeasure(formula="amount:sum"),
+                ModelMeasure(formula="amount:avg"),
+            ],
+        )
+        assert len(model.measures) == 2
+
+    def test_unique_names_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[
+                ModelMeasure(name="aov", formula="amount:sum / *:count"),
+                ModelMeasure(name="rev", formula="amount:sum"),
+            ],
+        )
+        assert len(model.columns) == 2
+        assert len(model.measures) == 2
+
+
 class TestAllowedAggregationsBuildTimeValidation:
     """Build-time validation of ``Column.allowed_aggregations``.
 
