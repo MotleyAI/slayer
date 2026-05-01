@@ -28,7 +28,7 @@ SLayer generates and executes the query against your database.
 ```json
 {
   "source_model": "orders",
-  "measures": ["*:count", "revenue:sum / orders.amount:sum"],
+  "measures": ["*:count", "revenue:sum / amount:sum"],
   "dimensions": ["status"],
   "filters": ["status <> 'cancelled'", "customers.regions.name='Asia'"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],

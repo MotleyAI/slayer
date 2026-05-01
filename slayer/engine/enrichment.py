@@ -166,7 +166,16 @@ async def enrich_query(
     # Saved-formula library for bare-name resolution. Only the source model's
     # named measures are in scope here; cross-model references (`other.aov`)
     # remain handled by the cross-model resolver.
-    named_measures = {m.name: m.formula for m in model.measures if m.name}
+    named_measures: Dict[str, str] = {}
+    for m in model.measures:
+        if not m.name:
+            continue
+        if m.name in named_measures:
+            raise ValueError(
+                f"Duplicate saved measure name '{m.name}' in model "
+                f"'{model.name}'. Saved measure names must be unique."
+            )
+        named_measures[m.name] = m.formula
 
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(

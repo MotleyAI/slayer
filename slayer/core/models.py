@@ -294,6 +294,12 @@ class SlayerModel(BaseModel):
                 f"Model '{self.name}': duplicate column names: {col_dupes}. "
                 f"Each column name must be unique within a model."
             )
+        unnamed = [m.formula for m in self.measures if m.name is None]
+        if unnamed:
+            raise ValueError(
+                f"Model '{self.name}': every ModelMeasure in 'measures' must "
+                f"have a name. Unnamed formulas: {unnamed}."
+            )
         measure_names_seq = [m.name for m in self.measures if m.name is not None]
         measure_dupes = sorted({n for n in measure_names_seq if measure_names_seq.count(n) > 1})
         if measure_dupes:
@@ -357,9 +363,10 @@ class SlayerModel(BaseModel):
                             f"aggregated with {sorted(PRIMARY_KEY_AGGREGATIONS)}."
                         )
                     continue
-                if agg_name in custom_agg_names:
+                if agg_name in custom_agg_names and agg_name not in BUILTIN_AGGREGATIONS:
                     # Custom aggregations are exempt from type-default eligibility;
-                    # the formula determines applicability.
+                    # the formula determines applicability. Built-in name overrides
+                    # (e.g., a model-defined ``sum``) keep their type semantics.
                     continue
                 allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(
                     c.type, frozenset()

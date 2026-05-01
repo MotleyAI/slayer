@@ -60,8 +60,9 @@ measures:
   - {name: aov_pct_change, formula: "change_pct(aov)"}
 ```
 
+All three forms below — bare name, transform, arithmetic — work as query measures:
+
 ```json
-// query — all three forms work
 "measures": [
   {"formula": "aov"},
   {"formula": "cumsum(aov)"},

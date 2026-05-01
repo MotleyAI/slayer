@@ -286,21 +286,22 @@ class TestWithinListDuplicateNames:
                 ],
             )
 
-    def test_unnamed_measures_do_not_collide(self) -> None:
-        """Multiple measures without a ``name`` are fine — the collision rule
-        only applies to named ones (queries reference saved formulas by name).
+    def test_unnamed_model_measure_rejected(self) -> None:
+        """Every ``ModelMeasure`` stored on a ``SlayerModel`` must have a name.
+
+        Unnamed entries are unreachable via ``get_measure()`` and bare-name
+        expansion, so persisting them is meaningless. (Inline measures on
+        ``SlayerQuery.measures`` may still be unnamed — only model-level
+        measures are required to be named.)
         """
-        model = SlayerModel(
-            name="orders",
-            sql_table="t",
-            data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
-            measures=[
-                ModelMeasure(formula="amount:sum"),
-                ModelMeasure(formula="amount:avg"),
-            ],
-        )
-        assert len(model.measures) == 2
+        with pytest.raises(ValueError, match="must have a name"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                measures=[ModelMeasure(formula="amount:sum")],
+            )
 
     def test_unique_names_accepted(self) -> None:
         model = SlayerModel(
@@ -326,9 +327,9 @@ class TestAllowedAggregationsBuildTimeValidation:
     The intersection contract: a whitelist entry must satisfy
     (1) the PK rule (only ``count`` / ``count_distinct`` for PKs),
     (2) type-default eligibility (``DEFAULT_AGGREGATIONS_BY_TYPE[col.type]``).
-    Custom aggregations defined on the model bypass type/PK eligibility
-    (their formula determines applicability), but they still must be a
-    known custom name.
+    Custom aggregations defined on the model bypass type-default eligibility
+    (their formula determines applicability), but PK restrictions still apply
+    and the name must be a known custom aggregation.
     """
 
     def test_pk_column_with_disallowed_aggregation_in_whitelist_rejected(self) -> None:
@@ -461,6 +462,29 @@ class TestAllowedAggregationsBuildTimeValidation:
                         name="revenue",
                         type=DataType.NUMBER,
                         allowed_aggregations=["bogus_agg"],
+                    ),
+                ],
+            )
+
+    def test_builtin_override_still_type_gated(self) -> None:
+        """Overriding a built-in name (e.g., ``sum``) with a custom formula must
+        still respect type-default eligibility — built-ins keep their type
+        semantics regardless of the override formula. Only truly novel custom
+        names bypass the type-default gate.
+        """
+        with pytest.raises(ValueError, match="not applicable|string"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                aggregations=[
+                    Aggregation(name="sum", formula="STRING_AGG({value}, ',')"),
+                ],
+                columns=[
+                    Column(
+                        name="status",
+                        type=DataType.STRING,
+                        allowed_aggregations=["sum"],
                     ),
                 ],
             )

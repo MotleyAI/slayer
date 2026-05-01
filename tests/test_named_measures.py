@@ -175,3 +175,22 @@ class TestNamedMeasureSQL:
 
         with pytest.raises(ValueError, match="Bare measure name"):
             await _generate(query, model)
+
+    async def test_duplicate_saved_measure_name_rejected_in_enrichment(self) -> None:
+        """Defense-in-depth: even if a model with duplicate saved-measure names
+        slips past the construction-time validator (e.g., direct mutation),
+        the enrichment helper refuses to build the bare-name lookup table.
+        """
+        model = _orders_model(
+            measures=[ModelMeasure(name="aov", formula="revenue:sum")]
+        )
+        # Bypass the model validator by appending after construction.
+        model.measures.append(ModelMeasure(name="aov", formula="revenue:avg"))
+
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "aov", "name": "result"}],
+        )
+
+        with pytest.raises(ValueError, match="Duplicate saved measure name"):
+            await _generate(query, model)
