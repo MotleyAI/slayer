@@ -203,7 +203,10 @@ def _extract_types_from_cursor(result, db_type: Optional[str] = None) -> Dict[st
 
 # Databases that return all-None cursor.description type codes need a real row
 _NEEDS_ROW_FOR_TYPES = {"sqlite"}
-_INLINE_SYNC_DB_TYPES = {"sqlite", "duckdb"}
+# DBs that should call _execute_with_retry_sync inline from async coroutines.
+# Empty: every dispatch goes through _run_sync_in_thread / _execute_with_retry_threaded
+# so the event loop is never blocked on DB work or on time.sleep retry backoff.
+_INLINE_SYNC_DB_TYPES: set[str] = set()
 
 
 async def _run_sync_in_thread(func, *args, **kwargs):
