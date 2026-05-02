@@ -197,6 +197,11 @@ class SlayerQueryEngine:
     def __init__(self, storage: StorageBackend):
         self.storage = storage
         self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
+        # Names of query-backed join targets currently being expanded — used by
+        # _resolve_join_target to break loops when a target's own join graph
+        # references it back (the call stack crosses _enrich invocations, so
+        # closure-local sets aren't sufficient).
+        self._join_target_resolving: set = set()
 
     async def execute(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
@@ -898,7 +903,7 @@ class SlayerQueryEngine:
         })
         await self.storage.save_model(updated)
 
-    async def _enrich(
+    async def _enrich(  # NOSONAR S3776 — orchestrates resolve-callback closures + cross-model post-processing; splitting into helpers obscures the closure variables threaded through enrich_query
         self,
         query: SlayerQuery,
         model: SlayerModel,
@@ -922,24 +927,12 @@ class SlayerQueryEngine:
                     outer_vars=query.variables,
                 )
             elif self.storage:
-                # Don't recurse through _resolve_model here: that would re-enter
-                # _enrich on the target's own source_queries, which can re-walk
-                # the join graph back to us and loop. For query-backed targets
-                # we prefer the cached ``backing_query_sql`` (kept fresh by the
-                # main resolution path); if absent, fall back to a one-shot
-                # expansion via _query_as_model.
                 target = await self.storage.get_model(target_model_name)
                 if target and target.source_queries:
-                    if target.backing_query_sql:
-                        target = target.model_copy(update={"sql": target.backing_query_sql})
-                    else:
-                        stages = list(target.source_queries)
-                        target = await self._query_as_model(
-                            inner_query=stages[-1],
-                            named_queries={q.name: q for q in stages[:-1] if q.name},
-                            override_name=target.name,
-                            outer_vars=dict(target.query_variables),
-                        )
+                    target = await self._render_query_backed_join_target(
+                        target=target,
+                        outer_query_variables=query.variables,
+                    )
             else:
                 target = None
             if target and target.sql_table:
@@ -965,6 +958,51 @@ class SlayerQueryEngine:
             )
 
         return enriched
+
+    async def _render_query_backed_join_target(
+        self,
+        target: SlayerModel,
+        outer_query_variables: Optional[Dict[str, Any]],
+    ) -> SlayerModel:
+        """Resolve a query-backed model used as a JOIN target.
+
+        Threads the enclosing query's variables into the target's stage filter
+        substitution so a target with ``filters=["amount > {threshold}"]`` sees
+        the runtime value, not the cached/default fill.
+
+        Recursion guard: ``self._join_target_resolving`` blocks re-entry on the
+        same target name. The call stack crosses ``_enrich`` invocations
+        (target's source_queries → target's own joins → _resolve_join_target
+        again), so this guard lives on the engine instance, not on a closure.
+        Re-entry returns the cached SQL if available, else returns the raw
+        target unchanged so enrichment fails with a clear "no sql" error
+        instead of looping.
+        """
+        if target.name in self._join_target_resolving:
+            if target.backing_query_sql:
+                return target.model_copy(update={"sql": target.backing_query_sql})
+            return target
+        # When the enclosing query has no variables AND a canonical cache
+        # exists, prefer the cached SQL (avoids the second render).
+        if not outer_query_variables and target.backing_query_sql:
+            return target.model_copy(update={"sql": target.backing_query_sql})
+        # Otherwise render fresh with merged variables (target defaults +
+        # enclosing query's vars; enclosing wins).
+        stages = list(target.source_queries or [])
+        if not stages:
+            return target
+        merged = {**dict(target.query_variables), **(outer_query_variables or {})}
+        self._join_target_resolving.add(target.name)
+        try:
+            return await self._query_as_model(
+                inner_query=stages[-1],
+                named_queries={q.name: q for q in stages[:-1] if q.name},
+                override_name=target.name,
+                outer_vars=merged,
+                runtime_kwarg=outer_query_variables or None,
+            )
+        finally:
+            self._join_target_resolving.discard(target.name)
 
     async def _query_as_model(  # NOSONAR S3776 — variable-precedence + enrich + SQL-gen + virtual-model assembly is a single conceptual unit
         self,

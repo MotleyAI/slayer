@@ -580,6 +580,55 @@ class TestJoinTargetIsQueryBacked:
     available as the join source.
     """
 
+    async def test_join_target_with_variables_uses_runtime_value(self) -> None:
+        """Saved query-backed join target with `filters=["amount > {threshold}"]`
+        must see the enclosing query's runtime ``variables`` — not the cached
+        placeholder-fill or model defaults.
+        """
+        from slayer.core.models import ModelJoin
+
+        engine, tmp = await _engine_with_orders()
+        try:
+            # Save a query-backed rollup whose stage filter references {threshold}.
+            await engine.save_model(SlayerModel(
+                name="rev_filtered",
+                data_source="ds",
+                source_queries=[SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["region"],
+                    filters=["amount > {threshold}"],
+                    dry_run=True,
+                )],
+                query_variables={"threshold": 0},  # save-time default
+            ))
+            # Add a join from orders → rev_filtered on region.
+            orders = await engine.storage.get_model("orders")
+            orders = orders.model_copy(update={
+                "joins": [ModelJoin(
+                    target_model="rev_filtered",
+                    join_pairs=[["region", "region"]],
+                )],
+            })
+            await engine.storage.save_model(orders)
+
+            # Outer query passes a runtime value for {threshold}; the join
+            # target's rendered SQL must use 999, not the saved 0.
+            outer = SlayerQuery(
+                source_model="orders",
+                dimensions=["region", "rev_filtered.amount_sum"],
+                measures=[{"formula": "*:count"}],
+                variables={"threshold": 999},
+                dry_run=True,
+            )
+            resp = await engine.execute(outer)
+            assert resp.sql is not None
+            assert "999" in resp.sql, (
+                f"join target should use runtime threshold=999, got SQL:\n{resp.sql}"
+            )
+        finally:
+            tmp.cleanup()
+
     async def test_join_target_is_query_backed_model(self) -> None:
         from slayer.core.models import ModelJoin
 

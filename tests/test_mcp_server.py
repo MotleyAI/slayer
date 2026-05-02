@@ -368,11 +368,12 @@ class TestInspectModelQueryBacked:
             "model_name": "qb", "format": "json", "show_sql": True,
         })
         parsed = json.loads(result)
-        # When the cache has been populated by a prior resolution, the field
-        # appears; when dry-run setup leaves it empty, the test still verifies
-        # the gating contract (no key when no cache).
-        if parsed.get("backing_query_sql"):
-            assert "amount" in parsed["backing_query_sql"].lower()
+        # The pre-warm above triggers the engine's cache-refresh path, so the
+        # field MUST be present here — a soft `if parsed.get(...)` would mask
+        # regressions in that path.
+        assert "backing_query_sql" in parsed
+        assert parsed["backing_query_sql"]
+        assert "amount" in parsed["backing_query_sql"].lower()
 
     async def test_required_variables_reported(
         self, mcp_server, storage: YAMLStorage
