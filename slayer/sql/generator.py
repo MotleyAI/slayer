@@ -49,6 +49,26 @@ _SAFE_AGG_PARAM_RE = re.compile(
     r')$'
 )
 
+_WINDOW_DURATION_RE = re.compile(r"(?P<num>\d+)(?P<unit>min|[ymwdhs])")
+_WINDOW_UNIT_SQL = {
+    "y": "year",
+    "m": "month",
+    "w": "week",
+    "d": "day",
+    "h": "hour",
+    "min": "minute",
+    "s": "second",
+}
+_WINDOW_UNIT_SQLITE = {
+    "y": "years",
+    "m": "months",
+    "w": "days",
+    "d": "days",
+    "h": "hours",
+    "min": "minutes",
+    "s": "seconds",
+}
+
 
 def _validate_agg_param_value(value: str, param_name: str, agg_name: str) -> None:
     """Validate that a query-time aggregation parameter value is safe for substitution.
@@ -97,6 +117,34 @@ def _has_cross_model_filter(m: EnrichedMeasure) -> bool:
         if prefix != m.model_name:
             return True
     return False
+
+
+def _is_windowed_measure(m: EnrichedMeasure) -> bool:
+    return bool(m.window)
+
+
+def _parse_window_duration(value: str) -> list[tuple[int, str]]:
+    """Parse compact durations like 1y2m3w5d6h7min8s."""
+    if not value:
+        raise ValueError("Window duration cannot be empty")
+    pos = 0
+    parts: list[tuple[int, str]] = []
+    for match in _WINDOW_DURATION_RE.finditer(value):
+        if match.start() != pos:
+            raise ValueError(
+                f"Invalid window duration '{value}'. Use syntax like '1y2m3w5d6h7min8s'."
+            )
+        amount = int(match.group("num"))
+        unit = match.group("unit")
+        if amount <= 0:
+            raise ValueError(f"Window duration parts must be positive in '{value}'")
+        parts.append((amount, unit))
+        pos = match.end()
+    if pos != len(value) or not parts:
+        raise ValueError(
+            f"Invalid window duration '{value}'. Use syntax like '1y2m3w5d6h7min8s'."
+        )
+    return parts
 
 
 def _cte_name_from_alias(prefix: str, alias: str) -> str:
@@ -168,8 +216,9 @@ class SQLGenerator:
         4. Expressions/transforms stacked on top of combined
         """
         has_isolated = any(_has_cross_model_filter(m) for m in enriched.measures)
+        has_windowed = any(_is_windowed_measure(m) for m in enriched.measures)
         has_cross_model = bool(enriched.cross_model_measures)
-        has_measure_ctes = has_isolated or has_cross_model
+        has_measure_ctes = has_isolated or has_cross_model or has_windowed
         has_computed = bool(enriched.expressions or enriched.transforms)
 
         base_sql = self._generate_base(enriched=enriched, skip_isolated=has_measure_ctes)
@@ -292,6 +341,14 @@ class SQLGenerator:
                 ctes.append((cte_name, select.sql(dialect=self.dialect)))
                 measure_cte_refs.append((cte_name, cm.alias, None))
 
+        # --- Windowed aggregation CTEs ---
+        for measure in enriched.measures:
+            if not _is_windowed_measure(measure):
+                continue
+            cte_name = _cte_name_from_alias("_wm_", measure.alias)
+            ctes.append((cte_name, self._generate_window_measure_cte(enriched, measure)))
+            measure_cte_refs.append((cte_name, measure.alias, None))
+
         # --- Isolated filtered-measure CTEs ---
         for measure in enriched.measures:
             if not _has_cross_model_filter(measure):
@@ -404,7 +461,7 @@ class SQLGenerator:
         # --- Build combined SELECT: _base LEFT JOIN measure CTEs ---
         base_cols = list(dim_aliases) + list(td_aliases)
         for m in enriched.measures:
-            if not _has_cross_model_filter(m):
+            if not _has_cross_model_filter(m) and not _is_windowed_measure(m):
                 base_cols.append(m.alias)
         final_parts = [f'_base."{a}"' for a in base_cols]
         for cte_name, alias, _ in measure_cte_refs:
@@ -453,7 +510,10 @@ class SQLGenerator:
         if enriched.order:
             order_parts = []
             base_cols = set(d.alias for d in enriched.dimensions) | set(td.alias for td in enriched.time_dimensions)
-            base_cols |= {m.alias for m in enriched.measures if not _has_cross_model_filter(m)}
+            base_cols |= {
+                m.alias for m in enriched.measures
+                if not _has_cross_model_filter(m) and not _is_windowed_measure(m)
+            }
             for order_item in enriched.order:
                 col = order_item.column
                 col_name = self._resolve_order_column(col=col, enriched=enriched)
@@ -589,6 +649,122 @@ class SQLGenerator:
         col_sql = col_expr.sql(dialect=self.dialect)
         return sqlglot.parse_one(f"{col_sql} + {interval_str}", dialect=self.dialect)
 
+    def _duration_interval_sql(self, duration: str, sign: int = 1) -> str:
+        parts = _parse_window_duration(duration)
+        if self.dialect == "sqlite":
+            modifiers = []
+            for amount, unit in parts:
+                value = amount * 7 if unit == "w" else amount
+                prefix = "+" if sign >= 0 else "-"
+                modifiers.append(f"'{prefix}{value} {_WINDOW_UNIT_SQLITE[unit]}'")
+            return ", ".join(modifiers)
+        interval_parts = []
+        for amount, unit in parts:
+            interval_parts.append(f"{amount} {_WINDOW_UNIT_SQL[unit]}")
+        prefix = "" if sign >= 0 else "-"
+        return f"{prefix}INTERVAL '{' '.join(interval_parts)}'"
+
+    def _granularity_interval_sql(self, granularity: TimeGranularity, sign: int = 1) -> str:
+        if granularity == TimeGranularity.QUARTER:
+            duration = "3m"
+        elif granularity == TimeGranularity.WEEK:
+            duration = "1w"
+        else:
+            unit_to_duration = {
+                TimeGranularity.YEAR: "1y",
+                TimeGranularity.MONTH: "1m",
+                TimeGranularity.DAY: "1d",
+                TimeGranularity.HOUR: "1h",
+                TimeGranularity.MINUTE: "1min",
+                TimeGranularity.SECOND: "1s",
+            }
+            duration = unit_to_duration[granularity]
+        return self._duration_interval_sql(duration, sign=sign)
+
+    def _add_intervals_sql(self, expr_sql: str, intervals: list[str]) -> str:
+        if self.dialect == "sqlite":
+            args = ", ".join([expr_sql] + intervals)
+            return f"DATETIME({args})"
+        result = expr_sql
+        for interval in intervals:
+            result = f"({result} + {interval})"
+        return result
+
+    def _generate_window_measure_cte(self, enriched: EnrichedQuery, measure: EnrichedMeasure) -> str:
+        if measure.aggregation not in ("sum", "avg"):
+            raise ValueError("Windowed aggregations are only supported for sum and avg")
+        if not measure.window or not measure.window_time_alias:
+            raise ValueError(f"Windowed measure '{measure.alias}' is missing window metadata")
+
+        td = next((t for t in enriched.time_dimensions if t.alias == measure.window_time_alias), None)
+        if td is None:
+            raise ValueError(f"Windowed measure '{measure.alias}' could not resolve its time dimension")
+
+        source_cols: list[str] = []
+        join_parts: list[str] = []
+        group_aliases = [d.alias for d in enriched.dimensions] + [td.alias for td in enriched.time_dimensions]
+
+        for idx, dim in enumerate(enriched.dimensions):
+            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+            src_alias = f"_w_dim_{idx}"
+            source_cols.append(f"{col_expr.sql(dialect=self.dialect)} AS {src_alias}")
+            join_parts.append(f'_src.{src_alias} = _base."{dim.alias}"')
+
+        raw_time_expr = self._resolve_sql(sql=td.sql or td.name, name=td.name, model_name=td.model_name)
+        raw_time_sql = raw_time_expr.sql(dialect=self.dialect)
+        source_cols.append(f"{raw_time_sql} AS _w_time")
+
+        value_expr = self._resolve_sql(sql=measure.sql or measure.name, name=measure.name, model_name=measure.model_name)
+        value_sql = value_expr.sql(dialect=self.dialect)
+        if measure.filter_sql:
+            value_sql = f"CASE WHEN {measure.filter_sql} THEN {value_sql} END"
+        source_cols.append(f"{value_sql} AS _w_value")
+
+        source_from = self._build_from_clause(enriched=enriched).sql(dialect=self.dialect)
+        source_sql = "SELECT\n    " + ",\n    ".join(source_cols) + f"\nFROM {source_from}"
+        for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
+            if target_table.startswith("("):
+                join_target = f"{target_table} AS {target_alias}"
+            else:
+                join_target = exp.to_table(target_table, alias=target_alias).sql(dialect=self.dialect)
+            source_sql += f"\n{jtype.upper()} JOIN {join_target} ON {join_cond}"
+
+        scoped = copy.copy(enriched)
+        scoped.time_dimensions = [
+            t.model_copy(update={"date_range": None}) for t in enriched.time_dimensions
+        ]
+        where_clause, _ = self._build_where_and_having(enriched=scoped)
+        if where_clause is not None:
+            source_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
+
+        frame_time = f'_base."{td.alias}"'
+        bucket_end = self._add_intervals_sql(
+            frame_time,
+            [self._granularity_interval_sql(td.granularity, sign=1)],
+        )
+        lower_bound = self._add_intervals_sql(
+            bucket_end,
+            [self._duration_interval_sql(measure.window, sign=-1)],
+        )
+        join_parts.append(f"_src._w_time >= {lower_bound}")
+        join_parts.append(f"_src._w_time < {bucket_end}")
+
+        agg_func = "SUM" if measure.aggregation == "sum" else "AVG"
+        select_parts = [f'_base."{a}"' for a in group_aliases]
+        select_parts.append(f'{agg_func}(_src._w_value) AS "{measure.alias}"')
+        group_parts = [f'_base."{a}"' for a in group_aliases]
+        return (
+            "SELECT\n    "
+            + ",\n    ".join(select_parts)
+            + "\nFROM _base\n"
+            + "LEFT JOIN (\n"
+            + source_sql
+            + "\n) AS _src\n    ON "
+            + " AND ".join(join_parts)
+            + "\nGROUP BY "
+            + ", ".join(group_parts)
+        )
+
     def _generate_base(self, enriched: EnrichedQuery,
                         skip_isolated: bool = False) -> str:
         """Generate the base SELECT (measures, dimensions, filters)."""
@@ -641,7 +817,7 @@ class SQLGenerator:
 
         has_aggregation = False
         for measure in enriched.measures:
-            if skip_isolated and _has_cross_model_filter(measure):
+            if skip_isolated and (_has_cross_model_filter(measure) or _is_windowed_measure(measure)):
                 continue  # Will be handled in its own CTE
             agg_expr, is_agg = self._build_agg(
                 measure=measure,
@@ -943,26 +1119,33 @@ class SQLGenerator:
         """Build a window function SQL expression for a transform."""
         measure = f'"{t.measure_alias}"'
         time_col = f'"{t.time_alias}"' if t.time_alias else None
+        partition_cols = getattr(t, "partition_aliases", []) or []
+        partition_clause = (
+            "PARTITION BY " + ", ".join(f'"{a}"' for a in partition_cols)
+            if partition_cols
+            else ""
+        )
         order_clause = f"ORDER BY {time_col}" if time_col else ""
+        over_parts = " ".join(p for p in (partition_clause, order_clause) if p)
 
         if t.transform == "cumsum":
-            return f"SUM({measure}) OVER ({order_clause})"
+            return f"SUM({measure}) OVER ({over_parts})"
         elif t.transform in _SELF_JOIN_TRANSFORMS:
             raise ValueError(f"{t.transform} should not reach _build_transform_sql; it uses self-join CTE")
         elif t.transform == "lag":
-            return f"LAG({measure}, {abs(t.offset)}) OVER ({order_clause})"
+            return f"LAG({measure}, {abs(t.offset)}) OVER ({over_parts})"
         elif t.transform == "lead":
-            return f"LEAD({measure}, {abs(t.offset)}) OVER ({order_clause})"
+            return f"LEAD({measure}, {abs(t.offset)}) OVER ({over_parts})"
         elif t.transform == "rank":
             return f"RANK() OVER (ORDER BY {measure} DESC)"
         elif t.transform == "first":
             return (
-                f"FIRST_VALUE({measure}) OVER ({order_clause} "
+                f"FIRST_VALUE({measure}) OVER ({over_parts} "
                 f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
             )
         elif t.transform == "last":
             return (
-                f"FIRST_VALUE({measure}) OVER ({order_clause} DESC "
+                f"FIRST_VALUE({measure}) OVER ({partition_clause} ORDER BY {time_col} DESC "
                 f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
             )
         else:

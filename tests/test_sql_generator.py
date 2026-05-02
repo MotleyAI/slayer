@@ -508,6 +508,55 @@ class TestFields:
         assert "ORDER BY" in sql
         assert "rev_running" in sql.lower()
 
+    async def test_cumsum_partitions_by_dimensions(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="cumsum(revenue:sum)", name="running_revenue")],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert 'SUM("orders.revenue_sum") OVER (PARTITION BY "orders.status" ORDER BY "orders.created_at")' in sql
+
+    async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            fields=[Field(formula="revenue:sum(window='90d')", name="revenue_90d")],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "_wm_orders__revenue_sum_window_90d" in sql
+        assert "LEFT JOIN (" in sql
+        assert "_src._w_time >=" in sql
+        assert "_src._w_time <" in sql
+        assert "INTERVAL '90 day'" in sql
+        assert '_src._w_dim_0 = _base."orders.status"' in sql
+
+    async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
+            fields=[Field(formula="revenue:avg(window='1y2m3w5d6h7min8s')", name="avg_window")],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "AVG(_src._w_value)" in sql
+        assert "INTERVAL '1 year 2 month 3 week 5 day 6 hour 7 minute 8 second'" in sql
+
+    async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
+            fields=[Field(formula="revenue:sum(window='1w2d3h4min5s')", name="revenue_window")],
+        )
+        sql = await _generate(SQLGenerator(dialect="sqlite"), query, orders_model)
+        assert "DATETIME(" in sql
+        assert "'-7 days'" in sql
+        assert "'-2 days'" in sql
+        assert "'-3 hours'" in sql
+        assert "'-4 minutes'" in sql
+        assert "'-5 seconds'" in sql
+
     async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
         orders_model.default_time_dimension = "created_at"

@@ -8,12 +8,12 @@ becomes an extra CTE in the generated SQL.
 
 | Transform | Purpose | SQL strategy |
 |-----------|---------|--------------|
-| `cumsum(x)` | Running total over time | Window: `SUM(x) OVER (ORDER BY time)` |
+| `cumsum(x)` | Running total over time | Window: `SUM(x) OVER (PARTITION BY dims ORDER BY time)` |
 | `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
 | `time_shift(x, n, 'year')` | Value at a different granularity offset (e.g. YoY) | Self-join CTE with INTERVAL offset |
 | `change(x)` | `x − previous(x)` | Desugars to `x − time_shift(x, -1)` |
 | `change_pct(x)` | `(x − previous) / previous` | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
-| `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn |
+| `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn, partitioned by dimensions |
 | `rank(x)` | Rank by x, descending | `RANK() OVER (ORDER BY x DESC)` |
 | `first(x)` | Broadcast earliest bucket's value to every row | Window |
 | `last(x)` | Broadcast latest bucket's value to every row | Window |
@@ -46,6 +46,10 @@ All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`,
 the query. With a single entry it's used automatically; with 2+ entries,
 `main_time_dimension` disambiguates (or `default_time_dimension` if among
 query's time dims). `rank` does **not** need a time dimension.
+
+Window-function transforms partition by the query's non-time dimensions. A
+`cumsum(revenue:sum)` grouped by `status` computes one running total per
+status. `rank` remains global across the result set.
 
 ## Nesting
 

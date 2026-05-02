@@ -50,6 +50,8 @@ class EnrichedMeasure(BaseModel):
     model_name: str
     aggregation_def: Optional[Aggregation] = Field(default=None, description="Full aggregation definition (formula, params)")
     agg_kwargs: Dict[str, str] = Field(default_factory=dict, description="Query-time aggregation param overrides")
+    window: Optional[str] = Field(default=None, description="Trailing time window for windowed sum/avg aggregations")
+    window_time_alias: Optional[str] = Field(default=None, description="Time dimension alias used for windowed aggregations")
     label: Optional[str] = Field(default=None, description="Human-readable label")
     time_column: Optional[str] = Field(default=None, description="Explicit time col for first/last (overrides query default)")
     source_measure_name: Optional[str] = Field(default=None, description="Original measure name before canonicalization")
@@ -101,6 +103,7 @@ class EnrichedTransform(BaseModel):
     offset: int = Field(description="For time_shift: number of rows or calendar units")
     granularity: Optional[str] = Field(default=None, description="For time_shift: year, month, quarter, etc.")
     time_alias: Optional[str] = Field(default=None, description="Alias of the time dimension column for ORDER BY")
+    partition_aliases: List[str] = Field(default_factory=list, description="Dimension aliases to PARTITION BY")
     label: Optional[str] = None
 
 

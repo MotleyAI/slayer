@@ -72,6 +72,13 @@ def _agg_signature_suffix(
     return "_" + "_".join(parts) if parts else ""
 
 
+def _strip_string_literal(value: str) -> str:
+    """Strip one layer of single/double quotes from a query parameter value."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
 def _canonical_agg_name(
     measure_name: str,
     aggregation_name: str,
@@ -218,7 +225,23 @@ async def enrich_query(
             agg_kwargs: Keyword args from colon syntax (e.g., weight override).
         """
         agg_args = agg_args or []
-        agg_kwargs = agg_kwargs or {}
+        agg_kwargs = {k: _strip_string_literal(v) for k, v in (agg_kwargs or {}).items()}
+
+        window = agg_kwargs.pop("window", None)
+        window_time_alias = None
+        if window is not None:
+            if aggregation_name not in ("sum", "avg"):
+                raise ValueError(
+                    f"Aggregation parameter 'window' is only supported for sum and avg, "
+                    f"not '{aggregation_name}'."
+                )
+            if resolved_time_alias is None:
+                raise ValueError(
+                    f"Windowed aggregation '{measure_name}:{aggregation_name}' requires an "
+                    f"unambiguous time dimension. Add a single time_dimensions entry, or set "
+                    f"main_time_dimension to select among multiple time dimensions."
+                )
+            window_time_alias = resolved_time_alias
 
         # Canonical name for the result column (colon → underscore). Includes a
         # signature suffix when args/kwargs are present so that parameterized
@@ -227,7 +250,7 @@ async def enrich_query(
             measure_name=measure_name,
             aggregation_name=aggregation_name,
             agg_args=agg_args,
-            agg_kwargs=agg_kwargs,
+            agg_kwargs={**agg_kwargs, **({"window": window} if window is not None else {})},
         )
 
         # Skip if already ensured with this alias_key
@@ -323,6 +346,8 @@ async def enrich_query(
                 model_name=model_name_str,
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs,
+                window=window,
+                window_time_alias=window_time_alias,
                 label=measure_def.label if measure_def else None,
                 time_column=explicit_time_col,
                 source_measure_name=measure_name,
@@ -358,6 +383,7 @@ async def enrich_query(
                 offset=offset,
                 granularity=granularity,
                 time_alias=resolved_time_alias if needs_time else None,
+                partition_aliases=[d.alias for d in dimensions],
             )
         )
         known_aliases[name] = alias

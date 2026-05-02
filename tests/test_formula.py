@@ -472,6 +472,13 @@ class TestFuncStyleEndToEnd:
         assert result.aggregation_name == "weighted_avg"
         assert result.agg_kwargs == {"weight": "qty"}
 
+    def test_windowed_sum_parses(self) -> None:
+        result = parse_formula("revenue:sum(window='1y2m3w5d6h7min8s')")
+        assert isinstance(result, AggregatedMeasureRef)
+        assert result.measure_name == "revenue"
+        assert result.aggregation_name == "sum"
+        assert result.agg_kwargs == {"window": "'1y2m3w5d6h7min8s'"}
+
     def test_filter_funcstyle(self) -> None:
         result = parse_filter("sum(revenue) > 100")
         assert "revenue_sum" in result.sql
