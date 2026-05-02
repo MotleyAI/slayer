@@ -559,6 +559,57 @@ def _contains_call(node: ast.AST) -> bool:
     return False
 
 
+def _replace_calls_in_arith(
+    node: ast.AST,
+    *,
+    sub_transforms: list[tuple],
+    measure_names: list[str],
+    counter: list[int],
+    agg_refs: Dict[str, AggregatedMeasureRef],
+    original: str,
+) -> ast.AST:
+    """Walk the AST, replacing transform Call nodes with Name placeholders."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ALL_TRANSFORMS:
+        placeholder = f"_t{counter[0]}"
+        counter[0] += 1
+        transform = _parse_node(node, original, agg_refs)
+        sub_transforms.append((placeholder, transform))
+        return ast.Name(id=placeholder, ctx=ast.Load())
+
+    kwargs = {
+        "sub_transforms": sub_transforms,
+        "measure_names": measure_names,
+        "counter": counter,
+        "agg_refs": agg_refs,
+        "original": original,
+    }
+
+    if isinstance(node, ast.Name):
+        if node.id not in [p for p, _ in sub_transforms]:
+            measure_names.append(node.id)
+        return node
+
+    if isinstance(node, ast.BinOp):
+        node.left = _replace_calls_in_arith(node.left, **kwargs)
+        node.right = _replace_calls_in_arith(node.right, **kwargs)
+        return node
+
+    if isinstance(node, ast.UnaryOp):
+        node.operand = _replace_calls_in_arith(node.operand, **kwargs)
+        return node
+
+    if isinstance(node, ast.Compare):
+        node.left = _replace_calls_in_arith(node.left, **kwargs)
+        node.comparators = [_replace_calls_in_arith(c, **kwargs) for c in node.comparators]
+        return node
+
+    if isinstance(node, ast.BoolOp):
+        node.values = [_replace_calls_in_arith(v, **kwargs) for v in node.values]
+        return node
+
+    return node
+
+
 def _parse_mixed_arithmetic(
     node: ast.AST,
     original: str,
@@ -576,43 +627,14 @@ def _parse_mixed_arithmetic(
     measure_names: list[str] = []
     counter = [0]
 
-    def _replace_calls(n: ast.AST) -> ast.AST:
-        """Walk the AST, replacing Call nodes with Name placeholders."""
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ALL_TRANSFORMS:
-            placeholder = f"_t{counter[0]}"
-            counter[0] += 1
-            # Parse the call as a transform
-            transform = _parse_node(n, original, agg_refs)
-            sub_transforms.append((placeholder, transform))
-            return ast.Name(id=placeholder, ctx=ast.Load())
-
-        if isinstance(n, ast.Name):
-            if n.id not in [p for p, _ in sub_transforms]:
-                measure_names.append(n.id)
-            return n
-
-        if isinstance(n, ast.BinOp):
-            n.left = _replace_calls(n.left)
-            n.right = _replace_calls(n.right)
-            return n
-
-        if isinstance(n, ast.UnaryOp):
-            n.operand = _replace_calls(n.operand)
-            return n
-
-        if isinstance(n, ast.Compare):
-            n.left = _replace_calls(n.left)
-            n.comparators = [_replace_calls(c) for c in n.comparators]
-            return n
-
-        if isinstance(n, ast.BoolOp):
-            n.values = [_replace_calls(v) for v in n.values]
-            return n
-
-        return n
-
-    modified = _replace_calls(node)
-    # Reconstruct SQL from modified AST
+    modified = _replace_calls_in_arith(
+        node,
+        sub_transforms=sub_transforms,
+        measure_names=measure_names,
+        counter=counter,
+        agg_refs=agg_refs,
+        original=original,
+    )
     modified_sql = ast.unparse(modified)
 
     field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}

@@ -710,6 +710,24 @@ class SQLGenerator:
             source_cols.append(f"{col_expr.sql(dialect=self.dialect)} AS {src_alias}")
             join_parts.append(f'_src.{src_alias} = _base."{dim.alias}"')
 
+        # Equality-join on every other time dim so the trailing window does not
+        # fan out across their values when the query has 2+ time dimensions.
+        for idx, other_td in enumerate(enriched.time_dimensions):
+            if other_td.alias == td.alias:
+                continue
+            other_expr = self._resolve_sql(
+                sql=other_td.sql or other_td.name,
+                name=other_td.name,
+                model_name=other_td.model_name,
+            )
+            other_bucket = self._build_date_trunc(
+                col_expr=other_expr,
+                granularity=other_td.granularity,
+            )
+            other_alias = f"_w_td_{idx}"
+            source_cols.append(f"{other_bucket.sql(dialect=self.dialect)} AS {other_alias}")
+            join_parts.append(f'_src.{other_alias} = _base."{other_td.alias}"')
+
         raw_time_expr = self._resolve_sql(sql=td.sql or td.name, name=td.name, model_name=td.model_name)
         raw_time_sql = raw_time_expr.sql(dialect=self.dialect)
         source_cols.append(f"{raw_time_sql} AS _w_time")

@@ -419,10 +419,10 @@ async def _execute_with_retry_threaded(
         try:
             return await _run_sync_in_thread(
                 _execute_sql_sync,
-                sql,
-                connection_string,
-                db_type,
-                timeout_seconds,
+                sql=sql,
+                connection_string=connection_string,
+                db_type=db_type,
+                timeout_seconds=timeout_seconds,
             )
         except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
             if attempt == max_attempts - 1:

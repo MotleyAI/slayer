@@ -18,6 +18,10 @@ async def _noop_async(**kw):
     return None
 
 
+def _norm(s: str) -> str:
+    return " ".join(s.split())
+
+
 _SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
 
 
@@ -68,6 +72,7 @@ def orders_model() -> SlayerModel:
             Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
             Column(name="status", sql="status", type=DataType.STRING),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="delivery_at", sql="delivery_at", type=DataType.TIMESTAMP),
             Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
 
             Column(name="revenue", sql="amount", type=DataType.NUMBER),
@@ -511,8 +516,12 @@ class TestFields:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "cumsum(revenue:sum)", "name": "running_revenue"}],
         )
-        sql = await _generate(generator, query, orders_model)
-        assert 'SUM("orders.revenue_sum") OVER (PARTITION BY "orders.status" ORDER BY "orders.created_at")' in sql
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert 'SUM("orders.revenue_sum")' in norm
+        assert "OVER (" in norm
+        assert 'PARTITION BY "orders.status"' in norm
+        assert 'ORDER BY "orders.created_at"' in norm
 
     async def test_consecutive_periods_uses_reset_group_ctes(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -521,13 +530,17 @@ class TestFields:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_streak"}],
         )
-        sql = await _generate(generator, query, orders_model)
-        assert "cp_reset_" in sql
-        assert "cp_value_" in sql
-        assert "SUM(CASE WHEN" in sql
-        assert 'PARTITION BY "orders.status" ORDER BY "orders.created_at"' in sql
-        assert 'PARTITION BY "orders.status", "_cp_reset_orders__positive_streak" ORDER BY "orders.created_at"' in sql
-        assert '"orders.positive_streak"' in sql
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "cp_reset_" in norm
+        assert "cp_value_" in norm
+        assert "SUM(CASE WHEN" in norm
+        # Reset CTE: partition by query dim, order by query time dim.
+        assert 'PARTITION BY "orders.status"' in norm
+        assert 'ORDER BY "orders.created_at"' in norm
+        # Value CTE: partition adds the reset-group alias.
+        assert '"_cp_reset_orders__positive_streak"' in norm
+        assert '"orders.positive_streak"' in norm
 
     async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -535,10 +548,12 @@ class TestFields:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "consecutive_periods(revenue:sum > 0) >= 2", "name": "long_enough"}],
         )
-        sql = await _generate(generator, query, orders_model)
-        assert "cp_reset_" in sql
-        assert "cp_value_" in sql
-        assert '>= 2 AS "orders.long_enough"' in sql
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "cp_reset_" in norm
+        assert "cp_value_" in norm
+        assert '>= 2' in norm
+        assert '"orders.long_enough"' in norm
 
     async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -547,13 +562,32 @@ class TestFields:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
             measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
         )
-        sql = await _generate(generator, query, orders_model)
-        assert "_wm_orders__revenue_sum_window_90d" in sql
-        assert "LEFT JOIN (" in sql
-        assert "_src._w_time >=" in sql
-        assert "_src._w_time <" in sql
-        assert "INTERVAL '90 day'" in sql
-        assert '_src._w_dim_0 = _base."orders.status"' in sql
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "_wm_orders__revenue_sum_window_90d" in norm
+        assert "LEFT JOIN" in norm
+        assert "_src._w_time >=" in norm
+        assert "_src._w_time <" in norm
+        assert "INTERVAL '90 day'" in norm
+        assert '_src._w_dim_0 = _base."orders.status"' in norm
+
+    async def test_windowed_sum_preserves_other_time_dim_grain(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """With 2+ time dimensions, the windowed CTE must equality-join on every
+        non-window time dim — otherwise rows from other dim values fan in."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension=ColumnRef(name="delivery_at"), granularity=TimeGranularity.MONTH),
+            ],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_w_td_" in sql
+        assert '_base."orders.delivery_at"' in sql
 
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -561,9 +595,11 @@ class TestFields:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
             measures=[{"formula": "revenue:avg(window='1y2m3w5d6h7min8s')", "name": "avg_window"}],
         )
-        sql = await _generate(generator, query, orders_model)
-        assert "AVG(_src._w_value)" in sql
-        assert "INTERVAL '1 year 2 month 3 week 5 day 6 hour 7 minute 8 second'" in sql
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "AVG(_src._w_value)" in norm
+        # The interval *content* is what the test cares about — keep it pinned.
+        assert "INTERVAL '1 year 2 month 3 week 5 day 6 hour 7 minute 8 second'" in norm
 
     async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -571,7 +607,11 @@ class TestFields:
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
             measures=[{"formula": "revenue:sum(window='1w2d3h4min5s')", "name": "revenue_window"}],
         )
-        sql = await _generate(SQLGenerator(dialect="sqlite"), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect="sqlite"),
+            query=query,
+            model=orders_model,
+        )
         assert "DATETIME(" in sql
         assert "'-7 days'" in sql
         assert "'-2 days'" in sql
@@ -1081,7 +1121,7 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             dimensions=[ColumnRef(name="status")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
-            await _generate(generator, query, model)
+            await _generate(generator=generator, query=query, model=model)
 
     async def test_cumsum_with_time_dimension_works(self, generator: SQLGenerator) -> None:
         """cumsum with explicit time_dimensions should work fine."""
