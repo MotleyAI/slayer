@@ -1,6 +1,8 @@
 """SQL client for executing queries against databases."""
 
 import asyncio
+import concurrent.futures
+import functools
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -201,6 +203,20 @@ def _extract_types_from_cursor(result, db_type: Optional[str] = None) -> Dict[st
 
 # Databases that return all-None cursor.description type codes need a real row
 _NEEDS_ROW_FOR_TYPES = {"sqlite"}
+_INLINE_SYNC_DB_TYPES = {"sqlite", "duckdb"}
+
+
+async def _run_sync_in_thread(func, *args, **kwargs):
+    """Run one blocking DB call in a short-lived worker thread.
+
+    Avoid using the event loop's default executor here. pytest-asyncio can wait
+    indefinitely for default-executor threads after SQLite integration tests,
+    while a scoped executor is shut down immediately after the call completes.
+    """
+    loop = asyncio.get_running_loop()
+    call = functools.partial(func, *args, **kwargs)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return await loop.run_in_executor(executor, call)
 
 
 def _get_column_types_sync(
@@ -271,6 +287,13 @@ class SlayerSQLClient:
                 db_type=db_type,
                 timeout_seconds=timeout_seconds,
             )
+        if db_type in _INLINE_SYNC_DB_TYPES:
+            return _execute_with_retry_sync(
+                sql=sql,
+                connection_string=self.datasource.get_connection_string(),
+                db_type=db_type,
+                timeout_seconds=timeout_seconds,
+            )
         # No async driver — fall back to sync in thread pool
         return await _execute_with_retry_threaded(
             sql=sql,
@@ -290,7 +313,13 @@ class SlayerSQLClient:
             return await _get_column_types_async(
                 sql=sql, engine=async_engine, db_type=self.datasource.type,
             )
-        return await asyncio.to_thread(
+        if self.datasource.type in _INLINE_SYNC_DB_TYPES:
+            return _get_column_types_sync(
+                sql=sql,
+                connection_string=self.datasource.get_connection_string(),
+                db_type=self.datasource.type,
+            )
+        return await _run_sync_in_thread(
             _get_column_types_sync,
             sql=sql,
             connection_string=self.datasource.get_connection_string(),
@@ -388,7 +417,7 @@ async def _execute_with_retry_threaded(
     delay = initial_delay
     for attempt in range(max_attempts):
         try:
-            return await asyncio.to_thread(
+            return await _run_sync_in_thread(
                 _execute_sql_sync,
                 sql,
                 connection_string,
