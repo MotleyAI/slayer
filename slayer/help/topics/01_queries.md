@@ -8,7 +8,7 @@ see the `query` tool's own arg documentation.
 | Part | What it drives |
 |------|----------------|
 | `source_model` | The model name, an inline model, or a `ModelExtension`. Not the table name. |
-| `fields` | The SELECTed columns — measures with `:agg`, arithmetic, transforms. |
+| `measures` | The SELECTed columns — measures with `:agg`, arithmetic, transforms. |
 | `dimensions` | Plain GROUP BY columns. Dotted paths cross joins. |
 | `time_dimensions` | GROUP BY on a truncated time column, plus an optional `date_range`. |
 | `filters` | List of condition strings, AND-ed. Route themselves to WHERE / HAVING / post-filter. |
@@ -21,9 +21,9 @@ see the `query` tool's own arg documentation.
 
 1. WHERE — filters on dimensions / raw columns, including model-level `filters`.
 2. GROUP BY — dimensions plus truncated time dimensions.
-3. Aggregate measures → SELECT computed fields.
+3. Aggregate columns → SELECT computed measures.
 4. HAVING — filters on aggregated measures.
-5. Post-filters — filters on transform / computed fields, applied on an outer wrapper.
+5. Post-filters — filters on transform / computed measures, applied on an outer wrapper.
 6. ORDER BY → LIMIT / OFFSET.
 
 Knowing which stage your filter lands in is why the auto-routing works. See
@@ -58,7 +58,7 @@ have two or more time dimensions.
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "*:count",
     "revenue:sum",
     {"formula": "change_pct(revenue:sum)", "name": "mom_growth"}
@@ -81,7 +81,7 @@ query; `customers.regions.name` walks `orders → customers → regions`;
 
 ## See also
 
-- `help(topic='formulas')` — the colon syntax and arithmetic that power `fields`.
+- `help(topic='formulas')` — the colon syntax and arithmetic that power `measures`.
 - `help(topic='filters')` — operators, WHERE vs HAVING, post-filters.
 - `help(topic='time')` — granularities, whole_periods_only, `last()` distinctions.
 - `help(topic='extending')` — `source_model` as a `ModelExtension` or a query name.

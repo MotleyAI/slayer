@@ -1456,6 +1456,11 @@ class SQLGenerator:
 
         # --- Custom or parameterized aggregation (formula-based) ---
         if agg_name not in _AGG_FUNCTION_MAP:
+            # percentile is dialect-dependent (no static formula works on
+            # SQLite/ClickHouse/MySQL) so it gets its own builder rather than
+            # going through the BUILTIN_AGGREGATION_FORMULAS path.
+            if agg_name == "percentile":
+                return self._build_percentile(measure), True
             return self._build_formula_agg(measure, agg_name), True
 
         # --- Resolve inner expression ---
@@ -1556,14 +1561,67 @@ class SQLGenerator:
 
     def _build_median(self, inner: exp.Expression) -> exp.Expression:
         """Build a median aggregation expression (dialect-dependent)."""
-        if self.dialect in ("clickhouse",):
-            return sqlglot.parse_one(f"median({inner.sql(dialect=self.dialect)})", dialect=self.dialect)
-        # Postgres, DuckDB, and most others: PERCENTILE_CONT
         inner_sql = inner.sql(dialect=self.dialect)
+        if self.dialect == "mysql":
+            raise NotImplementedError(
+                "Aggregation 'median' is not supported on MySQL: MySQL has no native "
+                "MEDIAN/PERCENTILE_CONT function and no Python UDF mechanism. "
+                "Use MariaDB (has MEDIAN()) or compute the value client-side."
+            )
+        if self.dialect in ("sqlite", "clickhouse"):
+            # SQLite: provided by the median() UDF registered on connect.
+            # ClickHouse: native median() aggregate.
+            return sqlglot.parse_one(f"median({inner_sql})", dialect=self.dialect)
+        # Postgres, DuckDB, and most others: PERCENTILE_CONT
         return sqlglot.parse_one(
             f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})",
             dialect=self.dialect,
         )
+
+    def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
+        """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
+
+        ``p`` comes from ``measure.agg_kwargs['p']`` as a string literal that has
+        already passed safe-value validation. Filter handling mirrors
+        ``_build_formula_agg``: when the measure carries a row-level filter we
+        wrap the value column in ``CASE WHEN ... END`` so non-matching rows
+        contribute NULL and are ignored by the aggregate.
+        """
+        p = measure.agg_kwargs.get("p")
+        if p is None and measure.aggregation_def:
+            for param in measure.aggregation_def.params:
+                if param.name == "p":
+                    p = param.sql
+                    break
+        if p is None:
+            raise ValueError(
+                "Aggregation 'percentile' requires parameter 'p'. "
+                "Set it in the model's aggregation definition or at query time "
+                "(e.g., 'measure:percentile(p=0.95)')."
+            )
+        _validate_agg_param_value(p, "p", "percentile")
+
+        if self.dialect == "mysql":
+            raise NotImplementedError(
+                "Aggregation 'percentile' is not supported on MySQL: MySQL has no native "
+                "PERCENTILE_CONT function and no Python UDF mechanism. "
+                "Use MariaDB or compute the value client-side."
+            )
+
+        col_expr = measure.sql or measure.name
+        if measure.filter_sql:
+            col_expr = f"(CASE WHEN {measure.filter_sql} THEN {col_expr} END)"
+
+        if self.dialect == "sqlite":
+            # Provided by the percentile_cont(value, p) UDF registered on connect.
+            sql_str = f"percentile_cont({col_expr}, {p})"
+        elif self.dialect == "clickhouse":
+            # ClickHouse parametric aggregate syntax.
+            sql_str = f"quantile({p})({col_expr})"
+        else:
+            sql_str = f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {col_expr})"
+
+        return sqlglot.parse_one(sql_str, dialect=self.dialect)
 
     # ------------------------------------------------------------------
     # WHERE / HAVING (filters still use ColumnRef for member resolution)

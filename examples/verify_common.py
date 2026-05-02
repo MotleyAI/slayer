@@ -6,6 +6,7 @@ Usage in verify.py:
 
 import json
 import os
+import statistics
 import sys
 import urllib.request
 
@@ -85,21 +86,21 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
         },
     )
-    check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders.count"] == TOTAL_ORDERS)
+    check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders._count"] == TOTAL_ORDERS)
 
     result = api(
         "POST",
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
             "dimensions": [{"name": "status"}],
         },
     )
-    by_status = {r["orders.status"]: r["orders.count"] for r in result["data"]}
+    by_status = {r["orders.status"]: r["orders._count"] for r in result["data"]}
     for status, expected in STATUS_COUNTS.items():
         check(f"{status} = {expected}", by_status.get(status) == expected)
 
@@ -108,13 +109,13 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
             "filters": ["status == 'completed'"],
         },
     )
     check(
         f"filter works (completed={STATUS_COUNTS['completed']})",
-        result["data"][0]["orders.count"] == STATUS_COUNTS["completed"],
+        result["data"][0]["orders._count"] == STATUS_COUNTS["completed"],
     )
 
     result = api(
@@ -122,9 +123,9 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
             "dimensions": [{"name": "customer_id"}],
-            "order": [{"column": {"name": "count"}, "direction": "desc"}],
+            "order": [{"column": {"name": "_count"}, "direction": "desc"}],
             "limit": 3,
         },
     )
@@ -135,20 +136,20 @@ def run_common_checks():
         "/query",
         {
             "source_model": "products",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
         },
     )
-    check("8 products total", result["data"][0]["products.count"] == 8)
+    check("8 products total", result["data"][0]["products._count"] == 8)
 
     result = api(
         "POST",
         "/query",
         {
             "source_model": "customers",
-            "fields": [{"formula": "count"}],
+            "fields": [{"formula": "*:count"}],
         },
     )
-    check("10 customers total", result["data"][0]["customers.count"] == 10)
+    check("10 customers total", result["data"][0]["customers._count"] == 10)
 
     # --- Datasources ---
     print("\nDatasources:")
@@ -157,6 +158,60 @@ def run_common_checks():
     check("demo datasource", any(d["name"] == "demo" for d in datasources))
 
     return models
+
+
+def _percentile_cont(values, p):
+    """Linear-interpolation percentile, matches Postgres PERCENTILE_CONT.
+
+    Inlined here so verify.py has no third-party dependencies.
+    """
+    s = sorted(values)
+    n = len(s)
+    if n == 1:
+        return s[0]
+    rank = p * (n - 1)
+    lo = int(rank)
+    hi = min(lo + 1, n - 1)
+    return s[lo] + (rank - lo) * (s[hi] - s[lo])
+
+
+def check_median_percentile(measure="quantity"):
+    """Run median + percentile against a numeric measure on the orders model.
+
+    Compares against reference values computed in Python from the seed data so
+    this works for any database whose dialect SLayer supports for these aggs.
+    Do not call from MySQL examples — SLayer raises NotImplementedError for
+    median/percentile on MySQL and the API will surface that as an error.
+    """
+    print("\nMedian / percentile:")
+
+    # Reference values from the seed (orders[3] is quantity in the tuple).
+    quantities = [o[3] for o in ORDERS]
+    expected_median = statistics.median(quantities)
+    expected_p25 = _percentile_cont(values=quantities, p=0.25)
+    expected_p75 = _percentile_cont(values=quantities, p=0.75)
+
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "fields": [
+                {"formula": f"{measure}:median"},
+                {"formula": f"{measure}:percentile(p=0.25)"},
+                {"formula": f"{measure}:percentile(p=0.75)"},
+            ],
+        },
+    )
+    row = result["data"][0]
+    got_median = float(row[f"orders.{measure}_median"])
+    got_p25 = float(row[f"orders.{measure}_percentile_p_0_25"])
+    got_p75 = float(row[f"orders.{measure}_percentile_p_0_75"])
+
+    # Tolerance covers float drift across dialects without masking real bugs.
+    check(f"median({measure}) = {expected_median}", abs(got_median - expected_median) < 1e-6)
+    check(f"percentile(p=0.25) = {expected_p25}", abs(got_p25 - expected_p25) < 1e-6)
+    check(f"percentile(p=0.75) = {expected_p75}", abs(got_p75 - expected_p75) < 1e-6)
 
 
 def check_rollup(expect_rollup=True):

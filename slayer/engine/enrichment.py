@@ -9,9 +9,14 @@ transformation step in the query pipeline.
 """
 
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Mapping, Optional, Set, Tuple
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, NUMERIC_ONLY_AGGREGATIONS
+from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
+    DEFAULT_AGGREGATIONS_BY_TYPE,
+    DataType,
+    PRIMARY_KEY_AGGREGATIONS,
+)
 from slayer.core.formula import (
     ALL_TRANSFORMS,
     AggregatedMeasureRef,
@@ -165,6 +170,20 @@ async def enrich_query(
         named_queries=named_queries,
     )
 
+    # Saved-formula library for bare-name resolution. Only the source model's
+    # named measures are in scope here; cross-model references (`other.aov`)
+    # remain handled by the cross-model resolver.
+    named_measures: Dict[str, str] = {}
+    for m in model.measures:
+        if not m.name:
+            continue
+        if m.name in named_measures:
+            raise ValueError(
+                f"Duplicate saved measure name '{m.name}' in model "
+                f"'{model.name}'. Saved measure names must be unique."
+            )
+        named_measures[m.name] = m.formula
+
     # --- Dimensions ---
     dimensions = await _resolve_dimensions(
         query=query,
@@ -259,7 +278,7 @@ async def enrich_query(
             known_aliases[alias_key] = alias
             return
 
-        # Resolve measure SQL
+        # Resolve column SQL
         measure_def = None
         if measure_name == "*":
             if aggregation_name != "count":
@@ -268,44 +287,45 @@ async def enrich_query(
                 )
             sql = None
         else:
-            measure_def = model.get_measure(measure_name)
-            if measure_def is not None:
-                if measure_def.allowed_aggregations is not None:
-                    if aggregation_name not in measure_def.allowed_aggregations:
-                        raise ValueError(
-                            f"Aggregation '{aggregation_name}' not allowed for measure "
-                            f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
-                        )
-                # Type-compatibility check: reject numeric-only aggregations
-                # (sum/avg/median/weighted_avg/percentile) on measures backed by a
-                # non-numeric column. Type is inferred from a same-named dimension,
-                # which covers the common auto-ingestion case (one measure per
-                # column, both sharing the column name).
-                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS:
-                    matching_dim = model.get_dimension(measure_name)
-                    if matching_dim is not None and str(matching_dim.type) == "string":
+            measure_def = model.get_column(measure_name)
+            if measure_def is None:
+                raise ValueError(
+                    f"Column '{measure_name}' not found in model '{model.name}'"
+                )
+            # Apply aggregation eligibility gates per the v2 contract:
+            # 1. Primary-key columns are always restricted to count/count_distinct
+            #    (regardless of type or any explicit whitelist).
+            # 2. An explicit allowed_aggregations whitelist on a non-PK column
+            #    overrides type defaults.
+            # 3. Otherwise, built-in aggregations are gated by type defaults;
+            #    custom model-level aggregations are allowed without further
+            #    type restriction.
+            if measure_def.primary_key:
+                if aggregation_name not in PRIMARY_KEY_AGGREGATIONS:
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' not allowed for "
+                        f"primary-key column '{measure_name}'. "
+                        f"Allowed: {sorted(PRIMARY_KEY_AGGREGATIONS)}"
+                    )
+            elif measure_def.allowed_aggregations is not None:
+                if aggregation_name not in measure_def.allowed_aggregations:
+                    raise ValueError(
+                        f"Aggregation '{aggregation_name}' not allowed for column "
+                        f"'{measure_name}'. Allowed: {measure_def.allowed_aggregations}"
+                    )
+            else:
+                is_custom_agg = model.get_aggregation(aggregation_name) is not None
+                if not is_custom_agg:
+                    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(
+                        measure_def.type, frozenset()
+                    )
+                    if aggregation_name not in allowed:
                         raise ValueError(
                             f"Aggregation '{aggregation_name}' is not applicable to "
-                            f"string measure '{measure_name}' in model '{model.name}'. "
-                            f"Valid aggregations for string columns: count, "
-                            f"count_distinct, min, max, first, last."
+                            f"{measure_def.type} column '{measure_name}' in model "
+                            f"'{model.name}'. Default aggregations: {sorted(allowed)}"
                         )
-                sql = measure_def.sql
-            else:
-                # Fall back: allow aggregating a dimension (e.g. pk:count_distinct)
-                dim_def = model.get_dimension(measure_name)
-                if dim_def is None:
-                    raise ValueError(
-                        f"Measure or dimension '{measure_name}' not found in model '{model.name}'"
-                    )
-                sql = dim_def.sql or measure_name
-                if aggregation_name in NUMERIC_ONLY_AGGREGATIONS and str(dim_def.type) == "string":
-                    raise ValueError(
-                        f"Aggregation '{aggregation_name}' is not applicable to "
-                        f"string dimension '{measure_name}' in model '{model.name}'. "
-                        f"Valid aggregations for string columns: count, "
-                        f"count_distinct, min, max, first, last."
-                    )
+            sql = measure_def.sql or measure_name
 
         # Validate aggregation exists
         aggregation_def = model.get_aggregation(aggregation_name)
@@ -326,7 +346,11 @@ async def enrich_query(
         filter_sql = None
         filter_columns: List[str] = []
         if measure_def and measure_def.filter:
-            parsed = parse_filter(measure_def.filter, extra_agg_names=custom_agg_names)
+            parsed = parse_filter(
+                measure_def.filter,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
             resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
@@ -589,8 +613,12 @@ async def enrich_query(
         raise ValueError(f"Unsupported field spec: {spec!r}")
 
     # Process each query field
-    for qfield in query.fields or []:
-        spec = parse_formula(qfield.formula, extra_agg_names=custom_agg_names)
+    for qfield in query.measures or []:
+        spec = parse_formula(
+            qfield.formula,
+            extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
         field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
             "*", ""
         )
@@ -661,7 +689,11 @@ async def enrich_query(
     for item in query.order or []:
         if not item.raw_formula:
             continue
-        spec = parse_formula(item.raw_formula, extra_agg_names=custom_agg_names)
+        spec = parse_formula(
+            item.raw_formula,
+            extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
         if isinstance(spec, AggregatedMeasureRef):
             canonical = _canonical_agg_name(
                 measure_name=spec.measure_name,
@@ -706,9 +738,14 @@ async def enrich_query(
     for f_str in all_filter_strs:
         rewritten, extra_fields = extract_filter_transforms(
             f_str, counter=ft_counter, extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
         )
         for name, formula in extra_fields:
-            spec = parse_formula(formula, extra_agg_names=custom_agg_names)
+            spec = parse_formula(
+                formula,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
             await _flatten_spec(spec, name)
         processed_filters.append(rewritten)
 
@@ -774,7 +811,7 @@ async def _resolve_dimensions(
     dimensions = []
     for dim_ref in query.dimensions or []:
         if dim_ref.model is None:
-            dim_def = model.get_dimension(dim_ref.name)
+            dim_def = model.get_column(dim_ref.name)
             effective_model = model_name_str
         else:
             parts = dim_ref.model.split(".") + [dim_ref.name]
@@ -808,7 +845,7 @@ async def _resolve_time_dimensions(
     time_dimensions = []
     for td in query.time_dimensions or []:
         if td.dimension.model is None:
-            dim_def = model.get_dimension(td.dimension.name)
+            dim_def = model.get_column(td.dimension.name)
             td_model_name = model_name_str
         else:
             parts = td.dimension.model.split(".") + [td.dimension.name]
@@ -869,7 +906,7 @@ def _resolve_last_agg_time(
         td = time_dimensions[0]
         return f"{td.model_name}.{td.sql or td.name}"
     if query.filters:
-        time_dim_names = {d.name for d in model.dimensions if d.type in (DataType.TIMESTAMP, DataType.DATE)}
+        time_dim_names = {c.name for c in model.columns if c.type in (DataType.TIMESTAMP, DataType.DATE)}
         for f_str in query.filters or []:
             for td_name in time_dim_names:
                 if td_name in f_str:
@@ -1046,19 +1083,26 @@ def extract_filter_transforms(
     filter_str: str,
     counter: Optional[List[int]] = None,
     extra_agg_names: Optional[frozenset[str]] = None,
+    named_measures: Optional[Mapping[str, str]] = None,
 ) -> tuple:
     """Extract transform function calls from a filter string.
 
     Returns (rewritten_filter, [(name, formula), ...]) where transform
     calls are replaced with generated field names.
+
+    Bare references to ``named_measures`` keys are inline-expanded before
+    transform extraction so that filters like ``change(aov) > 0`` work when
+    ``aov`` is a saved formula.
     """
     import ast as _ast
 
-    from slayer.core.formula import _preprocess_agg_refs
+    from slayer.core.formula import _expand_named_measures, _preprocess_agg_refs
 
     if counter is None:
         counter = [0]
 
+    if named_measures:
+        filter_str = _expand_named_measures(filter_str, named_measures)
     preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)
     funcstyle_rewritten = preprocessed  # capture after funcstyle rewrite, before further preprocessing
     preprocessed = _preprocess_like(preprocessed)
@@ -1127,7 +1171,7 @@ async def resolve_filter_columns(
         resolved_columns = []
         for col_name in dict.fromkeys(f.columns):
             if "." not in col_name:
-                dim = model.get_dimension(col_name)
+                dim = model.get_column(col_name)
                 if dim:
                     sql_expr = dim.sql or col_name
                     qualified = f"{model_name}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
@@ -1168,7 +1212,7 @@ async def resolve_filter_columns(
                     current_model = target_model
 
                 if resolved and current_model:
-                    dim = current_model.get_dimension(dim_name)
+                    dim = current_model.get_column(dim_name)
                     if dim:
                         sql_expr = dim.sql or dim_name
                         table_alias = "__".join(path_parts)

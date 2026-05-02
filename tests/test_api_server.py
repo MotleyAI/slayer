@@ -5,8 +5,10 @@ import tempfile
 import pytest
 from fastapi.testclient import TestClient
 
-from slayer.api.server import create_app
-from slayer.core.models import Measure, SlayerModel
+from slayer.api.server import QueryRequest, create_app
+from slayer.core.enums import DataType
+from slayer.core.models import Column, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -40,8 +42,10 @@ class TestModels:
             "name": "orders",
             "sql_table": "public.orders",
             "data_source": "test",
-            "dimensions": [{"name": "id", "sql": "id", "type": "number"}],
-            "measures": [{"name": "revenue", "sql": "amount"}],
+            "columns": [
+                {"name": "id", "sql": "id", "type": "number"},
+                {"name": "revenue", "sql": "amount", "type": "number"},
+            ],
         }
         resp = client.post("/models", json=model)
         assert resp.status_code == 200
@@ -49,8 +53,9 @@ class TestModels:
 
         resp = client.get("/models/orders")
         assert resp.status_code == 200
-        assert resp.json()["name"] == "orders"
-        assert len(resp.json()["dimensions"]) == 1
+        body = resp.json()
+        assert body["name"] == "orders"
+        assert len(body["columns"]) == 2
 
     def test_list_after_create(self, client: TestClient) -> None:
         client.post("/models", json={"name": "a", "sql_table": "t", "data_source": "test"})
@@ -95,29 +100,43 @@ class TestModels:
         assert "visible" in names
         assert "secret" not in names
 
-    def test_hidden_dimensions_excluded_from_get(self, client: TestClient) -> None:
+    def test_hidden_columns_excluded_from_get(self, client: TestClient) -> None:
         model = {
             "name": "orders",
             "sql_table": "t",
             "data_source": "test",
-            "dimensions": [
+            "columns": [
                 {"name": "id", "sql": "id", "type": "number"},
                 {"name": "internal_flag", "sql": "flag", "type": "string", "hidden": True},
-            ],
-            "measures": [
-                {"name": "revenue", "sql": "amount"},
-                {"name": "secret_sum", "sql": "x", "hidden": True},
+                {"name": "revenue", "sql": "amount", "type": "number"},
+                {"name": "secret_sum", "sql": "x", "type": "number", "hidden": True},
             ],
         }
         client.post("/models", json=model)
         resp = client.get("/models/orders")
         data = resp.json()
-        dim_names = [d["name"] for d in data["dimensions"]]
-        measure_names = [m["name"] for m in data["measures"]]
-        assert "id" in dim_names
-        assert "internal_flag" not in dim_names
-        assert "revenue" in measure_names
-        assert "secret_sum" not in measure_names
+        col_names = [c["name"] for c in data["columns"]]
+        assert col_names == ["id", "revenue"]
+
+    def test_all_named_measures_returned_from_get(self, client: TestClient) -> None:
+        """``ModelMeasure`` has no ``hidden`` field; every saved measure must come
+        back from ``/models/{name}``.
+        """
+        model = {
+            "name": "orders",
+            "sql_table": "t",
+            "data_source": "test",
+            "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
+            "measures": [
+                {"name": "aov", "formula": "amount:sum / *:count"},
+                {"name": "revenue", "formula": "amount:sum"},
+            ],
+        }
+        client.post("/models", json=model)
+        resp = client.get("/models/orders")
+        data = resp.json()
+        names = [m["name"] for m in data["measures"]]
+        assert names == ["aov", "revenue"]
 
 
 class TestDatasources:
@@ -163,7 +182,7 @@ class TestDatasources:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"source_model": "nonexistent", "fields": [{"formula": "*:count"}]})
+        resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "*:count"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -171,7 +190,27 @@ class TestQuery:
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            measures=[Measure(name="revenue", sql="amount")],
+            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         ))
-        resp = client.post("/query", json={"source_model": "orders", "fields": [{"formula": "revenue:sum"}]})
+        resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
+
+    def test_request_measures_payload_reaches_slayer_query(self) -> None:
+        """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
+        req = QueryRequest.model_validate(
+            {"source_model": "orders", "measures": [{"formula": "*:count"}]}
+        )
+        slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
+        assert slayer_query.measures is not None
+        assert len(slayer_query.measures) == 1
+        assert slayer_query.measures[0].formula == "*:count"
+
+    def test_request_legacy_fields_payload_migrates(self) -> None:
+        """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
+        req = QueryRequest.model_validate(
+            {"source_model": "orders", "fields": [{"formula": "*:count"}]}
+        )
+        slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
+        assert slayer_query.measures is not None
+        assert len(slayer_query.measures) == 1
+        assert slayer_query.measures[0].formula == "*:count"

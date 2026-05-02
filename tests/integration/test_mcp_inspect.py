@@ -14,9 +14,8 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
+    Column,
     DatasourceConfig,
-    Dimension,
-    Measure,
     SlayerModel,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -70,18 +69,14 @@ async def env(tmp_path):
         sql_table="orders",
         data_source="test_sqlite",
         description="Orders model used in integration tests.",
-        dimensions=[
-            Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="status", type=DataType.STRING, label="Status", description="Order state"),
-            Dimension(name="is_paid", type=DataType.BOOLEAN),
-            Dimension(name="amount", type=DataType.NUMBER),
-            Dimension(name="quantity", type=DataType.NUMBER),
-            Dimension(name="ordered_at", type=DataType.TIMESTAMP),
-            Dimension(name="notes", type=DataType.STRING),
-        ],
-        measures=[
-            Measure(name="amount", sql="amount", description="Revenue per order"),
-            Measure(name="quantity", sql="quantity"),
+        columns=[
+            Column(name="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="status", type=DataType.STRING, label="Status", description="Order state"),
+            Column(name="is_paid", type=DataType.BOOLEAN),
+            Column(name="amount", sql="amount", type=DataType.NUMBER, description="Revenue per order"),
+            Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+            Column(name="ordered_at", type=DataType.TIMESTAMP),
+            Column(name="notes", type=DataType.STRING),
         ],
     )
     await storage.save_model(model)
@@ -145,7 +140,7 @@ class TestGetRowCount:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="empty_ds",
-            dimensions=[Dimension(name="id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True)],
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
@@ -204,9 +199,9 @@ class TestCollectDimProfile:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="hc_ds",
-            dimensions=[
-                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="label", type=DataType.STRING),
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="label", type=DataType.STRING),
             ],
         )
         await storage.save_model(model)
@@ -231,10 +226,10 @@ class TestCollectDimProfile:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="empty_ds2",
-            dimensions=[
-                Dimension(name="id", type=DataType.NUMBER, primary_key=True),
-                Dimension(name="status", type=DataType.STRING),
-                Dimension(name="amount", type=DataType.NUMBER),
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", type=DataType.STRING),
+                Column(name="amount", type=DataType.NUMBER),
             ],
         )
         await storage.save_model(model)
@@ -269,30 +264,31 @@ class TestInspectModelEndToEnd:
         assert "**sql_table:** `orders`" in result
         assert "**row_count:** 6" in result
 
-        # Dimensions table (7 dims declared; pk excluded from sample but still listed).
+        # Columns table (7 declared; v2 has a unified columns table).
         # The `sampled` column is folded in, so the same section now carries the
-        # enumerated values for string/boolean dims and `min .. max` for numeric
-        # and temporal dims.
-        assert "## Dimensions (7)" in result
+        # enumerated values for string/boolean cols and `min .. max` for numeric
+        # and temporal cols.
+        assert "## Columns (7)" in result
         assert "| status |" in result
 
-        dim_section = result.split("## Dimensions")[1].split("## Measures")[0]
+        col_section = result.split("## Columns")[1].split("## Measures")[0]
         # The sampled column carries the profile data inline now.
         # status (string, 3 distinct) enumerates its values
-        assert "completed" in dim_section
-        assert "pending" in dim_section
-        assert "cancelled" in dim_section
-        # is_paid (boolean) is in the dim table; sample values render
-        assert "| is_paid |" in dim_section
+        assert "completed" in col_section
+        assert "pending" in col_section
+        assert "cancelled" in col_section
+        # is_paid (boolean) is in the column table; sample values render
+        assert "| is_paid |" in col_section
         # amount (number) shows as "<min> .. <max>"
-        assert " .. " in dim_section
-        # ordered_at (timestamp) is present in the dimensions section
-        assert "ordered_at" in dim_section
+        assert " .. " in col_section
+        # ordered_at (timestamp) is present in the columns section
+        assert "ordered_at" in col_section
         # The sampled column header appears
-        assert "| sampled |" in dim_section
+        assert "| sampled |" in col_section
 
-        # Measures table
-        assert "## Measures (2)" in result
+        # Measures table (formula list — empty by default in v2)
+        assert "## Measures (0)" in result
+        # Per-column description for revenue lives in the Columns table now.
         assert "Revenue per order" in result
 
         # Joins table (empty model has no joins but header always rendered)
@@ -348,10 +344,10 @@ class TestMeasureTypeInference:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="types_ds",
-            dimensions=[Dimension(name="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[
-                Measure(name="label", sql="label"),
-                Measure(name="price", sql="price"),
+            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True),
+
+                Column(name="label", sql="label", type=DataType.NUMBER),
+                Column(name="price", sql="price", type=DataType.NUMBER),
             ],
         )
         await storage.save_model(model)
@@ -362,16 +358,15 @@ class TestMeasureTypeInference:
         assert types["price"] == "number"
 
     async def test_type_appears_in_inspect_model(self, env) -> None:
-        """inspect_model measures table includes a type column with inferred types."""
+        """inspect_model columns table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
             name="inspect_model", arguments={"model_name": "orders", "num_rows": 0},
         )
         result = content[0].text
-        measures_section = result.split("## Measures")[1].split("##")[0]
-        # The type column should show "number" for both measures
-        assert "| type |" in measures_section or "| number |" in measures_section
-        assert "number" in measures_section
+        columns_section = result.split("## Columns")[1].split("##")[0]
+        assert "| type |" in columns_section
+        assert "number" in columns_section
 
     async def test_measure_sampled_shows_min_max(self, env) -> None:
         """Measures with data show min .. max in the sampled column."""
@@ -405,8 +400,9 @@ class TestMeasureTypeInference:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="null_ds",
-            dimensions=[Dimension(name="id", type=DataType.NUMBER, primary_key=True)],
-            measures=[Measure(name="val", sql="val")],
+            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True),
+Column(name="val", sql="val", type=DataType.NUMBER)
+            ],
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
@@ -427,33 +423,24 @@ class TestStringAggregationRejection:
     async def _run(self, env, formula: str) -> None:
         from slayer.core.query import SlayerQuery
 
-        # Ensure the `status` column is also exposed as a measure (auto-ingest
-        # convention). The fixture only declares amount/quantity as measures,
-        # so add `status` explicitly.
-        env["model"].measures.append(Measure(name="status", sql="status"))
-        await env["storage"].save_model(env["model"])
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": formula}],
+            "measures": [{"formula": formula}],
         })
         await env["engine"].execute(query=q)
 
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
     async def test_numeric_only_aggregations_rejected_on_string(self, env, agg: str) -> None:
-        with pytest.raises(ValueError, match="is not applicable to string measure"):
+        with pytest.raises(ValueError, match="is not applicable to string column"):
             await self._run(env, f"status:{agg}")
 
     async def test_min_max_allowed_on_string(self, env) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
         from slayer.core.query import SlayerQuery
 
-        env["model"].measures.append(Measure(name="status", sql="status"))
-        await env["storage"].save_model(env["model"])
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "status:min"}, {"formula": "status:max"}],
+            "measures": [{"formula": "status:min"}, {"formula": "status:max"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
@@ -462,12 +449,9 @@ class TestStringAggregationRejection:
         """count/count_distinct always work regardless of type."""
         from slayer.core.query import SlayerQuery
 
-        env["model"].measures.append(Measure(name="status", sql="status"))
-        await env["storage"].save_model(env["model"])
-
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
+            "measures": [{"formula": "status:count"}, {"formula": "status:count_distinct"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -478,7 +462,34 @@ class TestStringAggregationRejection:
 
         q = SlayerQuery.model_validate({
             "source_model": "orders",
-            "fields": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
+            "measures": [{"formula": "amount:sum"}, {"formula": "amount:avg"}],
+        })
+        result = await env["engine"].execute(query=q)
+        assert result.data
+
+
+class TestPrimaryKeyAggregationRule:
+    """v2 contract: primary-key columns are restricted to count/count_distinct
+    regardless of type or any explicit ``allowed_aggregations`` whitelist."""
+
+    async def test_sum_on_pk_rejected(self, env) -> None:
+        """`:sum` on a numeric primary-key column is rejected at enrichment."""
+        from slayer.core.query import SlayerQuery
+
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "id:sum"}],
+        })
+        with pytest.raises(ValueError, match="primary-key column"):
+            await env["engine"].execute(query=q)
+
+    async def test_count_on_pk_allowed(self, env) -> None:
+        """`:count` on a primary-key column is always allowed."""
+        from slayer.core.query import SlayerQuery
+
+        q = SlayerQuery.model_validate({
+            "source_model": "orders",
+            "measures": [{"formula": "id:count"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data

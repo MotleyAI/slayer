@@ -44,7 +44,7 @@ storage.save_datasource(ds)
 models = ingest_datasource(datasource=ds, schema="public")
 for model in models:
     storage.save_model(model)
-    print(f"  {model.name}: {len(model.dimensions)} dims, {len(model.measures)} measures")
+    print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} measures")
 ```
 
 ## Query
@@ -54,9 +54,9 @@ from slayer.core.query import SlayerQuery
 
 engine = SlayerQueryEngine(storage=storage)
 
-result = engine.execute(query=SlayerQuery(
+result = engine.execute_sync(query=SlayerQuery(
     source_model="orders",
-    fields=["*:count", "revenue:sum"],
+    measures=["*:count", "revenue:sum"],
     dimensions=["status"],
 ))
 
@@ -89,7 +89,7 @@ client = SlayerClient(url="http://localhost:5143")
 # Query — returns SlayerResponse (same as embedded mode)
 result = client.query(SlayerQuery(
     source_model="orders",
-    fields=["*:count"],
+    measures=["*:count"],
     dimensions=["status"],
 ))
 print(result.data)
@@ -101,7 +101,7 @@ print(result.data)
 # With pandas (requires motley-slayer[client] extra)
 df = client.query_df(SlayerQuery(
     source_model="orders",
-    fields=["*:count", "revenue:sum"],
+    measures=["*:count", "revenue:sum"],
     dimensions=["status"],
 ))
 print(df)
@@ -140,7 +140,7 @@ engine = SlayerQueryEngine(storage=storage)
 print(storage.list_models())
 
 # Should return data
-result = engine.execute(query={"source_model": "orders", "fields": ["*:count"]})
+result = engine.execute_sync(query={"source_model": "orders", "measures": ["*:count"]})
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 

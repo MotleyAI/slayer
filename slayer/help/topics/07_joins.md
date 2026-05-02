@@ -26,8 +26,8 @@ In **queries**, use dots:
 
 - Dimension: `{"dimensions": ["customers.name"]}`
 - Multi-hop: `{"dimensions": ["customers.regions.name"]}`
-- Measure: `{"fields": ["customers.*:count"]}`
-- Cross-model transform: `{"fields": [{"formula": "cumsum(customers.score:avg)"}]}`
+- Measure: `{"measures": ["customers.*:count"]}`
+- Cross-model transform: `{"measures": [{"formula": "cumsum(customers.score:avg)"}]}`
 
 SLayer walks the join graph via BFS and inserts the LEFT JOINs.
 
@@ -57,7 +57,7 @@ Upshot:
 ```json
 {
   "source_model": "orders",
-  "fields": ["customers.*:count"],
+  "measures": ["customers.*:count"],
   "dimensions": ["customers.name"]
 }
 ```
@@ -67,7 +67,7 @@ gives exactly the same answer as:
 ```json
 {
   "source_model": "customers",
-  "fields": ["*:count"],
+  "measures": ["*:count"],
   "dimensions": ["name"]
 }
 ```
@@ -84,7 +84,7 @@ produces a **separate** sub-query with its own alias:
 ```json
 {
   "source_model": "orders",
-  "fields": ["*:count"],
+  "measures": ["*:count"],
   "dimensions": ["customers.regions.name", "warehouses.regions.name"]
 }
 ```

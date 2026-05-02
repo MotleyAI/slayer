@@ -21,7 +21,7 @@ Given an `orders` [model](concepts/models.md) with a `revenue` measure and joins
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "change_pct(revenue:sum)", "name": "mom_growth"},
     {"formula": "revenue:sum / time_shift(revenue:sum, -1, 'year') - 1", "name": "yoy_growth"},

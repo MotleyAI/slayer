@@ -3,7 +3,8 @@
 import pytest
 
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Dimension, Measure, SlayerModel
+from slayer.core.enums import DataType
+from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import FieldMetadata, _infer_aggregated_format
 
 
@@ -21,21 +22,21 @@ class TestInferAggregatedFormat:
             name="orders",
             sql_table="orders",
             data_source="test_ds",
-            dimensions=[
-                Dimension(name="status", sql="status"),
-            ],
-            measures=[
-                Measure(
+            columns=[
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(
                     name="revenue",
                     sql="amount",
+                    type=DataType.NUMBER,
                     format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
                 ),
-                Measure(
+                Column(
                     name="margin",
                     sql="margin",
+                    type=DataType.NUMBER,
                     format=NumberFormat(type=NumberFormatType.PERCENT),
                 ),
-                Measure(name="quantity", sql="quantity"),
+                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
             ],
         )
 

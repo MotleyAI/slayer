@@ -7,7 +7,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
-from slayer.core.models import Dimension, Measure, SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.dbt import converter as converter_module
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import (
@@ -44,6 +44,7 @@ def _make_simple_project():
                     DbtDimension(name="order_date", type="time"),
                 ],
                 measures=[
+
                     DbtMeasure(name="total_amount", agg="sum", expr="amount"),
                     DbtMeasure(name="order_count", agg="count", expr="id"),
                 ],
@@ -58,7 +59,6 @@ def _make_simple_project():
                     DbtDimension(name="name", type="categorical"),
                     DbtDimension(name="region", type="categorical"),
                 ],
-                measures=[],
             ),
         ],
         metrics=[],
@@ -85,7 +85,7 @@ class TestBasicConversion:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.models if m.name == "orders")
-        dim_names = [d.name for d in orders.dimensions]
+        dim_names = [d.name for d in orders.columns]
         assert "status" in dim_names
         assert "order_date" in dim_names
 
@@ -93,25 +93,28 @@ class TestBasicConversion:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.models if m.name == "orders")
-        status = next(d for d in orders.dimensions if d.name == "status")
-        order_date = next(d for d in orders.dimensions if d.name == "order_date")
+        status = next(d for d in orders.columns if d.name == "status")
+        order_date = next(d for d in orders.columns if d.name == "order_date")
         assert status.type == DataType.STRING
         assert order_date.type == DataType.TIMESTAMP
 
     def test_measures(self) -> None:
+        """v2 dbt converter emits all dim/measure/entity columns into ``columns``."""
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.models if m.name == "orders")
-        assert len(orders.measures) == 2
-        amount = next(m for m in orders.measures if m.name == "total_amount")
+        # dbt measures appear as Columns with allowed_aggregations + numeric type.
+        amount = next(c for c in orders.columns if c.name == "total_amount")
         assert amount.sql == "amount"
         assert amount.allowed_aggregations == ["sum"]
+        order_count = next(c for c in orders.columns if c.name == "order_count")
+        assert order_count.allowed_aggregations == ["count"]
 
     def test_primary_key_dimension(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.models if m.name == "orders")
-        pk_dims = [d for d in orders.dimensions if d.primary_key]
+        pk_dims = [d for d in orders.columns if d.primary_key]
         assert len(pk_dims) >= 1
         assert any(d.name == "id" for d in pk_dims)
 
@@ -131,8 +134,12 @@ class TestBasicConversion:
                 name="claim",
                 model="claim",
                 entities=[DbtEntity(name="claim_identifier", type="primary")],
-                dimensions=[DbtDimension(name="status", type="categorical")],
-                measures=[DbtMeasure(name="count", agg="count", expr="1")],
+                dimensions=[DbtDimension(name="status", type="categorical"),
+                ],
+                measures=[
+DbtMeasure(name="count", agg="count", expr="1")
+                ,
+                ],
             ),
             DbtSemanticModel(
                 name="claim_coverage",
@@ -141,8 +148,6 @@ class TestBasicConversion:
                     DbtEntity(name="claim_identifier", type="primary"),
                     DbtEntity(name="policy_coverage_detail", type="foreign", expr="policy_coverage_detail_identifier"),
                 ],
-                dimensions=[],
-                measures=[],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -164,15 +169,19 @@ class TestBasicConversion:
                 name="agreement_party_role",
                 model="agreement_party_role",
                 entities=[DbtEntity(name="policy", type="primary", expr="agreement_identifier")],
-                dimensions=[DbtDimension(name="party_role_code", type="categorical")],
-                measures=[],
+                dimensions=[DbtDimension(name="party_role_code", type="categorical"),
+                ],
             ),
             DbtSemanticModel(
                 name="policy",
                 model="policy",
                 entities=[DbtEntity(name="policy", type="primary", expr="Policy_Identifier")],
-                dimensions=[DbtDimension(name="policy_number", type="categorical")],
-                measures=[DbtMeasure(name="number_of_policies", agg="sum", expr="1")],
+                dimensions=[DbtDimension(name="policy_number", type="categorical"),
+                ],
+                measures=[
+DbtMeasure(name="number_of_policies", agg="sum", expr="1")
+                ,
+                ],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -193,15 +202,11 @@ class TestBasicConversion:
                     DbtEntity(name="order_id", type="primary"),
                     DbtEntity(name="customer_id", type="foreign"),
                 ],
-                dimensions=[],
-                measures=[],
             ),
             DbtSemanticModel(
                 name="customers",
                 model="customers",
                 entities=[DbtEntity(name="customer_id", type="primary", expr="id")],
-                dimensions=[],
-                measures=[],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -215,17 +220,14 @@ class TestBasicConversion:
             DbtSemanticModel(
                 name="a", model="a",
                 entities=[DbtEntity(name="shared_id", type="primary")],
-                dimensions=[], measures=[],
             ),
             DbtSemanticModel(
                 name="b", model="b",
                 entities=[DbtEntity(name="shared_id", type="primary")],
-                dimensions=[], measures=[],
             ),
             DbtSemanticModel(
                 name="c", model="c",
                 entities=[DbtEntity(name="shared_id", type="primary")],
-                dimensions=[], measures=[],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -239,13 +241,12 @@ class TestBasicConversion:
 
 class TestMeasureConsolidation:
     def test_same_expr_consolidated(self) -> None:
-        """Measures with same expr but different aggs become one SLayer measure."""
+        """Measures with same expr but different aggs become one SLayer column."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="orders",
                 model="orders",
                 entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                dimensions=[],
                 measures=[
                     DbtMeasure(name="revenue_sum", agg="sum", expr="amount"),
                     DbtMeasure(name="revenue_avg", agg="average", expr="amount"),
@@ -254,24 +255,20 @@ class TestMeasureConsolidation:
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
-        # Should be consolidated into one measure
-        assert len(orders.measures) == 1
-        m = orders.measures[0]
+        m = next(c for c in orders.columns if c.name == "revenue_sum")
         assert m.sql == "amount"
-        assert m.name == "revenue_sum"
-        assert "sum" in m.allowed_aggregations
-        assert "avg" in m.allowed_aggregations
-        assert "revenue_sum" in m.description
-        assert "revenue_avg" in m.description
+        assert "sum" in (m.allowed_aggregations or [])
+        assert "avg" in (m.allowed_aggregations or [])
+        assert "revenue_sum" in (m.description or "")
+        assert "revenue_avg" in (m.description or "")
 
     def test_different_expr_not_consolidated(self) -> None:
-        """Measures with different exprs stay separate."""
+        """Measures with different exprs stay separate columns."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="orders",
                 model="orders",
                 entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                dimensions=[],
                 measures=[
                     DbtMeasure(name="revenue", agg="sum", expr="amount"),
                     DbtMeasure(name="quantity", agg="sum", expr="qty"),
@@ -280,7 +277,10 @@ class TestMeasureConsolidation:
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
-        assert len(orders.measures) == 2
+        # Both measure columns plus the entity PK column.
+        names = {c.name for c in orders.columns}
+        assert "revenue" in names
+        assert "quantity" in names
 
     def test_no_strict_aggregations(self) -> None:
         project = DbtProject(semantic_models=[
@@ -288,15 +288,33 @@ class TestMeasureConsolidation:
                 name="orders",
                 model="orders",
                 entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                dimensions=[],
-                measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")],
+                measures=[
+DbtMeasure(name="revenue", agg="sum", expr="amount")
+                ,
+                ],
             ),
         ])
         result = DbtToSlayerConverter(
             project=project, data_source="test", strict_aggregations=False,
         ).convert()
-        m = result.models[0].measures[0]
+        m = next(c for c in result.models[0].columns if c.name == "revenue")
         assert m.allowed_aggregations is None
+
+    def test_primary_entity_does_not_duplicate_pk_column(self) -> None:
+        """When primary_entity resolves to the same column the entity loop already
+        appended, the shorthand block must not append it a second time."""
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                primary_entity="order_id",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        id_cols = [c for c in result.models[0].columns if c.name == "id"]
+        assert len(id_cols) == 1
+        assert id_cols[0].primary_key is True
 
 
 class TestSimpleMetricConversion:
@@ -308,8 +326,12 @@ class TestSimpleMetricConversion:
                     name="orders",
                     model="orders",
                     entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                    dimensions=[DbtDimension(name="status", type="categorical")],
-                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                    dimensions=[DbtDimension(name="status", type="categorical"),
+                    ],
+                    measures=[
+DbtMeasure(name="total_amount", agg="sum", expr="amount")
+                    ,
+                    ],
                 ),
             ],
             metrics=[
@@ -325,11 +347,49 @@ class TestSimpleMetricConversion:
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
         # Should have the original measure plus the filtered one
-        filtered = [m for m in orders.measures if m.name == "completed_amount"]
+        filtered = [m for m in orders.columns if m.name == "completed_amount"]
         assert len(filtered) == 1
         assert filtered[0].filter is not None
         assert "completed" in filtered[0].filter
         assert filtered[0].label == "Completed Amount"
+
+    def test_filtered_metric_collision_with_existing_column_skipped(self) -> None:
+        """Filtered metric whose name collides with an existing column on the model
+        must NOT silently produce a duplicate column. Skip + emit a warning instead."""
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    dimensions=[
+                        # A dimension named "status" — becomes a Column on the slayer model.
+                        DbtDimension(name="status", type="categorical"),
+                    ],
+                    measures=[
+                        DbtMeasure(name="total_amount", agg="sum", expr="amount"),
+                    ],
+                ),
+            ],
+            metrics=[
+                DbtMetric(
+                    # Collides with the existing "status" dimension column.
+                    name="status",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="total_amount"),
+                    filter="{{Dimension('order_id__status')}} = 'completed'",
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        # Exactly one column named "status" — no duplicate appended.
+        assert [c.name for c in orders.columns].count("status") == 1
+        # And a warning was emitted explaining why.
+        warning_msgs = [w.message for w in result.warnings]
+        assert any("status" in m and "collide" in m.lower() for m in warning_msgs), (
+            f"Expected collision warning, got: {warning_msgs}"
+        )
 
     def test_unfiltered_simple_metric_no_extra_measure(self) -> None:
         """Simple metric without filter doesn't add anything."""
@@ -339,8 +399,10 @@ class TestSimpleMetricConversion:
                     name="orders",
                     model="orders",
                     entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                    dimensions=[],
-                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                    measures=[
+DbtMeasure(name="total_amount", agg="sum", expr="amount")
+                    ,
+                    ],
                 ),
             ],
             metrics=[
@@ -353,7 +415,11 @@ class TestSimpleMetricConversion:
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
-        assert len(orders.measures) == 1  # Just the original, no duplicate
+        # The metric matches an existing measure name → no duplicate column.
+        # v2: the entity 'order_id' is also added as a PK column, so we just
+        # check that no extra "total_amount" column was added.
+        names = [c.name for c in orders.columns]
+        assert names.count("total_amount") == 1
 
 
 class TestDerivedMetricConversion:
@@ -368,8 +434,8 @@ class TestDerivedMetricConversion:
                     name="orders",
                     model="orders",
                     entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                    dimensions=[],
                     measures=[
+
                         DbtMeasure(name="total", agg="sum", expr="amount"),
                         DbtMeasure(name="subtotal", agg="sum", expr="subtotal"),
                         DbtMeasure(name="total_orders", agg="count", expr="id"),
@@ -399,7 +465,7 @@ class TestDerivedMetricConversion:
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         q = next(qq for qq in result.queries if qq["name"] == "weird_ratio")
-        formula = q["fields"][0]["formula"]
+        formula = q["measures"][0]["formula"]
         # `total:sum`, `subtotal:sum`, and `total_orders:count` should all appear,
         # each as a complete token. The bug would have produced something like
         # `subtotal:sum + total:sum) / total:sum_orders` because plain replace
@@ -420,8 +486,8 @@ class TestDerivedMetricConversion:
                     name="orders",
                     model="orders",
                     entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                    dimensions=[],
                     measures=[
+
                         DbtMeasure(name="total_amount", agg="sum", expr="amount"),
                         DbtMeasure(name="order_count", agg="count", expr="id"),
                     ],
@@ -457,7 +523,7 @@ class TestDerivedMetricConversion:
         q = result.queries[0]
         assert q["name"] == "avg_order_value"
         assert "source_model" in q
-        assert len(q["fields"]) == 1
+        assert len(q["measures"]) == 1
 
 
 class TestConversionWarnings:
@@ -572,7 +638,7 @@ class TestImportDbtCli:
             "was likely discarded without run_sync"
         )
         assert persisted.name == "orders"
-        assert any(m.name == "total" for m in persisted.measures)
+        assert any(m.name == "total" for m in persisted.columns)
 
 
 class TestParserRoundTrip:
@@ -618,10 +684,10 @@ class TestParserRoundTrip:
         assert m.default_time_dimension == "order_date"
 
         # Labels preserved
-        status_dim = next(d for d in m.dimensions if d.name == "status")
+        status_dim = next(d for d in m.columns if d.name == "status")
         assert status_dim.label == "Order Status"
 
-        rev_measure = next(me for me in m.measures if me.name == "revenue")
+        rev_measure = next(me for me in m.columns if me.name == "revenue")
         assert rev_measure.label == "Revenue"
         assert rev_measure.allowed_aggregations == ["sum"]
 
@@ -632,12 +698,9 @@ def _sample_slayer_model(name: str = "raw_events") -> SlayerModel:
         name=name,
         sql_table="staging.raw_events",
         data_source="test_db",
-        dimensions=[
-            Dimension(name="event_id", sql="event_id", type=DataType.NUMBER, primary_key=True),
-            Dimension(name="event_type", sql="event_type", type=DataType.STRING),
-        ],
-        measures=[
-            Measure(name="event_type", sql="event_type"),
+        columns=[
+            Column(name="event_id", sql="event_id", type=DataType.NUMBER, primary_key=True),
+            Column(name="event_type", sql="event_type", type=DataType.STRING),
         ],
     )
 
@@ -655,8 +718,12 @@ def _project_with_orphan(
                 name="orders",
                 model="orders",
                 entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                dimensions=[DbtDimension(name="status", type="categorical")],
-                measures=[DbtMeasure(name="total", agg="sum", expr="amount")],
+                dimensions=[DbtDimension(name="status", type="categorical"),
+                ],
+                measures=[
+DbtMeasure(name="total", agg="sum", expr="amount")
+                ,
+                ],
             )
         )
     columns = []
@@ -719,7 +786,7 @@ class TestRegularModelConversion:
         # Model description overlaid from dbt manifest
         assert raw.description == "Raw event log"
         # Column descriptions overlaid onto dimensions
-        event_id_dim = next(d for d in raw.dimensions if d.name == "event_id")
+        event_id_dim = next(d for d in raw.columns if d.name == "event_id")
         assert event_id_dim.description == "Unique event identifier"
 
     def test_introspection_failure_is_skipped_with_warning(self) -> None:
@@ -777,22 +844,24 @@ class TestForeignEntityJoinsAllPrimaries:
                     DbtEntity(name="policy_amount", type="primary", expr="Policy_Amount_Identifier"),
                     DbtEntity(name="policy", type="foreign", expr="Policy_Identifier"),
                 ],
-                dimensions=[],
-                measures=[DbtMeasure(name="total", agg="sum", expr="amount")],
+                measures=[
+DbtMeasure(name="total", agg="sum", expr="amount")
+                ,
+                ],
             ),
             DbtSemanticModel(
                 name="policy",
                 model="policy",
                 entities=[DbtEntity(name="policy", type="primary", expr="Policy_Identifier")],
-                dimensions=[DbtDimension(name="policy_number", type="categorical")],
-                measures=[],
+                dimensions=[DbtDimension(name="policy_number", type="categorical"),
+                ],
             ),
             DbtSemanticModel(
                 name="agreement_party_role",
                 model="agreement_party_role",
                 entities=[DbtEntity(name="policy", type="primary", expr="agreement_identifier")],
-                dimensions=[DbtDimension(name="party_role_code", type="categorical")],
-                measures=[],
+                dimensions=[DbtDimension(name="party_role_code", type="categorical"),
+                ],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -811,15 +880,11 @@ class TestForeignEntityJoinsAllPrimaries:
                     DbtEntity(name="order_id", type="primary"),
                     DbtEntity(name="customer", type="foreign", expr="customer_id"),
                 ],
-                dimensions=[],
-                measures=[],
             ),
             DbtSemanticModel(
                 name="customers",
                 model="customers",
                 entities=[DbtEntity(name="customer", type="primary", expr="id")],
-                dimensions=[],
-                measures=[],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -840,8 +905,12 @@ class TestMetricFilterDimensionQualification:
                     entities=[
                         DbtEntity(name="claim_amount", type="primary", expr="claim_amount_identifier"),
                     ],
-                    dimensions=[DbtDimension(name="amount_type_code", type="categorical")],
-                    measures=[DbtMeasure(name="total_claim_amount", agg="sum", expr="claim_amount")],
+                    dimensions=[DbtDimension(name="amount_type_code", type="categorical"),
+                    ],
+                    measures=[
+DbtMeasure(name="total_claim_amount", agg="sum", expr="claim_amount")
+                    ,
+                    ],
                 ),
                 DbtSemanticModel(
                     name="loss_payment",
@@ -849,8 +918,8 @@ class TestMetricFilterDimensionQualification:
                     entities=[
                         DbtEntity(name="claim_amount", type="primary", expr="Claim_Amount_Identifier"),
                     ],
-                    dimensions=[DbtDimension(name="has_loss_payment", type="categorical", expr="1")],
-                    measures=[],
+                    dimensions=[DbtDimension(name="has_loss_payment", type="categorical", expr="1"),
+                    ],
                 ),
             ],
             metrics=[
@@ -865,7 +934,7 @@ class TestMetricFilterDimensionQualification:
         )
         result = DbtToSlayerConverter(project=project, data_source="test", strict_aggregations=True).convert()
         ca = next(m for m in result.models if m.name == "claim_amount")
-        filtered_measure = next((m for m in ca.measures if m.name == "loss_payment_amount"), None)
+        filtered_measure = next((m for m in ca.columns if m.name == "loss_payment_amount"), None)
         assert filtered_measure is not None, "Filtered measure not created"
         # The filter must be qualified with the peer model name
         assert "loss_payment.has_loss_payment" in filtered_measure.filter, (
@@ -880,8 +949,12 @@ class TestMetricFilterDimensionQualification:
                     name="orders",
                     model="orders",
                     entities=[DbtEntity(name="orders", type="primary", expr="id")],
-                    dimensions=[DbtDimension(name="status", type="categorical")],
-                    measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")],
+                    dimensions=[DbtDimension(name="status", type="categorical"),
+                    ],
+                    measures=[
+DbtMeasure(name="revenue", agg="sum", expr="amount")
+                    ,
+                    ],
                 ),
             ],
             metrics=[
@@ -896,7 +969,7 @@ class TestMetricFilterDimensionQualification:
         )
         result = DbtToSlayerConverter(project=project, data_source="test", strict_aggregations=True).convert()
         orders = next(m for m in result.models if m.name == "orders")
-        filtered_measure = next((m for m in orders.measures if m.name == "active_revenue"), None)
+        filtered_measure = next((m for m in orders.columns if m.name == "active_revenue"), None)
         assert filtered_measure is not None
         assert filtered_measure.filter == "status = 'active'", f"Got: {filtered_measure.filter!r}"
         assert not result.models[0].hidden
@@ -915,13 +988,11 @@ class TestJoinTypeFromDbt:
                     DbtEntity(name="order_id", type="primary"),
                     DbtEntity(name="customer", type="foreign", expr="customer_id"),
                 ],
-                dimensions=[], measures=[],
             ),
             DbtSemanticModel(
                 name="customers",
                 model="customers",
                 entities=[DbtEntity(name="customer", type="primary", expr="id")],
-                dimensions=[], measures=[],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -936,13 +1007,11 @@ class TestJoinTypeFromDbt:
                 name="claim",
                 model="claim",
                 entities=[DbtEntity(name="claim_identifier", type="primary")],
-                dimensions=[], measures=[],
             ),
             DbtSemanticModel(
                 name="claim_coverage",
                 model="claim_coverage",
                 entities=[DbtEntity(name="claim_identifier", type="primary")],
-                dimensions=[], measures=[],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
@@ -960,13 +1029,11 @@ class TestJoinTypeFromDbt:
                     DbtEntity(name="policy_amount", type="primary", expr="id"),
                     DbtEntity(name="policy", type="foreign", expr="policy_id"),
                 ],
-                dimensions=[], measures=[],
             ),
             DbtSemanticModel(
                 name="policy",
                 model="policy",
                 entities=[DbtEntity(name="policy", type="primary", expr="id")],
-                dimensions=[], measures=[],
             ),
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()

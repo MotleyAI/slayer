@@ -25,7 +25,7 @@ What if you want to add to a query a filter that directly references the underly
 }
 ```
 
-Here, `subtotal > tax_paid * 5` is a raw SQL condition on the underlying table columns — it's added to the model definition via `ModelExtension`, not to the query's filters. The query's own `fields` and `dimensions` still use DSL-level names.
+Here, `subtotal > tax_paid * 5` is a raw SQL condition on the underlying table columns — it's added to the model definition via `ModelExtension`, not to the query's filters. The query's own `measures` and `dimensions` still use DSL-level names.
 
 What if you want to get fancy, and use expressions such as time-shift for defining derived measures or dimensions?
 

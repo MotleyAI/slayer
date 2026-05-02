@@ -17,7 +17,7 @@ price:weighted_avg(weight=quantity)  — weighted average with kwargs
 customers.score:avg  — cross-model: AVG of "score" from the joined "customers" model
 ```
 
-Colon syntax is used everywhere measures appear: in `fields`, in arithmetic expressions, in transform function arguments, and in filters.
+Colon syntax is used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters.
 
 ### Windowed sum and average
 
@@ -61,10 +61,10 @@ inside the formula.
 
 ## Field Formulas
 
-Field formulas define what data columns a query returns. They go in the `fields` parameter:
+Measure formulas define what aggregated values a query returns. They go in the `measures` parameter:
 
 ```json
-"fields": [
+"measures": [
   "*:count",
   {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
   "cumsum(revenue:sum)",
@@ -87,6 +87,31 @@ The `name` is optional — if omitted, it's auto-generated from the formula. The
 Parentheses work as expected: `"(revenue:sum - cost:sum) / *:count"`.
 
 All measure names referenced in the formula must exist in the model (except `*` which is always available). For measures from joined models, use dotted syntax with colon aggregation: `"customers.score:avg"` or multi-hop: `"customers.regions.population:sum"`. Joins are auto-resolved by walking the join graph. See [Cross-Model Measures](queries.md#cross-model-measures).
+
+### Saved Formulas (Named Measures)
+
+A model can carry a library of named formulas in `model.measures`. Queries can reference these by **bare name** in their own measure formulas — root, inside transforms, or inside arithmetic:
+
+```yaml
+# model definition
+measures:
+  - {name: aov, formula: "revenue:sum / *:count", label: "Average Order Value"}
+  - {name: aov_pct_change, formula: "change_pct(aov)"}
+```
+
+All three forms below — bare name, transform, arithmetic — work as query measures:
+
+```json
+"measures": [
+  {"formula": "aov"},
+  {"formula": "cumsum(aov)"},
+  {"formula": "aov * 1.1", "name": "aov_with_markup"}
+]
+```
+
+Bare-name references are inline-expanded at parse time into the saved formula's text, so queries that use the saved name produce the same SQL as queries with the formula written out longhand. Saved formulas can reference other saved formulas (transitively) — cycles like `a → b → a` are detected and rejected with the chain in the error message.
+
+The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`, `change_pct`) are rejected at model construction time.
 
 Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
@@ -127,7 +152,7 @@ total per status, not one running total across the whole result set.
 Field formulas support nesting — window transforms can wrap self-join transforms (but not vice versa):
 
 ```json
-"fields": [
+"measures": [
   {"formula": "cumsum(change(revenue:sum))", "name": "cumsum_delta"},
   "last(change(revenue:sum))",
   {"formula": "cumsum(revenue:sum / *:count)", "name": "running_aov"},
@@ -149,7 +174,7 @@ The ranking granularity depends on the query's dimensions and time dimensions. E
 {
   "source_model": "orders",
   "dimensions": ["customer_name"],
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "rank(revenue:sum)", "name": "rnk"}
   ],
@@ -177,7 +202,7 @@ Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at ra
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "first(revenue:sum)", "name": "initial_revenue"},
     {"formula": "last(revenue:sum)", "name": "latest_revenue"}

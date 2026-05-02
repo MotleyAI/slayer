@@ -48,7 +48,7 @@ common workflows:
   slayer serve
 
   # 2. Query from the command line
-  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
 
   # 3. Start the MCP server for AI agents
   slayer mcp
@@ -118,13 +118,13 @@ examples:
         epilog="""\
 examples:
   # Inline JSON
-  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}'
+  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}'
 
   # From a file
   slayer query @query.json
 
   # Preview SQL without executing
-  slayer query '{"source_model": "orders", "fields": [{"formula": "count"}]}' --dry-run
+  slayer query '{"source_model": "orders", "measures": [{"formula": "*:count"}]}' --dry-run
 
   # Show execution plan
   slayer query @query.json --explain
@@ -498,7 +498,7 @@ def _run_ingest(args):
     )
     for model in models:
         run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
 def _run_import_dbt(args):
@@ -553,7 +553,7 @@ def _run_import_dbt(args):
             hidden_count += 1
         print(
             f"Imported model: {model.name}{suffix} "
-            f"({len(model.dimensions)} dims, {len(model.measures)} measures)"
+            f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
     # Save queries to queries.yaml if any
@@ -812,7 +812,7 @@ def _run_datasources_create(args, storage):
 
     for model in models:
         run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
 def _run_datasources_create_demo(args, storage):
@@ -891,7 +891,7 @@ def _run_datasources_create_demo(args, storage):
         if model.name in DEFAULT_TIME_DIMENSIONS:
             model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
         run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.dimensions)} dims, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
 if __name__ == "__main__":

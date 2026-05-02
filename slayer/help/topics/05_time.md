@@ -25,7 +25,7 @@ A time dimension may carry a `date_range: [start, end]` (ISO dates):
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue:sum"],
+  "measures": ["revenue:sum"],
   "time_dimensions": [{
     "dimension": "created_at",
     "granularity": "month",
@@ -46,7 +46,7 @@ show "this month is half-done, the bar looks tiny":
 ```json
 {
   "source_model": "orders",
-  "fields": ["revenue:sum"],
+  "measures": ["revenue:sum"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
   "whole_periods_only": true
 }
@@ -86,7 +86,7 @@ bucket / filter. Pick the one that matches your question.
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     "revenue:sum",
     {"formula": "time_shift(revenue:sum, -1, 'year')", "name": "prev_year"},
     {"formula": "revenue:sum / time_shift(revenue:sum, -1, 'year') - 1",
