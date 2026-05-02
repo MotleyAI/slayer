@@ -14,6 +14,7 @@ becomes an extra CTE in the generated SQL.
 | `change(x)` | `x − previous(x)` | Desugars to `x − time_shift(x, -1)` |
 | `change_pct(x)` | `(x − previous) / previous` | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
 | `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn, partitioned by dimensions |
+| `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x)` | Rank by x, descending | `RANK() OVER (ORDER BY x DESC)` |
 | `first(x)` | Broadcast earliest bucket's value to every row | Window |
 | `last(x)` | Broadcast latest bucket's value to every row | Window |
@@ -42,14 +43,32 @@ prefer `lag` / `lead`.
 ## Time dimension requirement
 
 All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`,
-`first`, `last`, `lag`, `lead`) require an explicit `time_dimensions` entry in
-the query. With a single entry it's used automatically; with 2+ entries,
-`main_time_dimension` disambiguates (or `default_time_dimension` if among
-query's time dims). `rank` does **not** need a time dimension.
+`first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit
+`time_dimensions` entry in the query. With a single entry it's used
+automatically; with 2+ entries, `main_time_dimension` disambiguates (or
+`default_time_dimension` if among query's time dims). `rank` does **not** need a
+time dimension.
 
 Window-function transforms partition by the query's non-time dimensions. A
 `cumsum(revenue:sum)` grouped by `status` computes one running total per
 status. `rank` remains global across the result set.
+
+## consecutive_periods
+
+`consecutive_periods(predicate)` returns an integer count of how many
+consecutive output periods, ending at the current row, have `predicate` true.
+False or NULL breaks the run and returns 0 for that row.
+
+```json
+{
+  "source_model": "orders",
+  "measures": [
+    {"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_run"},
+    {"formula": "consecutive_periods(revenue:sum > 0) >= 3", "name": "positive_3_periods"}
+  ],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
+}
+```
 
 ## Nesting
 

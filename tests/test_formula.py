@@ -89,6 +89,21 @@ class TestFormulaParser:
         assert isinstance(result, TransformField)
         assert result.transform == "rank"
 
+    def test_consecutive_periods_predicate(self) -> None:
+        result = parse_formula("consecutive_periods(revenue:sum > 0)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "consecutive_periods"
+        assert isinstance(result.inner, ArithmeticField)
+        assert ">" in result.inner.sql
+
+    def test_consecutive_periods_comparison(self) -> None:
+        result = parse_formula("consecutive_periods(revenue:sum > 0) >= 3")
+        assert isinstance(result, MixedArithmeticField)
+        assert len(result.sub_transforms) == 1
+        placeholder, transform = result.sub_transforms[0]
+        assert placeholder in result.sql
+        assert transform.transform == "consecutive_periods"
+
     def test_change_pct(self) -> None:
         result = parse_formula("change_pct(revenue:sum)")
         assert isinstance(result, TransformField)

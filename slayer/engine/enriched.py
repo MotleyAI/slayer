@@ -97,7 +97,7 @@ class EnrichedTransform(BaseModel):
     """
 
     name: str
-    transform: str = Field(description="Transform name: cumsum, lag, lead, rank, time_shift, first, last")
+    transform: str = Field(description="Transform name: cumsum, lag, lead, rank, time_shift, first, last, consecutive_periods")
     measure_alias: str = Field(description="Alias of the measure in the base CTE to transform")
     alias: str = Field(description="Result column name")
     offset: int = Field(description="For time_shift: number of rows or calendar units")

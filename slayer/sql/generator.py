@@ -963,11 +963,14 @@ class SQLGenerator:
 
             # Batch window-function transforms into this layer
             deferred_self_joins = []
+            deferred_consecutive_periods = []
             for t in pending_transforms:
                 if t.measure_alias not in available_aliases:
                     remaining_transforms.append(t)
                 elif t.transform in _SELF_JOIN_TRANSFORMS:
                     deferred_self_joins.append(t)  # Handle after window layer
+                elif t.transform == "consecutive_periods":
+                    deferred_consecutive_periods.append(t)
                 else:
                     window_sql = self._build_transform_sql(t)
                     layer_parts.append(f'{window_sql} AS "{t.alias}"')
@@ -1014,8 +1017,24 @@ class SQLGenerator:
                 available_aliases.add(t.alias)
                 added_this_layer.append(t.alias)
 
+            # consecutive_periods needs two window layers: one to compute the
+            # reset group, then one to count within that group. Most SQL
+            # engines reject nested window functions in a single SELECT.
+            for t in deferred_consecutive_periods:
+                reset_layer, value_layer = self._build_consecutive_periods_ctes(
+                    transform=t,
+                    source_cte=ctes[-1][0],
+                    available_aliases=available_aliases,
+                    layer_num=layer_num,
+                )
+                ctes.extend(reset_layer)
+                ctes.extend(value_layer)
+                available_aliases.add(t.alias)
+                added_this_layer.append(t.alias)
+
             if not added_this_layer:
                 remaining_transforms.extend(deferred_self_joins)
+                remaining_transforms.extend(deferred_consecutive_periods)
                 break  # Nothing could be added — remaining items have unresolved deps
 
             pending_expressions = remaining_expressions
@@ -1036,6 +1055,8 @@ class SQLGenerator:
         for t in pending_transforms:
             if t.transform in _SELF_JOIN_TRANSFORMS:
                 continue  # Should not happen — self-joins are always materialized
+            if t.transform == "consecutive_periods":
+                raise ValueError("consecutive_periods could not be materialized")
             window_sql = self._build_transform_sql(t)
             final_parts.append(f'{window_sql} AS "{t.alias}"')
 
@@ -1076,6 +1097,51 @@ class SQLGenerator:
         import re
         refs = re.findall(r'"([^"]+)"', sql)
         return all(ref in available for ref in refs)
+
+    @staticmethod
+    def _build_consecutive_periods_ctes(
+        transform,
+        source_cte: str,
+        available_aliases: set[str],
+        layer_num: int,
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        measure = f'"{transform.measure_alias}"'
+        time_col = f'"{transform.time_alias}"'
+        partition_aliases = getattr(transform, "partition_aliases", []) or []
+        partition_cols = [f'"{a}"' for a in partition_aliases]
+        partition_clause = (
+            "PARTITION BY " + ", ".join(partition_cols)
+            if partition_cols
+            else ""
+        )
+        order_clause = f"ORDER BY {time_col}"
+        reset_over = " ".join(p for p in (partition_clause, order_clause) if p)
+        reset_alias = _cte_name_from_alias("_cp_reset_", transform.alias)
+        reset_cte = _cte_name_from_alias(f"cp_reset_{layer_num}_", transform.alias)
+        value_cte = _cte_name_from_alias(f"cp_value_{layer_num}_", transform.alias)
+
+        source_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
+        reset_sql = (
+            f"SELECT {source_cols}, "
+            f"SUM(CASE WHEN {measure} THEN 0 ELSE 1 END) "
+            f"OVER ({reset_over} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) "
+            f'AS "{reset_alias}"\n'
+            f"FROM {source_cte}"
+        )
+
+        value_partition_cols = partition_cols + [f'"{reset_alias}"']
+        value_partition_clause = "PARTITION BY " + ", ".join(value_partition_cols)
+        value_over = f"{value_partition_clause} {order_clause}"
+        value_sql = (
+            f"SELECT {source_cols}, "
+            f"CASE WHEN {measure} THEN "
+            f"SUM(CASE WHEN {measure} THEN 1 ELSE 0 END) "
+            f"OVER ({value_over} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) "
+            f"ELSE 0 END AS \"{transform.alias}\"\n"
+            f"FROM {reset_cte}"
+        )
+
+        return [(reset_cte, reset_sql)], [(value_cte, value_sql)]
 
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
         """Build a DATE_TRUNC expression, with SQLite STRFTIME fallback."""
@@ -1130,6 +1196,8 @@ class SQLGenerator:
 
         if t.transform == "cumsum":
             return f"SUM({measure}) OVER ({over_parts})"
+        elif t.transform == "consecutive_periods":
+            raise ValueError("consecutive_periods should be materialized with staged CTEs")
         elif t.transform in _SELF_JOIN_TRANSFORMS:
             raise ValueError(f"{t.transform} should not reach _build_transform_sql; it uses self-join CTE")
         elif t.transform == "lag":

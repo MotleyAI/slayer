@@ -514,6 +514,32 @@ class TestFields:
         sql = await _generate(generator, query, orders_model)
         assert 'SUM("orders.revenue_sum") OVER (PARTITION BY "orders.status" ORDER BY "orders.created_at")' in sql
 
+    async def test_consecutive_periods_uses_reset_group_ctes(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_streak"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "cp_reset_" in sql
+        assert "cp_value_" in sql
+        assert "SUM(CASE WHEN" in sql
+        assert 'PARTITION BY "orders.status" ORDER BY "orders.created_at"' in sql
+        assert 'PARTITION BY "orders.status", "_cp_reset_orders__positive_streak" ORDER BY "orders.created_at"' in sql
+        assert '"orders.positive_streak"' in sql
+
+    async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "consecutive_periods(revenue:sum > 0) >= 2", "name": "long_enough"}],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "cp_reset_" in sql
+        assert "cp_value_" in sql
+        assert '>= 2 AS "orders.long_enough"' in sql
+
     async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1030,6 +1056,28 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         query = SlayerQuery(
             source_model="orders",
             measures=[ModelMeasure(formula="lag(revenue:sum)")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
+            await _generate(generator, query, model)
+
+    async def test_consecutive_periods_without_time_dimension_raises(self, generator: SQLGenerator) -> None:
+        """consecutive_periods with only default_time_dimension must error."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.DATE),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="consecutive_periods(revenue:sum > 0)")],
             dimensions=[ColumnRef(name="status")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):

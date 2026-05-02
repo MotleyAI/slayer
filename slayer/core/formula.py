@@ -24,7 +24,17 @@ from pydantic import BaseModel, Field
 from slayer.core.enums import BUILTIN_AGGREGATIONS
 
 # Transforms that require a time dimension for ORDER BY
-TIME_TRANSFORMS = {"cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead"}
+TIME_TRANSFORMS = {
+    "cumsum",
+    "change",
+    "change_pct",
+    "time_shift",
+    "first",
+    "last",
+    "lag",
+    "lead",
+    "consecutive_periods",
+}
 
 # Transforms that don't need time ordering
 TIMELESS_TRANSFORMS = {"rank"}
@@ -59,7 +69,7 @@ class ArithmeticField(BaseModel):
 
 class TransformField(BaseModel):
     """A transform function call, possibly wrapping another transform or arithmetic."""
-    transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, time_shift, first, last")
+    transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, time_shift, first, last, consecutive_periods")
     inner: "FieldSpec" = Field(description="The measure or expression being transformed")
     args: List[Any] = Field(default_factory=list, description="Extra transform args (offset, granularity, etc.)")
 
@@ -509,8 +519,8 @@ def _parse_node(
 
         return TransformField(transform=func_name, inner=inner, args=extra_args)
 
-    # Binary/unary operation → check if it contains transform calls
-    if isinstance(node, (ast.BinOp, ast.UnaryOp)):
+    # Binary/unary/comparison/boolean operation → check if it contains transform calls
+    if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp)):
         if _contains_call(node):
             return _parse_mixed_arithmetic(node, original, agg_refs)
         measure_names = _collect_names(node)
@@ -588,6 +598,15 @@ def _parse_mixed_arithmetic(
 
         if isinstance(n, ast.UnaryOp):
             n.operand = _replace_calls(n.operand)
+            return n
+
+        if isinstance(n, ast.Compare):
+            n.left = _replace_calls(n.left)
+            n.comparators = [_replace_calls(c) for c in n.comparators]
+            return n
+
+        if isinstance(n, ast.BoolOp):
+            n.values = [_replace_calls(v) for v in n.values]
             return n
 
         return n

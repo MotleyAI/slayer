@@ -111,7 +111,7 @@ All three forms below — bare name, transform, arithmetic — work as query mea
 
 Bare-name references are inline-expanded at parse time into the saved formula's text, so queries that use the saved name produce the same SQL as queries with the formula written out longhand. Saved formulas can reference other saved formulas (transitively) — cycles like `a → b → a` are detected and rejected with the chain in the error message.
 
-The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`, `change_pct`) are rejected at model construction time.
+The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`, `change_pct`, `consecutive_periods`) are rejected at model construction time.
 
 Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
@@ -128,11 +128,12 @@ Functions apply window operations to measures:
 | `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (PARTITION BY dims ORDER BY time)` |
 | `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
 | `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
+| `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x)` | Ranking by value (descending) | `RANK() OVER (ORDER BY x DESC)` |
 | `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
 
 Time-ordered window transforms partition by the query's non-time dimensions.
 For example, `cumsum(revenue:sum)` grouped by `status` computes one running
@@ -146,6 +147,20 @@ total per status, not one running total across the whole result set.
 
 - **Edge NULLs**: the first/last N rows always return NULL since window functions can only see rows within the current result set.
 - **Gap sensitivity**: if there are missing time periods in your data, `lag` shifts by row position, not by logical period — so the "previous row" might not be the previous calendar period.
+
+`consecutive_periods(predicate)` evaluates a predicate at the query grain and
+returns an integer streak length for the current row. False or NULL breaks the
+run and returns 0. The result composes with normal comparisons:
+
+```json
+{
+  "measures": [
+    {"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_run"},
+    {"formula": "consecutive_periods(revenue:sum > 0) >= 3", "name": "positive_3_periods"}
+  ],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
+}
+```
 
 ### Nesting
 
