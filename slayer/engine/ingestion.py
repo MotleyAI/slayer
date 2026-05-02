@@ -4,7 +4,7 @@ Flow:
 1. Get table names, build FK graph, check for cycles
 2. For each table, build rollup SQL (with LEFT JOINs for referenced tables)
 3. Introspect the rollup query's result columns for types
-4. Generate dimensions and measures from those columns
+4. Generate one Column per non-joined column (v2 unified-columns shape)
 """
 
 import logging
@@ -49,7 +49,7 @@ _SA_TYPE_MAP = {
 _NUMERIC_TYPES = {DataType.NUMBER}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
 
-# Float-like SA type names — these columns get measures only, no dimensions.
+# Float-like SA type names — these columns get a FLOAT NumberFormat on the emitted Column.
 # NUMERIC/DECIMAL are handled separately via scale inspection in _sa_type_is_float.
 _FLOAT_LIKE_SA_TYPES = frozenset(
     {

@@ -50,72 +50,103 @@ joins:
     join_pairs: [["customer_id", "id"]]
 ```
 
-### Measures — Aggregation at Query Time
+### Measures — Column + ModelMeasure Split
 
-dbt bakes aggregation into each measure (`agg: sum`). SLayer separates them — measures are row-level expressions, aggregation is specified at query time.
+dbt bakes aggregation into each measure (`agg: sum`). SLayer separates them — a row-level expression lives on a `Column`, and the aggregation is named on a `ModelMeasure` formula.
 
-The converter stores the dbt aggregation in `allowed_aggregations`:
+Each unique SQL expression among the dbt measures of a semantic model becomes one SLayer `Column`; each dbt measure becomes one `ModelMeasure` whose formula references that column with the colon aggregation:
 
 ```yaml
 # dbt: {name: revenue, agg: sum, expr: amount}
-# SLayer: {name: revenue, sql: amount, allowed_aggregations: [sum]}
+# SLayer:
+columns:
+  - name: amount
+    type: number
+    format: {type: float}
+measures:
+  - name: revenue
+    formula: amount:sum
 ```
 
-Use `--no-strict-aggregations` to allow all aggregation types on imported measures.
+When the dbt expression is a SQL fragment rather than a bare identifier (e.g. `amount * quantity`), the Column is named `<first_dbt_measure_name>_col`:
+
+```yaml
+# dbt: {name: line_total, agg: sum, expr: amount * quantity}
+columns:
+  - name: line_total_col
+    sql: amount * quantity
+    type: number
+    format: {type: float}
+measures:
+  - name: line_total
+    formula: line_total_col:sum
+```
+
+If the natural Column name would collide with a `ModelMeasure` name on the same model, the Column is suffixed with `_col`. The dbt measure's `label` and `description` are written verbatim onto the `ModelMeasure` only — never onto the underlying `Column`.
 
 ### Measure Consolidation
 
-When multiple dbt measures share the same SQL expression but differ only in aggregation type, they are consolidated into a single SLayer measure with multiple `allowed_aggregations`. The original name:aggregation pairs are listed in the description:
+When multiple dbt measures share the same SQL expression but differ in aggregation, they collapse into a single SLayer Column; each dbt measure still becomes its own ModelMeasure:
 
 ```yaml
 # dbt: {name: revenue_sum, agg: sum, expr: amount} + {name: revenue_avg, agg: average, expr: amount}
-# SLayer:
-- name: amount
-  sql: amount
-  allowed_aggregations: [sum, avg]
-  description: "dbt measures: revenue_sum (sum), revenue_avg (average)"
+columns:
+  - name: amount
+    type: number
+    format: {type: float}
+measures:
+  - name: revenue_sum
+    formula: amount:sum
+  - name: revenue_avg
+    formula: amount:avg
 ```
 
 ### Metrics
 
-dbt metrics are handled differently depending on their type:
+dbt metrics fold into `ModelMeasure` formulas on their source semantic model. No separate query file is produced.
 
 #### Simple metrics (with filter)
 
-Converted to a **filtered measure** on the base model. The dbt Jinja filter syntax is converted to a SLayer filter string:
+Converted to a `Column` carrying the filter (with no `allowed_aggregations` whitelist) plus a `ModelMeasure` referencing it:
 
 ```yaml
 # dbt metric: loss_payment_amount (filter: has_loss_payment = 1)
-# SLayer measure added to the claim_amount model:
-- name: loss_payment_amount
-  sql: claim_amount
-  filter: "has_loss_payment = 1"
-  allowed_aggregations: [sum]
+columns:
+  - name: loss_payment_amount_col
+    sql: claim_amount
+    type: number
+    format: {type: float}
+    filter: "has_loss_payment = 1"
+measures:
+  - name: loss_payment_amount
+    formula: loss_payment_amount_col:sum
 ```
 
-At query time, `loss_payment_amount:sum` generates:
+At query time, `loss_payment_amount` generates:
+
 ```sql
 SUM(CASE WHEN has_loss_payment = 1 THEN claim_amount END)
 ```
 
 #### Simple metrics (without filter)
 
-Nothing to add — the underlying measure is already directly queryable in SLayer.
+Nothing to add — the underlying measure is already directly queryable.
 
-#### Derived, ratio, and cumulative metrics → `queries.yaml`
+#### Derived / ratio / cumulative metrics → `ModelMeasure`
 
-These don't map to model-level constructs. They are converted to SlayerQuery definitions and written to a separate `queries.yaml` file:
+All three fold into a `ModelMeasure` on the source semantic model. Inputs are referenced by **bare ModelMeasure name**, so the formula parser resolves them locally:
 
-- **Derived**: `{"formula": "metric_a:sum + metric_b:sum", "name": "combined"}`
-- **Ratio**: `{"formula": "numerator:sum / denominator:sum", "name": "ratio"}`
-- **Cumulative (unbounded)**: `{"formula": "cumsum(measure:agg)", "name": "running_total"}`
+- **Derived**: `formula: "metric_a + metric_b"`
+- **Ratio**: `formula: "numerator / denominator"`
+- **Cumulative (unbounded)**: `formula: "cumsum(measure_name)"`
 
-These can be executed via the SLayer API/MCP or used as templates for building queries.
+#### Unconverted metrics
 
-#### Unsupported metric types
+Some dbt metrics cannot be expressed as a `ModelMeasure`. They are reported in `ConversionResult.unconverted_metrics` and printed with an `UNCONVERTED` tag. Categories:
 
-- **Cumulative with window or grain_to_date**: warning emitted (SLayer's `cumsum` is unbounded)
-- **Conversion metrics**: warning emitted (entity-based sequential event tracking not supported)
+- **Cumulative with window or grain_to_date**: SLayer's `cumsum` is unbounded.
+- **Conversion metrics**: entity-based sequential event tracking is not supported.
+- **Transform-name shadowing**: a dbt measure or metric named after a SLayer transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `first`, `last`) is rejected — using it bare in a formula would shadow the transform.
 
 ## Filter Syntax Conversion
 
@@ -133,12 +164,11 @@ The converter resolves these to plain SLayer filter strings:
 - `TimeDimension('name', 'grain')` → `name` (granularity is query-time in SLayer)
 - `Entity('name')` → the entity's SQL expression column name
 
-## Output Files
+## Output
 
 The converter produces:
-1. **Model YAML files** in `models/` — one per dbt semantic model
-2. **`queries.yaml`** — SlayerQuery definitions for derived/ratio/cumulative metrics (if any)
-3. **Console report** — summary of models imported, queries generated, and warnings
+1. **Model YAML files** (or rows in SQLite storage) — one per dbt semantic model. Every metric folds into a `ModelMeasure` on its source model.
+2. **Console report** — summary of models imported, unconverted metrics, and warnings.
 
 ## Regular dbt Models (Hidden Import)
 
@@ -217,8 +247,11 @@ Arguments:
 Options:
   --datasource NAME         SLayer datasource name for imported models (required)
   --storage PATH            Storage directory for output (default: ./slayer_data)
-  --no-strict-aggregations  Allow all aggregation types (don't restrict to dbt's defined agg)
   --include-hidden-models   Also import regular dbt models (not wrapped by a
                             semantic_model) as hidden SLayer models via SQL
                             introspection. Requires the `dbt` extra.
 ```
+
+## Hard Failures
+
+The converter raises `DbtConversionError` (and aborts) when a dbt semantic model defines both a dimension and a measure with the same name. SLayer columns and named measures share a single namespace per model, so the names must be disjoint — rename one side in the dbt project.
