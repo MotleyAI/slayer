@@ -8,8 +8,10 @@ column names, joins resolved to direct FK pairs only). Also round-trips the
 ingested models through YAMLStorage to confirm no v1 keys leak to disk.
 """
 
+import asyncio
 import os
 import tempfile
+from pathlib import Path
 from typing import Dict
 
 import pytest
@@ -206,8 +208,8 @@ async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models):
 
         for model_name in jaffle_models:
             path = os.path.join(storage.models_dir, f"{model_name}.yaml")
-            with open(path) as f:
-                on_disk = yaml.safe_load(f)
+            raw = await asyncio.to_thread(Path(path).read_text)
+            on_disk = yaml.safe_load(raw)
             assert on_disk["version"] == 2, model_name
             assert "columns" in on_disk, model_name
             assert "dimensions" not in on_disk, (

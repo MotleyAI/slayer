@@ -30,6 +30,7 @@ from slayer.dbt.models import (
     DbtDimension,
     DbtMeasure,
     DbtMetric,
+    DbtMetricTypeParams,
     DbtProject,
     DbtRegularModel,
     DbtSemanticModel,
@@ -753,77 +754,83 @@ class DbtToSlayerConverter:
     def _find_metric_source_model(self, metric: DbtMetric) -> Optional[str]:
         """Determine the source model for a metric.
 
-        Walks ``measure``, then ``metrics``, then ``numerator``/``denominator``
-        to support all metric shapes that reference an underlying measure.
+        Walks ``measure``, ``metrics``, and ``numerator``/``denominator`` and
+        returns the unique source semantic-model name. When the metric's
+        inputs span multiple semantic models, returns ``None`` so the caller
+        routes the metric to ``unconverted_metrics`` rather than silently
+        anchoring it to whichever model is discovered first.
         """
         if metric.type_params is None:
             return None
+        sources = self._collect_metric_sources_from_params(metric.type_params)
+        return next(iter(sources)) if len(sources) == 1 else None
 
-        if metric.type_params.measure:
-            sm = self._find_measure_model(metric.type_params.measure)
-            if sm:
-                return sm.name
+    def _collect_metric_sources(self, metric_name: str, _seen: Optional[set] = None) -> set:
+        """Collect every distinct semantic-model name a metric ultimately resolves to.
 
-        if metric.type_params.metrics:
-            for m_input in metric.type_params.metrics:
-                source = self._resolve_metric_source(m_input.name)
-                if source:
-                    return source
-
-        # Q-E: ratio metrics carry numerator/denominator, not metrics=[…].
-        for side in (metric.type_params.numerator, metric.type_params.denominator):
-            if side is None:
-                continue
-            source = self._resolve_metric_source(side.name)
-            if source:
-                return source
-
-        return None
-
-    def _resolve_metric_source(self, metric_name: str) -> Optional[str]:
-        """Recursively resolve a metric name to its source model.
-
-        First tries the metric's own ``measure`` (simple), then descends into
-        ``numerator``/``denominator`` (ratio), then ``metrics`` (derived).
-        Falls back to looking up ``metric_name`` as a dbt measure directly.
+        Recurses through derived (``metrics``) and ratio
+        (``numerator``/``denominator``) inputs. Falls back to looking
+        ``metric_name`` up as a dbt measure when no metric of that name
+        exists. ``_seen`` guards against pathological metric cycles.
         """
+        seen = _seen if _seen is not None else set()
+        if metric_name in seen:
+            return set()
+        seen = seen | {metric_name}
+
         for m in self.project.metrics:
             if m.name != metric_name:
                 continue
             if m.type_params is None:
-                return None
-            if m.type_params.measure:
-                sm = self._find_measure_model(m.type_params.measure)
-                if sm:
-                    return sm.name
-            for side in (m.type_params.numerator, m.type_params.denominator):
-                if side is None:
-                    continue
-                source = self._resolve_metric_source(side.name)
-                if source:
-                    return source
-            if m.type_params.metrics:
-                for m_input in m.type_params.metrics:
-                    source = self._resolve_metric_source(m_input.name)
-                    if source:
-                        return source
-            return None
-        # ``metric_name`` may be a bare dbt measure name rather than a metric.
+                return set()
+            return self._collect_metric_sources_from_params(m.type_params, seen=seen)
+
         sm = self._find_measure_model(metric_name)
-        return sm.name if sm else None
+        return {sm.name} if sm else set()
+
+    def _collect_metric_sources_from_params(
+        self, type_params: DbtMetricTypeParams, *, seen: Optional[set] = None
+    ) -> set:
+        """Shared shape-walker used by both entry points above."""
+        sources: set = set()
+        if type_params.measure:
+            sm = self._find_measure_model(type_params.measure)
+            if sm:
+                sources.add(sm.name)
+        if type_params.metrics:
+            for m_input in type_params.metrics:
+                sources |= self._collect_metric_sources(m_input.name, _seen=seen)
+        for side in (type_params.numerator, type_params.denominator):
+            if side is None:
+                continue
+            sources |= self._collect_metric_sources(side.name, _seen=seen)
+        return sources
 
     def _resolve_metric_to_name(self, metric_name: str) -> Optional[str]:
         """Resolve a metric name to a formula reference.
 
         Returns the bare ``ModelMeasure`` name when the metric was lowered
-        into a ``ModelMeasure`` (simple, derived, ratio, cumulative). Falls
-        back to the ``column:agg`` colon form when ``metric_name`` is a dbt
-        measure rather than a metric.
+        into a ``ModelMeasure`` (filtered simple, derived, ratio, cumulative).
+        For an *unfiltered* simple metric — which ``_convert_simple_metric``
+        deliberately does not materialize — resolves to the backing dbt
+        measure name instead, since that is what's actually addressable on
+        the model. Falls back to ``_resolve_measure_to_name`` when
+        ``metric_name`` is a dbt measure rather than a metric.
         """
         for m in self.project.metrics:
-            if m.name == metric_name:
-                # All metric kinds are stored as ModelMeasures named after the metric.
-                return metric_name
+            if m.name != metric_name:
+                continue
+            if (
+                m.type
+                and m.type.lower() == "simple"
+                and not m.filter
+                and m.type_params is not None
+                and m.type_params.measure
+            ):
+                # Unfiltered simple metric was not materialized — point at
+                # the backing measure's ModelMeasure on its own model.
+                return self._resolve_measure_to_name(m.type_params.measure)
+            return metric_name
         return self._resolve_measure_to_name(metric_name)
 
     def _resolve_measure_to_name(self, measure_name: str) -> Optional[str]:

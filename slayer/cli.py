@@ -727,6 +727,33 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
+def _persist_ingested_models(models, storage, *, assume_yes: bool, pre_save=None) -> None:
+    """Persist freshly-ingested models, after a collision-confirmation prompt.
+
+    Used by both ``datasources create`` (with ``--ingest``) and
+    ``datasources create demo --ingest``. ``pre_save`` is an optional hook
+    called once per model just before saving — the demo path uses it to
+    apply ``default_time_dimension`` overrides.
+    """
+    if not models:
+        print("No models were generated.")
+        return
+
+    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
+    if colliding and not _confirm(
+        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
+        assume_yes=assume_yes,
+    ):
+        print("Aborted before writing models.")
+        sys.exit(1)
+
+    for model in models:
+        if pre_save is not None:
+            pre_save(model)
+        run_sync(storage.save_model(model))
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+
+
 def _run_datasources_create(args, storage):
     if (args.connection_string or "").strip().lower() == "demo":
         _run_datasources_create_demo(args, storage)
@@ -779,21 +806,7 @@ def _run_datasources_create(args, storage):
         print(f"Ingestion failed: {e}")
         sys.exit(1)
 
-    if not models:
-        print("No models were generated.")
-        return
-
-    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
-    if colliding and not _confirm(
-        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
-        assume_yes=args.yes,
-    ):
-        print("Aborted before writing models.")
-        sys.exit(1)
-
-    for model in models:
-        run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+    _persist_ingested_models(models, storage, assume_yes=args.yes)
 
 
 def _run_datasources_create_demo(args, storage):
@@ -856,23 +869,13 @@ def _run_datasources_create_demo(args, storage):
         print(f"Ingestion failed: {e}")
         sys.exit(1)
 
-    if not models:
-        print("No models were generated.")
-        return
-
-    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
-    if colliding and not _confirm(
-        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
-        assume_yes=args.yes,
-    ):
-        print("Aborted before writing models.")
-        sys.exit(1)
-
-    for model in models:
+    def _apply_demo_time_dim(model):
         if model.name in DEFAULT_TIME_DIMENSIONS:
             model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
-        run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+
+    _persist_ingested_models(
+        models, storage, assume_yes=args.yes, pre_save=_apply_demo_time_dim
+    )
 
 
 if __name__ == "__main__":

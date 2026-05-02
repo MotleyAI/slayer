@@ -28,6 +28,40 @@ from slayer.dbt.models import (
 from slayer.dbt.parser import parse_dbt_project
 
 
+@pytest.fixture
+def aov_ratio_project() -> DbtProject:
+    """Minimal dbt project: an ``orders`` semantic model with two measures
+    and a single ratio metric ``aov = total_amount / order_count``.
+
+    Shared between the ratio-becomes-ModelMeasure and the
+    _find_metric_source_model regression tests, which previously copy-pasted
+    this same project literal.
+    """
+    return DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                measures=[
+                    DbtMeasure(name="total_amount", agg="sum", expr="amount"),
+                    DbtMeasure(name="order_count", agg="count", expr="id"),
+                ],
+            ),
+        ],
+        metrics=[
+            DbtMetric(
+                name="aov",
+                type="ratio",
+                type_params=DbtMetricTypeParams(
+                    numerator=DbtMetricInput(name="total_amount"),
+                    denominator=DbtMetricInput(name="order_count"),
+                ),
+            ),
+        ],
+    )
+
+
 def _make_simple_project():
     """Create a minimal dbt project for testing."""
     return DbtProject(
@@ -535,10 +569,13 @@ class TestDerivedMetricConversion:
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         # Derived metric folded into a ModelMeasure on the source model — no
-        # SlayerQuery dicts are produced.
+        # SlayerQuery dicts are produced. The two referenced metrics are
+        # *unfiltered* simple metrics so they were never materialized as
+        # ModelMeasures; the formula must point at the backing dbt measures
+        # (which are the actual ModelMeasure names on the model).
         orders = next(m for m in result.models if m.name == "orders")
         m = next(mm for mm in orders.measures if mm.name == "avg_order_value")
-        assert m.formula == "total_amount_metric / order_count_metric"
+        assert m.formula == "total_amount / order_count"
         assert m.description == "Average order value"
 
 
@@ -1144,31 +1181,8 @@ class TestColumnNamingS4:
 class TestDbtMeasureToModelMeasure:
     """Step 7 (Q-1, Q-5, Q-6): metrics fold into ModelMeasures, not SlayerQuery dicts."""
 
-    def test_ratio_metric_becomes_model_measure(self) -> None:
-        project = DbtProject(
-            semantic_models=[
-                DbtSemanticModel(
-                    name="orders",
-                    model="orders",
-                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                    measures=[
-                        DbtMeasure(name="total_amount", agg="sum", expr="amount"),
-                        DbtMeasure(name="order_count", agg="count", expr="id"),
-                    ],
-                ),
-            ],
-            metrics=[
-                DbtMetric(
-                    name="aov",
-                    type="ratio",
-                    type_params=DbtMetricTypeParams(
-                        numerator=DbtMetricInput(name="total_amount"),
-                        denominator=DbtMetricInput(name="order_count"),
-                    ),
-                ),
-            ],
-        )
-        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+    def test_ratio_metric_becomes_model_measure(self, aov_ratio_project) -> None:
+        result = DbtToSlayerConverter(project=aov_ratio_project, data_source="test").convert()
         orders = next(m for m in result.models if m.name == "orders")
 
         aov = next(m for m in orders.measures if m.name == "aov")
@@ -1204,9 +1218,160 @@ class TestDbtMeasureToModelMeasure:
 class TestFindMetricSourceModelRatio:
     """Q-E regression: _find_metric_source_model must walk numerator/denominator."""
 
-    def test_find_metric_source_model_resolves_ratio_numerator_denominator(self) -> None:
+    def test_find_metric_source_model_resolves_ratio_numerator_denominator(
+        self, aov_ratio_project
+    ) -> None:
         """A ratio metric whose source is reachable only through its
         numerator (or denominator) must still resolve."""
+        result = DbtToSlayerConverter(project=aov_ratio_project, data_source="test").convert()
+        # Source resolution worked — the ModelMeasure ended up on orders.
+        orders = next(m for m in result.models if m.name == "orders")
+        assert any(m.name == "aov" for m in orders.measures), (
+            "Ratio metric source model not resolved via numerator/denominator"
+        )
+
+
+class TestMultiSourceMetricRouting:
+    """Metrics whose inputs span multiple semantic models must be routed to
+    ``unconverted_metrics`` rather than silently anchored to whichever model
+    happens to be discovered first (CodeRabbit 1a)."""
+
+    def test_derived_metric_spanning_two_models_is_unconverted(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                ),
+                DbtSemanticModel(
+                    name="customers",
+                    model="customers",
+                    entities=[DbtEntity(name="customer_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="customer_count", agg="count", expr="id")],
+                ),
+            ],
+            metrics=[
+                # Derived metric whose two referenced measures live on
+                # different semantic models.
+                DbtMetric(
+                    name="amount_per_customer",
+                    type="derived",
+                    type_params=DbtMetricTypeParams(
+                        expr="total_amount / customer_count",
+                        metrics=[
+                            DbtMetricInput(name="total_amount"),
+                            DbtMetricInput(name="customer_count"),
+                        ],
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+
+        orders = next(m for m in result.models if m.name == "orders")
+        customers = next(m for m in result.models if m.name == "customers")
+        assert not any(m.name == "amount_per_customer" for m in orders.measures), (
+            "Cross-model derived metric should not be anchored to 'orders'"
+        )
+        assert not any(m.name == "amount_per_customer" for m in customers.measures), (
+            "Cross-model derived metric should not be anchored to 'customers'"
+        )
+        assert any(
+            u.metric_name == "amount_per_customer" for u in result.unconverted_metrics
+        ), "Cross-model derived metric should be routed to unconverted_metrics"
+
+    def test_ratio_metric_spanning_two_models_is_unconverted(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                ),
+                DbtSemanticModel(
+                    name="customers",
+                    model="customers",
+                    entities=[DbtEntity(name="customer_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="customer_count", agg="count", expr="id")],
+                ),
+            ],
+            metrics=[
+                DbtMetric(
+                    name="amount_per_customer_ratio",
+                    type="ratio",
+                    type_params=DbtMetricTypeParams(
+                        numerator=DbtMetricInput(name="total_amount"),
+                        denominator=DbtMetricInput(name="customer_count"),
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+
+        orders = next(m for m in result.models if m.name == "orders")
+        customers = next(m for m in result.models if m.name == "customers")
+        assert not any(m.name == "amount_per_customer_ratio" for m in orders.measures)
+        assert not any(m.name == "amount_per_customer_ratio" for m in customers.measures)
+        assert any(
+            u.metric_name == "amount_per_customer_ratio"
+            for u in result.unconverted_metrics
+        )
+
+
+class TestUnfilteredSimpleMetricResolution:
+    """An unfiltered simple metric is not materialized as a ModelMeasure; any
+    derived/ratio formula that references it must resolve to the backing
+    measure's name instead of the (non-existent) metric name (CodeRabbit 1b).
+    """
+
+    def test_derived_metric_referencing_unfiltered_simple_metric_uses_backing_measure(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                ),
+            ],
+            metrics=[
+                # Simple unfiltered metric — _convert_simple_metric returns
+                # without creating a ModelMeasure for this one.
+                DbtMetric(
+                    name="amount_metric",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="total_amount"),
+                ),
+                # Derived metric referencing the simple metric by name.
+                DbtMetric(
+                    name="double_amount",
+                    type="derived",
+                    type_params=DbtMetricTypeParams(
+                        expr="amount_metric * 2",
+                        metrics=[DbtMetricInput(name="amount_metric")],
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+
+        measure_names = {m.name for m in orders.measures}
+        assert "amount_metric" not in measure_names, (
+            "Unfiltered simple metric should not be materialized as a ModelMeasure"
+        )
+        double = next(m for m in orders.measures if m.name == "double_amount")
+        assert "amount_metric" not in double.formula, (
+            f"Derived formula must not reference unmaterialized metric name; got {double.formula!r}"
+        )
+        assert "total_amount" in double.formula, (
+            f"Derived formula should reference backing measure 'total_amount'; got {double.formula!r}"
+        )
+
+    def test_ratio_metric_referencing_unfiltered_simple_metric_uses_backing_measure(self) -> None:
         project = DbtProject(
             semantic_models=[
                 DbtSemanticModel(
@@ -1220,23 +1385,31 @@ class TestFindMetricSourceModelRatio:
                 ),
             ],
             metrics=[
-                # Ratio metric — only reachable via numerator/denominator names,
-                # NOT via type_params.measure or type_params.metrics.
                 DbtMetric(
-                    name="aov",
+                    name="amount_metric",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="total_amount"),
+                ),
+                DbtMetric(
+                    name="count_metric",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="order_count"),
+                ),
+                DbtMetric(
+                    name="aov_via_metrics",
                     type="ratio",
                     type_params=DbtMetricTypeParams(
-                        numerator=DbtMetricInput(name="total_amount"),
-                        denominator=DbtMetricInput(name="order_count"),
+                        numerator=DbtMetricInput(name="amount_metric"),
+                        denominator=DbtMetricInput(name="count_metric"),
                     ),
                 ),
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
-        # Source resolution worked — the ModelMeasure ended up on orders.
         orders = next(m for m in result.models if m.name == "orders")
-        assert any(m.name == "aov" for m in orders.measures), (
-            "Ratio metric source model not resolved via numerator/denominator"
+        aov = next(m for m in orders.measures if m.name == "aov_via_metrics")
+        assert aov.formula == "total_amount / order_count", (
+            f"Ratio formula should reference backing measures, got {aov.formula!r}"
         )
 
 
