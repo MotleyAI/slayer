@@ -5,7 +5,7 @@ import concurrent.futures
 import functools
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import sqlalchemy as sa
 import sqlalchemy.event as sa_event
@@ -348,6 +348,38 @@ class SlayerSQLClient:
 # ---------------------------------------------------------------------------
 
 
+async def _retry_with_backoff(
+    *,
+    sql: str,
+    do_call: Callable[[], Awaitable[List[Dict[str, Any]]]],
+    max_attempts: int,
+    initial_delay: float,
+    max_delay: float,
+) -> List[Dict[str, Any]]:
+    """Retry an async DB call with exponential backoff on transient errors.
+
+    `sql` is used only for the warning's excerpt so users can correlate
+    retries with the offending query. The underlying DBAPI message comes
+    from `exc.orig` (e.g. sqlite3.OperationalError("database is locked"));
+    without it the warning would be uninformative.
+    """
+    delay = initial_delay
+    for attempt in range(max_attempts):
+        try:
+            return await do_call()
+        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
+            if attempt == max_attempts - 1:
+                raise
+            sql_lines = (sql or "").strip().splitlines()
+            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
+            logger.warning(
+                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
+                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)
+
+
 async def _execute_with_retry_async(
     sql: str,
     engine,
@@ -357,30 +389,15 @@ async def _execute_with_retry_async(
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
 ) -> List[Dict[str, Any]]:
-    delay = initial_delay
-    for attempt in range(max_attempts):
-        try:
-            return await _execute_sql_async(
-                sql=sql,
-                engine=engine,
-                db_type=db_type,
-                timeout_seconds=timeout_seconds,
-            )
-        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
-            if attempt == max_attempts - 1:
-                raise
-            # Log the underlying DBAPI message + a SQL excerpt so the
-            # warning is actionable. `exc.orig` carries the driver's
-            # exception (e.g. sqlite3.OperationalError("database is locked"));
-            # without it the warning was uninformative.
-            sql_lines = (sql or "").strip().splitlines()
-            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
-            logger.warning(
-                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
-                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
-            )
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, max_delay)
+    return await _retry_with_backoff(
+        sql=sql,
+        do_call=lambda: _execute_sql_async(
+            sql=sql, engine=engine, db_type=db_type, timeout_seconds=timeout_seconds,
+        ),
+        max_attempts=max_attempts,
+        initial_delay=initial_delay,
+        max_delay=max_delay,
+    )
 
 
 async def _execute_sql_async(
@@ -417,31 +434,19 @@ async def _execute_with_retry_threaded(
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
 ) -> List[Dict[str, Any]]:
-    delay = initial_delay
-    for attempt in range(max_attempts):
-        try:
-            return await _run_sync_in_thread(
-                _execute_sql_sync,
-                sql=sql,
-                connection_string=connection_string,
-                db_type=db_type,
-                timeout_seconds=timeout_seconds,
-            )
-        except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
-            if attempt == max_attempts - 1:
-                raise
-            # Log the underlying DBAPI message + a SQL excerpt so the
-            # warning is actionable. `exc.orig` carries the driver's
-            # exception (e.g. sqlite3.OperationalError("database is locked"));
-            # without it the warning was uninformative.
-            sql_lines = (sql or "").strip().splitlines()
-            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
-            logger.warning(
-                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
-                attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
-            )
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, max_delay)
+    return await _retry_with_backoff(
+        sql=sql,
+        do_call=lambda: _run_sync_in_thread(
+            _execute_sql_sync,
+            sql=sql,
+            connection_string=connection_string,
+            db_type=db_type,
+            timeout_seconds=timeout_seconds,
+        ),
+        max_attempts=max_attempts,
+        initial_delay=initial_delay,
+        max_delay=max_delay,
+    )
 
 
 # ---------------------------------------------------------------------------
