@@ -651,6 +651,64 @@ class TestFields:
             f"src_body:\n{src_body}"
         )
 
+    async def test_windowed_sum_keeps_joins_used_by_query_filter(
+        self, generator: SQLGenerator, tmp_path,
+    ) -> None:
+        """Window CTE must keep joins whose alias is referenced by a query-level
+        WHERE filter, even if the windowed measure itself doesn't use them.
+
+        Otherwise the rendered SQL has a WHERE clause referencing an alias
+        whose JOIN was pruned, and the SQL becomes invalid (or silently
+        changes filtering behavior).
+        """
+        from slayer.engine.query_engine import SlayerQueryEngine
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            ],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        engine = SlayerQueryEngine(storage=storage)
+
+        # Filter on customers.region_id forces a customers join. The windowed
+        # measure does not otherwise reference customers, so the join would be
+        # pruned without the filter-aware logic — and then the WHERE clause
+        # below would reference an undefined alias.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            filters=["customers.region_id = 5"],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        assert any(alias == "customers" for _, alias, *_ in enriched.resolved_joins)
+
+        sql = generator.generate(enriched=enriched)
+        _, _, after_left_join = sql.partition("LEFT JOIN (\n")
+        src_body, _, _ = after_left_join.partition("\n) AS _src")
+        assert src_body, "Could not isolate _src subquery body"
+        assert "customers" in src_body, (
+            f"_src subquery must include customers join because the query-level "
+            f"WHERE filter references customers.region_id.\nsrc_body:\n{src_body}"
+        )
+
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
