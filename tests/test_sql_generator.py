@@ -509,7 +509,7 @@ class TestFields:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="cumsum(revenue:sum)", name="running_revenue")],
+            measures=[{"formula": "cumsum(revenue:sum)", "name": "running_revenue"}],
         )
         sql = await _generate(generator, query, orders_model)
         assert 'SUM("orders.revenue_sum") OVER (PARTITION BY "orders.status" ORDER BY "orders.created_at")' in sql
@@ -519,7 +519,7 @@ class TestFields:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
-            fields=[Field(formula="revenue:sum(window='90d')", name="revenue_90d")],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
         )
         sql = await _generate(generator, query, orders_model)
         assert "_wm_orders__revenue_sum_window_90d" in sql
@@ -533,7 +533,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
-            fields=[Field(formula="revenue:avg(window='1y2m3w5d6h7min8s')", name="avg_window")],
+            measures=[{"formula": "revenue:avg(window='1y2m3w5d6h7min8s')", "name": "avg_window"}],
         )
         sql = await _generate(generator, query, orders_model)
         assert "AVG(_src._w_value)" in sql
@@ -543,7 +543,7 @@ class TestFields:
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
-            fields=[Field(formula="revenue:sum(window='1w2d3h4min5s')", name="revenue_window")],
+            measures=[{"formula": "revenue:sum(window='1w2d3h4min5s')", "name": "revenue_window"}],
         )
         sql = await _generate(SQLGenerator(dialect="sqlite"), query, orders_model)
         assert "DATETIME(" in sql
