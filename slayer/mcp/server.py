@@ -534,6 +534,95 @@ async def _collect_reachable_fields(
     return sorted(reachable_dims), sorted(reachable_measures)
 
 
+def _build_backing_query_info(model: SlayerModel) -> Optional[dict]:
+    """Build the ``backing_query`` block for inspect_model output.
+
+    Returns ``None`` for non-query-backed models. For query-backed models,
+    returns ``{variables, required_variables, stages}`` where:
+
+    - ``variables``: ``model.query_variables`` (defaults).
+    - ``required_variables``: placeholder names that have no default.
+    - ``stages``: each stage dumped as a dict, ready for JSON output.
+    """
+    if not model.source_queries:
+        return None
+    from slayer.core.query import extract_placeholder_names
+
+    all_placeholders: set = set()
+    stage_dicts: List[dict] = []
+    for q in model.source_queries:
+        all_placeholders |= extract_placeholder_names(q)
+        stage_dicts.append(q.model_dump(mode="json", exclude_none=True))
+    required = sorted(all_placeholders - set(model.query_variables.keys()))
+    return {
+        "variables": dict(model.query_variables),
+        "required_variables": required,
+        "stages": stage_dicts,
+    }
+
+
+def _backing_query_markdown_section(info: dict) -> str:
+    """Format the ``backing_query`` info as a markdown section."""
+    lines: List[str] = ["## Backing Query"]
+    stages = info.get("stages") or []
+    for i, stage in enumerate(stages, start=1):
+        title = stage.get("name") or ("final" if i == len(stages) else f"stage {i}")
+        lines.append(f"\n**{i}. {title}**")
+        src = stage.get("source_model")
+        if isinstance(src, str):
+            lines.append(f"- source_model: `{src}`")
+        elif isinstance(src, dict):
+            sn = src.get("source_name") or src.get("name")
+            if sn:
+                lines.append(f"- source_model: `{sn}` (extension)")
+        for key in ("dimensions", "time_dimensions", "measures", "filters"):
+            val = stage.get(key)
+            if not val:
+                continue
+            if key == "filters":
+                rendered = "; ".join(f"`{f}`" for f in val)
+            else:
+                rendered_parts: List[str] = []
+                for v in val:
+                    if isinstance(v, dict):
+                        if "name" in v and v["name"]:
+                            rendered_parts.append(str(v["name"]))
+                        elif "formula" in v and v["formula"]:
+                            rendered_parts.append(str(v["formula"]))
+                        elif "dimension" in v and isinstance(v["dimension"], dict):
+                            dim_name = v["dimension"].get("name")
+                            if dim_name:
+                                rendered_parts.append(str(dim_name))
+                            else:
+                                rendered_parts.append(str(v))
+                        else:
+                            rendered_parts.append(str(v))
+                    else:
+                        rendered_parts.append(str(v))
+                rendered = "; ".join(rendered_parts)
+            lines.append(f"- {key}: {rendered}")
+    variables = info.get("variables") or {}
+    required = info.get("required_variables") or []
+    if variables or required:
+        lines.append("\n**Variables:**")
+        for k, v in variables.items():
+            lines.append(f"- `{k}`: default `{v}`")
+        for k in required:
+            lines.append(f"- `{k}`: required")
+    return "\n".join(lines)
+
+
+def _source_type_for(model: SlayerModel) -> str:
+    """Classify a model's source mode for summary/inspect output."""
+    if model.source_queries:
+        return "query"
+    if model.sql_table:
+        return "table"
+    if model.sql:
+        return "sql"
+    return "unknown"
+
+
 def _model_to_summary(model: SlayerModel) -> dict:
     """Convert a SlayerModel to a summary dict."""
     columns = []
@@ -565,6 +654,7 @@ def _model_to_summary(model: SlayerModel) -> dict:
     return {
         "name": model.name,
         "description": model.description,
+        "source_type": _source_type_for(model),
         "columns": columns,
         "measures": measures,
     }
@@ -615,6 +705,7 @@ def create_mcp_server(storage: StorageBackend):
         dry_run: bool = False,
         explain: bool = False,
         format: str = "markdown",
+        variables: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Query data from a semantic model. Call inspect_model first to see available columns and measures.
 
@@ -667,12 +758,39 @@ def create_mcp_server(storage: StorageBackend):
             data["explain"] = True
         if measures:
             data["measures"] = measures
+        if variables:
+            data["variables"] = dict(variables)
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
+            # Run-by-name shortcut: when only source_model is given (no
+            # measures / dimensions / filters / time_dimensions / order /
+            # limit / offset), dispatch through ``engine.execute(str)`` so
+            # the model's stored backing query runs directly. Variables flow
+            # through with the documented run-by-name precedence.
+            no_overrides = (
+                not measures and not dimensions and not filters
+                and not time_dimensions and not order
+                and limit is None and offset is None
+                and not whole_periods_only
+            )
+            if no_overrides and await storage.get_model(source_model) is not None:
+                target = await storage.get_model(source_model)
+                if target is not None and target.source_queries:
+                    result = await engine.execute(
+                        source_model, variables=variables or {}
+                    )
+                    if dry_run or explain:
+                        return f"SQL:\n{result.sql}"
+                    output = _format_output(result=result, fmt=fmt)
+                    if show_sql and result.sql:
+                        output = f"SQL:\n{result.sql}\n\n{output}"
+                    return output
             slayer_query = SlayerQuery.model_validate(data)
-            result = await engine.execute(query=slayer_query)
+            result = await engine.execute(
+                query=slayer_query, variables=variables
+            )
             if dry_run:
                 return f"SQL:\n{result.sql}"
             if explain:
@@ -885,6 +1003,15 @@ def create_mcp_server(storage: StorageBackend):
             filter_lines = "\n".join(f"- `{f}`" for f in model.filters)
             sections.append(f"## Filters (model-level)\n\n{filter_lines}")
 
+        # Backing-query section (query-backed models only).
+        backing_info = _build_backing_query_info(model)
+        if backing_info is not None:
+            sections.append(_backing_query_markdown_section(backing_info))
+            if show_sql and model.backing_query_sql:
+                sections.append(
+                    f"## Backing Query SQL\n\n```sql\n{model.backing_query_sql}\n```"
+                )
+
         # Dimension profile (distinct values / min-max) — folded into the
         # Dimensions table as a ``sampled`` column so there's one table per
         # dimension rather than a separate section the LLM has to cross-join by
@@ -1048,8 +1175,17 @@ def create_mcp_server(storage: StorageBackend):
                     "model_name": model.name,
                     "description": model.description,
                     "data_source": model.data_source,
+                    "source_type": _source_type_for(model),
                     **({"sql_table": model.sql_table} if show_sql else {}),
                     **({"sql": model.sql} if show_sql else {}),
+                    **(
+                        {"backing_query": backing_info} if backing_info is not None else {}
+                    ),
+                    **(
+                        {"backing_query_sql": model.backing_query_sql}
+                        if show_sql and backing_info is not None and model.backing_query_sql
+                        else {}
+                    ),
                     "default_time_dimension": model.default_time_dimension,
                     "hidden": model.hidden,
                     "row_count": row_count,
@@ -1123,7 +1259,8 @@ def create_mcp_server(storage: StorageBackend):
         description: Optional[str] = None,
         columns: Optional[List[Dict[str, Any]]] = None,
         measures: Optional[List[Dict[str, str]]] = None,
-        query: Optional[Dict] = None,
+        query: Optional[Any] = None,
+        variables: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Create a new semantic model, either from a database table or from a query.
 
@@ -1150,9 +1287,13 @@ def create_mcp_server(storage: StorageBackend):
             measures: List of named formula definitions on the model. Each:
                 {"name": "aov", "formula": "revenue:sum / *:count", "label": "..."}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
-            query: A SLayer query dict. When provided, the query's SQL becomes the model source
-                and columns are auto-introspected. Mutually exclusive with
-                sql_table, sql, columns, and measures.
+            query: A SLayer query dict (or list of stage dicts for a multi-stage backing
+                query). When provided, the query is saved as the model's ``source_queries``
+                and the model becomes query-backed. Mutually exclusive with sql_table, sql,
+                columns, and measures.
+            variables: Default values for ``{var}`` placeholders in the backing query.
+                Saved as ``query_variables`` on the model. Only meaningful when ``query``
+                is provided.
         """
         if query is not None:
             table_params = {
@@ -1168,9 +1309,16 @@ def create_mcp_server(storage: StorageBackend):
                     "Use 'query' alone to create from a query, or provide table details without 'query'."
                 )
             try:
-                parsed_query = SlayerQuery.model_validate(query)
+                # Accept a single SlayerQuery dict or a list of stage dicts.
+                if isinstance(query, list):
+                    parsed_query = [SlayerQuery.model_validate(q) for q in query]
+                else:
+                    parsed_query = SlayerQuery.model_validate(query)
                 model = await engine.create_model_from_query(
-                    query=parsed_query, name=name, description=description or "",
+                    query=parsed_query,
+                    name=name,
+                    description=description or "",
+                    variables=variables,
                 )
             except Exception as e:
                 if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -1245,6 +1393,8 @@ def create_mcp_server(storage: StorageBackend):
         default_time_dimension: Optional[str] = None,
         sql_table: Optional[str] = None,
         sql: Optional[str] = None,
+        source_queries: Optional[List[Dict[str, Any]]] = None,
+        query_variables: Any = _UNSET,
         hidden: Optional[bool] = None,
         columns: Optional[List[Dict[str, Any]]] = None,
         measures: Optional[List[Dict[str, Any]]] = None,
@@ -1264,8 +1414,15 @@ def create_mcp_server(storage: StorageBackend):
             data_source: New data source name.
             default_time_dimension: Default time dimension (a column of type date/time) for
                 time-dependent transforms.
-            sql_table: Database table name.
-            sql: Custom SQL expression for the model source.
+            sql_table: Database table name. Setting this clears ``sql`` and ``source_queries``.
+            sql: Custom SQL expression for the model source. Setting this clears ``sql_table`` and ``source_queries``.
+            source_queries: Replace the model's backing query with this list of stages.
+                Each stage is a SlayerQuery dict; non-final stages must have a ``name``.
+                Setting this clears ``sql_table`` and ``sql``, makes the model query-backed,
+                and refreshes the cached ``columns`` and ``backing_query_sql``.
+            query_variables: Replace the model's default ``{var}`` placeholder values for
+                its backing query. Pass null/None to clear. Only meaningful for
+                query-backed models.
             hidden: Whether this model is hidden from discovery.
             meta: Arbitrary JSON metadata for the model (replaces existing meta). Pass null/None to clear.
             columns: Columns to create or update (upsert by name). Each dict:
@@ -1312,17 +1469,43 @@ def create_mcp_server(storage: StorageBackend):
         if default_time_dimension is not None:
             model.default_time_dimension = default_time_dimension
             changes.append(f"set default_time_dimension to '{default_time_dimension}'")
-        if sql_table is not None and sql is not None:
-            return "Specify only one of 'sql_table' or 'sql' when editing a model."
+        explicit_sources = sum(
+            1 for v in (sql_table, sql, source_queries) if v is not None
+        )
+        if explicit_sources > 1:
+            return (
+                "Specify at most one of 'sql_table', 'sql', or 'source_queries' "
+                "when editing a model — the three source modes are mutually exclusive."
+            )
 
         if sql_table is not None:
             model.sql_table = sql_table
             model.sql = None
+            model.source_queries = None
             changes.append(f"set sql_table to '{sql_table}'")
         if sql is not None:
             model.sql = sql
             model.sql_table = None
+            model.source_queries = None
             changes.append(f"set sql to '{sql}'")
+        if source_queries is not None:
+            # Switching to query-backed source mode. Cache columns and
+            # backing_query_sql get refreshed when we save via engine.save_model.
+            from slayer.core.query import SlayerQuery as _SlayerQuery
+            model.source_queries = [_SlayerQuery.model_validate(q) for q in source_queries]
+            model.sql_table = None
+            model.sql = None
+            # Clear the user-managed columns so the cache write succeeds.
+            model.columns = []
+            model.backing_query_sql = None
+            changes.append(f"set source_queries ({len(source_queries)} stage(s))")
+        if query_variables is not _UNSET:
+            model.query_variables = query_variables or {}
+            changes.append(
+                "updated query_variables"
+                if query_variables
+                else "cleared query_variables"
+            )
         if hidden is not None:
             model.hidden = hidden
             changes.append(f"set hidden to {hidden}")
@@ -1420,12 +1603,28 @@ def create_mcp_server(storage: StorageBackend):
             return f"No changes specified for model '{model_name}'."
 
         # --- Phase 5: Validate and save ---
+        # For query-backed models, columns are an engine-managed cache.
+        # If we end up with source_queries set after this edit, we route through
+        # engine.save_model so the cache is refreshed (and any user-supplied
+        # cache fields are rejected). Otherwise, persist directly via storage.
         try:
             validated = SlayerModel.model_validate(model.model_dump(mode="json"))
         except Exception as exc:
             return f"Validation error: {exc}"
 
-        await storage.save_model(validated)
+        if validated.source_queries:
+            # Strip cache fields before save so engine.save_model can repopulate
+            # them from a fresh _query_as_model pass.
+            validated = validated.model_copy(update={
+                "columns": [],
+                "backing_query_sql": None,
+            })
+            try:
+                await engine.save_model(validated)
+            except Exception as exc:
+                return f"Validation error: {exc}"
+        else:
+            await storage.save_model(validated)
         return json.dumps({
             "success": True,
             "model_name": model_name,

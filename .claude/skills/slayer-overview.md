@@ -17,9 +17,11 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 
 ## Key Models
 
-- **SlayerModel** — maps a table/subquery to dimensions and measures. Defined in YAML or auto-generated.
-- **SlayerQuery** — specifies model, fields, dimensions, time_dimensions, filters, order, limit
+- **SlayerModel** — has one of three source modes: `sql_table` (physical table), `sql` (explicit SQL), or `source_queries` (query-backed — rows are the result of saved `SlayerQuery` stages). Optional `query_variables` defaults for `{var}` placeholders. Engine-managed `columns` and `backing_query_sql` cache for query-backed models. Defined in YAML or auto-generated.
+- **SlayerQuery** — specifies model, measures, dimensions, time_dimensions, filters, order, limit, variables
 - **DatasourceConfig** — DB connection details with `${ENV_VAR}` resolution
+
+Query-backed models support two access patterns: **run by name** (`engine.execute("monthly_revenue", variables={...})` runs the stored backing query) and **as a source_model** (`{"source_model": "monthly_revenue", ...}` in another query). Variable precedence: runtime kwarg > stage > outer query > model defaults.
 
 ## MCP Tools
 

@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field as PydanticField, model_validator
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import (
+    ColumnRef,
+    SlayerQuery,
+    TimeDimension,
+    extract_placeholder_names,
+)
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
@@ -47,6 +52,39 @@ _EXPLAIN_PREFIX = {
 _EXPLAIN_POSTFIX = {
     "tsql": "; SET SHOWPLAN_ALL OFF",
 }
+
+
+_PLACEHOLDER_FILL_VALUE = "0"
+
+
+def _merge_query_variables(
+    *,
+    outer: Optional[Dict[str, Any]],
+    stage: Optional[Dict[str, Any]],
+    runtime: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Merge variable layers per spec precedence: ``runtime > stage > outer``.
+
+    Model-level defaults are folded into ``outer`` by the caller before
+    invoking this helper.
+    """
+    return {**(outer or {}), **(stage or {}), **(runtime or {})}
+
+
+def _apply_placeholder_fill(
+    query: SlayerQuery, effective: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Add ``{var: '0'}`` for any unresolved ``{var}`` placeholder in
+    ``query.filters`` so save-time dry-run SQL generation can proceed even
+    when a runtime variable has no default.
+
+    Existing values in ``effective`` are preserved.
+    """
+    placeholders = extract_placeholder_names(query)
+    missing = {p: _PLACEHOLDER_FILL_VALUE for p in placeholders if p not in effective}
+    if not missing:
+        return effective
+    return {**missing, **effective}
 
 
 def _build_explain_sql(dialect: str, sql: str) -> str:
@@ -160,7 +198,20 @@ class SlayerQueryEngine:
         self.storage = storage
         self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
 
-    async def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+    async def execute(
+        self,
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        variables: Optional[Dict[str, Any]] = None,
+    ) -> SlayerResponse:
+        runtime_kwarg = variables or {}
+
+        # Run-by-name dispatch: ``execute("model_name", variables=...)`` runs
+        # the backing query of a query-backed model.
+        if isinstance(query, str):
+            return await self._execute_by_name(
+                name=query, runtime_kwarg=runtime_kwarg
+            )
+
         # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
             queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
@@ -176,6 +227,103 @@ class SlayerQueryEngine:
                 query = SlayerQuery.model_validate(query)
             named_queries = {}
 
+        # Merge ``variables=`` kwarg into query.variables so filter
+        # substitution and downstream resolution see the merged set.
+        # ``runtime_kwarg`` always wins (per spec precedence).
+        if runtime_kwarg:
+            merged_top = {**(query.variables or {}), **runtime_kwarg}
+            if merged_top != (query.variables or {}):
+                query = query.model_copy(update={"variables": merged_top})
+
+        return await self._execute_pipeline(
+            query=query,
+            named_queries=named_queries,
+            runtime_kwarg=runtime_kwarg,
+        )
+
+    async def _execute_by_name(
+        self,
+        name: str,
+        runtime_kwarg: Dict[str, Any],
+    ) -> SlayerResponse:
+        """Run the backing query of a query-backed model by name."""
+        model = await self.storage.get_model(name)
+        if model is None:
+            raise ValueError(f"Model '{name}' not found")
+        if not model.source_queries:
+            raise ValueError(
+                f"Model '{name}' is not query-backed; pass a SlayerQuery "
+                f"with source_model='{name}'."
+            )
+
+        stages = list(model.source_queries)
+        main_query = stages[-1]
+        named_queries: Dict[str, SlayerQuery] = {}
+        for q in stages[:-1]:
+            if q.name:
+                if q.name in named_queries:
+                    raise ValueError(
+                        f"Duplicate query name '{q.name}' in source_queries "
+                        f"of model '{name}'"
+                    )
+                named_queries[q.name] = q
+
+        # Merge precedence at the run-by-name entry point:
+        # ``runtime_kwarg > stage > model_defaults``. There's no enclosing
+        # outer query for direct execution, so ``model.query_variables`` acts
+        # as the lowest layer.
+        merged = _merge_query_variables(
+            outer=model.query_variables,
+            stage=main_query.variables,
+            runtime=runtime_kwarg,
+        )
+        if merged != (main_query.variables or {}):
+            main_query = main_query.model_copy(update={"variables": merged})
+
+        response = await self._execute_pipeline(
+            query=main_query,
+            named_queries=named_queries,
+            runtime_kwarg=runtime_kwarg,
+        )
+
+        # Refresh the model's cache (columns + backing_query_sql). The
+        # pipeline above does not call ``_resolve_model_inner`` for ``model``
+        # itself (we go directly through its final stage), so cache refresh
+        # has to be wired here. Cost: one extra enrich+SQL-gen pass per
+        # run-by-name, in-process, no DB hit.
+        try:
+            virtual = await self._query_as_model(
+                inner_query=main_query,
+                named_queries=named_queries,
+                override_name=name,
+                _resolving=set(),
+                outer_vars=dict(model.query_variables),
+                runtime_kwarg=runtime_kwarg,
+            )
+            await self._refresh_cache_after_resolution(model, virtual)
+        except Exception:
+            # Pipeline already succeeded; don't fail the user's call on a
+            # cache-side error. Log and move on.
+            logger.warning(
+                "Cache refresh failed for query-backed model '%s'; "
+                "pipeline result still returned.",
+                name,
+                exc_info=True,
+            )
+
+        return response
+
+    async def _execute_pipeline(
+        self,
+        query: SlayerQuery,
+        named_queries: Dict[str, SlayerQuery],
+        runtime_kwarg: Dict[str, Any],
+    ) -> SlayerResponse:
+        """Shared pipeline used by both ``execute()`` and ``_execute_by_name()``.
+
+        Assumes ``query.variables`` already reflects the resolved variable
+        context for the top of the chain (kwarg merged in by the caller).
+        """
         # Pre-processing: strip redundant source model name prefixes from all references
         query = query.strip_source_model_prefix()
         named_queries = {
@@ -187,12 +335,16 @@ class SlayerQueryEngine:
         if query.whole_periods_only:
             query = query.snap_to_whole_periods()
 
-        # Resolve model from query.source_model (str, SlayerModel, or ModelExtension)
+        # Resolve model from query.source_model (str, SlayerModel, or ModelExtension).
+        # Pass query.variables as the outer-vars context for any nested
+        # query-backed model resolution; runtime_kwarg threads through unchanged.
         resolving: set = set()
         model = await self._resolve_query_model(
             query_model=query.source_model,
             named_queries=named_queries,
             _resolving=resolving,
+            outer_vars=query.variables,
+            runtime_kwarg=runtime_kwarg,
         )
 
         # Auto-correct: move bare field names to dimensions if they match
@@ -321,16 +473,29 @@ class SlayerQueryEngine:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
 
+        # For query-backed models, resolve through the engine so the virtual
+        # model (with rendered SQL) is enriched against — otherwise the
+        # generator would see ``model.sql_table is None and model.sql is None``
+        # and fail.
+        if model.source_queries:
+            try:
+                model = await self._resolve_model(model_name=model_name)
+            except Exception:
+                logger.warning(
+                    "get_column_types: failed to resolve query-backed model '%s'",
+                    model_name,
+                )
+                return {}
+
         probe_query = self._build_type_probe_query(model=model)
         try:
             enriched = await self._enrich(query=probe_query, model=model)
+            dialect = self._dialect_for_type(datasource.type)
+            generator = SQLGenerator(dialect=dialect)
+            sql = generator.generate(enriched=enriched)
         except Exception:
-            logger.warning("get_column_types enrichment failed for model '%s'", model_name)
+            logger.warning("get_column_types enrich/generate failed for model '%s'", model_name)
             return {}
-
-        dialect = self._dialect_for_type(datasource.type)
-        generator = SQLGenerator(dialect=dialect)
-        sql = generator.generate(enriched=enriched)
 
         try:
             raw_types = await client.get_column_types(sql=sql)
@@ -345,29 +510,60 @@ class SlayerQueryEngine:
                 result[em.source_measure_name or em.name] = raw_types[em.alias]
         return result
 
-    def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+    def execute_sync(
+        self,
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        variables: Optional[Dict[str, Any]] = None,
+    ) -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
         from slayer.async_utils import run_sync
 
-        return run_sync(self.execute(query))
+        return run_sync(self.execute(query, variables=variables))
 
     def create_model_from_query_sync(
-        self, query: "SlayerQuery | list[SlayerQuery]", name: str,
-        description: str = None, save: bool = True,
+        self,
+        query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
+        name: str,
+        description: Optional[str] = None,
+        variables: Optional[Dict[str, Any]] = None,
+        save: bool = True,
     ) -> SlayerModel:
         """Synchronous wrapper for create_model_from_query()."""
         from slayer.async_utils import run_sync
 
-        return run_sync(self.create_model_from_query(query=query, name=name, description=description, save=save))
+        return run_sync(
+            self.create_model_from_query(
+                query=query,
+                name=name,
+                description=description,
+                variables=variables,
+                save=save,
+            )
+        )
 
-    async def _resolve_query_model(self, query_model, named_queries: dict = None, _resolving: set = None) -> SlayerModel:
+    async def _resolve_query_model(
+        self,
+        query_model,
+        named_queries: dict = None,
+        _resolving: set = None,
+        outer_vars: Optional[Dict[str, Any]] = None,
+        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        dry_run_placeholders: bool = False,
+    ) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
         from slayer.core.query import ModelExtension
 
         named_queries = named_queries or {}
 
         if isinstance(query_model, str):
-            return await self._resolve_model(model_name=query_model, named_queries=named_queries, _resolving=_resolving)
+            return await self._resolve_model(
+                model_name=query_model,
+                named_queries=named_queries,
+                _resolving=_resolving,
+                outer_vars=outer_vars,
+                runtime_kwarg=runtime_kwarg,
+                dry_run_placeholders=dry_run_placeholders,
+            )
         elif isinstance(query_model, SlayerModel):
             return query_model
         elif isinstance(query_model, ModelExtension):
@@ -375,6 +571,9 @@ class SlayerQueryEngine:
                 model_name=query_model.source_name,
                 named_queries=named_queries,
                 _resolving=_resolving,
+                outer_vars=outer_vars,
+                runtime_kwarg=runtime_kwarg,
+                dry_run_placeholders=dry_run_placeholders,
             )
             # Extend the base model with extra columns/measures/joins
             from slayer.core.models import ModelJoin
@@ -397,7 +596,14 @@ class SlayerQueryEngine:
             # Dict — could be ModelExtension or SlayerModel
             if "source_name" in query_model:
                 ext = ModelExtension.model_validate(query_model)
-                return await self._resolve_query_model(ext, named_queries, _resolving=_resolving)
+                return await self._resolve_query_model(
+                    ext,
+                    named_queries,
+                    _resolving=_resolving,
+                    outer_vars=outer_vars,
+                    runtime_kwarg=runtime_kwarg,
+                    dry_run_placeholders=dry_run_placeholders,
+                )
             else:
                 model = SlayerModel.model_validate(query_model)
                 return model
@@ -405,8 +611,13 @@ class SlayerQueryEngine:
             raise ValueError(f"Invalid query.source_model type: {type(query_model)}")
 
     async def _resolve_model(
-        self, model_name: str, named_queries: dict[str, SlayerQuery] = None,
+        self,
+        model_name: str,
+        named_queries: dict[str, SlayerQuery] = None,
         _resolving: set = None,
+        outer_vars: Optional[Dict[str, Any]] = None,
+        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        dry_run_placeholders: bool = False,
     ) -> SlayerModel:
         """Resolve a model by name — checks named queries first, then storage."""
         named_queries = named_queries or {}
@@ -420,65 +631,174 @@ class SlayerQueryEngine:
             )
         _resolving.add(model_name)
         try:
-            return await self._resolve_model_inner(model_name, named_queries, _resolving=_resolving)
+            return await self._resolve_model_inner(
+                model_name,
+                named_queries,
+                _resolving=_resolving,
+                outer_vars=outer_vars,
+                runtime_kwarg=runtime_kwarg,
+                dry_run_placeholders=dry_run_placeholders,
+            )
         finally:
             _resolving.discard(model_name)
 
-    async def _resolve_model_inner(self, model_name: str, named_queries: dict[str, SlayerQuery], _resolving: set = None) -> SlayerModel:
+    async def _resolve_model_inner(
+        self,
+        model_name: str,
+        named_queries: dict[str, SlayerQuery],
+        _resolving: set = None,
+        outer_vars: Optional[Dict[str, Any]] = None,
+        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        dry_run_placeholders: bool = False,
+    ) -> SlayerModel:
         # Named query overrides stored model
         if model_name in named_queries:
-            return await self._query_as_model(inner_query=named_queries[model_name], named_queries=named_queries, _resolving=_resolving)
+            return await self._query_as_model(
+                inner_query=named_queries[model_name],
+                named_queries=named_queries,
+                _resolving=_resolving,
+                outer_vars=outer_vars,
+                runtime_kwarg=runtime_kwarg,
+                dry_run_placeholders=dry_run_placeholders,
+            )
 
         model = await self.storage.get_model(model_name)
         if model is None:
             raise ValueError(f"Model '{model_name}' not found")
 
-        # If model has source_queries, re-enrich from stored queries
-        if hasattr(model, "source_queries") and model.source_queries:
-            # Parse stored queries (may be dicts from YAML round-trip)
-            parsed = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in model.source_queries]
-            return await self._query_as_model(
-                inner_query=parsed[-1],
-                named_queries={q.name: q for q in parsed[:-1] if q.name},
+        # If model has source_queries, re-enrich from stored queries.
+        # SlayerModel parses each stage to a SlayerQuery in its before-validator,
+        # so entries are already typed here. Model-level defaults are folded
+        # into ``outer_vars`` for the next resolution layer (see _merge_query_variables
+        # for the full precedence: ``runtime > stage > outer > model_defaults``).
+        if model.source_queries:
+            stages = list(model.source_queries)
+            merged_outer = {**model.query_variables, **(outer_vars or {})}
+            virtual = await self._query_as_model(
+                inner_query=stages[-1],
+                named_queries={q.name: q for q in stages[:-1] if q.name},
                 override_name=model.name,
                 _resolving=_resolving,
+                outer_vars=merged_outer,
+                runtime_kwarg=runtime_kwarg,
+                dry_run_placeholders=dry_run_placeholders,
             )
+            # Refresh the stored model's cache (columns + backing_query_sql)
+            # from the freshly-resolved virtual. Skip during save-time dry-run
+            # since the save path persists explicitly with placeholder fill.
+            if not dry_run_placeholders:
+                await self._refresh_cache_after_resolution(model, virtual)
+            return virtual
 
         return model
 
     async def create_model_from_query(
         self,
-        query: "SlayerQuery | list[SlayerQuery]",
+        query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
         name: str,
-        description: str = None,
+        description: Optional[str] = None,
+        variables: Optional[Dict[str, Any]] = None,
         save: bool = True,
     ) -> SlayerModel:
-        """Create a permanent model from a query (or list of queries).
+        """Create a query-backed model from a query (or list of stages).
 
-        Saves the query structure in the model so it can be re-enriched
-        when underlying models change. Also snapshots dimensions/measures
-        for discoverability.
+        The returned model has ``source_queries`` populated, plus ``columns``
+        and ``backing_query_sql`` populated from a save-time dry-run of the
+        final stage (with literal ``0`` substituted for any unresolved
+        ``{var}`` placeholder). ``query_variables`` is set from the
+        ``variables=`` kwarg.
 
         Args:
-            query: The source query or list of queries (last is main).
+            query: One ``SlayerQuery`` or a list of stages (last is the
+                final/main query). Dicts are accepted and validated.
             name: Name for the new model.
             description: Optional model description.
-            save: If True, persist to storage immediately.
+            variables: Default values for ``{var}`` placeholders in the
+                stages — saved as ``model.query_variables``.
+            save: If True (default), persist to storage immediately.
         """
-        queries = query if isinstance(query, list) else [query]
-        main_query = queries[-1]
-        named = {q.name: q for q in queries[:-1] if q.name}
-        virtual = await self._query_as_model(inner_query=main_query, named_queries=named, _resolving=set())
+        raw = query if isinstance(query, list) else [query]
+        stages = [
+            SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in raw
+        ]
+        # Construct the SlayerModel — Pydantic validators enforce source-mode
+        # exclusivity and stage-name rules.
         model = SlayerModel(
             name=name,
-            source_queries=queries,
-            data_source=virtual.data_source,
-            columns=virtual.columns,
             description=description,
+            source_queries=stages,
+            query_variables=variables or {},
         )
         if save:
-            await self.storage.save_model(model)
+            return await self.save_model(model)
+        # save=False: still validate and populate the cache so the caller
+        # can use the returned model directly.
+        return await self._validate_and_populate_cache(model)
+
+    async def save_model(self, model: SlayerModel) -> SlayerModel:
+        """Persist a SlayerModel through the engine.
+
+        For query-backed models, rejects user-supplied cache fields and runs
+        save-time dry-run validation before populating the cache. For non-
+        query-backed models, persists as-is.
+        """
+        if model.source_queries:
+            if model.columns:
+                raise ValueError(
+                    f"Model '{model.name}' is query-backed; columns are "
+                    f"auto-generated and must not be supplied "
+                    f"(got {len(model.columns)} columns)."
+                )
+            if model.backing_query_sql is not None:
+                raise ValueError(
+                    f"Model '{model.name}' is query-backed; backing_query_sql "
+                    f"is auto-managed and must not be supplied."
+                )
+            model = await self._validate_and_populate_cache(model)
+        await self.storage.save_model(model)
         return model
+
+    async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:
+        """Run save-time dry-run validation on a query-backed model and
+        return a copy with ``columns``, ``backing_query_sql``, and
+        ``data_source`` populated from the virtual model.
+        """
+        stages = list(model.source_queries or [])
+        if not stages:
+            return model
+        virtual = await self._query_as_model(
+            inner_query=stages[-1],
+            named_queries={q.name: q for q in stages[:-1] if q.name},
+            override_name=model.name,
+            _resolving=set(),
+            outer_vars=dict(model.query_variables),
+            runtime_kwarg={},
+            dry_run_placeholders=True,
+        )
+        return model.model_copy(update={
+            "columns": list(virtual.columns),
+            "backing_query_sql": virtual.sql,
+            "data_source": model.data_source or virtual.data_source,
+        })
+
+    async def _refresh_cache_after_resolution(
+        self,
+        stored_model: SlayerModel,
+        virtual: SlayerModel,
+    ) -> None:
+        """Write-if-changed update of a query-backed model's cache fields
+        using a freshly-resolved virtual model. No-op when nothing changed.
+        """
+        if (
+            list(stored_model.columns) == list(virtual.columns)
+            and stored_model.backing_query_sql == virtual.sql
+        ):
+            return
+        updated = stored_model.model_copy(update={
+            "columns": list(virtual.columns),
+            "backing_query_sql": virtual.sql,
+        })
+        await self.storage.save_model(updated)
 
     async def _enrich(
         self,
@@ -495,9 +815,13 @@ class SlayerQueryEngine:
         async def _resolve_join_target(target_model_name, named_queries):
             nq = named_queries or {}
             if target_model_name in nq:
+                # Named-query stages inherit the variable context of the query
+                # being enriched (its filter substitutions) so nested query-
+                # backed model resolution works through joins as well.
                 target = await self._query_as_model(
                     inner_query=nq[target_model_name],
                     named_queries=nq,
+                    outer_vars=query.variables,
                 )
             else:
                 target = await self.storage.get_model(target_model_name) if self.storage else None
@@ -526,22 +850,51 @@ class SlayerQueryEngine:
         return enriched
 
     async def _query_as_model(
-        self, inner_query: SlayerQuery, named_queries: dict[str, SlayerQuery] = None,
-        override_name: str = None, _resolving: set = None,
+        self,
+        inner_query: SlayerQuery,
+        named_queries: dict[str, SlayerQuery] = None,
+        override_name: str = None,
+        _resolving: set = None,
+        outer_vars: Optional[Dict[str, Any]] = None,
+        runtime_kwarg: Optional[Dict[str, Any]] = None,
+        dry_run_placeholders: bool = False,
     ) -> SlayerModel:
         """Build a virtual SlayerModel from a nested query's result.
 
         Enriches and generates SQL for the inner query, then creates a model
         whose `sql` is the inner query's SQL and whose dimensions/measures
         are derived from the inner query's enriched columns.
+
+        ``outer_vars``, ``runtime_kwarg``, and ``dry_run_placeholders`` thread
+        the variable-precedence machinery through nested query-backed model
+        resolution; see ``_merge_query_variables`` and
+        ``_apply_placeholder_fill``.
         """
         named_queries = named_queries or {}
 
-        # Resolve the inner model (handles str, SlayerModel, ModelExtension)
+        # Compute effective variables for this stage and stamp them onto a
+        # copy of the inner query so substitution at enrichment time uses
+        # the merged set.
+        effective = _merge_query_variables(
+            outer=outer_vars,
+            stage=inner_query.variables,
+            runtime=runtime_kwarg,
+        )
+        if dry_run_placeholders:
+            effective = _apply_placeholder_fill(inner_query, effective)
+        if effective != (inner_query.variables or {}):
+            inner_query = inner_query.model_copy(update={"variables": effective})
+
+        # Resolve the inner model (handles str, SlayerModel, ModelExtension).
+        # Pass ``effective`` as the next layer's outer_vars so nested
+        # query-backed models inherit this stage's resolved context.
         inner_model = await self._resolve_query_model(
             query_model=inner_query.source_model,
             named_queries=named_queries,
             _resolving=_resolving,
+            outer_vars=effective,
+            runtime_kwarg=runtime_kwarg,
+            dry_run_placeholders=dry_run_placeholders,
         )
 
         # Enrich the inner query

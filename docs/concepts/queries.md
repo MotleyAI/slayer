@@ -177,6 +177,51 @@ This produces the filter `status = 'completed' AND amount > 100`.
 - `{{` and `}}` produce literal `{` and `}`
 - Undefined variables raise an error
 
+#### Variables passed as a runtime kwarg
+
+Every execution entry point also accepts a `variables=` runtime kwarg that **always wins**, even over a stage's own `variables` dict and a query-backed model's `query_variables` defaults:
+
+```python
+# Python
+await engine.execute(slayer_query, variables={"region": "EU"})
+await engine.execute("monthly_revenue", variables={"region": "EU"})  # run-by-name
+```
+
+```bash
+# CLI
+slayer query @query.json --variables region=EU --variables threshold=100
+slayer query monthly_revenue --variables region=EU
+```
+
+```json
+// REST POST /query
+{"source_model": "orders", "measures": [{"formula": "*:count"}], "variables": {"region": "EU"}}
+{"name": "monthly_revenue", "variables": {"region": "EU"}}  // run-by-name
+```
+
+Precedence (highest first):
+
+1. Runtime kwarg (`variables=`)
+2. Stage `SlayerQuery.variables`
+3. Outer-query `.variables` (when a query-backed model is used as `source_model`)
+4. Model defaults (`model.query_variables`)
+
+Unknown kwarg variables (not referenced in any filter) are silently ignored.
+
+## Run a saved query by name
+
+If a model is **query-backed** (created via `create_model_from_query` or saved with `source_queries`), you can run its stored backing query directly:
+
+```python
+await engine.execute("monthly_revenue", variables={"region": "EU"})
+```
+
+This loads the model, runs its `source_queries` stages with the merged variables, and returns the final-stage result. Calling `execute(str)` on a non-query-backed model raises a clear error directing the user to wrap it in a `SlayerQuery` instead.
+
+REST equivalent: `POST /query` with `{"name": "<model>", "variables": {...}}` — no other query fields are allowed in this body shape.
+
+CLI equivalent: `slayer query <model_name> [--variables k=v ...]` — when the positional argument doesn't look like JSON (doesn't start with `{` or `[`) and isn't a `@file` reference, it's interpreted as a model name.
+
 ---
 
 ## Examples

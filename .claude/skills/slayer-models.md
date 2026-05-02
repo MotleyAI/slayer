@@ -54,9 +54,24 @@ Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`cus
 
 Models can have always-applied WHERE filters: `filters: ["deleted_at IS NULL"]`. Only WHERE conditions on underlying table columns.
 
-## Creating Models from Queries
+## Source modes
 
-`create_model_from_query(query, name)` saves a query's SQL as a permanent model with auto-introspected dimensions and measures.
+A SlayerModel has exactly one source mode (mutually exclusive):
+- `sql_table`: physical table.
+- `sql`: explicit SQL subquery.
+- `source_queries`: list of `SlayerQuery` stages — the model is **query-backed**.
+
+## Query-backed models
+
+`create_model_from_query(query, name, variables=None)` saves a query (or list of stages) as a query-backed model. It populates `model.source_queries`, optional `model.query_variables` defaults, and caches `model.columns` + `model.backing_query_sql` from a save-time dry-run (unresolved `{var}` placeholders default to `'0'`).
+
+Saved query-backed models support two access patterns:
+- **Run by name**: `engine.execute("monthly_revenue", variables={...})` runs the stored backing query.
+- **Use as source_model**: `{"source_model": "monthly_revenue", ...}` treats the saved result as a model in another query.
+
+Variable precedence (highest first): runtime kwarg > stage `.variables` > outer query `.variables` > `model.query_variables`.
+
+You **cannot** supply `columns` or `backing_query_sql` when saving a query-backed model — they're engine-managed cache; the save path rejects them. Caches refresh on every execute (real / dry-run / explain).
 
 ## SQL Expressions
 

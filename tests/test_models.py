@@ -321,6 +321,163 @@ class TestWithinListDuplicateNames:
         assert len(model.measures) == 2
 
 
+class TestSourceModeExclusivity:
+    """Source-mode exclusivity: exactly one of sql_table, sql, or
+    source_queries must be populated.
+    """
+
+    def test_accepts_sql_table_only(self) -> None:
+        m = SlayerModel(name="orders", sql_table="orders_t", data_source="ds")
+        assert m.sql_table == "orders_t"
+        assert m.sql is None
+        assert m.source_queries is None
+
+    def test_accepts_sql_only(self) -> None:
+        m = SlayerModel(name="orders", sql="SELECT 1 AS x", data_source="ds")
+        assert m.sql == "SELECT 1 AS x"
+        assert m.sql_table is None
+
+    def test_accepts_source_queries_only(self) -> None:
+        m = SlayerModel(
+            name="saved",
+            data_source="ds",
+            source_queries=[SlayerQuery(source_model="orders")],
+        )
+        assert m.source_queries is not None and len(m.source_queries) == 1
+
+    def test_rejects_no_source(self) -> None:
+        with pytest.raises(ValueError, match="exactly one source.*none specified"):
+            SlayerModel(name="orders", data_source="ds")
+
+    def test_rejects_sql_table_plus_sql(self) -> None:
+        with pytest.raises(ValueError, match="exactly one source"):
+            SlayerModel(
+                name="orders", sql_table="t", sql="SELECT 1", data_source="ds"
+            )
+
+    def test_rejects_sql_table_plus_source_queries(self) -> None:
+        with pytest.raises(ValueError, match="exactly one source"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                source_queries=[SlayerQuery(source_model="orders")],
+                data_source="ds",
+            )
+
+    def test_rejects_sql_plus_source_queries(self) -> None:
+        with pytest.raises(ValueError, match="exactly one source"):
+            SlayerModel(
+                name="orders",
+                sql="SELECT 1",
+                source_queries=[SlayerQuery(source_model="orders")],
+                data_source="ds",
+            )
+
+    def test_rejects_all_three(self) -> None:
+        with pytest.raises(ValueError, match="exactly one source"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                sql="SELECT 1",
+                source_queries=[SlayerQuery(source_model="orders")],
+                data_source="ds",
+            )
+
+    def test_rejects_empty_source_queries_list(self) -> None:
+        with pytest.raises(ValueError, match="cannot be an empty list"):
+            SlayerModel(name="orders", source_queries=[], data_source="ds")
+
+
+class TestSourceQueryStages:
+    """Stage-name rules on ``source_queries``."""
+
+    def test_single_unnamed_stage_accepted(self) -> None:
+        """Single (final) stage may be unnamed."""
+        m = SlayerModel(
+            name="saved",
+            data_source="ds",
+            source_queries=[SlayerQuery(source_model="orders")],
+        )
+        assert m.source_queries is not None
+
+    def test_unnamed_non_final_stage_rejected(self) -> None:
+        with pytest.raises(ValueError, match="non-final stage at index 0.*must have a 'name'"):
+            SlayerModel(
+                name="saved",
+                data_source="ds",
+                source_queries=[
+                    SlayerQuery(source_model="orders"),
+                    SlayerQuery(source_model="orders"),
+                ],
+            )
+
+    def test_named_non_final_stage_with_unnamed_final_accepted(self) -> None:
+        m = SlayerModel(
+            name="saved",
+            data_source="ds",
+            source_queries=[
+                SlayerQuery(name="stage1", source_model="orders"),
+                SlayerQuery(source_model="stage1"),
+            ],
+        )
+        assert m.source_queries is not None and len(m.source_queries) == 2
+
+    def test_duplicate_stage_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="duplicate stage name"):
+            SlayerModel(
+                name="saved",
+                data_source="ds",
+                source_queries=[
+                    SlayerQuery(name="dup", source_model="orders"),
+                    SlayerQuery(name="dup", source_model="orders"),
+                ],
+            )
+
+    def test_dicts_parsed_to_slayer_query(self) -> None:
+        """source_queries entries given as dicts are parsed into SlayerQuery
+        instances by the before-validator."""
+        m = SlayerModel(
+            name="saved",
+            data_source="ds",
+            source_queries=[
+                {"source_model": "orders", "measures": [{"formula": "*:count"}]}
+            ],
+        )
+        assert m.source_queries is not None
+        assert isinstance(m.source_queries[0], SlayerQuery)
+        assert m.source_queries[0].measures is not None
+        assert m.source_queries[0].measures[0].formula == "*:count"
+
+    def test_invalid_entry_type_rejected(self) -> None:
+        with pytest.raises((ValueError, TypeError)):
+            SlayerModel(
+                name="saved",
+                data_source="ds",
+                source_queries=[123],  # type: ignore[list-item]
+            )
+
+
+class TestQueryVariablesAndCacheFields:
+    """``query_variables`` and ``backing_query_sql`` defaults and shape."""
+
+    def test_query_variables_default_is_empty_dict(self) -> None:
+        m = SlayerModel(name="orders", sql_table="t", data_source="ds")
+        assert m.query_variables == {}
+
+    def test_query_variables_persists_user_value(self) -> None:
+        m = SlayerModel(
+            name="saved",
+            data_source="ds",
+            source_queries=[SlayerQuery(source_model="orders")],
+            query_variables={"threshold": 1500, "region": "US"},
+        )
+        assert m.query_variables == {"threshold": 1500, "region": "US"}
+
+    def test_backing_query_sql_default_is_none(self) -> None:
+        m = SlayerModel(name="orders", sql_table="t", data_source="ds")
+        assert m.backing_query_sql is None
+
+
 class TestAllowedAggregationsBuildTimeValidation:
     """Build-time validation of ``Column.allowed_aggregations``.
 

@@ -122,8 +122,8 @@ Available topics and what they cover (content lives in `slayer/help/topics/*.md`
 | `time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
 | `filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
 | `joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |
-| `models` | `sql_table` vs `sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
-| `extending` | `ModelExtension`, query lists, `create_model_from_query` ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
+| `models` | Source modes (`sql_table`, `sql`, `source_queries`); query-backed models, `query_variables`, cached `backing_query_sql`; result column naming; `default_time_dimension`; hidden models ([models ref](../concepts/models.md)) |
+| `extending` | `ModelExtension`, query lists, `create_model_from_query` (with `variables=`), run-by-name via `query` tool ([multistage post](../examples/06_multistage_queries/multistage_queries.md)) |
 | `workflow` | Tool-chaining playbook, query-iteration tips, common-error decoder |
 
 ## Typical Agent Workflows

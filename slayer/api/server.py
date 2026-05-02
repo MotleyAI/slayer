@@ -22,7 +22,8 @@ class QueryRequest(BaseModel):
     # to pass through to SlayerQuery's pre-validate hook.
     model_config = ConfigDict(extra="allow")
 
-    source_model: str
+    name: Optional[str] = None  # Run-by-name: backing query for a query-backed model
+    source_model: Optional[str] = None
     measures: Optional[List[Dict[str, Any]]] = None
     dimensions: Optional[List[Dict[str, Any]]] = None
     time_dimensions: Optional[List[Dict[str, Any]]] = None
@@ -33,6 +34,7 @@ class QueryRequest(BaseModel):
     whole_periods_only: Optional[bool] = None
     dry_run: Optional[bool] = None
     explain: Optional[bool] = None
+    variables: Optional[Dict[str, Any]] = None
 
 
 class FieldMetadataResponse(BaseModel):
@@ -76,10 +78,47 @@ def create_app(storage: StorageBackend) -> FastAPI:
     @app.post("/query")
     async def query(request: QueryRequest) -> QueryResponse:
         try:
-            slayer_query = SlayerQuery.model_validate(
-                request.model_dump(exclude_none=True)
-            )
-            result = await engine.execute(query=slayer_query)
+            # Run-by-name: ``{"name": "<model>", "variables": {...}}``
+            # routes through ``engine.execute(str)`` so the model's stored
+            # backing query runs directly. Cannot be combined with
+            # ``source_model`` or other query fields.
+            if request.name is not None:
+                disallowed = [
+                    f for f in (
+                        request.source_model, request.measures, request.dimensions,
+                        request.time_dimensions, request.filters, request.order,
+                        request.limit, request.offset,
+                    ) if f is not None
+                ]
+                if disallowed:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "When 'name' is supplied for run-by-name, no other "
+                            "query fields may be set (only 'variables', 'dry_run', "
+                            "'explain' are allowed)."
+                        ),
+                    )
+                result = await engine.execute(
+                    request.name, variables=request.variables or {}
+                )
+                dry_or_explain = bool(request.dry_run or request.explain)
+            else:
+                if request.source_model is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Either 'name' (run-by-name) or 'source_model' must be provided.",
+                    )
+                payload = request.model_dump(exclude_none=True)
+                # ``variables`` is consumed at execute() level, not part of
+                # SlayerQuery's filter-substitution variables (those merge
+                # automatically via the kwarg path).
+                runtime_kwarg = payload.pop("variables", None)
+                slayer_query = SlayerQuery.model_validate(payload)
+                result = await engine.execute(
+                    query=slayer_query, variables=runtime_kwarg
+                )
+                dry_or_explain = bool(slayer_query.dry_run or slayer_query.explain)
             attrs = result.attributes
 
             def _convert_meta(d: dict) -> Dict[str, FieldMetadataResponse]:
@@ -97,7 +136,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 columns=result.columns,
                 attributes=attributes,
             )
-            if slayer_query.dry_run or slayer_query.explain:
+            if dry_or_explain:
                 response.sql = result.sql
             return response
         except ValueError as e:
@@ -128,7 +167,12 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.post("/models")
     async def create_model(model: SlayerModel) -> Dict[str, str]:
-        await storage.save_model(model)
+        # Route through engine.save_model so query-backed models get cache
+        # populated (and user-supplied cache fields are rejected).
+        try:
+            await engine.save_model(model)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         return {"status": "created", "name": model.name}
 
     @app.put("/models/{name}")
@@ -138,7 +182,10 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 status_code=400,
                 detail=f"Path name '{name}' does not match body name '{model.name}'",
             )
-        await storage.save_model(model)
+        try:
+            await engine.save_model(model)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         return {"status": "updated", "name": name}
 
     @app.delete("/models/{name}")

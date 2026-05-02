@@ -68,6 +68,22 @@ def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
     return _VAR_PATTERN.sub(_replace, filter_str)
 
 
+def extract_placeholder_names(query: "SlayerQuery") -> set:
+    """Return the set of valid {var} placeholder names referenced in
+    ``query.filters``. Used to compute required-variable lists and to
+    inject placeholder defaults during save-time dry-run validation.
+    """
+    found: set = set()
+    for f in (query.filters or []):
+        for match in _VAR_PATTERN.finditer(f):
+            if match.group(0) in ("{{", "}}"):
+                continue
+            valid_name = match.group(1)
+            if valid_name:
+                found.add(valid_name)
+    return found
+
+
 class ColumnRef(BaseModel):
     """Reference to a dimension by name.
 

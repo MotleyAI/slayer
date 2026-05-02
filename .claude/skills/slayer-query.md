@@ -67,7 +67,15 @@ filters=[
 ```python
 engine = SlayerQueryEngine(storage=storage)
 result = engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes
+
+# With runtime variables (always wins over query.variables / model defaults)
+result = engine.execute(query=query, variables={"region": "US"})
+
+# Run-by-name: execute the stored backing query of a query-backed model
+result = engine.execute("monthly_revenue", variables={"region": "US"})
 ```
+
+Variable precedence (highest first): `runtime kwarg > stage.variables > outer query.variables > model.query_variables`. Unknown kwarg variables are silently ignored. Unresolved `{var}` placeholders raise at execute time, naming the model and stage.
 
 ## Cross-Model Measures
 

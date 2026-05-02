@@ -214,3 +214,95 @@ class TestQuery:
         assert slayer_query.measures is not None
         assert len(slayer_query.measures) == 1
         assert slayer_query.measures[0].formula == "*:count"
+
+
+class TestQueryBackedModelsAPI:
+    """REST surface for query-backed models — POST /models with source_queries
+    and POST /query with run-by-name body shape.
+    """
+
+    def test_post_models_creates_query_backed_model(
+        self, client: TestClient, storage: YAMLStorage
+    ) -> None:
+        # Set up upstream + a datasource so cache refresh succeeds at save time.
+        from slayer.core.models import DatasourceConfig
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_datasource(DatasourceConfig(
+                name="ds", type="sqlite", database=":memory:"
+            ))
+        )
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_model(SlayerModel(
+                name="upstream", sql_table="t", data_source="ds",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+        )
+        resp = client.post("/models", json={
+            "name": "qb_via_api",
+            "data_source": "ds",
+            "source_queries": [{
+                "source_model": "upstream",
+                "measures": [{"formula": "amount:sum"}],
+                "dry_run": True,
+            }],
+            "query_variables": {},
+        })
+        assert resp.status_code == 200, resp.text
+        # GET returns the model with source_queries + query_variables
+        get_resp = client.get("/models/qb_via_api")
+        assert get_resp.status_code == 200
+        body = get_resp.json()
+        assert "source_queries" in body
+        assert body["source_queries"][0]["source_model"] == "upstream"
+
+    def test_post_models_rejects_user_columns_on_query_backed(
+        self, client: TestClient, storage: YAMLStorage
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_datasource(DatasourceConfig(
+                name="ds", type="sqlite", database=":memory:"
+            ))
+        )
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_model(SlayerModel(
+                name="upstream", sql_table="t", data_source="ds",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+        )
+        resp = client.post("/models", json={
+            "name": "qb_bad",
+            "data_source": "ds",
+            "source_queries": [{
+                "source_model": "upstream",
+                "measures": [{"formula": "amount:sum"}],
+            }],
+            "columns": [{"name": "x", "type": "string"}],
+        })
+        # 400 with "auto-generated" in detail
+        assert resp.status_code == 400
+        assert "auto-generated" in resp.text or "must not be supplied" in resp.text
+
+    def test_post_query_run_by_name_rejects_extra_query_fields(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/query", json={
+            "name": "some_model",
+            "source_model": "other",
+        })
+        assert resp.status_code == 400
+        assert "no other query fields" in resp.text or "may not be set" in resp.text
+
+    def test_post_query_run_by_name_requires_model(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/query", json={"name": "nonexistent"})
+        assert resp.status_code == 400
+
+    def test_post_query_either_name_or_source_model_required(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/query", json={})
+        assert resp.status_code == 400
