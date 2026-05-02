@@ -603,19 +603,12 @@ class TestFields:
         assert "_w_td_" in sql
         assert '_base."orders.delivery_at"' in sql
 
-    async def test_windowed_sum_excludes_unrelated_joins(
-        self, generator: SQLGenerator, tmp_path,
-    ) -> None:
-        """The window CTE must not pull joins unrelated to the windowed measure.
+    @pytest.fixture
+    async def orders_with_customers_engine(self, tmp_path):
+        """Storage + engine with an orders→customers join.
 
-        Set up a query with:
-          - a windowed measure on orders' revenue (no cross-model refs), and
-          - a sibling cross-model measure that DOES need the customers join.
-
-        The customers join is required at the OUTER query level, but must NOT
-        leak into the windowed measure's _src subquery — otherwise the
-        customers fan-out would distort the trailing aggregation. Per
-        CLAUDE.md core principle: adding a measure must not affect cardinality.
+        The customers model includes both name and region_id so the two
+        window-CTE join-scoping regression tests below can share one fixture.
         """
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_model(SlayerModel(
@@ -623,6 +616,7 @@ class TestFields:
             columns=[
                 Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
                 Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
             ],
         ))
         orders = SlayerModel(
@@ -637,8 +631,23 @@ class TestFields:
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         await storage.save_model(orders)
-        engine = SlayerQueryEngine(storage=storage)
+        return SlayerQueryEngine(storage=storage), orders
 
+    async def test_windowed_sum_excludes_unrelated_joins(
+        self, generator: SQLGenerator, orders_with_customers_engine,
+    ) -> None:
+        """The window CTE must not pull joins unrelated to the windowed measure.
+
+        Set up a query with:
+          - a windowed measure on orders' revenue (no cross-model refs), and
+          - a sibling cross-model measure that DOES need the customers join.
+
+        The customers join is required at the OUTER query level, but must NOT
+        leak into the windowed measure's _src subquery — otherwise the
+        customers fan-out would distort the trailing aggregation. Per
+        CLAUDE.md core principle: adding a measure must not affect cardinality.
+        """
+        engine, orders = orders_with_customers_engine
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],  # local to orders — no join needed
@@ -661,7 +670,7 @@ class TestFields:
         )
 
     async def test_windowed_sum_keeps_joins_used_by_query_filter(
-        self, generator: SQLGenerator, tmp_path,
+        self, generator: SQLGenerator, orders_with_customers_engine,
     ) -> None:
         """Window CTE must keep joins whose alias is referenced by a query-level
         WHERE filter, even if the windowed measure itself doesn't use them.
@@ -670,28 +679,7 @@ class TestFields:
         whose JOIN was pruned, and the SQL becomes invalid (or silently
         changes filtering behavior).
         """
-        storage = YAMLStorage(base_dir=str(tmp_path))
-        await storage.save_model(SlayerModel(
-            name="customers", sql_table="customers", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
-            ],
-        ))
-        orders = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        )
-        await storage.save_model(orders)
-        engine = SlayerQueryEngine(storage=storage)
-
+        engine, orders = orders_with_customers_engine
         # Filter on customers.region_id forces a customers join. The windowed
         # measure does not otherwise reference customers, so the join would be
         # pruned without the filter-aware logic — and then the WHERE clause
