@@ -22,6 +22,19 @@ def _norm(s: str) -> str:
     return " ".join(s.split())
 
 
+def _extract_src_body(sql: str) -> str:
+    """Pull out the `_src` subquery body from a generated window-measure SQL.
+
+    Resilient when the outer query also contains other LEFT JOIN (...) blocks
+    (e.g. cross-model measure subqueries): anchors on the unique `\\n) AS _src`
+    suffix and reverse-searches for the matching `LEFT JOIN (\\n` before it.
+    """
+    end = sql.index("\n) AS _src")
+    open_token = "LEFT JOIN (\n"
+    start = sql.rfind(open_token, 0, end) + len(open_token)
+    return sql[start:end]
+
+
 _SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
 
 
@@ -642,9 +655,7 @@ class TestFields:
         assert any(alias == "customers" for _, alias, *_ in enriched.resolved_joins)
 
         sql = generator.generate(enriched=enriched)
-        # Locate the windowed-measure CTE body (between "LEFT JOIN (\n" and "\n) AS _src").
-        _, _, after_left_join = sql.partition("LEFT JOIN (\n")
-        src_body, _, _ = after_left_join.partition("\n) AS _src")
+        src_body = _extract_src_body(sql)
         assert src_body, "Could not isolate _src subquery body"
         assert "customers" not in src_body, (
             f"_src subquery must not include the unrelated customers join.\n"
@@ -701,8 +712,7 @@ class TestFields:
         assert any(alias == "customers" for _, alias, *_ in enriched.resolved_joins)
 
         sql = generator.generate(enriched=enriched)
-        _, _, after_left_join = sql.partition("LEFT JOIN (\n")
-        src_body, _, _ = after_left_join.partition("\n) AS _src")
+        src_body = _extract_src_body(sql)
         assert src_body, "Could not isolate _src subquery body"
         assert "customers" in src_body, (
             f"_src subquery must include customers join because the query-level "
