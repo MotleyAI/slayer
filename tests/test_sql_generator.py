@@ -12,6 +12,7 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator, _validate_agg_param_value
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 async def _noop_async(**kw):
@@ -616,9 +617,6 @@ class TestFields:
         customers fan-out would distort the trailing aggregation. Per
         CLAUDE.md core principle: adding a measure must not affect cardinality.
         """
-        from slayer.engine.query_engine import SlayerQueryEngine
-        from slayer.storage.yaml_storage import YAMLStorage
-
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="test",
@@ -672,9 +670,6 @@ class TestFields:
         whose JOIN was pruned, and the SQL becomes invalid (or silently
         changes filtering behavior).
         """
-        from slayer.engine.query_engine import SlayerQueryEngine
-        from slayer.storage.yaml_storage import YAMLStorage
-
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="test",
