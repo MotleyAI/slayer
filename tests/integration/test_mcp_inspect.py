@@ -317,6 +317,59 @@ class TestInspectModelEndToEnd:
             _json.loads(result)
 
 
+class TestInspectModelSectionGatingIntegration:
+    """End-to-end ``sections``/``descriptions_max_chars`` against a real DB.
+
+    These tests confirm the gating semantics work against a live datasource
+    (not just mocked storage), so the column-profile / sample-query
+    short-circuits actually take effect when sections are dropped.
+    """
+
+    async def _call(self, server: Any, *, name: str, arguments: Optional[dict] = None) -> str:
+        content, _ = await server.call_tool(name=name, arguments=arguments or {})
+        return content[0].text
+
+    async def test_columns_only_short_circuits_samples(self, env) -> None:
+        """sections=['columns'] keeps the columns table populated and skips
+        sample-data and reachable-fields entirely; the footer documents what
+        was trimmed."""
+        server = create_mcp_server(storage=env["storage"])
+        result = await self._call(
+            server, name="inspect_model",
+            arguments={"model_name": "orders", "sections": ["columns"]},
+        )
+        # Columns full table is rendered — `sampled` column populated by the
+        # live profile query (proves columns-section is fully included).
+        assert "## Columns (7)" in result
+        col_section = result.split("## Columns")[1]
+        # Profile data still in the columns table when columns is included
+        assert "completed" in col_section
+        # No sample data section, no reachable-fields section
+        assert "## Sample Data" not in result
+        assert "## Reachable" not in result
+        # Empty list-only headings for the rest are OK (model has no measures /
+        # aggregations / joins, so they render nothing); footer should still
+        # document what was omitted.
+        assert "> Sections shown: columns." in result
+        assert "> Omitted: reachable_fields, samples." in result
+
+    async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
+        """descriptions_max_chars trims long descriptions and appends the marker."""
+        server = create_mcp_server(storage=env["storage"])
+        result = await self._call(
+            server, name="inspect_model",
+            arguments={
+                "model_name": "orders",
+                "descriptions_max_chars": 5,
+                "sections": ["columns"],
+            },
+        )
+        # Long description "Revenue per order" (17 chars) → truncates to 5 + marker
+        assert "Reven ... [truncated]" in result
+        # The column itself still renders
+        assert "| amount |" in result
+
+
 class TestMeasureTypeInference:
     """get_column_types infers measure types via LIMIT 0 against a real DB."""
 
