@@ -1827,7 +1827,7 @@ async def test_median_sqlite(integration_env):
     engine = integration_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="total_amount:median")],
+        measures=[ModelMeasure(formula="total_amount:median")],
     ))
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
@@ -1838,9 +1838,9 @@ async def test_percentile_sqlite_quartiles(integration_env):
     engine = integration_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        fields=[
-            Field(formula="total_amount:percentile(p=0.25)"),
-            Field(formula="total_amount:percentile(p=0.75)"),
+        measures=[
+            ModelMeasure(formula="total_amount:percentile(p=0.25)"),
+            ModelMeasure(formula="total_amount:percentile(p=0.75)"),
         ],
     ))
     assert response.row_count == 1
@@ -1859,7 +1859,7 @@ async def test_median_grouped_sqlite(integration_env):
     engine = integration_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="total_amount:median")],
+        measures=[ModelMeasure(formula="total_amount:median")],
         dimensions=[ColumnRef(name="status")],
     ))
     by_status = {
@@ -1876,7 +1876,7 @@ async def test_median_empty_result_sqlite(integration_env):
     engine = integration_env
     response = await engine.execute(SlayerQuery(
         source_model="orders",
-        fields=[Field(formula="total_amount:median")],
+        measures=[ModelMeasure(formula="total_amount:median")],
         filters=["status == 'nonexistent'"],
     ))
     assert response.row_count == 1
@@ -1890,7 +1890,7 @@ async def test_sqlite_udf_pool_reuse(integration_env):
     connection, which forces the connect listener to fire again.
     """
     engine = integration_env
-    q = SlayerQuery(source_model="orders", fields=[Field(formula="total_amount:median")])
+    q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="total_amount:median")])
     r1 = await engine.execute(q)
     for sa_engine in _sync_engines.values():
         sa_engine.dispose()

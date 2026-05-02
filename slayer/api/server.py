@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):
-    # Allow legacy `fields` to flow through to SlayerQuery's v1→v2 migration.
+    # Allow extra keys (e.g. forward-compat fields a newer client might send)
+    # to pass through to SlayerQuery's pre-validate hook.
     model_config = ConfigDict(extra="allow")
 
     source_model: str
@@ -123,8 +124,6 @@ def create_app(storage: StorageBackend) -> FastAPI:
         data = model.model_dump(exclude_none=True)
         if "columns" in data:
             data["columns"] = [c for c in data["columns"] if not c.get("hidden")]
-        if "measures" in data:
-            data["measures"] = [m for m in data["measures"] if not m.get("hidden")]
         return data
 
     @app.post("/models")

@@ -55,7 +55,7 @@ options. Validated at both model creation and query time.
 ```json
 {
   "source_model": "orders",
-  "fields": ["customer_id:count_distinct"]
+  "measures": ["customer_id:count_distinct"]
 }
 ```
 
@@ -78,7 +78,7 @@ Query time:
 ```json
 {
   "source_model": "orders",
-  "fields": [{"formula": "score:trimmed_mean(lo=10, hi=90)"}]
+  "measures": [{"formula": "score:trimmed_mean(lo=10, hi=90)"}]
 }
 ```
 

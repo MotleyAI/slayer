@@ -137,6 +137,131 @@ class TestFormulaParser:
         assert result.inner.inner.transform == "cumsum"
 
 
+class TestNamedMeasureExpansion:
+    """Bare-name resolution against ``SlayerModel.measures`` saved formulas.
+
+    The S3 milestone introduced ``ModelMeasure`` (a named saved formula). Queries
+    can reference these by bare name in their own measure formulas — e.g., a model
+    with ``measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")]``
+    can be queried with ``measures=[{"formula": "aov"}]`` or
+    ``measures=[{"formula": "cumsum(aov)"}]``. Expansion happens at parse time
+    via the ``named_measures`` argument.
+    """
+
+    def test_root_aggregated(self) -> None:
+        result = parse_formula("rev", named_measures={"rev": "revenue:sum"})
+        assert isinstance(result, AggregatedMeasureRef)
+        assert result.measure_name == "revenue"
+        assert result.aggregation_name == "sum"
+
+    def test_root_arithmetic(self) -> None:
+        result = parse_formula(
+            "aov", named_measures={"aov": "revenue:sum / *:count"}
+        )
+        assert isinstance(result, ArithmeticField)
+        agg_measure_names = sorted(r.measure_name for r in result.agg_refs.values())
+        assert agg_measure_names == ["*", "revenue"]
+
+    def test_inside_transform(self) -> None:
+        result = parse_formula(
+            "cumsum(aov)", named_measures={"aov": "revenue:sum"}
+        )
+        assert isinstance(result, TransformField)
+        assert result.transform == "cumsum"
+        assert isinstance(result.inner, AggregatedMeasureRef)
+        assert result.inner.measure_name == "revenue"
+
+    def test_inside_transform_arithmetic_inner(self) -> None:
+        """cumsum(aov) where aov expands to arithmetic → TransformField wrapping ArithmeticField."""
+        result = parse_formula(
+            "cumsum(aov)", named_measures={"aov": "revenue:sum / *:count"}
+        )
+        assert isinstance(result, TransformField)
+        assert result.transform == "cumsum"
+        assert isinstance(result.inner, ArithmeticField)
+
+    def test_in_arithmetic(self) -> None:
+        """``aov + tax`` where both are saved measures."""
+        result = parse_formula(
+            "aov + tax",
+            named_measures={"aov": "revenue:sum", "tax": "tax_amount:sum"},
+        )
+        assert isinstance(result, ArithmeticField)
+        agg_measure_names = sorted(r.measure_name for r in result.agg_refs.values())
+        assert agg_measure_names == ["revenue", "tax_amount"]
+
+    def test_arithmetic_with_constant(self) -> None:
+        result = parse_formula(
+            "aov * 1.1", named_measures={"aov": "revenue:sum"}
+        )
+        assert isinstance(result, ArithmeticField)
+
+    def test_chained_expansion(self) -> None:
+        """``a → b → revenue:sum`` is fully expanded."""
+        result = parse_formula(
+            "a", named_measures={"a": "b", "b": "revenue:sum"}
+        )
+        assert isinstance(result, AggregatedMeasureRef)
+        assert result.measure_name == "revenue"
+
+    def test_cycle_raises(self) -> None:
+        """``a → b → a`` raises with the chain in the error message."""
+        with pytest.raises(ValueError, match="cyclic"):
+            parse_formula("a", named_measures={"a": "b", "b": "a"})
+
+    def test_self_reference_raises(self) -> None:
+        with pytest.raises(ValueError, match="cyclic"):
+            parse_formula("a", named_measures={"a": "a"})
+
+    def test_not_substituted_in_colon_syntax(self) -> None:
+        """``revenue:sum`` parses as the column-aggregation form even if a saved
+        measure called ``revenue`` exists. Real models prevent this name
+        collision via the column/measure disjointness validator, but the
+        expander itself must not over-substitute.
+        """
+        result = parse_formula(
+            "revenue:sum", named_measures={"revenue": "*:count"}
+        )
+        assert isinstance(result, AggregatedMeasureRef)
+        assert result.measure_name == "revenue"
+        assert result.aggregation_name == "sum"
+
+    def test_not_substituted_after_dot(self) -> None:
+        """``customers.aov`` is a cross-model reference and is NOT expanded."""
+        with pytest.raises(ValueError, match="Cross-model measure"):
+            parse_formula(
+                "customers.aov", named_measures={"aov": "revenue:sum"}
+            )
+
+    def test_not_substituted_when_called(self) -> None:
+        """A saved measure shadowing a transform name is not expanded as an identifier
+        when followed by ``(``. The ``cumsum(...)`` token sequence is still parsed
+        as the transform.
+        """
+        result = parse_formula(
+            "cumsum(rev)",
+            named_measures={"cumsum": "*:count", "rev": "revenue:sum"},
+        )
+        assert isinstance(result, TransformField)
+        assert result.transform == "cumsum"
+        assert isinstance(result.inner, AggregatedMeasureRef)
+        assert result.inner.measure_name == "revenue"
+
+    def test_unknown_bare_name_still_raises(self) -> None:
+        with pytest.raises(ValueError, match="Bare measure name"):
+            parse_formula(
+                "unknown_thing", named_measures={"aov": "revenue:sum"}
+            )
+
+    def test_no_named_measures_preserves_old_behavior(self) -> None:
+        """Calling ``parse_formula`` without ``named_measures`` keeps the
+        existing bare-name rejection — no regression for callers that don't
+        opt in.
+        """
+        with pytest.raises(ValueError, match="Bare measure name"):
+            parse_formula("aov")
+
+
 class TestExtractFilterTransforms:
     """Tests for extract_filter_transforms reverse mapping."""
 

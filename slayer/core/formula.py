@@ -13,9 +13,11 @@ A formula can be:
 """
 
 import ast
+import io
 import re
+import tokenize
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -318,9 +320,105 @@ def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasure
     return processed, refs
 
 
+def _expand_named_measures(
+    formula: str,
+    named_measures: Mapping[str, str],
+    _visited: frozenset[str] = frozenset(),
+) -> str:
+    """Inline-expand bare references to ``ModelMeasure`` saved formulas.
+
+    For each NAME token whose value is a key in ``named_measures``, replaces it
+    with ``(<recursively expanded saved formula>)``. The expansion is a textual
+    substitution that runs *before* the rest of the formula pipeline (function-
+    style rewrite, colon-syntax preprocessing, AST parsing), so the expanded
+    string is parsed as if the user had written the inlined formula directly.
+
+    Substitution is **skipped** when the NAME token is:
+
+    - Preceded by ``.``  — right-hand side of a cross-model reference
+      (e.g. ``customers.aov``); cross-model resolution is handled separately.
+    - Followed by ``.``  — left-hand side of a cross-model reference
+      (e.g. ``customers.aov`` where ``customers`` happens to be a saved name).
+    - Preceded by ``:``  — aggregation name in colon syntax
+      (e.g. ``revenue:sum`` — ``sum`` is not a measure reference).
+    - Followed by ``:``  — column being aggregated in colon syntax
+      (e.g. ``revenue:sum``).
+    - Followed by ``(``  — function call (transform like ``cumsum(...)``).
+    - Followed by ``=``  — keyword argument name in an aggregation call
+      (e.g. ``weight`` in ``revenue:weighted_avg(weight=quantity)``).
+
+    Cycles (``a → b → a``) raise ``ValueError`` with the chain in the message.
+
+    Saved-measure names are pre-validated to be Python identifiers
+    (``slayer/core/models.py:_NAME_PATTERN``), so plain Python tokenization is
+    sufficient. If tokenization fails for any reason, returns the formula
+    unchanged so the downstream parser can produce a clear error.
+    """
+    if not named_measures:
+        return formula
+
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(formula).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return formula
+
+    def _significant(idx: int, step: int) -> Optional[tokenize.TokenInfo]:
+        skip_types = {tokenize.NEWLINE, tokenize.NL, tokenize.ENCODING,
+                      tokenize.ENDMARKER, tokenize.COMMENT, tokenize.INDENT,
+                      tokenize.DEDENT}
+        j = idx + step
+        while 0 <= j < len(tokens):
+            t = tokens[j]
+            if t.type in skip_types:
+                j += step
+                continue
+            return t
+        return None
+
+    replacements: List[tuple] = []  # (start_pos, end_pos, replacement_text)
+    for i, tok in enumerate(tokens):
+        if tok.type != tokenize.NAME or tok.string not in named_measures:
+            continue
+        prev_tok = _significant(i, -1)
+        next_tok = _significant(i, 1)
+        if prev_tok is not None and prev_tok.type == tokenize.OP and prev_tok.string in (".", ":"):
+            continue
+        if next_tok is not None and next_tok.type == tokenize.OP and next_tok.string in (".", ":", "(", "="):
+            continue
+
+        if tok.string in _visited:
+            chain = " → ".join([*_visited, tok.string])
+            raise ValueError(
+                f"Saved measure '{tok.string}' has a cyclic reference: {chain}"
+            )
+        inner_expanded = _expand_named_measures(
+            named_measures[tok.string],
+            named_measures,
+            _visited | {tok.string},
+        )
+        replacements.append((tok.start, tok.end, f"({inner_expanded})"))
+
+    if not replacements:
+        return formula
+
+    # Position-based substitution assumes a single-line formula. Multi-line
+    # formulas are not part of the supported grammar; if encountered, fall back
+    # to no expansion and let the downstream parser produce a sensible error.
+    if any(start[0] != end[0] or start[0] != 1 for start, end, _ in replacements):
+        return formula
+
+    result = formula
+    for (_, start_col), (_, end_col), repl in sorted(
+        replacements, key=lambda r: -r[0][1]
+    ):
+        result = result[:start_col] + repl + result[end_col:]
+    return result
+
+
 def parse_formula(
     formula: str,
     extra_agg_names: Optional[frozenset[str]] = None,
+    named_measures: Optional[Mapping[str, str]] = None,
 ) -> FieldSpec:
     """Parse a formula string into a FieldSpec.
 
@@ -332,12 +430,19 @@ def parse_formula(
         "price:weighted_avg(weight=qty)"     → AggregatedMeasureRef(..., agg_kwargs={"weight": "qty"})
         "revenue:last(ordered_at)"           → AggregatedMeasureRef(..., agg_args=["ordered_at"])
 
-    Bare measure names (e.g., "revenue") are not valid — use colon syntax.
+    Bare measure names (e.g., "revenue") are valid only when ``named_measures``
+    is supplied and contains the name — they are inline-expanded to the saved
+    formula. Otherwise bare names raise.
 
     Args:
         formula: The formula string to parse.
         extra_agg_names: Additional aggregation names for function-style rewriting.
+        named_measures: Mapping of saved-measure name → its formula. Bare
+            references to these names are inline-expanded (recursively, with
+            cycle detection) before the rest of parsing.
     """
+    if named_measures:
+        formula = _expand_named_measures(formula, named_measures)
     # Rewrite function-style aggregations (e.g., sum(revenue) → revenue:sum)
     formula = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Preprocess colon syntax into ast-parseable placeholders
@@ -596,6 +701,7 @@ def _preprocess_sql_operators(formula: str) -> str:
 def parse_filter(
     formula: str,
     extra_agg_names: Optional[frozenset[str]] = None,
+    named_measures: Optional[Mapping[str, str]] = None,
 ) -> ParsedFilter:
     """Parse a filter formula string into a ParsedFilter.
 
@@ -618,7 +724,12 @@ def parse_filter(
     Args:
         formula: The filter string to parse.
         extra_agg_names: Additional aggregation names for function-style rewriting.
+        named_measures: Mapping of saved-measure name → its formula. Bare
+            references to these names in filter expressions (e.g.
+            ``cumsum(aov) > 0``) are inline-expanded before parsing.
     """
+    if named_measures:
+        formula = _expand_named_measures(formula, named_measures)
     # Rewrite function-style aggregations (e.g., sum(revenue) > 100 → revenue:sum > 100)
     processed = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing

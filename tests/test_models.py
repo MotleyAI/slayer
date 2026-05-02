@@ -118,6 +118,20 @@ class TestSlayerModel:
         assert model.get_measure("aov") is not None
         assert model.get_measure("missing") is None
 
+    def test_model_measure_name_cannot_shadow_transform(self) -> None:
+        """A ``ModelMeasure`` named after a built-in transform (``cumsum`` etc.)
+        would shadow the transform in formulas like ``cumsum(...)``. Reject at
+        model-validation time.
+        """
+        with pytest.raises(ValueError, match="reserved"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                measures=[ModelMeasure(name="cumsum", formula="revenue:sum")],
+            )
+
     def test_filter_bare_column_allowed(self) -> None:
         """Bare column names in model filters are valid."""
         model = SlayerModel(
@@ -237,6 +251,265 @@ class TestSlayerModel:
     def test_measure_name_without_dot_allowed(self) -> None:
         meas = Column(name="order_total_sum", sql="total", type=DataType.NUMBER)
         assert meas.name == "order_total_sum"
+
+
+class TestWithinListDuplicateNames:
+    """Duplicate names within ``columns`` or within ``measures`` are rejected.
+
+    Codex's Major 4: today only cross-list overlap is validated, so two
+    columns named ``revenue`` (or two measures named ``aov``) silently pass
+    and ``get_column`` / ``get_measure`` return the first match.
+    """
+
+    def test_duplicate_column_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="duplicate.*column|column.*duplicate"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                    Column(name="revenue", sql="net_amount", type=DataType.NUMBER),
+                ],
+            )
+
+    def test_duplicate_measure_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="duplicate.*measure|measure.*duplicate"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                measures=[
+                    ModelMeasure(name="aov", formula="amount:sum / *:count"),
+                    ModelMeasure(name="aov", formula="amount:avg"),
+                ],
+            )
+
+    def test_unnamed_model_measure_rejected(self) -> None:
+        """Every ``ModelMeasure`` stored on a ``SlayerModel`` must have a name.
+
+        Unnamed entries are unreachable via ``get_measure()`` and bare-name
+        expansion, so persisting them is meaningless. (Inline measures on
+        ``SlayerQuery.measures`` may still be unnamed — only model-level
+        measures are required to be named.)
+        """
+        with pytest.raises(ValueError, match="must have a name"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                measures=[ModelMeasure(formula="amount:sum")],
+            )
+
+    def test_unique_names_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+            ],
+            measures=[
+                ModelMeasure(name="aov", formula="amount:sum / *:count"),
+                ModelMeasure(name="rev", formula="amount:sum"),
+            ],
+        )
+        assert len(model.columns) == 2
+        assert len(model.measures) == 2
+
+
+class TestAllowedAggregationsBuildTimeValidation:
+    """Build-time validation of ``Column.allowed_aggregations``.
+
+    The intersection contract: a whitelist entry must satisfy
+    (1) the PK rule (only ``count`` / ``count_distinct`` for PKs),
+    (2) type-default eligibility (``DEFAULT_AGGREGATIONS_BY_TYPE[col.type]``).
+    Custom aggregations defined on the model bypass type-default eligibility
+    (their formula determines applicability), but PK restrictions still apply
+    and the name must be a known custom aggregation.
+    """
+
+    def test_pk_column_with_disallowed_aggregation_in_whitelist_rejected(self) -> None:
+        with pytest.raises(ValueError, match="primary[- ]key|count"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(
+                        name="id",
+                        type=DataType.NUMBER,
+                        primary_key=True,
+                        allowed_aggregations=["sum"],
+                    ),
+                ],
+            )
+
+    def test_pk_column_with_count_only_whitelist_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="id",
+                    type=DataType.NUMBER,
+                    primary_key=True,
+                    allowed_aggregations=["count", "count_distinct"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["count", "count_distinct"]
+
+    def test_string_column_with_sum_in_whitelist_rejected(self) -> None:
+        with pytest.raises(ValueError, match="not applicable|string"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(
+                        name="status",
+                        type=DataType.STRING,
+                        allowed_aggregations=["sum"],
+                    ),
+                ],
+            )
+
+    def test_string_column_with_min_max_in_whitelist_accepted(self) -> None:
+        """String ``min``/``max`` are intentionally type-eligible."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="status",
+                    type=DataType.STRING,
+                    allowed_aggregations=["min", "max", "count"],
+                ),
+            ],
+        )
+        assert "min" in (model.columns[0].allowed_aggregations or [])
+        assert "max" in (model.columns[0].allowed_aggregations or [])
+
+    def test_date_column_with_min_max_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="ordered_on",
+                    type=DataType.DATE,
+                    allowed_aggregations=["min", "max"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["min", "max"]
+
+    def test_timestamp_column_with_min_max_accepted(self) -> None:
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(
+                    name="ordered_at",
+                    type=DataType.TIMESTAMP,
+                    allowed_aggregations=["min", "max"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["min", "max"]
+
+    def test_custom_aggregation_in_whitelist_bypasses_type_check(self) -> None:
+        """A custom-aggregation entry is exempt from type-default eligibility.
+        Its applicability depends on the custom formula, not the type-default map.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="t",
+            data_source="test",
+            aggregations=[
+                Aggregation(
+                    name="custom_concat",
+                    formula="STRING_AGG({value}, ',')",
+                ),
+            ],
+            columns=[
+                Column(
+                    name="status",
+                    type=DataType.STRING,
+                    allowed_aggregations=["custom_concat"],
+                ),
+            ],
+        )
+        assert model.columns[0].allowed_aggregations == ["custom_concat"]
+
+    def test_unknown_aggregation_in_whitelist_still_rejected(self) -> None:
+        """Existing behavior — keep it."""
+        with pytest.raises(ValueError, match="not a built-in aggregation"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                columns=[
+                    Column(
+                        name="revenue",
+                        type=DataType.NUMBER,
+                        allowed_aggregations=["bogus_agg"],
+                    ),
+                ],
+            )
+
+    def test_builtin_override_still_type_gated(self) -> None:
+        """Overriding a built-in name (e.g., ``sum``) with a custom formula must
+        still respect type-default eligibility — built-ins keep their type
+        semantics regardless of the override formula. Only truly novel custom
+        names bypass the type-default gate.
+        """
+        with pytest.raises(ValueError, match="not applicable|string"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                aggregations=[
+                    Aggregation(name="sum", formula="STRING_AGG({value}, ',')"),
+                ],
+                columns=[
+                    Column(
+                        name="status",
+                        type=DataType.STRING,
+                        allowed_aggregations=["sum"],
+                    ),
+                ],
+            )
+
+    def test_pk_column_with_custom_agg_rejected(self) -> None:
+        """Even custom aggregations cannot be whitelisted on a PK column —
+        the PK rule (count/count_distinct only) is absolute.
+        """
+        with pytest.raises(ValueError, match="primary[- ]key|count"):
+            SlayerModel(
+                name="orders",
+                sql_table="t",
+                data_source="test",
+                aggregations=[
+                    Aggregation(name="custom_sum", formula="SUM({value})"),
+                ],
+                columns=[
+                    Column(
+                        name="id",
+                        type=DataType.NUMBER,
+                        primary_key=True,
+                        allowed_aggregations=["custom_sum"],
+                    ),
+                ],
+            )
 
 
 class TestDatasourceConfig:
