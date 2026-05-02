@@ -1210,10 +1210,15 @@ class SQLGenerator:
         reset_cte = _cte_name_from_alias(f"cp_reset_{layer_num}_", transform.alias)
         value_cte = _cte_name_from_alias(f"cp_value_{layer_num}_", transform.alias)
 
+        # Wrap measure in an explicit boolean predicate so non-boolean argument
+        # expressions don't rely on dialect-specific truthiness coercion in
+        # CASE WHEN. Postgres rejects non-boolean WHEN outright; SQLite/MySQL
+        # coerce non-zero to true; ClickHouse has its own rules.
+        predicate = f"({measure}) IS NOT NULL AND ({measure}) <> 0"
         source_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
         reset_sql = (
             f"SELECT {source_cols}, "
-            f"SUM(CASE WHEN {measure} THEN 0 ELSE 1 END) "
+            f"SUM(CASE WHEN {predicate} THEN 0 ELSE 1 END) "
             f"OVER ({reset_over} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) "
             f'AS "{reset_alias}"\n'
             f"FROM {source_cte}"
@@ -1224,8 +1229,8 @@ class SQLGenerator:
         value_over = f"{value_partition_clause} {order_clause}"
         value_sql = (
             f"SELECT {source_cols}, "
-            f"CASE WHEN {measure} THEN "
-            f"SUM(CASE WHEN {measure} THEN 1 ELSE 0 END) "
+            f"CASE WHEN {predicate} THEN "
+            f"SUM(CASE WHEN {predicate} THEN 1 ELSE 0 END) "
             f"OVER ({value_over} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) "
             f"ELSE 0 END AS \"{transform.alias}\"\n"
             f"FROM {reset_cte}"

@@ -347,6 +347,35 @@ async def test_consecutive_periods_counts_trailing_true_run(integration_env):
     assert [r["orders.positive_run"] for r in response.data] == [1, 0, 1]
 
 
+async def test_consecutive_periods_with_non_boolean_argument(integration_env):
+    """consecutive_periods on a non-boolean argument treats NULL/0 as false.
+
+    The CTE wraps the argument in `IS NOT NULL AND <> 0` so behaviour is
+    portable across dialects rather than relying on each engine's
+    truthiness coercion in CASE WHEN.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(formula="consecutive_periods(total_amount:sum)", name="any_revenue_run"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 3
+    # Every month has nonzero revenue (Jan=300, Feb=125, Mar=325) so the run
+    # is monotonically increasing with no resets.
+    assert [r["orders.any_revenue_run"] for r in response.data] == [1, 2, 3]
+
+
 async def test_consecutive_periods_partitions_by_dimension(integration_env):
     """Runs reset independently for each non-time dimension."""
     engine = integration_env
