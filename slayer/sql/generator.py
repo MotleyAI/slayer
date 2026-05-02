@@ -346,7 +346,7 @@ class SQLGenerator:
             if not _is_windowed_measure(measure):
                 continue
             cte_name = _cte_name_from_alias("_wm_", measure.alias)
-            ctes.append((cte_name, self._generate_window_measure_cte(enriched, measure)))
+            ctes.append((cte_name, self._generate_window_measure_cte(enriched=enriched, measure=measure)))
             measure_cte_refs.append((cte_name, measure.alias, None))
 
         # --- Isolated filtered-measure CTEs ---
