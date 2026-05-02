@@ -434,8 +434,12 @@ class SlayerQuery(BaseModel):
         if not updates:
             return self
 
+        # Sanitize for log injection (S5145): model names are usually trusted
+        # internal identifiers, but they originate from user input via the
+        # public API, so strip CR/LF before logging.
+        safe_name = model_name.replace("\r", "\\r").replace("\n", "\\n")
         logger.info(
             "Stripped source model prefix '%s.' from query references",
-            model_name,
+            safe_name,
         )
         return self.model_copy(update=updates)

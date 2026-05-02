@@ -550,10 +550,15 @@ def _build_backing_query_info(model: SlayerModel) -> Optional[dict]:
 
     all_placeholders: set = set()
     stage_dicts: List[dict] = []
+    # A placeholder is "required" only if it has no default at any layer the
+    # engine consults: model.query_variables OR the stage's own variables.
+    defaulted: set = set(model.query_variables.keys())
     for q in model.source_queries:
         all_placeholders |= extract_placeholder_names(q)
+        if q.variables:
+            defaulted |= set(q.variables.keys())
         stage_dicts.append(q.model_dump(mode="json", exclude_none=True))
-    required = sorted(all_placeholders - set(model.query_variables.keys()))
+    required = sorted(all_placeholders - defaulted)
     return {
         "variables": dict(model.query_variables),
         "required_variables": required,
@@ -561,46 +566,68 @@ def _build_backing_query_info(model: SlayerModel) -> Optional[dict]:
     }
 
 
+def _render_field_value(v: Any) -> str:
+    """Pick the most descriptive label out of a query-stage field value.
+
+    Stage list entries can be plain strings, simple `{name}` dicts, formula
+    dicts, or wrapper dicts like `{"dimension": {"name": ...}}`. Try each
+    shape in priority order and fall back to `str(v)` if nothing matches.
+    """
+    if not isinstance(v, dict):
+        return str(v)
+    name = v.get("name")
+    if name:
+        return str(name)
+    formula = v.get("formula")
+    if formula:
+        return str(formula)
+    inner = v.get("dimension")
+    if isinstance(inner, dict):
+        inner_name = inner.get("name")
+        if inner_name:
+            return str(inner_name)
+    return str(v)
+
+
+def _render_stage_field_list(key: str, val: list) -> str:
+    """Render a stage's field list (dimensions / measures / filters / etc.)."""
+    if key == "filters":
+        return "; ".join(f"`{f}`" for f in val)
+    return "; ".join(_render_field_value(v) for v in val)
+
+
+def _render_source_model(src: Any) -> Optional[str]:
+    """Render a stage's ``source_model`` (str or ModelExtension dict)."""
+    if isinstance(src, str):
+        return f"- source_model: `{src}`"
+    if isinstance(src, dict):
+        sn = src.get("source_name") or src.get("name")
+        if sn:
+            return f"- source_model: `{sn}` (extension)"
+    return None
+
+
+def _render_stage(i: int, stage: dict, total: int) -> List[str]:
+    """Render one stage's markdown lines."""
+    title = stage.get("name") or ("final" if i == total else f"stage {i}")
+    out: List[str] = [f"\n**{i}. {title}**"]
+    src_line = _render_source_model(stage.get("source_model"))
+    if src_line:
+        out.append(src_line)
+    for key in ("dimensions", "time_dimensions", "measures", "filters"):
+        val = stage.get(key)
+        if not val:
+            continue
+        out.append(f"- {key}: {_render_stage_field_list(key, val)}")
+    return out
+
+
 def _backing_query_markdown_section(info: dict) -> str:
     """Format the ``backing_query`` info as a markdown section."""
     lines: List[str] = ["## Backing Query"]
     stages = info.get("stages") or []
     for i, stage in enumerate(stages, start=1):
-        title = stage.get("name") or ("final" if i == len(stages) else f"stage {i}")
-        lines.append(f"\n**{i}. {title}**")
-        src = stage.get("source_model")
-        if isinstance(src, str):
-            lines.append(f"- source_model: `{src}`")
-        elif isinstance(src, dict):
-            sn = src.get("source_name") or src.get("name")
-            if sn:
-                lines.append(f"- source_model: `{sn}` (extension)")
-        for key in ("dimensions", "time_dimensions", "measures", "filters"):
-            val = stage.get(key)
-            if not val:
-                continue
-            if key == "filters":
-                rendered = "; ".join(f"`{f}`" for f in val)
-            else:
-                rendered_parts: List[str] = []
-                for v in val:
-                    if isinstance(v, dict):
-                        if "name" in v and v["name"]:
-                            rendered_parts.append(str(v["name"]))
-                        elif "formula" in v and v["formula"]:
-                            rendered_parts.append(str(v["formula"]))
-                        elif "dimension" in v and isinstance(v["dimension"], dict):
-                            dim_name = v["dimension"].get("name")
-                            if dim_name:
-                                rendered_parts.append(str(dim_name))
-                            else:
-                                rendered_parts.append(str(v))
-                        else:
-                            rendered_parts.append(str(v))
-                    else:
-                        rendered_parts.append(str(v))
-                rendered = "; ".join(rendered_parts)
-            lines.append(f"- {key}: {rendered}")
+        lines.extend(_render_stage(i, stage, len(stages)))
     variables = info.get("variables") or {}
     required = info.get("required_variables") or []
     if variables or required:
@@ -691,7 +718,7 @@ def create_mcp_server(storage: StorageBackend):
         return render_help(topic=topic)
 
     @mcp.tool()
-    async def query(
+    async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
         source_model: str,
         measures: Optional[List[Dict[str, str]]] = None,
         dimensions: Optional[List[str]] = None,
@@ -779,10 +806,17 @@ def create_mcp_server(storage: StorageBackend):
                 target = await storage.get_model(source_model)
                 if target is not None and target.source_queries:
                     result = await engine.execute(
-                        source_model, variables=variables or {}
+                        source_model,
+                        variables=variables or {},
+                        dry_run=dry_run,
+                        explain=explain,
                     )
-                    if dry_run or explain:
+                    if dry_run:
                         return f"SQL:\n{result.sql}"
+                    if explain:
+                        output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
+                        output += _format_output(result=result, fmt=fmt)
+                        return output
                     output = _format_output(result=result, fmt=fmt)
                     if show_sql and result.sql:
                         output = f"SQL:\n{result.sql}\n\n{output}"
@@ -1613,8 +1647,20 @@ def create_mcp_server(storage: StorageBackend):
             return f"Validation error: {exc}"
 
         if validated.source_queries:
+            # ``columns`` and ``backing_query_sql`` are engine-managed for
+            # query-backed models. Reject explicit user supply rather than
+            # silently dropping (which would let the API report a successful
+            # column edit that never persists).
+            if columns is not None:
+                return (
+                    "Validation error: cannot supply 'columns' on a "
+                    f"query-backed model ('{model_name}'). Columns are "
+                    "engine-managed (auto-derived from the backing query)."
+                )
             # Strip cache fields before save so engine.save_model can repopulate
-            # them from a fresh _query_as_model pass.
+            # them from a fresh _query_as_model pass. (These are present here
+            # only because they were on the existing stored model, not from
+            # this edit.)
             validated = validated.model_copy(update={
                 "columns": [],
                 "backing_query_sql": None,

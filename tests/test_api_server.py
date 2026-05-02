@@ -306,3 +306,70 @@ class TestQueryBackedModelsAPI:
     ) -> None:
         resp = client.post("/query", json={})
         assert resp.status_code == 400
+
+
+class TestOpenAPI400Documentation:
+    """Endpoints that raise HTTPException(400) should declare it in OpenAPI
+    so generated SDKs surface the error shape (Sonar S8415).
+    """
+
+    def test_query_endpoint_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/query"]["post"]["responses"]
+        assert "400" in responses
+
+    def test_post_models_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models"]["post"]["responses"]
+        assert "400" in responses
+
+    def test_put_model_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models/{name}"]["put"]["responses"]
+        assert "400" in responses
+
+    def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
+        self, client: TestClient, storage: YAMLStorage
+    ) -> None:
+        """``{"name": "m", "dry_run": true}`` must populate ``sql`` in the response
+        without ever calling the SQL client.
+        """
+        from slayer.core.models import DatasourceConfig
+        import asyncio
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(storage.save_datasource(
+            DatasourceConfig(name="ds", type="sqlite", database=":memory:")
+        ))
+        loop.run_until_complete(storage.save_model(SlayerModel(
+            name="upstream", sql_table="t", data_source="ds",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+        )))
+        # Save a query-backed model whose stage does NOT have dry_run set.
+        client.post("/models", json={
+            "name": "qb_dryrun",
+            "data_source": "ds",
+            "source_queries": [{
+                "source_model": "upstream",
+                "measures": [{"formula": "amount:sum"}],
+            }],
+        })
+
+        from slayer.sql.client import SlayerSQLClient
+        execute_calls = 0
+        real_execute = SlayerSQLClient.execute
+
+        async def counting_execute(self, *a, **kw):
+            nonlocal execute_calls
+            execute_calls += 1
+            return await real_execute(self, *a, **kw)
+
+        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
+        try:
+            resp = client.post("/query", json={"name": "qb_dryrun", "dry_run": True})
+        finally:
+            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body.get("sql") is not None
+        assert "amount" in body["sql"].lower()
+        assert execute_calls == 0, "dry_run=True must not execute SQL"

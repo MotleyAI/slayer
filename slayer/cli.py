@@ -408,7 +408,10 @@ def _parse_cli_variables(args) -> dict:
             "--variables and --variables-json are mutually exclusive."
         )
     if has_json:
-        parsed = _json.loads(args.variables_json)
+        try:
+            parsed = _json.loads(args.variables_json)
+        except _json.JSONDecodeError as exc:
+            raise SystemExit(f"--variables-json contains invalid JSON: {exc}") from None
         if not isinstance(parsed, dict):
             raise SystemExit("--variables-json must decode to a JSON object.")
         return parsed
@@ -423,7 +426,7 @@ def _parse_cli_variables(args) -> dict:
     return out
 
 
-def _run_query(args):
+def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
     import json
 
     from slayer.core.query import SlayerQuery
@@ -459,28 +462,17 @@ def _run_query(args):
         dry_run_set = slayer_query.dry_run
     else:
         # Run-by-name: the positional arg is a model name.
-        if args.dry_run or args.explain:
-            # Synthesize a dry-run/explain by loading the model's stages,
-            # but the engine's run-by-name path doesn't expose dry_run/explain
-            # toggles directly. Inject them by rewriting the final stage's
-            # flags via a normal SlayerQuery wrapper.
-            data = {"source_model": query_input}
-            if args.dry_run:
-                data["dry_run"] = True
-            if args.explain:
-                data["explain"] = True
-            slayer_query = SlayerQuery.model_validate(data)
-            result = engine.execute_sync(
-                query=slayer_query, variables=runtime_kwarg or None
-            )
-            explain_set = bool(args.explain)
-            dry_run_set = bool(args.dry_run)
-        else:
-            result = engine.execute_sync(
-                query_input, variables=runtime_kwarg
-            )
-            explain_set = False
-            dry_run_set = False
+        # ``execute_sync(str, dry_run=..., explain=...)`` honors the flags
+        # via the engine's run-by-name path, which also enforces the
+        # "model must be query-backed" check uniformly.
+        result = engine.execute_sync(
+            query_input,
+            variables=runtime_kwarg,
+            dry_run=bool(args.dry_run),
+            explain=bool(args.explain),
+        )
+        explain_set = bool(args.explain)
+        dry_run_set = bool(args.dry_run)
 
     if dry_run_set:
         print(result.sql)

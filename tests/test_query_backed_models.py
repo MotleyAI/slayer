@@ -473,3 +473,224 @@ class TestCacheRefreshOnExecute:
             assert after.backing_query_sql == initial_sql
         finally:
             tmp.cleanup()
+
+
+class TestBackingQuerySQLCacheHygiene:
+    """``backing_query_sql`` is the canonical placeholder-fill render and must
+    not capture per-request runtime variables.
+    """
+
+    async def test_runtime_variables_do_not_leak_into_persisted_sql(
+        self,
+    ) -> None:
+        # Use engine.save_model so the canonical cache is populated up-front;
+        # then assert that a request with overriding variables doesn't churn it.
+        engine, tmp = await _engine_with_orders()
+        try:
+            await engine.save_model(SlayerModel(
+                name="rev_filtered",
+                data_source="ds",
+                source_queries=[SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    filters=["region = '{r}'"],
+                    dry_run=True,
+                )],
+                query_variables={"r": "DEFAULT_R"},
+            ))
+            initial = await engine.storage.get_model("rev_filtered")
+            initial_sql = initial.backing_query_sql
+            # Save-time canonical render should already have the default value.
+            assert initial_sql is not None
+            assert "'DEFAULT_R'" in initial_sql
+
+            # Execute with a runtime variable that overrides the default.
+            await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"})
+
+            # Reload — the persisted backing_query_sql must NOT contain the
+            # request-specific value (would leak per-request data through
+            # inspect/export and cause cache churn).
+            after = await engine.storage.get_model("rev_filtered")
+            assert after is not None
+            assert "'REQUEST_VAL'" not in (after.backing_query_sql or "")
+            assert after.backing_query_sql == initial_sql
+        finally:
+            tmp.cleanup()
+
+
+class TestInlineQueryBackedSourceModel:
+    """``source_model`` may be an inline ``SlayerModel(source_queries=[...])`` —
+    that model must be expanded into a virtual model with executable SQL,
+    same as a stored query-backed model.
+    """
+
+    async def test_inline_slayermodel_with_source_queries_executes(self) -> None:
+        engine, tmp = await _engine_with_orders()
+        try:
+            inline = SlayerModel(
+                name="inline_qb",
+                data_source="ds",
+                source_queries=[SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["region"],
+                )],
+            )
+            outer = SlayerQuery(
+                source_model=inline,
+                dimensions=["region"],
+                measures=[{"formula": "amount_sum:max"}],
+                dry_run=True,
+            )
+            resp = await engine.execute(outer)
+            assert resp.sql is not None
+            # The outer query references amount_sum (the inner result column).
+            assert "amount_sum" in resp.sql.lower()
+            assert "region" in resp.sql.lower()
+        finally:
+            tmp.cleanup()
+
+    async def test_inline_dict_slayermodel_with_source_queries_executes(self) -> None:
+        engine, tmp = await _engine_with_orders()
+        try:
+            outer = SlayerQuery.model_validate({
+                "source_model": {
+                    "name": "inline_qb_dict",
+                    "data_source": "ds",
+                    "source_queries": [{
+                        "source_model": "orders",
+                        "measures": [{"formula": "amount:sum"}],
+                        "dimensions": ["region"],
+                    }],
+                },
+                "dimensions": ["region"],
+                "measures": [{"formula": "amount_sum:max"}],
+                "dry_run": True,
+            })
+            resp = await engine.execute(outer)
+            assert resp.sql is not None
+            assert "amount_sum" in resp.sql.lower()
+        finally:
+            tmp.cleanup()
+
+
+class TestJoinTargetIsQueryBacked:
+    """Joining onto a saved query-backed model: the join target must be
+    expanded through the same resolution path so its rendered SQL is
+    available as the join source.
+    """
+
+    async def test_join_target_is_query_backed_model(self) -> None:
+        from slayer.core.models import ModelJoin
+
+        engine, tmp = await _engine_with_orders()
+        try:
+            # Create a saved query-backed "rollup" model joinable from orders.
+            await engine.create_model_from_query(
+                query=SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["region"],
+                    dry_run=True,
+                ),
+                name="rev_by_region",
+            )
+            # Add a join from orders → rev_by_region on region.
+            orders = await engine.storage.get_model("orders")
+            orders = orders.model_copy(update={
+                "joins": [ModelJoin(
+                    target_model="rev_by_region",
+                    join_pairs=[["region", "region"]],
+                )],
+            })
+            await engine.storage.save_model(orders)
+
+            outer = SlayerQuery(
+                source_model="orders",
+                dimensions=["region", "rev_by_region.amount_sum"],
+                measures=[{"formula": "*:count"}],
+                dry_run=True,
+            )
+            resp = await engine.execute(outer)
+            assert resp.sql is not None
+            # The join target should resolve to a sub-query containing the
+            # rollup SQL (not raise about missing sql_table).
+            assert "amount_sum" in resp.sql.lower()
+        finally:
+            tmp.cleanup()
+
+
+class TestRunByNamePlanFlags:
+    """``engine.execute(str, ...)`` must honor caller-supplied dry_run / explain
+    so REST/MCP/CLI run-by-name doesn't silently execute when plan-only was asked.
+    """
+
+    async def test_dry_run_kwarg_returns_sql_without_executing(self) -> None:
+        """Caller passes dry_run=True on a stored stage that has dry_run=False."""
+        saved = SlayerModel(
+            name="rev_by_region",
+            data_source="ds",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                dimensions=["region"],
+                # NOTE: dry_run NOT set on the stage; only the caller asks.
+            )],
+        )
+        engine, tmp = await _engine_with_orders(saved)
+        try:
+            # Track whether a SQL execute was attempted.
+            execute_calls = 0
+            from slayer.sql.client import SlayerSQLClient
+            real_execute = SlayerSQLClient.execute
+
+            async def counting_execute(self, *a, **kw):
+                nonlocal execute_calls
+                execute_calls += 1
+                return await real_execute(self, *a, **kw)
+
+            SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
+            try:
+                resp = await engine.execute("rev_by_region", dry_run=True)
+            finally:
+                SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+            assert resp.sql is not None
+            assert "amount" in resp.sql.lower()
+            assert execute_calls == 0, "dry_run=True must not execute SQL"
+        finally:
+            tmp.cleanup()
+
+    async def test_explain_kwarg_routes_through_explain_builder(self) -> None:
+        """Caller passes explain=True; engine should invoke the EXPLAIN-SQL
+        builder rather than executing the raw query.
+        """
+        saved = SlayerModel(
+            name="rev_by_region",
+            data_source="ds",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                dimensions=["region"],
+            )],
+        )
+        engine, tmp = await _engine_with_orders(saved)
+        try:
+            import slayer.engine.query_engine as qe
+            real_explain = qe._build_explain_sql
+            calls: list = []
+
+            def tracking_explain(*, dialect, sql):
+                calls.append(sql)
+                return real_explain(dialect=dialect, sql=sql)
+
+            qe._build_explain_sql = tracking_explain  # type: ignore[assignment]
+            try:
+                # Don't care about the actual EXPLAIN output (no table created);
+                # we just want to confirm the explain path was reached.
+                with pytest.raises(Exception):  # noqa: BLE001 — DB error is fine
+                    await engine.execute("rev_by_region", explain=True)
+            finally:
+                qe._build_explain_sql = real_explain  # type: ignore[assignment]
+            assert calls, "explain=True must route through _build_explain_sql"
+        finally:
+            tmp.cleanup()

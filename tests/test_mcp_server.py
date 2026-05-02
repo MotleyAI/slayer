@@ -1324,9 +1324,21 @@ class TestEditModel:
     async def test_edit_set_source_queries_makes_model_query_backed(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        """Replacing source mode via edit_model: switch from sql_table to source_queries.
-        Cache fields populate from the engine save path.
+        """Switching source mode via edit_model: sql_table → source_queries.
+        Persisted state must show source_queries set and sql_table cleared.
         """
+        from slayer.core.models import DatasourceConfig
+        # Engine save path needs a datasource to dry-run validate the new
+        # backing query.
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        # Separate upstream model so the edited model's backing query has a
+        # non-cyclic source.
+        await storage.save_model(SlayerModel(
+            name="orders_source", sql_table="orders_t", data_source="test",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+        ))
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
@@ -1334,18 +1346,19 @@ class TestEditModel:
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "source_queries": [{
-                "source_model": "orders",
+                "source_model": "orders_source",
                 "measures": [{"formula": "amount:sum"}],
-                "dimensions": ["amount"],
             }],
         })
-        # Note: this test creates a self-referencing source_queries which is a
-        # cycle — engine should reject it. But the edit itself sets the field;
-        # the cache-refresh save path detects the cycle. Either way, switching
-        # source mode should at least clear sql_table and surface a relevant
-        # error if planning fails.
-        # Accept success or a clear cycle/validation error; assert structure.
-        assert "source_queries" in result or "Validation error" in result or "Circular" in result
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        # Persisted state: source_queries set, sql_table cleared.
+        reloaded = await storage.get_model("orders")
+        assert reloaded is not None
+        assert reloaded.source_queries is not None
+        assert len(reloaded.source_queries) == 1
+        assert reloaded.source_queries[0].source_model == "orders_source"
+        assert not reloaded.sql_table
 
     async def test_edit_query_variables_on_query_backed_model(
         self, mcp_server, storage: YAMLStorage
@@ -1396,6 +1409,138 @@ class TestEditModel:
             "sql": "SELECT 1",
         })
         assert "mutually exclusive" in result or "Specify at most one" in result
+
+
+class TestEditModelColumnsRejected:
+    """edit_model on a query-backed model must explicitly reject ``columns``
+    (which are engine-managed cache) instead of silently dropping them.
+    """
+
+    async def test_columns_on_query_backed_edit_returns_error(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        from slayer.core.query import SlayerQuery
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="upstream", sql_table="t", data_source="test",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+        ))
+        await storage.save_model(SlayerModel(
+            name="qb",
+            data_source="test",
+            source_queries=[SlayerQuery(
+                source_model="upstream",
+                measures=[{"formula": "amount:sum"}],
+                dry_run=True,
+            )],
+        ))
+        # Snapshot the model state before the bad edit.
+        before = await storage.get_model("qb")
+        before_columns = list(before.columns)
+
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "qb",
+            "columns": [{"name": "x", "sql": "x", "type": "string"}],
+        })
+        # Should be a clear error, not a silent success.
+        assert (
+            "engine-managed" in result
+            or "auto-generated" in result
+            or "Cannot supply columns" in result
+            or "must not be supplied" in result
+        ), f"expected explicit rejection, got: {result}"
+        # Stored model is unchanged.
+        after = await storage.get_model("qb")
+        assert [c.name for c in after.columns] == [c.name for c in before_columns]
+
+
+class TestInspectModelRequiredVariables:
+    """``required_variables`` must exclude placeholders that have a default at
+    either ``model.query_variables`` OR a stage's own ``variables`` block.
+    """
+
+    async def test_stage_scoped_default_not_required(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        from slayer.core.query import SlayerQuery
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="upstream", sql_table="t", data_source="test",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+        ))
+        # Stage has its own variables={"x": 1}, so {x} placeholder is NOT
+        # required from outside.
+        await storage.save_model(SlayerModel(
+            name="qb_stage_default",
+            data_source="test",
+            source_queries=[SlayerQuery(
+                source_model="upstream",
+                measures=[{"formula": "amount:sum"}],
+                filters=["amount > {x}"],
+                variables={"x": 1},
+                dry_run=True,
+            )],
+            # No model-level query_variables.
+        ))
+        result = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "qb_stage_default", "format": "json",
+        })
+        parsed = json.loads(result)
+        assert "x" not in parsed["backing_query"]["required_variables"]
+
+
+class TestRunByNamePlanFlagsMCP:
+    """``query(source_model="qb_model", dry_run=True)`` should return SQL
+    without executing the backing query.
+    """
+
+    async def test_dry_run_run_by_name_returns_sql_without_executing(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        from slayer.core.query import SlayerQuery
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="upstream", sql_table="t", data_source="test",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+        ))
+        await storage.save_model(SlayerModel(
+            name="qb_dr",
+            data_source="test",
+            source_queries=[SlayerQuery(
+                source_model="upstream",
+                measures=[{"formula": "amount:sum"}],
+                # NOTE: no dry_run on the stage; only the caller asks.
+            )],
+        ))
+        from slayer.sql.client import SlayerSQLClient
+        execute_calls = 0
+        real_execute = SlayerSQLClient.execute
+
+        async def counting_execute(self, *a, **kw):
+            nonlocal execute_calls
+            execute_calls += 1
+            return await real_execute(self, *a, **kw)
+
+        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
+        try:
+            result = await _call(mcp_server, name="query", arguments={
+                "source_model": "qb_dr",
+                "dry_run": True,
+            })
+        finally:
+            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        assert "SQL:" in result
+        assert "amount" in result.lower()
+        assert execute_calls == 0, "dry_run=True must not execute SQL"
 
 
 class TestDatasources:

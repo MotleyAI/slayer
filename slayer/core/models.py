@@ -226,11 +226,15 @@ def _coerce_source_queries(v: Any) -> Any:
     Imports SlayerQuery lazily to avoid the slayer.core.models ↔
     slayer.core.query import cycle (query.py imports ModelMeasure from
     models.py).
+
+    Raises ``ValueError`` (not ``TypeError``) for bad input so Pydantic v2
+    wraps it into a ``ValidationError`` — required for REST/MCP/CLI callers
+    to get structured error responses instead of raw tracebacks.
     """
     if v is None:
         return v
     if not isinstance(v, list):
-        raise TypeError(f"source_queries must be a list, got {type(v).__name__}")
+        raise ValueError(f"source_queries must be a list, got {type(v).__name__}")
     from slayer.core.query import SlayerQuery
     result = []
     for i, item in enumerate(v):
@@ -239,7 +243,7 @@ def _coerce_source_queries(v: Any) -> Any:
         elif isinstance(item, dict):
             result.append(SlayerQuery.model_validate(item))
         else:
-            raise TypeError(
+            raise ValueError(
                 f"source_queries[{i}] must be a SlayerQuery or dict, "
                 f"got {type(item).__name__}"
             )
@@ -443,6 +447,9 @@ class SlayerModel(BaseModel):
             )
         return self
 
+    # NOSONAR S3516 — Pydantic v2 @model_validator(mode="after") is required to
+    # return ``self``; the rule's "always returns same value" warning doesn't
+    # apply to validator methods.
     @model_validator(mode="after")
     def _validate_source_query_stages(self) -> "SlayerModel":
         """Validate stage-name rules on source_queries.

@@ -275,12 +275,12 @@ A query-backed model is a queryable relation whose rows are the final-stage resu
 
 ```python
 await engine.create_model_from_query(
-    query=SlayerQuery(
-        source_model="orders",
-        measures=[{"formula": "amount:sum"}],
-        dimensions=["region"],
-        time_dimensions=[{"dimension": "ordered_at", "granularity": "month"}],
-    ),
+    query={
+        "source_model": "orders",
+        "measures": [{"formula": "amount:sum"}],
+        "dimensions": ["region"],
+        "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
+    },
     name="monthly_revenue",
     description="Monthly revenue by region",
     variables={"region": "US"},  # default placeholder values, optional
@@ -361,11 +361,14 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 | `name` | string | Yes | — | Unique model name |
 | `sql_table` | string | One of | — | Database table (e.g. `public.orders`) |
 | `sql` | string | these | — | Custom SQL subquery |
+| `source_queries` | list[SlayerQuery] | three | — | Saved query stages — makes the model **query-backed**. Multi-stage queries: every non-final stage must have a `name`. |
 | `data_source` | string | Yes | — | Datasource name |
-| `columns` | list | No | `[]` | Column definitions (`Column`) — usable as group-by keys or aggregation sources, gated per query |
+| `columns` | list | No | `[]` | Column definitions (`Column`). For query-backed models this is an **engine-managed cache** auto-derived from the backing query — supplying it on save raises a clear error. |
 | `measures` | list | No | `[]` | Library of named formulas (`ModelMeasure`) — referenced by bare name in queries |
 | `joins` | list | No | `[]` | JOIN relationships to other models |
 | `filters` | list[str] | No | `[]` | Model-level WHERE filters (always applied, e.g., `"deleted_at IS NULL"`) |
+| `query_variables` | dict | No | `{}` | Default values for `{var}` placeholders in `source_queries`. Lowest layer of the variable-precedence stack (see [Variable precedence](#variable-precedence)). Only meaningful for query-backed models. |
+| `backing_query_sql` | string | No | — | Engine-managed cache of the rendered backing query (canonical placeholder-fill render). Read-only; user-supplied values are rejected at save. |
 | `description` | string | No | — | Helps agents and users understand the model |
 | `hidden` | bool | No | `false` | Hide from model listings |
 | `default_time_dimension` | string | No | — | Default time dimension name for time-dependent formulas (e.g. `"created_at"`) |

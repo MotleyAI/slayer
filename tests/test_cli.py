@@ -1,8 +1,10 @@
 """Tests for CLI helpers."""
 
+from types import SimpleNamespace
+
 import pytest
 
-from slayer.cli import _parse_connection_string
+from slayer.cli import _parse_cli_variables, _parse_connection_string
 
 
 class TestParseConnectionString:
@@ -51,3 +53,23 @@ class TestParseConnectionString:
     def test_sqlite_no_path_raises(self):
         with pytest.raises(ValueError, match="Cannot derive a name"):
             _parse_connection_string("sqlite://")
+
+
+class TestParseCliVariables:
+    def test_invalid_json_exits_cleanly(self):
+        """Malformed --variables-json must produce a clean SystemExit, not a
+        bare ``json.JSONDecodeError`` traceback to the user.
+        """
+        args = SimpleNamespace(variables=None, variables_json="{not valid json")
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_cli_variables(args)
+        assert "invalid JSON" in str(exc_info.value)
+
+    def test_valid_json_object_returned(self):
+        args = SimpleNamespace(variables=None, variables_json='{"a": 1, "b": "x"}')
+        assert _parse_cli_variables(args) == {"a": 1, "b": "x"}
+
+    def test_json_non_object_exits(self):
+        args = SimpleNamespace(variables=None, variables_json='[1, 2, 3]')
+        with pytest.raises(SystemExit, match="must decode to a JSON object"):
+            _parse_cli_variables(args)

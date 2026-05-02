@@ -456,6 +456,31 @@ class TestSourceQueryStages:
                 source_queries=[123],  # type: ignore[list-item]
             )
 
+    def test_invalid_entry_raises_pydantic_validation_error(self) -> None:
+        """``source_queries`` is a public input surface (REST/MCP/CLI). Bad
+        items must surface as a Pydantic ``ValidationError`` (wraps
+        ``ValueError``), not a raw ``TypeError`` traceback that escapes the
+        validator.
+        """
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            SlayerModel(
+                name="saved",
+                data_source="ds",
+                source_queries=[123],  # type: ignore[list-item]
+            )
+
+    def test_non_list_input_raises_pydantic_validation_error(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            SlayerModel.model_validate({
+                "name": "saved",
+                "data_source": "ds",
+                "source_queries": "not a list",
+            })
+
 
 class TestQueryVariablesAndCacheFields:
     """``query_variables`` and ``backing_query_sql`` defaults and shape."""

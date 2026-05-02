@@ -64,15 +64,24 @@ filters=[
 
 ## Executing
 
+`SlayerQueryEngine.execute(...)` is **async**. Use `await` from async code, or call `execute_sync(...)` from CLIs / notebooks / scripts.
+
 ```python
 engine = SlayerQueryEngine(storage=storage)
-result = engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes
+
+# Async (most callers — REST/MCP):
+result = await engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes
 
 # With runtime variables (always wins over query.variables / model defaults)
-result = engine.execute(query=query, variables={"region": "US"})
+result = await engine.execute(query=query, variables={"region": "US"})
 
-# Run-by-name: execute the stored backing query of a query-backed model
-result = engine.execute("monthly_revenue", variables={"region": "US"})
+# Run-by-name: execute the stored backing query of a query-backed model.
+# Caller may also request plan-only via dry_run=True / explain=True.
+result = await engine.execute("monthly_revenue", variables={"region": "US"})
+result = await engine.execute("monthly_revenue", dry_run=True)
+
+# Sync wrapper (use from CLIs / notebooks; not from running event loops):
+result = engine.execute_sync(query=query)
 ```
 
 Variable precedence (highest first): `runtime kwarg > stage.variables > outer query.variables > model.query_variables`. Unknown kwarg variables are silently ignored. Unresolved `{var}` placeholders raise at execute time, naming the model and stage.

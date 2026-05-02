@@ -45,7 +45,7 @@ curl -X POST http://localhost:5143/query \
   }'
 ```
 
-**Run-by-name** — for query-backed models, provide `name` and (optionally) `variables`. No other query fields are allowed in this body shape.
+**Run-by-name** — for query-backed models, provide `name` and (optionally) `variables`, `dry_run`, and `explain`. Query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed in this body shape.
 
 ```bash
 curl -X POST http://localhost:5143/query \

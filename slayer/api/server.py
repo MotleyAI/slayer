@@ -75,7 +75,10 @@ def create_app(storage: StorageBackend) -> FastAPI:
     async def health() -> Dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/query")
+    @app.post(
+        "/query",
+        responses={400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."}},
+    )
     async def query(request: QueryRequest) -> QueryResponse:
         try:
             # Run-by-name: ``{"name": "<model>", "variables": {...}}``
@@ -100,7 +103,10 @@ def create_app(storage: StorageBackend) -> FastAPI:
                         ),
                     )
                 result = await engine.execute(
-                    request.name, variables=request.variables or {}
+                    request.name,
+                    variables=request.variables or {},
+                    dry_run=bool(request.dry_run),
+                    explain=bool(request.explain),
                 )
                 dry_or_explain = bool(request.dry_run or request.explain)
             else:
@@ -165,7 +171,10 @@ def create_app(storage: StorageBackend) -> FastAPI:
             data["columns"] = [c for c in data["columns"] if not c.get("hidden")]
         return data
 
-    @app.post("/models")
+    @app.post(
+        "/models",
+        responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
+    )
     async def create_model(model: SlayerModel) -> Dict[str, str]:
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
@@ -175,7 +184,10 @@ def create_app(storage: StorageBackend) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "created", "name": model.name}
 
-    @app.put("/models/{name}")
+    @app.put(
+        "/models/{name}",
+        responses={400: {"description": "Body name does not match path name, or model failed validation."}},
+    )
     async def update_model(name: str, model: SlayerModel) -> Dict[str, str]:
         if model.name != name:
             raise HTTPException(
