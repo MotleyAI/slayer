@@ -741,6 +741,35 @@ class SQLGenerator:
 
         return source_cols, join_parts
 
+    @staticmethod
+    def _window_referenced_aliases(
+        *,
+        source_cols: list[str],
+        measure: EnrichedMeasure,
+        filters,
+    ) -> set[str]:
+        """Aliases the windowed-CTE actually references; drives join pruning.
+
+        Scans rendered source_cols, the measure's filter_sql, and column paths
+        of every non-post query filter (so a WHERE on customers.x keeps the
+        customers join even if no other thing references it). Path aliases use
+        "__" so each is one identifier token.
+        """
+        referenced_text = " ".join(source_cols)
+        if measure.filter_sql:
+            referenced_text += " " + measure.filter_sql
+        referenced = set(re.findall(r'(?:^|[^\w."\'])([A-Za-z_]\w*)\.', referenced_text))
+        for f in filters:
+            if f.is_post_filter:
+                continue
+            for col in f.columns:
+                if "." not in col:
+                    continue
+                parts = col.split(".")
+                for i in range(1, len(parts)):
+                    referenced.add("__".join(parts[:i]))
+        return referenced
+
     def _build_window_source_sql(
         self,
         *,
@@ -757,25 +786,9 @@ class SQLGenerator:
         """
         source_from = self._build_from_clause(enriched=enriched).sql(dialect=self.dialect)
         source_sql = "SELECT\n    " + ",\n    ".join(source_cols) + f"\nFROM {source_from}"
-
-        # Compute referenced aliases by scanning rendered source_cols + measure
-        # filter SQL. Path aliases use "__" so each is one identifier token.
-        referenced_text = " ".join(source_cols)
-        if measure.filter_sql:
-            referenced_text += " " + measure.filter_sql
-        referenced = set(re.findall(r'(?:^|[^\w."\'])([A-Za-z_]\w*)\.', referenced_text))
-
-        # Query-level (non-post) filters can reference joined aliases that don't
-        # appear in source_cols/filter_sql. Walk each filter's column paths and
-        # add every prefix as a path alias (`a.b.c` → adds `a` and `a__b`).
-        for f in enriched.filters:
-            if f.is_post_filter:
-                continue
-            for col in f.columns:
-                if "." in col:
-                    parts = col.split(".")
-                    for i in range(1, len(parts)):
-                        referenced.add("__".join(parts[:i]))
+        referenced = self._window_referenced_aliases(
+            source_cols=source_cols, measure=measure, filters=enriched.filters,
+        )
 
         for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
             if target_alias not in referenced:
