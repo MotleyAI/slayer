@@ -690,19 +690,21 @@ class SQLGenerator:
             result = f"({result} + {interval})"
         return result
 
-    def _generate_window_measure_cte(self, enriched: EnrichedQuery, measure: EnrichedMeasure) -> str:
-        if measure.aggregation not in ("sum", "avg"):
-            raise ValueError("Windowed aggregations are only supported for sum and avg")
-        if not measure.window or not measure.window_time_alias:
-            raise ValueError(f"Windowed measure '{measure.alias}' is missing window metadata")
+    def _build_window_source_cols(
+        self,
+        *,
+        enriched: EnrichedQuery,
+        td,
+        measure: EnrichedMeasure,
+    ) -> tuple[list[str], list[str]]:
+        """Build the SELECT columns and base equality predicates for the _src subquery.
 
-        td = next((t for t in enriched.time_dimensions if t.alias == measure.window_time_alias), None)
-        if td is None:
-            raise ValueError(f"Windowed measure '{measure.alias}' could not resolve its time dimension")
-
+        The trailing-window range predicate (`_src._w_time >= ...`) is added later
+        by the caller; only the equality joins on dims and other time dims are
+        produced here.
+        """
         source_cols: list[str] = []
         join_parts: list[str] = []
-        group_aliases = [d.alias for d in enriched.dimensions] + [td.alias for td in enriched.time_dimensions]
 
         for idx, dim in enumerate(enriched.dimensions):
             col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
@@ -729,8 +731,7 @@ class SQLGenerator:
             join_parts.append(f'_src.{other_alias} = _base."{other_td.alias}"')
 
         raw_time_expr = self._resolve_sql(sql=td.sql or td.name, name=td.name, model_name=td.model_name)
-        raw_time_sql = raw_time_expr.sql(dialect=self.dialect)
-        source_cols.append(f"{raw_time_sql} AS _w_time")
+        source_cols.append(f"{raw_time_expr.sql(dialect=self.dialect)} AS _w_time")
 
         value_expr = self._resolve_sql(sql=measure.sql or measure.name, name=measure.name, model_name=measure.model_name)
         value_sql = value_expr.sql(dialect=self.dialect)
@@ -738,9 +739,35 @@ class SQLGenerator:
             value_sql = f"CASE WHEN {measure.filter_sql} THEN {value_sql} END"
         source_cols.append(f"{value_sql} AS _w_value")
 
+        return source_cols, join_parts
+
+    def _build_window_source_sql(
+        self,
+        *,
+        enriched: EnrichedQuery,
+        source_cols: list[str],
+        measure: EnrichedMeasure,
+    ) -> str:
+        """Render the _src subquery: SELECT ... FROM ... [filtered JOINs] [WHERE ...].
+
+        Only joins whose target_alias is referenced by source_cols (or by the
+        measure's filter SQL) are included — pulling in unrelated joins can
+        change row multiplicity for the windowed aggregation, breaking the
+        "adding a measure must not affect cardinality" core principle.
+        """
         source_from = self._build_from_clause(enriched=enriched).sql(dialect=self.dialect)
         source_sql = "SELECT\n    " + ",\n    ".join(source_cols) + f"\nFROM {source_from}"
+
+        # Compute referenced aliases by scanning rendered source_cols + measure
+        # filter SQL. Path aliases use "__" so each is one identifier token.
+        referenced_text = " ".join(source_cols)
+        if measure.filter_sql:
+            referenced_text += " " + measure.filter_sql
+        referenced = set(re.findall(r'(?:^|[^A-Za-z0-9_."\'])([A-Za-z_][A-Za-z0-9_]*)\.', referenced_text))
+
         for target_table, target_alias, join_cond, jtype in enriched.resolved_joins:
+            if target_alias not in referenced:
+                continue
             if target_table.startswith("("):
                 join_target = f"{target_table} AS {target_alias}"
             else:
@@ -754,6 +781,26 @@ class SQLGenerator:
         where_clause, _ = self._build_where_and_having(enriched=scoped)
         if where_clause is not None:
             source_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
+
+        return source_sql
+
+    def _generate_window_measure_cte(self, enriched: EnrichedQuery, measure: EnrichedMeasure) -> str:
+        if measure.aggregation not in ("sum", "avg"):
+            raise ValueError("Windowed aggregations are only supported for sum and avg")
+        if not measure.window or not measure.window_time_alias:
+            raise ValueError(f"Windowed measure '{measure.alias}' is missing window metadata")
+
+        td = next((t for t in enriched.time_dimensions if t.alias == measure.window_time_alias), None)
+        if td is None:
+            raise ValueError(f"Windowed measure '{measure.alias}' could not resolve its time dimension")
+
+        group_aliases = [d.alias for d in enriched.dimensions] + [t.alias for t in enriched.time_dimensions]
+        source_cols, join_parts = self._build_window_source_cols(
+            enriched=enriched, td=td, measure=measure,
+        )
+        source_sql = self._build_window_source_sql(
+            enriched=enriched, source_cols=source_cols, measure=measure,
+        )
 
         frame_time = f'_base."{td.alias}"'
         bucket_end = self._add_intervals_sql(

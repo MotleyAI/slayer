@@ -589,6 +589,68 @@ class TestFields:
         assert "_w_td_" in sql
         assert '_base."orders.delivery_at"' in sql
 
+    async def test_windowed_sum_excludes_unrelated_joins(
+        self, generator: SQLGenerator, tmp_path,
+    ) -> None:
+        """The window CTE must not pull joins unrelated to the windowed measure.
+
+        Set up a query with:
+          - a windowed measure on orders' revenue (no cross-model refs), and
+          - a sibling cross-model measure that DOES need the customers join.
+
+        The customers join is required at the OUTER query level, but must NOT
+        leak into the windowed measure's _src subquery — otherwise the
+        customers fan-out would distort the trailing aggregation. Per
+        CLAUDE.md core principle: adding a measure must not affect cardinality.
+        """
+        from slayer.engine.query_engine import SlayerQueryEngine
+        from slayer.storage.yaml_storage import YAMLStorage
+
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+            ],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],  # local to orders — no join needed
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "revenue_90d"},
+                {"formula": "customers.id:count_distinct", "name": "n_customers"},
+            ],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        # Sanity: the customers join *did* get resolved at the outer level.
+        assert any(alias == "customers" for _, alias, *_ in enriched.resolved_joins)
+
+        sql = generator.generate(enriched=enriched)
+        # Locate the windowed-measure CTE body (between "LEFT JOIN (\n" and "\n) AS _src").
+        _, _, after_left_join = sql.partition("LEFT JOIN (\n")
+        src_body, _, _ = after_left_join.partition("\n) AS _src")
+        assert src_body, "Could not isolate _src subquery body"
+        assert "customers" not in src_body, (
+            f"_src subquery must not include the unrelated customers join.\n"
+            f"src_body:\n{src_body}"
+        )
+
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
