@@ -1,19 +1,29 @@
-"""Convert a parsed DbtProject into SLayer models and query definitions.
+"""Convert a parsed DbtProject into SLayer models.
 
-Orchestrates the full pipeline: entity resolution, dimension/measure conversion,
-measure consolidation, metric-to-measure and metric-to-query generation.
+Orchestrates the full pipeline: entity resolution, dimension/measure
+conversion, measure consolidation (one ``Column`` per unique expr +
+one ``ModelMeasure`` per dbt measure), and folding of metric definitions
+(simple-with-filter / derived / ratio / cumulative) into ``ModelMeasure``
+entries on the source semantic model.
+
+The converter never emits ``SlayerQuery`` definitions: every dbt artefact
+that produces a query-shaped result is expressed as a named formula on a
+model. Metrics that cannot be expressed that way (e.g. transform-name
+collisions, conversion metrics) are returned in
+``ConversionResult.unconverted_metrics``.
 """
 
 import logging
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.format import NumberFormat, NumberFormatType
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import convert_dbt_filter
 from slayer.dbt.models import (
@@ -43,6 +53,17 @@ _AGG_MAP: Dict[str, str] = {
     "sum_boolean": "sum",
 }
 
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
+
+
+class DbtConversionError(Exception):
+    """Raised when a dbt project cannot be converted to SLayer shape.
+
+    The message includes the offending semantic-model name and the
+    colliding identifiers so the user can fix the dbt definitions.
+    """
+
 
 class ConversionWarning(BaseModel):
     """A warning or info message from the conversion process."""
@@ -54,7 +75,7 @@ class ConversionWarning(BaseModel):
 class ConversionResult(BaseModel):
     """Result of converting a DbtProject to SLayer representations."""
     models: List[SlayerModel] = Field(default_factory=list)
-    queries: List[dict] = Field(default_factory=list)  # SlayerQuery dicts for metrics
+    unconverted_metrics: List[ConversionWarning] = Field(default_factory=list)
     warnings: List[ConversionWarning] = Field(default_factory=list)
 
 
@@ -65,6 +86,11 @@ def _map_agg(dbt_agg: str) -> str:
         logger.warning("Unknown dbt aggregation '%s', passing through as-is", dbt_agg)
         return dbt_agg.lower()
     return mapped
+
+
+def _is_simple_identifier(s: str) -> bool:
+    """A bare SQL column reference (no operators, calls, or dots)."""
+    return bool(_IDENTIFIER_RE.match(s))
 
 
 def _convert_dimension(dim: DbtDimension) -> Column:
@@ -87,98 +113,102 @@ def _convert_dimension(dim: DbtDimension) -> Column:
 
 def _convert_measures(
     dbt_measures: List[DbtMeasure],
-    strict_aggregations: bool,
-) -> List[Column]:
-    """Convert dbt measures to SLayer columns with consolidation.
+    *,
+    sm_name: str,
+    existing_column_names: set,
+    unconverted: List[ConversionWarning],
+) -> Tuple[List[Column], List[ModelMeasure]]:
+    """Convert dbt measures into a (Columns, ModelMeasures) pair.
 
-    Measures with the same expr are consolidated into one SLayer column
-    with multiple allowed_aggregations. Original name:agg pairs are listed
-    in the description. dbt measures imply numeric data, so the resulting
-    columns get DataType.NUMBER.
+    Each unique measure expression yields a single ``Column`` whose name is
+    either the bare expression (when it is a SQL identifier) or
+    ``<first_dbt_measure_name>_col`` (when the expression is a SQL fragment
+    like ``amount * quantity``). Each dbt measure yields one ``ModelMeasure``
+    whose formula is ``<col_name>:<agg>``. label and description live on the
+    ``ModelMeasure`` only — they belong to the named formula, not the raw
+    column.
+
+    Column-name collisions with already-emitted dimensions/entities or with
+    any of the about-to-be-emitted ``ModelMeasure`` names are resolved by
+    suffixing the Column with ``_col`` (Q-2 / Q-I in the S4 spec).
+
+    A ``ModelMeasure`` whose name shadows a built-in transform (e.g.
+    ``cumsum``) is rejected by the Pydantic validator; the dbt measure is
+    routed to ``unconverted`` and skipped.
     """
-    # Group by effective expr (expr or name if expr is None)
     groups: Dict[str, List[DbtMeasure]] = defaultdict(list)
     for m in dbt_measures:
         key = m.expr or m.name
         groups[key].append(m)
 
-    result: List[Column] = []
-    for expr_key, measures_in_group in groups.items():
-        if len(measures_in_group) == 1:
-            m = measures_in_group[0]
-            mapped_agg = _map_agg(m.agg)
-            sql = m.expr if m.expr and m.expr != m.name else None
-            allowed = [mapped_agg] if strict_aggregations else None
+    # All dbt-measure names, taken to be the eventual ``ModelMeasure`` names.
+    measure_names = {m.name for m in dbt_measures}
 
-            desc = m.description or ""
-            if desc and not desc.endswith("."):
-                desc += "."
-            desc = f"{desc} Default aggregation: {m.agg}".strip()
+    columns: List[Column] = []
+    measures: List[ModelMeasure] = []
+    used_column_names = set(existing_column_names)
 
-            result.append(Column(
-                name=m.name,
-                sql=sql,
-                type=DataType.NUMBER,
-                description=desc,
-                label=m.label,
-                allowed_aggregations=allowed,
-            ))
+    for expr_key, group in groups.items():
+        if _is_simple_identifier(expr_key):
+            base_name = expr_key
         else:
-            # Consolidate: multiple dbt measures → one SLayer column
-            aggs = []
-            name_agg_pairs = []
-            labels = []
-            descriptions = []
+            base_name = f"{group[0].name}_col"
 
-            for m in measures_in_group:
-                mapped = _map_agg(m.agg)
-                if mapped not in aggs:
-                    aggs.append(mapped)
-                name_agg_pairs.append(f"{m.name} ({m.agg})")
-                if m.label:
-                    labels.append(m.label)
-                if m.description:
-                    descriptions.append(m.description)
+        col_name = base_name
+        # Q-2: avoid collision with any ModelMeasure name in this model.
+        # Q-I: also avoid collision with the dimensions/entities already on
+        # the model, by suffixing ``_col`` until unique.
+        while col_name in measure_names or col_name in used_column_names:
+            col_name = f"{col_name}_col"
+        used_column_names.add(col_name)
 
-            # Use the first dbt measure's name; fall back to expr_key. Keep the
-            # SQL expression whenever it differs from the chosen name.
-            measure_name = measures_in_group[0].name or expr_key
-            sql = expr_key if expr_key != measure_name else None
+        sql = expr_key if expr_key != col_name else None
+        columns.append(Column(
+            name=col_name,
+            sql=sql,
+            type=DataType.NUMBER,
+            format=_FLOAT_FORMAT,
+        ))
 
-            desc = f"dbt measures: {', '.join(name_agg_pairs)}"
-            if descriptions:
-                desc = f"{descriptions[0]}. {desc}"
+        for m in group:
+            mapped_agg = _map_agg(m.agg)
+            try:
+                measures.append(ModelMeasure(
+                    name=m.name,
+                    formula=f"{col_name}:{mapped_agg}",
+                    label=m.label,
+                    description=m.description,
+                ))
+            except ValueError as exc:
+                unconverted.append(ConversionWarning(
+                    model_name=sm_name,
+                    metric_name=m.name,
+                    message=(
+                        f"dbt measure '{m.name}' could not be converted to a "
+                        f"ModelMeasure: {exc}"
+                    ),
+                ))
 
-            result.append(Column(
-                name=measure_name,
-                sql=sql,
-                type=DataType.NUMBER,
-                description=desc,
-                label=labels[0] if labels else None,
-                allowed_aggregations=aggs if strict_aggregations else None,
-            ))
-
-    return result
+    return columns, measures
 
 
 class DbtToSlayerConverter:
-    """Convert a DbtProject into SLayer models and query definitions."""
+    """Convert a DbtProject into SLayer models."""
 
     def __init__(
         self,
         project: DbtProject,
         data_source: str,
-        strict_aggregations: bool = True,
         sa_engine: Optional[sa.Engine] = None,
         include_hidden_models: bool = False,
     ) -> None:
         self.project = project
         self.data_source = data_source
-        self.strict_aggregations = strict_aggregations
         self.sa_engine = sa_engine
         self.include_hidden_models = include_hidden_models
         self.entity_registry = EntityRegistry()
         self._warnings: List[ConversionWarning] = []
+        self._unconverted: List[ConversionWarning] = []
         # {model_name: SlayerModel} for metric resolution
         self._models_by_name: Dict[str, SlayerModel] = {}
         # {model_name: DbtSemanticModel} for looking up entities
@@ -193,37 +223,28 @@ class DbtToSlayerConverter:
 
     def convert(self) -> ConversionResult:
         """Full conversion pipeline."""
-        # 1. Build entity registry
         self.entity_registry.build(self.project.semantic_models)
 
-        # 2. Index dbt models
         for sm in self.project.semantic_models:
             self._dbt_models_by_name[sm.name] = sm
 
-        # 3. Convert semantic models
         models: List[SlayerModel] = []
         for sm in self.project.semantic_models:
             model = self._convert_semantic_model(sm)
             models.append(model)
             self._models_by_name[model.name] = model
 
-        # 4. Convert metrics
-        queries: List[dict] = []
         for metric in self.project.metrics:
-            query = self._convert_metric(metric)
-            if query is not None:
-                queries.append(query)
+            self._convert_metric(metric)
 
-        # 5. Mirror inner joins: if A→B is inner, ensure B→A is inner too
         self._mirror_inner_joins()
 
-        # 6. Convert orphan regular dbt models into hidden SLayer models
         if self.include_hidden_models and self.project.regular_models:
             models.extend(self._convert_regular_models(existing_names={m.name for m in models}))
 
         return ConversionResult(
             models=models,
-            queries=queries,
+            unconverted_metrics=self._unconverted,
             warnings=self._warnings,
         )
 
@@ -249,11 +270,7 @@ class DbtToSlayerConverter:
                     ))
 
     def _convert_regular_models(self, existing_names: set) -> List[SlayerModel]:
-        """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models.
-
-        Requires a live SQLAlchemy engine for SQL introspection. If no engine was
-        provided, logs one warning and returns [].
-        """
+        """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models."""
         if self.sa_engine is None:
             self._warnings.append(ConversionWarning(
                 message=(
@@ -268,8 +285,6 @@ class DbtToSlayerConverter:
         results: List[SlayerModel] = []
         for rm in self.project.regular_models:
             if rm.name in existing_names:
-                # A semantic_model with the same name already produced a visible
-                # SLayer model; don't shadow it with a hidden import.
                 continue
             converted = self._convert_regular_model(rm=rm, sa_engine=engine, inspector=inspector)
             if converted is not None:
@@ -308,7 +323,6 @@ class DbtToSlayerConverter:
         if rm.description:
             model.description = rm.description
 
-        # Overlay column-level descriptions from dbt manifest onto columns.
         col_descriptions = {c.name: c.description for c in rm.columns if c.description}
         if col_descriptions:
             for c in model.columns:
@@ -321,12 +335,21 @@ class DbtToSlayerConverter:
     def _convert_semantic_model(self, sm: DbtSemanticModel) -> SlayerModel:
         """Convert a single dbt semantic model to a SlayerModel.
 
-        If the referenced dbt model is a regular model with a ``.sql`` body
-        on disk (i.e. a query, not a physical source table), inline the
-        resolved SQL into ``SlayerModel.sql`` so SLayer can query it directly
-        without requiring ``dbt run`` to have materialised it. Otherwise the
-        ref name is used as ``sql_table``.
+        Hard-fails (DbtConversionError) when the same name appears as both a
+        dimension and a measure on this semantic model — ambiguous, since v2
+        SLayer columns and measures share a namespace per model.
         """
+        # Q-G: hard-fail on dim/measure name collisions before doing any work.
+        dim_names = {d.name for d in sm.dimensions}
+        measure_names = {m.name for m in sm.measures}
+        collisions = sorted(dim_names & measure_names)
+        if collisions:
+            raise DbtConversionError(
+                f"Semantic model '{sm.name}': dimension and measure share name(s) "
+                f"{collisions}. SLayer columns and measures occupy a single "
+                f"namespace per model — rename one side in the dbt project."
+            )
+
         ref_name = sm.model or sm.name
 
         sql_source: Optional[str] = None
@@ -345,15 +368,13 @@ class DbtToSlayerConverter:
         else:
             sql_table = ref_name
 
-        # Default time dimension
         default_time_dim = None
         if sm.defaults and sm.defaults.agg_time_dimension:
             default_time_dim = sm.defaults.agg_time_dimension
 
-        # Convert dimensions to columns
         cols: List[Column] = [_convert_dimension(d) for d in sm.dimensions]
 
-        # Add primary key column for primary/unique entities
+        # Add primary key column for primary/unique entities.
         entity_col_names = {c.name for c in cols}
         for entity in sm.entities:
             if entity.type in ("primary", "unique"):
@@ -371,7 +392,6 @@ class DbtToSlayerConverter:
                         if c.name == col_name:
                             c.primary_key = True
 
-        # Also handle primary_entity shorthand
         if sm.primary_entity:
             pe_name = sm.primary_entity
             pe_expr = pe_name
@@ -387,19 +407,14 @@ class DbtToSlayerConverter:
                 ))
                 entity_col_names.add(pe_expr)
 
-        # Append converted measures (consolidated). Avoid name collisions with
-        # already-added entity/dimension columns by skipping duplicates.
-        existing_names = {c.name for c in cols}
-        for m_col in _convert_measures(
+        measure_cols, measures = _convert_measures(
             dbt_measures=sm.measures,
-            strict_aggregations=self.strict_aggregations,
-        ):
-            if m_col.name in existing_names:
-                continue
-            cols.append(m_col)
-            existing_names.add(m_col.name)
+            sm_name=sm.name,
+            existing_column_names={c.name for c in cols},
+            unconverted=self._unconverted,
+        )
+        cols.extend(measure_cols)
 
-        # Resolve joins from foreign entities
         joins = self.entity_registry.resolve_joins_for_model(sm)
 
         return SlayerModel(
@@ -410,72 +425,114 @@ class DbtToSlayerConverter:
             description=sm.description,
             default_time_dimension=default_time_dim,
             columns=cols,
+            measures=measures,
             joins=joins,
         )
 
-    def _convert_metric(self, metric: DbtMetric) -> Optional[dict]:
-        """Convert a dbt metric. Returns a query dict, or None if handled as a measure."""
+    # ── Metric conversion ─────────────────────────────────────────────
+
+    def _convert_metric(self, metric: DbtMetric) -> None:
+        """Route a dbt metric to the appropriate handler.
+
+        All handlers fold their output into a ``ModelMeasure`` on the source
+        semantic model (or report ``unconverted_metrics`` on failure). No
+        ``SlayerQuery`` is produced.
+        """
         metric_type = metric.type.lower()
 
         if metric_type == "simple":
-            return self._convert_simple_metric(metric)
+            self._convert_simple_metric(metric)
         elif metric_type == "derived":
-            return self._convert_derived_metric(metric)
+            self._convert_derived_metric(metric)
         elif metric_type == "ratio":
-            return self._convert_ratio_metric(metric)
+            self._convert_ratio_metric(metric)
         elif metric_type == "cumulative":
-            return self._convert_cumulative_metric(metric)
+            self._convert_cumulative_metric(metric)
         elif metric_type == "conversion":
-            self._warnings.append(ConversionWarning(
+            self._unconverted.append(ConversionWarning(
                 metric_name=metric.name,
                 message="Conversion metrics are not supported in SLayer. Skipped.",
             ))
-            return None
         else:
-            self._warnings.append(ConversionWarning(
+            self._unconverted.append(ConversionWarning(
                 metric_name=metric.name,
                 message=f"Unknown metric type '{metric.type}'. Skipped.",
             ))
-            return None
 
-    def _convert_simple_metric(self, metric: DbtMetric) -> Optional[dict]:
-        """Convert a simple metric to a filtered measure on the base model."""
-        if not metric.type_params or not metric.type_params.measure:
+    def _add_model_measure(
+        self,
+        *,
+        slayer_model: SlayerModel,
+        metric: DbtMetric,
+        formula: str,
+    ) -> None:
+        """Append a ``ModelMeasure`` to ``slayer_model``.
+
+        Routes transform-name collisions (Q-F) to ``unconverted_metrics``
+        instead of raising. Skips silently with a warning if the name
+        collides with an existing column or measure on the model.
+        """
+        existing_names = {c.name for c in slayer_model.columns}
+        existing_names.update(m.name for m in slayer_model.measures if m.name is not None)
+        if metric.name in existing_names:
             self._warnings.append(ConversionWarning(
+                model_name=slayer_model.name,
+                metric_name=metric.name,
+                message=(
+                    f"Metric '{metric.name}' collides with an existing column or "
+                    f"measure on model '{slayer_model.name}'. Skipped."
+                ),
+            ))
+            return
+        try:
+            slayer_model.measures.append(ModelMeasure(
+                name=metric.name,
+                formula=formula,
+                label=metric.label,
+                description=metric.description,
+            ))
+        except ValueError as exc:
+            self._unconverted.append(ConversionWarning(
+                model_name=slayer_model.name,
+                metric_name=metric.name,
+                message=(
+                    f"Metric '{metric.name}' could not be converted to a "
+                    f"ModelMeasure: {exc}"
+                ),
+            ))
+
+    def _convert_simple_metric(self, metric: DbtMetric) -> None:
+        """A simple metric is a (filtered) re-aggregation of a single measure.
+
+        Without a filter: nothing to do — the underlying measure is already
+        addressable as a ModelMeasure. With a filter: emit a Column carrying
+        the CASE-WHEN ``filter`` and a ModelMeasure pointing at it.
+        """
+        if not metric.type_params or not metric.type_params.measure:
+            self._unconverted.append(ConversionWarning(
                 metric_name=metric.name,
                 message="Simple metric has no measure reference. Skipped.",
             ))
-            return None
+            return
 
         measure_name = metric.type_params.measure
 
         if not metric.filter:
-            # No filter — the measure is already queryable. Nothing to add.
-            return None
+            return
 
-        # Find which semantic model owns this measure
         source_sm = self._find_measure_model(measure_name)
         if source_sm is None:
-            self._warnings.append(ConversionWarning(
+            self._unconverted.append(ConversionWarning(
                 metric_name=metric.name,
                 message=f"Cannot find measure '{measure_name}' in any semantic model. Skipped.",
             ))
-            return None
+            return
 
-        # Find the dbt measure to get the expr and agg
-        dbt_measure = None
-        for m in source_sm.measures:
-            if m.name == measure_name:
-                dbt_measure = m
-                break
-
+        dbt_measure = next((m for m in source_sm.measures if m.name == measure_name), None)
         if dbt_measure is None:
-            return None
+            return
 
-        # Build entity names dict for filter resolution
         model_entities = {e.name: e.type for e in source_sm.entities}
-
-        # Convert the filter
         sm_by_name = {sm.name: sm for sm in self.project.semantic_models}
         slayer_filter = convert_dbt_filter(
             filter_str=metric.filter,
@@ -485,133 +542,205 @@ class DbtToSlayerConverter:
             all_semantic_models=sm_by_name,
         )
 
-        # Create a filtered measure and add to the SLayer model
         mapped_agg = _map_agg(dbt_measure.agg)
         slayer_model = self._models_by_name.get(source_sm.name)
         if slayer_model is None:
-            return None
+            return
 
-        sql = dbt_measure.expr if dbt_measure.expr and dbt_measure.expr != dbt_measure.name else None
-
-        filtered_column = Column(
-            name=metric.name,
-            sql=sql or dbt_measure.name,
-            type=DataType.NUMBER,
-            description=metric.description or f"Filtered metric: {metric.name}",
-            label=metric.label,
-            allowed_aggregations=[mapped_agg] if self.strict_aggregations else None,
-            filter=slayer_filter,
-        )
-        if any(c.name == filtered_column.name for c in slayer_model.columns):
+        # Q-3: filtered simple metrics get a Column carrying the filter, with
+        # NO allowed_aggregations. The metric becomes a ModelMeasure that
+        # references that Column with the dbt-defined aggregation.
+        existing_names = {c.name for c in slayer_model.columns}
+        existing_names.update(m.name for m in slayer_model.measures if m.name is not None)
+        if metric.name in existing_names:
             self._warnings.append(ConversionWarning(
                 model_name=slayer_model.name,
                 metric_name=metric.name,
                 message=(
                     f"Filtered metric '{metric.name}' collides with an existing column "
-                    f"on model '{slayer_model.name}'. Skipped."
+                    f"or measure on model '{slayer_model.name}'. Skipped."
                 ),
             ))
-            return None
-        slayer_model.columns.append(filtered_column)
-        return None  # Handled as a column, no query needed
+            return
 
-    def _convert_derived_metric(self, metric: DbtMetric) -> Optional[dict]:
-        """Convert a derived metric to a SlayerQuery dict."""
+        col_name = f"{metric.name}_col"
+        while col_name in existing_names:
+            col_name = f"{col_name}_col"
+
+        underlying_sql = (
+            dbt_measure.expr
+            if dbt_measure.expr and dbt_measure.expr != dbt_measure.name
+            else dbt_measure.name
+        )
+        slayer_model.columns.append(Column(
+            name=col_name,
+            sql=underlying_sql,
+            type=DataType.NUMBER,
+            format=_FLOAT_FORMAT,
+            filter=slayer_filter,
+        ))
+        try:
+            slayer_model.measures.append(ModelMeasure(
+                name=metric.name,
+                formula=f"{col_name}:{mapped_agg}",
+                label=metric.label,
+                description=metric.description or f"Filtered metric: {metric.name}",
+            ))
+        except ValueError as exc:
+            # Roll back the column we just appended so the model stays consistent.
+            slayer_model.columns.pop()
+            self._unconverted.append(ConversionWarning(
+                model_name=slayer_model.name,
+                metric_name=metric.name,
+                message=(
+                    f"Filtered metric '{metric.name}' could not be converted: {exc}"
+                ),
+            ))
+
+    def _convert_derived_metric(self, metric: DbtMetric) -> None:
+        """A derived metric expresses a formula over other metrics/measures.
+
+        The ``ModelMeasure.formula`` references inputs by **bare name** —
+        either another ``ModelMeasure`` on the same model (which the formula
+        parser resolves) or a column-with-aggregation when bare names cannot
+        be located locally.
+        """
         if not metric.type_params:
-            return None
+            return
 
         expr = metric.type_params.expr
         if not expr:
-            self._warnings.append(ConversionWarning(
+            self._unconverted.append(ConversionWarning(
                 metric_name=metric.name,
                 message="Derived metric has no expr. Skipped.",
             ))
-            return None
+            return
 
-        # Build the formula: replace metric names with SLayer colon syntax.
-        # Use word-boundary regex so a ref like "total" doesn't mutate
-        # `subtotal` or `total_orders` elsewhere in the expression.
         formula = expr
         if metric.type_params.metrics:
             for m_input in metric.type_params.metrics:
                 ref_name = m_input.alias or m_input.name
-                resolved = self._resolve_metric_to_formula(m_input.name)
-                if resolved:
+                resolved = self._resolve_metric_to_name(m_input.name)
+                if resolved and resolved != ref_name:
                     formula = re.sub(
                         rf"\b{re.escape(ref_name)}\b",
-                        # Escape backreference syntax in the replacement so
-                        # any literal \1 / \g<...> in the resolved colon
-                        # expression is treated as text, not a backref.
                         resolved.replace("\\", r"\\"),
                         formula,
                     )
 
-        # Find a source model for this query
-        source_model = self._find_metric_source_model(metric)
+        source_model_name = self._find_metric_source_model(metric)
+        if source_model_name is None:
+            self._unconverted.append(ConversionWarning(
+                metric_name=metric.name,
+                message=f"Could not determine source model for derived metric '{metric.name}'. Skipped.",
+            ))
+            return
 
-        query = {
-            "name": metric.name,
-            "description": metric.description or f"Derived metric: {metric.name}",
-            "measures": [{"formula": formula, "name": metric.name}],
-        }
-        if source_model:
-            query["source_model"] = source_model
+        slayer_model = self._models_by_name.get(source_model_name)
+        if slayer_model is None:
+            self._unconverted.append(ConversionWarning(
+                metric_name=metric.name,
+                message=(
+                    f"Source model '{source_model_name}' for derived metric "
+                    f"'{metric.name}' was not converted. Skipped."
+                ),
+            ))
+            return
 
-        return query
+        self._add_model_measure(
+            slayer_model=slayer_model,
+            metric=metric,
+            formula=formula,
+        )
 
-    def _convert_ratio_metric(self, metric: DbtMetric) -> Optional[dict]:
-        """Convert a ratio metric to a SlayerQuery dict."""
+    def _convert_ratio_metric(self, metric: DbtMetric) -> None:
+        """A ratio metric is numerator / denominator over two measures/metrics."""
         if not metric.type_params:
-            return None
+            return
 
         num = metric.type_params.numerator
         den = metric.type_params.denominator
         if not num or not den:
-            self._warnings.append(ConversionWarning(
+            self._unconverted.append(ConversionWarning(
                 metric_name=metric.name,
                 message="Ratio metric missing numerator or denominator. Skipped.",
             ))
-            return None
+            return
 
-        num_formula = self._resolve_metric_to_formula(num.name) or num.name
-        den_formula = self._resolve_metric_to_formula(den.name) or den.name
+        num_formula = self._resolve_metric_to_name(num.name) or num.name
+        den_formula = self._resolve_metric_to_name(den.name) or den.name
 
-        source_model = self._find_metric_source_model(metric)
+        source_model_name = self._find_metric_source_model(metric)
+        if source_model_name is None:
+            self._unconverted.append(ConversionWarning(
+                metric_name=metric.name,
+                message=f"Could not determine source model for ratio metric '{metric.name}'. Skipped.",
+            ))
+            return
 
-        query = {
-            "name": metric.name,
-            "description": metric.description or f"Ratio metric: {metric.name}",
-            "measures": [{"formula": f"{num_formula} / {den_formula}", "name": metric.name}],
-        }
-        if source_model:
-            query["source_model"] = source_model
+        slayer_model = self._models_by_name.get(source_model_name)
+        if slayer_model is None:
+            self._unconverted.append(ConversionWarning(
+                metric_name=metric.name,
+                message=(
+                    f"Source model '{source_model_name}' for ratio metric "
+                    f"'{metric.name}' was not converted. Skipped."
+                ),
+            ))
+            return
 
-        return query
+        self._add_model_measure(
+            slayer_model=slayer_model,
+            metric=metric,
+            formula=f"{num_formula} / {den_formula}",
+        )
 
-    def _convert_cumulative_metric(self, metric: DbtMetric) -> Optional[dict]:
-        """Convert a cumulative metric to a SlayerQuery dict."""
+    def _convert_cumulative_metric(self, metric: DbtMetric) -> None:
+        """A cumulative metric is a running total of one underlying measure."""
         if not metric.type_params or not metric.type_params.measure:
-            self._warnings.append(ConversionWarning(
+            self._unconverted.append(ConversionWarning(
                 metric_name=metric.name,
                 message="Cumulative metric has no measure reference. Skipped.",
             ))
-            return None
+            return
 
-        measure_ref = self._resolve_measure_to_formula(metric.type_params.measure)
+        measure_ref = self._resolve_measure_to_name(metric.type_params.measure)
         if not measure_ref:
-            return None
+            self._unconverted.append(ConversionWarning(
+                metric_name=metric.name,
+                message=(
+                    f"Cumulative metric '{metric.name}' references unknown "
+                    f"measure '{metric.type_params.measure}'. Skipped."
+                ),
+            ))
+            return
 
-        source_model = self._find_metric_source_model(metric)
+        source_model_name = self._find_metric_source_model(metric)
+        if source_model_name is None:
+            self._unconverted.append(ConversionWarning(
+                metric_name=metric.name,
+                message=f"Could not determine source model for cumulative metric '{metric.name}'. Skipped.",
+            ))
+            return
 
-        query = {
-            "name": metric.name,
-            "description": metric.description or f"Cumulative metric: {metric.name}",
-            "measures": [{"formula": f"cumsum({measure_ref})", "name": metric.name}],
-        }
-        if source_model:
-            query["source_model"] = source_model
+        slayer_model = self._models_by_name.get(source_model_name)
+        if slayer_model is None:
+            self._unconverted.append(ConversionWarning(
+                metric_name=metric.name,
+                message=(
+                    f"Source model '{source_model_name}' for cumulative metric "
+                    f"'{metric.name}' was not converted. Skipped."
+                ),
+            ))
+            return
 
-        return query
+        self._add_model_measure(
+            slayer_model=slayer_model,
+            metric=metric,
+            formula=f"cumsum({measure_ref})",
+        )
+
+    # ── Resolution helpers ────────────────────────────────────────────
 
     def _find_measure_model(self, measure_name: str) -> Optional[DbtSemanticModel]:
         """Find which dbt semantic model contains a given measure."""
@@ -622,57 +751,98 @@ class DbtToSlayerConverter:
         return None
 
     def _find_metric_source_model(self, metric: DbtMetric) -> Optional[str]:
-        """Determine the source model for a metric query."""
-        if metric.type_params and metric.type_params.measure:
+        """Determine the source model for a metric.
+
+        Walks ``measure``, then ``metrics``, then ``numerator``/``denominator``
+        to support all metric shapes that reference an underlying measure.
+        """
+        if metric.type_params is None:
+            return None
+
+        if metric.type_params.measure:
             sm = self._find_measure_model(metric.type_params.measure)
             if sm:
                 return sm.name
-        # For derived metrics, try to find source through input metrics
-        if metric.type_params and metric.type_params.metrics:
+
+        if metric.type_params.metrics:
             for m_input in metric.type_params.metrics:
                 source = self._resolve_metric_source(m_input.name)
                 if source:
                     return source
+
+        # Q-E: ratio metrics carry numerator/denominator, not metrics=[…].
+        for side in (metric.type_params.numerator, metric.type_params.denominator):
+            if side is None:
+                continue
+            source = self._resolve_metric_source(side.name)
+            if source:
+                return source
+
         return None
 
     def _resolve_metric_source(self, metric_name: str) -> Optional[str]:
-        """Recursively resolve a metric name to its source model."""
+        """Recursively resolve a metric name to its source model.
+
+        First tries the metric's own ``measure`` (simple), then descends into
+        ``numerator``/``denominator`` (ratio), then ``metrics`` (derived).
+        Falls back to looking up ``metric_name`` as a dbt measure directly.
+        """
+        for m in self.project.metrics:
+            if m.name != metric_name:
+                continue
+            if m.type_params is None:
+                return None
+            if m.type_params.measure:
+                sm = self._find_measure_model(m.type_params.measure)
+                if sm:
+                    return sm.name
+            for side in (m.type_params.numerator, m.type_params.denominator):
+                if side is None:
+                    continue
+                source = self._resolve_metric_source(side.name)
+                if source:
+                    return source
+            if m.type_params.metrics:
+                for m_input in m.type_params.metrics:
+                    source = self._resolve_metric_source(m_input.name)
+                    if source:
+                        return source
+            return None
+        # ``metric_name`` may be a bare dbt measure name rather than a metric.
+        sm = self._find_measure_model(metric_name)
+        return sm.name if sm else None
+
+    def _resolve_metric_to_name(self, metric_name: str) -> Optional[str]:
+        """Resolve a metric name to a formula reference.
+
+        Returns the bare ``ModelMeasure`` name when the metric was lowered
+        into a ``ModelMeasure`` (simple, derived, ratio, cumulative). Falls
+        back to the ``column:agg`` colon form when ``metric_name`` is a dbt
+        measure rather than a metric.
+        """
         for m in self.project.metrics:
             if m.name == metric_name:
-                if m.type_params and m.type_params.measure:
-                    sm = self._find_measure_model(m.type_params.measure)
-                    return sm.name if sm else None
-        return None
+                # All metric kinds are stored as ModelMeasures named after the metric.
+                return metric_name
+        return self._resolve_measure_to_name(metric_name)
 
-    def _resolve_metric_to_formula(self, metric_name: str) -> Optional[str]:
-        """Resolve a metric name to a SLayer field formula (measure:agg)."""
-        for m in self.project.metrics:
-            if m.name == metric_name:
-                return self._resolve_measure_to_formula_from_metric(m)
-        # Might be a direct measure name
-        return self._resolve_measure_to_formula(metric_name)
+    def _resolve_measure_to_name(self, measure_name: str) -> Optional[str]:
+        """Resolve a dbt measure name to a formula reference.
 
-    def _resolve_measure_to_formula_from_metric(self, metric: DbtMetric) -> Optional[str]:
-        """Resolve a metric to its underlying measure:agg formula."""
-        if metric.type_params and metric.type_params.measure:
-            return self._resolve_measure_to_formula(metric.type_params.measure)
-        return f"{metric.name}:sum"  # Fallback
-
-    def _resolve_measure_to_formula(self, measure_name: str) -> Optional[str]:
-        """Resolve a dbt measure name to SLayer colon syntax (measure:agg)."""
-        for sm in self.project.semantic_models:
-            for m in sm.measures:
-                if m.name == measure_name:
-                    mapped_agg = _map_agg(m.agg)
-                    # After consolidation, the SLayer column might have a
-                    # different name (expr-based). Check if it was consolidated.
-                    slayer_model = self._models_by_name.get(sm.name)
-                    if slayer_model:
-                        for slayer_c in slayer_model.columns:
-                            if slayer_c.name == measure_name:
-                                return f"{measure_name}:{mapped_agg}"
-                            # Check if consolidated under expr name
-                            if slayer_c.sql == (m.expr or m.name) and slayer_c.name != measure_name:
-                                return f"{slayer_c.name}:{mapped_agg}"
-                    return f"{measure_name}:{mapped_agg}"
+        After ``_convert_measures`` has run, the dbt measure name is the
+        ``ModelMeasure`` name on its semantic model. Reference it by bare
+        name (Q-5) so the formula parser can resolve it relative to the
+        current model.
+        """
+        sm = self._find_measure_model(measure_name)
+        if sm is None:
+            return None
+        slayer_model = self._models_by_name.get(sm.name)
+        if slayer_model is None:
+            return None
+        for m in slayer_model.measures:
+            if m.name == measure_name:
+                return measure_name
+        # Fallback: shouldn't happen for converted measures, but if the
+        # measure was routed to unconverted_metrics we have nothing to point at.
         return None

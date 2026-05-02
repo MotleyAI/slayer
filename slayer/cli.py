@@ -5,7 +5,7 @@ import os
 import sys
 
 from slayer.async_utils import run_sync
-from slayer.storage.base import default_storage_path, storage_base_dir
+from slayer.storage.base import default_storage_path
 
 _STORAGE_DEFAULT = default_storage_path()
 _STORAGE_HELP = (
@@ -30,11 +30,6 @@ def _resolve_storage(args):
 
     path = args.storage or args.models_dir or _STORAGE_DEFAULT
     return resolve_storage(path)
-
-
-def _queries_dir_for_storage(storage_path: str) -> str:
-    """Return the directory where queries.yaml should be written."""
-    return storage_base_dir(storage_path)
 
 
 def main():
@@ -188,11 +183,6 @@ examples:
     )
     import_dbt_parser.add_argument("dbt_project_path", help="Path to dbt project root or models directory")
     import_dbt_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
-    import_dbt_parser.add_argument(
-        "--no-strict-aggregations",
-        action="store_true",
-        help="Don't restrict measures to their dbt-defined aggregation types",
-    )
     import_dbt_parser.add_argument(
         "--include-hidden-models",
         action="store_true",
@@ -503,7 +493,6 @@ def _run_ingest(args):
 
 def _run_import_dbt(args):
     import sqlalchemy as sa
-    import yaml as _yaml
 
     from slayer.dbt.converter import DbtToSlayerConverter
     from slayer.dbt.parser import parse_dbt_project
@@ -535,7 +524,6 @@ def _run_import_dbt(args):
         converter = DbtToSlayerConverter(
             project=project,
             data_source=args.datasource,
-            strict_aggregations=not args.no_strict_aggregations,
             sa_engine=sa_engine,
             include_hidden_models=include_hidden,
         )
@@ -544,7 +532,6 @@ def _run_import_dbt(args):
         if sa_engine is not None:
             sa_engine.dispose()
 
-    # Save models
     hidden_count = 0
     for model in result.models:
         run_sync(storage.save_model(model))
@@ -556,17 +543,10 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    # Save queries to queries.yaml if any
-    if result.queries:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-        queries_dir = _queries_dir_for_storage(storage_path)
-        os.makedirs(queries_dir, exist_ok=True)
-        queries_path = os.path.join(queries_dir, "queries.yaml")
-        with open(queries_path, "w", encoding="utf-8") as f:
-            _yaml.dump(result.queries, f, sort_keys=False, default_flow_style=False)
-        print(f"Generated {len(result.queries)} metric queries → {queries_path}")
+    for u in result.unconverted_metrics:
+        context = u.model_name or u.metric_name or "general"
+        print(f"  UNCONVERTED [{context}]: {u.message}")
 
-    # Print warnings
     for w in result.warnings:
         context = w.model_name or w.metric_name or "general"
         print(f"  WARNING [{context}]: {w.message}")
@@ -574,7 +554,8 @@ def _run_import_dbt(args):
     visible_count = len(result.models) - hidden_count
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
-        f"{len(result.queries)} queries, {len(result.warnings)} warnings"
+        f"{len(result.unconverted_metrics)} unconverted metrics, "
+        f"{len(result.warnings)} warnings"
     )
 
 
