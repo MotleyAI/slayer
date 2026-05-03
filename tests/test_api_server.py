@@ -295,6 +295,18 @@ class TestQueryBackedModelsAPI:
         assert resp.status_code == 400
         assert "no other query fields" in resp.text or "may not be set" in resp.text
 
+    def test_post_query_run_by_name_rejects_whole_periods_only(
+        self, client: TestClient
+    ) -> None:
+        # ``whole_periods_only`` is not forwarded by run-by-name dispatch, so
+        # the API must reject it rather than silently dropping the flag.
+        resp = client.post("/query", json={
+            "name": "some_model",
+            "whole_periods_only": True,
+        })
+        assert resp.status_code == 400
+        assert "no other query fields" in resp.text or "may not be set" in resp.text
+
     def test_post_query_run_by_name_requires_model(
         self, client: TestClient
     ) -> None:

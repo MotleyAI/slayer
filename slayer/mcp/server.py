@@ -880,7 +880,7 @@ def create_mcp_server(storage: StorageBackend):
                 and limit is None and offset is None
                 and not whole_periods_only
             )
-            if no_overrides and await storage.get_model(source_model) is not None:
+            if no_overrides:
                 target = await storage.get_model(source_model)
                 if target is not None and target.source_queries:
                     result = await engine.execute(

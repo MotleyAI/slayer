@@ -450,16 +450,32 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
 
     if is_json:
         data = json.loads(query_input)
-        if args.dry_run:
-            data["dry_run"] = True
-        if args.explain:
-            data["explain"] = True
-        slayer_query = SlayerQuery.model_validate(data)
-        result = engine.execute_sync(
-            query=slayer_query, variables=runtime_kwarg or None
-        )
-        explain_set = slayer_query.explain
-        dry_run_set = slayer_query.dry_run
+        if isinstance(data, list):
+            if not data:
+                raise SystemExit("Query list cannot be empty.")
+            final_stage = dict(data[-1])
+            if args.dry_run:
+                final_stage["dry_run"] = True
+            if args.explain:
+                final_stage["explain"] = True
+            data = [*data[:-1], final_stage]
+            result = engine.execute_sync(
+                query=data, variables=runtime_kwarg or None
+            )
+            final_query = SlayerQuery.model_validate(final_stage)
+            explain_set = final_query.explain
+            dry_run_set = final_query.dry_run
+        else:
+            if args.dry_run:
+                data["dry_run"] = True
+            if args.explain:
+                data["explain"] = True
+            slayer_query = SlayerQuery.model_validate(data)
+            result = engine.execute_sync(
+                query=slayer_query, variables=runtime_kwarg or None
+            )
+            explain_set = slayer_query.explain
+            dry_run_set = slayer_query.dry_run
     else:
         # Run-by-name: the positional arg is a model name.
         # ``execute_sync(str, dry_run=..., explain=...)`` honors the flags
@@ -691,7 +707,11 @@ def _run_models(args):
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
         engine = SlayerQueryEngine(storage=storage)
-        run_sync(engine.save_model(model))
+        try:
+            run_sync(engine.save_model(model))
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         print(f"Created model '{model.name}'.")
 
     elif args.models_command == "delete":
