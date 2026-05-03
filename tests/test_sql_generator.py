@@ -702,6 +702,70 @@ class TestFields:
             f"WHERE filter references customers.region_id.\nsrc_body:\n{src_body}"
         )
 
+    async def test_windowed_sum_keeps_transitive_joins_for_multi_hop_filter(
+        self, generator: SQLGenerator, tmp_path,
+    ) -> None:
+        """Multi-hop filter (e.g. customers.regions.name) must keep the
+        intermediate `customers` join in the _src subquery.
+
+        The path-aliased target_alias `customers__regions` carries a join
+        condition like `customers.region_id = customers__regions.id`, so the
+        prefix `customers` must also appear in the JOIN list — otherwise the
+        rendered SQL references an undefined alias.
+        """
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            filters=["customers.regions.name = 'US'"],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        # Sanity: both joins resolved at outer level.
+        joined_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
+        assert "customers" in joined_aliases
+        assert "customers__regions" in joined_aliases
+
+        sql = generator.generate(enriched=enriched)
+        src_body = _extract_src_body(sql)
+        assert "customers__regions" in src_body, (
+            f"_src must include the multi-hop customers__regions join.\nsrc_body:\n{src_body}"
+        )
+        assert "customers " in src_body or "customers\n" in src_body or "customers." in src_body, (
+            f"_src must also include the transitive customers join — its JOIN ON references customers.\n"
+            f"src_body:\n{src_body}"
+        )
+
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",

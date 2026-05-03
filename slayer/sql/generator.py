@@ -753,12 +753,25 @@ class SQLGenerator:
         Scans rendered source_cols, the measure's filter_sql, and column paths
         of every non-post query filter (so a WHERE on customers.x keeps the
         customers join even if no other thing references it). Path aliases use
-        "__" so each is one identifier token.
+        "__" so each is one identifier token; for multi-hop aliases like
+        "customers__regions" we also add every "__"-split prefix ("customers")
+        so the transitive joins those reference are kept too.
         """
+        referenced: set[str] = set()
+
+        def _add_with_prefixes(alias: str) -> None:
+            referenced.add(alias)
+            if "__" in alias:
+                parts = alias.split("__")
+                for i in range(1, len(parts)):
+                    referenced.add("__".join(parts[:i]))
+
         referenced_text = " ".join(source_cols)
         if measure.filter_sql:
             referenced_text += " " + measure.filter_sql
-        referenced = set(re.findall(r'(?:^|[^\w."\'])([A-Za-z_]\w*)\.', referenced_text))
+        for tok in re.findall(r'(?:^|[^\w."\'])([A-Za-z_]\w*)\.', referenced_text):
+            _add_with_prefixes(tok)
+
         for f in filters:
             if f.is_post_filter:
                 continue
@@ -767,7 +780,8 @@ class SQLGenerator:
                     continue
                 parts = col.split(".")
                 for i in range(1, len(parts)):
-                    referenced.add("__".join(parts[:i]))
+                    _add_with_prefixes("__".join(parts[:i]))
+
         return referenced
 
     def _build_window_source_sql(
