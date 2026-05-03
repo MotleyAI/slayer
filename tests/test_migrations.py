@@ -755,28 +755,11 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
     import logging
     import os
 
-    from slayer.core.enums import DataType
-    from slayer.core.models import Column, DatasourceConfig, SlayerModel
-    from slayer.engine.query_engine import SlayerQueryEngine
-
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_datasource(DatasourceConfig(
-            name="ds", type="postgres", host="localhost", port=5432,
-            database="db", username="u", password="p",  # NOSONAR(S2068) — test datasource never actually connects (dry_run only)
-        ))
-        # Save the underlying physical model the normal way.
-        await storage.save_model(SlayerModel(
-            name="orders",
-            sql_table="public.orders",
-            data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-            ],
-        ))
+        engine = await _build_engine_with_orders(tmpdir)
+        storage = engine.storage
         # Hand-write a v2 query-backed model YAML with a stale dry_run=True
         # nested inside source_queries — bypassing storage.save_model so the
         # v3 schema/migration cannot strip it at write time.
@@ -817,7 +800,6 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
 
         # The engine can now execute the model. Pass dry_run=True as a kwarg
         # (which is the new way), which short-circuits to SQL without DB calls.
-        engine = SlayerQueryEngine(storage=storage)
         result = await engine.execute(query="stale", dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
