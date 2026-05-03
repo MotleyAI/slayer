@@ -582,7 +582,9 @@ class TestFields:
         assert "LEFT JOIN" in norm
         assert "_src._w_time >=" in norm
         assert "_src._w_time <" in norm
-        assert "INTERVAL '90 day'" in norm
+        # AST-based generation renders single-unit intervals via sqlglot's
+        # per-dialect transpiler — Postgres caps the unit name.
+        assert "INTERVAL '90 DAY'" in norm
         assert '_src._w_dim_0 = _base."orders.status"' in norm
 
     async def test_windowed_sum_preserves_other_time_dim_grain(
@@ -807,8 +809,21 @@ class TestFields:
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
         assert "AVG(_src._w_value)" in norm
-        # The interval *content* is what the test cares about — keep it pinned.
-        assert "INTERVAL '1 year 2 month 3 week 5 day 6 hour 7 minute 8 second'" in norm
+        # AST-based generation emits one INTERVAL per parsed (amount, unit)
+        # pair, chained as repeated subtractions — sqlglot then transpiles each
+        # single-unit interval per dialect (so this same compact duration
+        # produces dialect-correct output on MySQL/ClickHouse/BigQuery without
+        # the broken Postgres-shape multi-unit literal).
+        for piece in (
+            "INTERVAL '1 YEAR'",
+            "INTERVAL '2 MONTH'",
+            "INTERVAL '3 WEEK'",
+            "INTERVAL '5 DAY'",
+            "INTERVAL '6 HOUR'",
+            "INTERVAL '7 MINUTE'",
+            "INTERVAL '8 SECOND'",
+        ):
+            assert piece in norm, f"missing per-unit interval clause '{piece}'\nsql:\n{sql}"
 
     async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
