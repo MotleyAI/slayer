@@ -160,7 +160,16 @@ class SlayerQueryEngine:
         self.storage = storage
         self._sql_clients: Dict[str, SlayerSQLClient] = {}  # connection string → cached client
 
-    async def execute(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+    async def execute(
+        self,
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        *,
+        dry_run: bool = False,
+        explain: bool = False,
+    ) -> SlayerResponse:
+        # str input is shorthand for "run this saved model with no extras"
+        if isinstance(query, str):
+            query = SlayerQuery(source_model=query)
         # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
             queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
@@ -253,7 +262,7 @@ class SlayerQueryEngine:
         )
 
         # dry_run: return SQL without executing
-        if query.dry_run:
+        if dry_run:
             return SlayerResponse(data=[], columns=expected_columns, sql=sql, attributes=attributes)
 
         # Execute — reuse SQL client (and its connection pool) per datasource
@@ -263,7 +272,7 @@ class SlayerQueryEngine:
         client = self._sql_clients[ds_key]
 
         # explain: run dialect-appropriate EXPLAIN on the query
-        if query.explain:
+        if explain:
             explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
             rows = await client.execute(sql=explain_sql)
             return SlayerResponse(data=rows, sql=sql, attributes=attributes)
@@ -345,11 +354,17 @@ class SlayerQueryEngine:
                 result[em.source_measure_name or em.name] = raw_types[em.alias]
         return result
 
-    def execute_sync(self, query: "SlayerQuery | dict | list[SlayerQuery | dict]") -> SlayerResponse:
+    def execute_sync(
+        self,
+        query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
+        *,
+        dry_run: bool = False,
+        explain: bool = False,
+    ) -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
         from slayer.async_utils import run_sync
 
-        return run_sync(self.execute(query))
+        return run_sync(self.execute(query, dry_run=dry_run, explain=explain))
 
     def create_model_from_query_sync(
         self, query: "SlayerQuery | list[SlayerQuery]", name: str,

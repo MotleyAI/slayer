@@ -661,10 +661,6 @@ def create_mcp_server(storage: StorageBackend):
             data["offset"] = offset
         if whole_periods_only:
             data["whole_periods_only"] = True
-        if dry_run:
-            data["dry_run"] = True
-        if explain:
-            data["explain"] = True
         if measures:
             data["measures"] = measures
         try:
@@ -672,7 +668,9 @@ def create_mcp_server(storage: StorageBackend):
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
             slayer_query = SlayerQuery.model_validate(data)
-            result = await engine.execute(query=slayer_query)
+            result = await engine.execute(
+                query=slayer_query, dry_run=dry_run, explain=explain
+            )
             if dry_run:
                 return f"SQL:\n{result.sql}"
             if explain:

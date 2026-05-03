@@ -76,10 +76,13 @@ def create_app(storage: StorageBackend) -> FastAPI:
     @app.post("/query")
     async def query(request: QueryRequest) -> QueryResponse:
         try:
-            slayer_query = SlayerQuery.model_validate(
-                request.model_dump(exclude_none=True)
+            body = request.model_dump(exclude_none=True)
+            dry_run = bool(body.pop("dry_run", False))
+            explain = bool(body.pop("explain", False))
+            slayer_query = SlayerQuery.model_validate(body)
+            result = await engine.execute(
+                query=slayer_query, dry_run=dry_run, explain=explain
             )
-            result = await engine.execute(query=slayer_query)
             attrs = result.attributes
 
             def _convert_meta(d: dict) -> Dict[str, FieldMetadataResponse]:
@@ -97,7 +100,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 columns=result.columns,
                 attributes=attributes,
             )
-            if slayer_query.dry_run or slayer_query.explain:
+            if dry_run or explain:
                 response.sql = result.sql
             return response
         except ValueError as e:

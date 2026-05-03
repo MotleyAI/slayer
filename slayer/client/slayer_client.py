@@ -88,28 +88,35 @@ class SlayerClient:
 
     # ----- Async API -----
 
-    async def query(self, query) -> SlayerResponse:
+    async def query(
+        self,
+        query,
+        *,
+        dry_run: bool = False,
+        explain: bool = False,
+    ) -> SlayerResponse:
         """Execute a query asynchronously. Accepts SlayerQuery or dict."""
         if isinstance(query, dict):
             query = SlayerQuery.model_validate(query)
         if self._engine is not None:
-            return await self._engine.execute(query=query)
-        result = await self._request(method="POST", path="/query", json=query.model_dump(exclude_none=True))
+            return await self._engine.execute(
+                query=query, dry_run=dry_run, explain=explain
+            )
+        body = query.model_dump(exclude_none=True)
+        if dry_run:
+            body["dry_run"] = True
+        if explain:
+            body["explain"] = True
+        result = await self._request(method="POST", path="/query", json=body)
         return self._parse_response(result)
 
     async def sql(self, query) -> str:
         """Generate SQL for a query without executing it."""
-        if isinstance(query, dict):
-            query = SlayerQuery.model_validate(query)
-        dry_query = query.model_copy(update={"dry_run": True})
-        return (await self.query(query=dry_query)).sql
+        return (await self.query(query=query, dry_run=True)).sql
 
     async def explain(self, query) -> SlayerResponse:
         """Run EXPLAIN ANALYZE on a query."""
-        if isinstance(query, dict):
-            query = SlayerQuery.model_validate(query)
-        explain_query = query.model_copy(update={"explain": True})
-        return await self.query(query=explain_query)
+        return await self.query(query=query, explain=True)
 
     async def list_models(self) -> List[str]:
         return await self._request(method="GET", path="/models")
@@ -128,28 +135,35 @@ class SlayerClient:
 
     # ----- Sync API (for notebooks, scripts, CLI) -----
 
-    def query_sync(self, query) -> SlayerResponse:
+    def query_sync(
+        self,
+        query,
+        *,
+        dry_run: bool = False,
+        explain: bool = False,
+    ) -> SlayerResponse:
         """Execute a query synchronously. Accepts SlayerQuery or dict."""
         if isinstance(query, dict):
             query = SlayerQuery.model_validate(query)
         if self._engine is not None:
-            return self._engine.execute_sync(query=query)
-        result = self._request_sync(method="POST", path="/query", json=query.model_dump(exclude_none=True))
+            return self._engine.execute_sync(
+                query=query, dry_run=dry_run, explain=explain
+            )
+        body = query.model_dump(exclude_none=True)
+        if dry_run:
+            body["dry_run"] = True
+        if explain:
+            body["explain"] = True
+        result = self._request_sync(method="POST", path="/query", json=body)
         return self._parse_response(result)
 
     def sql_sync(self, query) -> str:
         """Generate SQL synchronously."""
-        if isinstance(query, dict):
-            query = SlayerQuery.model_validate(query)
-        dry_query = query.model_copy(update={"dry_run": True})
-        return self.query_sync(query=dry_query).sql
+        return self.query_sync(query=query, dry_run=True).sql
 
     def explain_sync(self, query) -> SlayerResponse:
         """Run EXPLAIN ANALYZE synchronously."""
-        if isinstance(query, dict):
-            query = SlayerQuery.model_validate(query)
-        explain_query = query.model_copy(update={"explain": True})
-        return self.query_sync(query=explain_query)
+        return self.query_sync(query=query, explain=True)
 
     def query_df(self, query: SlayerQuery):
         """Execute a query and return a pandas DataFrame (sync)."""

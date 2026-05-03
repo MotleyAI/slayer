@@ -64,24 +64,24 @@ def test_migrate_chain_runs_in_order(monkeypatch) -> None:
     """Synthetic chain to verify ordering and version stamping.
 
     Registers two synthetic migrations *above* the real ones so we don't
-    collide with the real v1→v2 SlayerModel converter.
+    collide with the real v1→v2 / v2→v3 SlayerModel converters.
     """
-    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 4)
+    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 5)
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
-
-    @mig.register_migration("SlayerModel", 2)
-    def _v2_to_v3(data: dict) -> dict:
-        data["step1"] = True
-        return data
 
     @mig.register_migration("SlayerModel", 3)
     def _v3_to_v4(data: dict) -> dict:
+        data["step1"] = True
+        return data
+
+    @mig.register_migration("SlayerModel", 4)
+    def _v4_to_v5(data: dict) -> dict:
         assert data.get("step1") is True  # ordering guarantee
         data["step2"] = True
         return data
 
-    out = mig.migrate("SlayerModel", {"version": 2, "name": "foo"})
-    assert out["version"] == 4
+    out = mig.migrate("SlayerModel", {"version": 3, "name": "foo"})
+    assert out["version"] == 5
     assert out["step1"] is True
     assert out["step2"] is True
 
@@ -120,18 +120,18 @@ def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> Non
 
     Registers a migration *above* the real ones so we don't double-migrate.
     """
-    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 3)
+    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 4)
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
 
-    @mig.register_migration("SlayerModel", 2)
-    def _v2_to_v3(data: dict) -> dict:
+    @mig.register_migration("SlayerModel", 3)
+    def _v3_to_v4(data: dict) -> dict:
         # Stash a marker in meta so we can verify post-validation that the
         # converter actually ran on the inbound dict.
         data.setdefault("meta", {})["migrated"] = True
         return data
 
-    m = SlayerModel.model_validate({"version": 2, "name": "orders"})
-    assert m.version == 3
+    m = SlayerModel.model_validate({"version": 3, "name": "orders"})
+    assert m.version == 4
     assert m.meta == {"migrated": True}
 
 
@@ -245,7 +245,7 @@ def test_model_v1_to_v2_dimensions_only() -> None:
             {"name": "id", "type": "number", "primary_key": True},
         ],
     })
-    assert m.version == 2
+    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.columns] == ["status", "id"]
     assert m.columns[0].type.value == "string"
     assert m.columns[1].primary_key is True
@@ -263,7 +263,7 @@ def test_model_v1_to_v2_measures_only() -> None:
              "allowed_aggregations": ["sum"]},
         ],
     })
-    assert m.version == 2
+    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.columns] == ["revenue", "high_value"]
     assert all(c.type.value == "number" for c in m.columns)
     assert all(c.primary_key is False for c in m.columns)
@@ -345,7 +345,7 @@ def test_model_v2_input_is_noop() -> None:
         "columns": [{"name": "status", "type": "string"}],
         "measures": [],
     })
-    assert m.version == 2
+    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.columns] == ["status"]
 
 
@@ -368,7 +368,7 @@ def test_query_v1_to_v2_fields_renamed() -> None:
         "source_model": "orders",
         "fields": [{"formula": "revenue:sum", "name": "rev"}],
     })
-    assert q.version == 2
+    assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     assert q.measures is not None
     assert q.measures[0].formula == "revenue:sum"
     assert q.measures[0].name == "rev"
@@ -396,7 +396,7 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
         },
         "fields": [{"formula": "revenue:sum"}],
     })
-    assert q.version == 2
+    assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     sm = q.source_model
     assert isinstance(sm, dict)
     assert sm["source_name"] == "orders"
@@ -431,9 +431,9 @@ def test_query_v1_to_v2_inline_slayer_model_dict_is_left_for_model_migration() -
     assert isinstance(q.source_model, dict)
 
     # When the engine validates the same inline dict as a SlayerModel, the
-    # model-level migration runs and produces v2 shape.
+    # model-level migration runs and produces the current schema shape.
     m = SlayerModel.model_validate(inline)
-    assert m.version == 2
+    assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.columns] == ["status", "revenue"]
 
 
@@ -454,11 +454,11 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     assert m.source_queries is not None
     assert len(m.source_queries) == 1
     inner = m.source_queries[0]
-    # After migration, the inner query is v2-shaped: 'fields' renamed to
-    # 'measures', no 'fields' key remains, version bumped to 2.
+    # After migration, the inner query is up to current SlayerQuery shape:
+    # 'fields' renamed to 'measures', no 'fields' key remains, version bumped.
     assert "fields" not in inner
     assert inner["measures"] == [{"formula": "revenue:sum", "name": "rev"}]
-    assert inner.get("version") == 2
+    assert inner.get("version") == mig.CURRENT_VERSIONS["SlayerQuery"]
 
 
 def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
@@ -523,15 +523,15 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
 
         loaded = await storage.get_model("orders")
         assert loaded is not None
-        assert loaded.version == 2
+        assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         assert [c.name for c in loaded.columns] == ["status", "revenue"]
         assert loaded.measures == []
 
-        # Re-save and confirm v2 on disk.
+        # Re-save and confirm current version on disk.
         await storage.save_model(loaded)
         with open(legacy_path) as f:
             on_disk = yaml.safe_load(f)
-        assert on_disk["version"] == 2
+        assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert "columns" in on_disk
         assert "dimensions" not in on_disk
 
@@ -557,5 +557,246 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
 
         loaded = await storage.get_model("orders")
         assert loaded is not None
-        assert loaded.version == 2
+        assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         assert [c.name for c in loaded.columns] == ["status", "revenue"]
+
+
+# --- v2 → v3 SlayerQuery migration (drops dry_run / explain) -----------------
+
+
+@pytest.mark.parametrize(
+    "v2_payload,expected_dropped",
+    [
+        ({"version": 2, "source_model": "orders", "dry_run": True}, ["dry_run"]),
+        ({"version": 2, "source_model": "orders", "explain": True}, ["explain"]),
+        (
+            {"version": 2, "source_model": "orders", "dry_run": True, "explain": True},
+            ["dry_run", "explain"],
+        ),
+    ],
+)
+def test_query_v2_to_v3_drops_legacy_execution_flags(
+    v2_payload: dict, expected_dropped: list, caplog
+) -> None:
+    """v2 SlayerQuery dicts with dry_run/explain are migrated; flags are dropped."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+    with pytest.warns(DeprecationWarning, match="v2.+v3 migration"):
+        q = SlayerQuery.model_validate(v2_payload)
+    assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
+    # Fields are gone from the schema entirely
+    assert not hasattr(q, "dry_run")
+    assert not hasattr(q, "explain")
+    # Exactly one warning per migrated query, naming every dropped field
+    warnings_emitted = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings_emitted) == 1
+    for f in expected_dropped:
+        assert f in warnings_emitted[0].message
+    # The query identifier appears (here: source_model since name is unset)
+    assert "orders" in warnings_emitted[0].message
+
+
+def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
+    """A v2 query without dry_run/explain migrates silently."""
+    import logging
+    import warnings as wmod
+
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+    with wmod.catch_warnings(record=True) as captured:
+        wmod.simplefilter("always")
+        q = SlayerQuery.model_validate(
+            {"version": 2, "source_model": "orders"}
+        )
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+    assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
+    assert deprecations == []
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+def test_query_v2_to_v3_uses_name_as_identifier_when_present(caplog) -> None:
+    """When the query has a name, the warning identifies it by that name."""
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+    with pytest.warns(DeprecationWarning):
+        SlayerQuery.model_validate({
+            "version": 2,
+            "name": "stale_query",
+            "source_model": "orders",
+            "dry_run": True,
+        })
+    [record] = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert "'stale_query'" in record.message
+
+
+# --- extra="forbid" regression ------------------------------------------------
+
+
+def test_slayer_query_v3_extra_forbid_rejects_typo_field() -> None:
+    """v3 SlayerQuery has extra='forbid'; typos surface immediately.
+
+    Note: ``dry_run``/``explain`` themselves are intercepted by the v2→v3
+    migration (drop + DeprecationWarning), so they don't raise. Other typos
+    that aren't part of the migration drop list raise ValidationError.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="dryrun|extra"):
+        SlayerQuery(source_model="orders", dryrun=True)  # type: ignore[call-arg]
+
+
+def test_slayer_query_v3_direct_construct_with_dry_run_still_warns() -> None:
+    """``SlayerQuery(dry_run=True)`` is intercepted by the migration; emits
+    DeprecationWarning + drops the field rather than raising. This is the
+    soft-landing for callers porting away from the v2 API."""
+    with pytest.warns(DeprecationWarning, match="v2.+v3 migration"):
+        q = SlayerQuery(source_model="orders", dry_run=True)  # type: ignore[call-arg]
+    assert not hasattr(q, "dry_run")
+
+
+# --- Engine kwargs across input shapes (dry_run short-circuit) ---------------
+
+
+async def _build_engine_with_orders(tmpdir: str):
+    """Build an engine with a single 'orders' model and a postgres datasource.
+
+    The datasource is postgres so dialect detection works, but dry_run never
+    actually connects to it.
+    """
+    from slayer.core.enums import DataType
+    from slayer.core.models import Column, DatasourceConfig, SlayerModel
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = YAMLStorage(base_dir=tmpdir)
+    await storage.save_datasource(DatasourceConfig(
+        name="ds", type="postgres", host="localhost", port=5432,
+        database="db", username="u", password="p",
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="public.orders",
+        data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+        ],
+    ))
+    return SlayerQueryEngine(storage=storage)
+
+
+async def test_engine_dry_run_kwarg_str_input() -> None:
+    """dry_run=True kwarg with str input returns SQL without executing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = await _build_engine_with_orders(tmp)
+        result = await engine.execute(query="orders", dry_run=True)
+        assert result.data == []
+        assert result.sql is not None and "FROM" in result.sql.upper()
+
+
+async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = await _build_engine_with_orders(tmp)
+        q = SlayerQuery(source_model="orders", measures=[{"formula": "*:count"}])
+        result = await engine.execute(query=q, dry_run=True)
+        assert result.data == []
+        assert "COUNT(*)" in result.sql
+
+
+async def test_engine_dry_run_kwarg_dict_input() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = await _build_engine_with_orders(tmp)
+        result = await engine.execute(
+            query={"source_model": "orders", "measures": [{"formula": "*:count"}]},
+            dry_run=True,
+        )
+        assert result.data == []
+        assert "COUNT(*)" in result.sql
+
+
+async def test_engine_dry_run_kwarg_list_input() -> None:
+    """For list input, dry_run applies to the single resulting SQL statement."""
+    with tempfile.TemporaryDirectory() as tmp:
+        engine = await _build_engine_with_orders(tmp)
+        result = await engine.execute(
+            query=[
+                {"source_model": "orders", "measures": [{"formula": "*:count"}]},
+            ],
+            dry_run=True,
+        )
+        assert result.data == []
+        assert "COUNT(*)" in result.sql
+
+
+# --- End-to-end: stale on-disk v2 YAML with dry_run=True still executes -----
+
+
+async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
+    """A query-backed model whose source_queries entry was saved as v2 with
+    dry_run=True (bypassing storage.save_model) still executes normally —
+    the v2→v3 migration on load drops the stale flag.
+    """
+    import logging
+    import os
+
+    from slayer.core.enums import DataType
+    from slayer.core.models import Column, DatasourceConfig, SlayerModel
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = YAMLStorage(base_dir=tmpdir)
+        await storage.save_datasource(DatasourceConfig(
+            name="ds", type="postgres", host="localhost", port=5432,
+            database="db", username="u", password="p",
+        ))
+        # Save the underlying physical model the normal way.
+        await storage.save_model(SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+            ],
+        ))
+        # Hand-write a v2 query-backed model YAML with a stale dry_run=True
+        # nested inside source_queries — bypassing storage.save_model so the
+        # v3 schema/migration cannot strip it at write time.
+        models_dir = os.path.join(tmpdir, "models")
+        os.makedirs(models_dir, exist_ok=True)
+        stale_yaml_path = os.path.join(models_dir, "stale.yaml")
+        with open(stale_yaml_path, "w") as f:
+            yaml.dump({
+                "version": 2,
+                "name": "stale",
+                "data_source": "ds",
+                "source_queries": [{
+                    "version": 2,
+                    "name": "stale_inner",
+                    "source_model": "orders",
+                    "measures": [{"formula": "*:count"}],
+                    "dry_run": True,
+                }],
+            }, f)
+
+        # Loading the model triggers nested SlayerQuery validation, which
+        # fires the v2→v3 migration and drops dry_run with a warning.
+        loaded = await storage.get_model("stale")
+        assert loaded is not None
+        assert loaded.source_queries is not None
+        assert "dry_run" not in loaded.source_queries[0]
+        # The migration warning identifies the inner query by name.
+        assert any(
+            "'stale_inner'" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+        # The engine can now execute the model. Pass dry_run=True as a kwarg
+        # (which is the new way), which short-circuits to SQL without DB calls.
+        engine = SlayerQueryEngine(storage=storage)
+        result = await engine.execute(query="stale", dry_run=True)
+        assert result.data == []
+        assert "COUNT(*)" in result.sql

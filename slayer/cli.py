@@ -387,24 +387,22 @@ def _run_query(args):
         with open(query_input[1:]) as f:
             query_input = f.read()
     data = json.loads(query_input)
-    if args.dry_run:
-        data["dry_run"] = True
-    if args.explain:
-        data["explain"] = True
     slayer_query = SlayerQuery.model_validate(data)
 
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
-    result = engine.execute_sync(query=slayer_query)
+    result = engine.execute_sync(
+        query=slayer_query, dry_run=args.dry_run, explain=args.explain
+    )
 
-    if slayer_query.dry_run:
+    if args.dry_run:
         print(result.sql)
         return
 
     if args.format == "json":
         print(json.dumps(result.data, indent=2, default=str))
     else:
-        if slayer_query.explain:
+        if args.explain:
             print(f"SQL:\n{result.sql}\n")
             print("Query Plan:")
         if not result.data:
@@ -416,7 +414,7 @@ def _run_query(args):
         print(separator)
         for row in result.data:
             print(" | ".join(str(row.get(c, "")) for c in result.columns))
-        if not slayer_query.explain:
+        if not args.explain:
             print(f"\n{result.row_count} row(s)")
 
 
