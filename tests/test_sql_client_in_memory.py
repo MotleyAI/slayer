@@ -29,6 +29,14 @@ from slayer.sql.client import _is_in_memory_sqlite
         # File-backed must NOT classify as in-memory
         ("sqlite:///foo.db", False),
         ("sqlite:////tmp/foo.db", False),
+        # mode=memory without uri=true: SQLite ignores mode=memory and opens
+        # the path as a literal file (verified empirically — `sqlite:///file:foo
+        # ?mode=memory` creates a file named "file:foo" on disk). The detector
+        # must NOT treat these as in-memory or two clients on the same string
+        # would share a file while believing they have isolated DBs.
+        ("sqlite:///foo.db?mode=memory", False),
+        ("sqlite:///file:foo?mode=memory", False),
+        ("sqlite:///file:foo?mode=memory&cache=shared", False),
         # Non-SQLite connection strings must NOT classify as in-memory,
         # even if they coincidentally contain ":memory:"
         ("postgresql://u:p@h/db", False),

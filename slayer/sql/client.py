@@ -80,9 +80,17 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
     if not database or database == _MEMORY_DB_NAME:
         return True
     query: Dict[str, Any] = dict(url.query) if url.query else {}
-    if database.startswith("file:") and (query.get("mode") == "memory" or _MEMORY_DB_NAME in database):
-        return True
-    if "mode=memory" in connection_string:
+    # SQLite honors `mode=memory` and the `file::memory:` URI form ONLY when
+    # the connection is opened with URI handling enabled (`uri=true`).
+    # Without `uri=true`, SQLite treats the database part as a literal
+    # filename — `sqlite:///file:foo?mode=memory` actually creates a file
+    # called "file:foo" on disk. Misclassifying those as in-memory would
+    # break per-client isolation: two clients on the same string would each
+    # build a StaticPool engine but both back onto the same on-disk file.
+    is_uri = str(query.get("uri", "")).lower() == "true"
+    if is_uri and database.startswith("file:") and (
+        query.get("mode") == "memory" or _MEMORY_DB_NAME in database
+    ):
         return True
     return False
 
@@ -100,6 +108,11 @@ def _create_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
     percentile_disc) as ``_get_sync_engine`` does. With StaticPool the event
     fires exactly once.
     """
+    # SQLAlchemy's make_url rejects a bare ":memory:" — normalize to the
+    # standard scheme form before create_engine. The detector accepts the
+    # bare form for caller convenience; this is where it gets canonicalized.
+    if connection_string == _MEMORY_DB_NAME:
+        connection_string = f"sqlite:///{_MEMORY_DB_NAME}"
     engine = sa.create_engine(
         connection_string,
         poolclass=StaticPool,

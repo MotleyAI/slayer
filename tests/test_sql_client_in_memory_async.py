@@ -169,6 +169,24 @@ async def test_sqlite_udfs_work_under_static_pool() -> None:
     assert rows == [{"med": 2.0}]
 
 
+async def test_bare_memory_connection_string_works_end_to_end() -> None:
+    """A bare ``:memory:`` (no ``sqlite:///`` scheme) must reach a working engine.
+
+    ``sa.create_engine(":memory:")`` raises ``ArgumentError`` because the bare
+    DBAPI form is not a valid SQLAlchemy URL. ``_create_in_memory_sqlite_engine``
+    must normalize it to ``sqlite:///:memory:`` before creating the engine,
+    otherwise any caller passing the bare form (which the detector accepts)
+    would crash on the first DB call.
+    """
+    client = SlayerSQLClient(
+        datasource=DatasourceConfig(
+            name="bare", type="sqlite", connection_string=":memory:",
+        ),
+    )
+    rows = await client.execute("SELECT 1 AS n")
+    assert rows == [{"n": 1}]
+
+
 async def test_concurrent_async_calls_share_in_memory_db(no_retry: None) -> None:
     """Realistic concurrent path: many awaits in flight at once.
 
