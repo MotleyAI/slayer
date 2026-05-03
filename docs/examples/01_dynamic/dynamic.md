@@ -16,7 +16,7 @@ At the semantic level this is the natural framing: *aggregation is a property of
 
 In contrast, most semantic layers force you to pre-declare one measure per (expression × aggregation) pair, which multiplies the model surface area fast.
 
-SLayer's answer is **colon syntax**: `revenue:sum`, `revenue:avg`, `revenue:quantile(0.25)`. 
+SLayer's answer is **colon syntax**: `revenue:sum`, `revenue:avg`, `revenue:percentile(p=0.25)`. 
 [Custom aggregations](../07_aggregations/aggregations.md) defined with SQL templates and parameters (weighted averages, percentiles, trimmed means) plug in the same way.
 
 Contrast this with pre-definition-heavy semantic layers. In something like Cube.js, every new shape of question requires a pre-declared measure or dimension in the cube: time-shifted revenue is one measure, its change over period another, the same pair repeated for every granularity and time column you care about, plus every bucket dimension you might plausibly want. The model definition explodes combinatorially — and the resulting thing has to fit into an agent's context window. 
@@ -29,7 +29,7 @@ The second form of dynamism is **extending the model for the lifetime of one que
 
 The semantic concept is trivial; the SQL that expresses it is a view, a dbt model, or a CTE chain, and making a commit to a source controlled config repo to change any of those for a one-off is disproportionate.
 
-SLayer's answer are model extension semantics: when constructing a query, the `source_model` can be a plain model name, or it can be that model name plus extra dimensions, measures, filters, and [joins](../05_joins/joins.md) appended for the lifetime of this single query. 
+SLayer's answer are model extension semantics: when constructing a query, the `source_model` can be a plain model name, or it can be that model name plus extra columns, named-formula measures, filters, and [joins](../05_joins/joins.md) appended for the lifetime of this single query. 
 
 The persisted model stays untouched.
 
@@ -37,7 +37,7 @@ The persisted model stays untouched.
 
 You might reasonably ask why one would want to add *joins* at query time. If there's a relationship between this model and another, shouldn't it live in the model definition?
 
-Often, yes. But not always — because **queries themselves can be used as models**. A SLayer query resolves to a SQL query, and SLayer's [introspection](../../concepts/ingestion.md) already turns any SQL query into a model by generating dimensions and measures from its columns. 
+Often, yes. But not always — because **queries themselves can be used as models**. A SLayer query resolves to a SQL query, and SLayer's [introspection](../../concepts/ingestion.md) already turns any SQL query into a [query-backed model](../../concepts/models.md#query-backed-models) by deriving its `columns` from the query's output. 
 
 Dynamic joins are what stitch a query-as-model back into a bigger query.
 
@@ -48,7 +48,7 @@ Dynamic joins are what stitch a query-as-model back into a bigger query.
 Put queries-as-models together with inline joins and you get **[multistage queries](../06_multistage_queries/multistage_queries.md)** — not as a bolt-on with its own syntax, but as a natural consequence of the two features above. Two patterns this makes easy, both of which are genuinely awkward in most semantic layers:
 
 - **Nested aggregation**: sum revenue per store, then average those store totals across months or regions. A single SQL pass can't express this; SLayer expresses it as a **two-element query list** where the outer query references the inner by name.
-- **Grouping by a calculated dimension**: bucket customers by their total spend, then count how many fall in each bucket. The bucket depends on an aggregate — so the inner query computes the totals, and the outer query's `source_model` is a `ModelExtension` adding a `CASE WHEN` dimension over the inner query's field.
+- **Grouping by a calculated dimension**: bucket customers by their total spend, then count how many fall in each bucket. The bucket depends on an aggregate — so the inner query computes the totals, and the outer query's `source_model` is a `ModelExtension` adding a `CASE WHEN` column over the inner query's output.
 
 Each of these is **simple at the semantic level and non-trivial at the SQL level**. That's exactly the gap a good semantic layer should close — and SLayer closes it in the query, not the model, saving agent tokens and keeping the model small enough to fit.
 

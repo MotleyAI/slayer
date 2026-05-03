@@ -37,12 +37,14 @@ SLayer generates and executes the query against your database.
 }
 ```
 
-You can add ad hoc measures, dimensions, etc to the source_model, like
+You can add ad hoc columns, formulas, joins, or filters to the source_model
+inline via `ModelExtension`. Row-level SQL goes in `columns`; named formulas go
+in `measures`:
 ```json
 {
   "source_model": {
     "source_name": "orders",
-    "measures": [{"name": "adams_revenue", "sql": "amount", "filter": "customers.name='Adam'"}],
+    "columns": [{"name": "adams_revenue", "sql": "amount", "type": "number", "filter": "customers.name='Adam'"}],
     ...
   }
 ...

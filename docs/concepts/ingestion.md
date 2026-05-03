@@ -55,7 +55,7 @@ All models use `sql_table` (the source table) plus `joins` (direct FK joins only
 ### CLI
 
 ```bash
-slayer ingest --datasource my_postgres --schema public --models-dir ./slayer_data
+slayer ingest --datasource my_postgres --schema public --storage ./slayer_data
 ```
 
 ### Python

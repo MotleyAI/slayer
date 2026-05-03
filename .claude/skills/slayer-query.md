@@ -1,58 +1,62 @@
 ---
-description: How to construct and execute SLayer queries. Use when building queries with fields, dimensions, filters, time dimensions.
+description: How to construct and execute SLayer queries. Use when building queries with measures, dimensions, filters, time dimensions.
 ---
 
 # Querying with SLayer
 
-## SlayerQuery Structure
+A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API, MCP tools, the CLI, and the Python SDK — pick whichever matches your interface.
 
-```python
-from slayer.core.query import SlayerQuery
+## Query Structure
 
-query = SlayerQuery(
-    source_model="orders",
-    fields=["*:count", "revenue:sum"],
-    dimensions=["status"],
-    time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-    filters=["status = 'active'"],
-    order=[{"column": "*:count", "direction": "desc"}],
-    limit=10,
-)
+```json
+{
+  "source_model": "orders",
+  "measures": ["*:count", "revenue:sum"],
+  "dimensions": ["status"],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
+  "filters": ["status = 'active'"],
+  "order": [{"column": "count", "direction": "desc"}],
+  "limit": 10
+}
 ```
 
-## Fields — Measures with Colon Aggregation
+`order[].column` is the short alias (`count`, `revenue_sum`) — not the colon form.
 
-Measures are row-level expressions; aggregation is chosen at query time with **colon syntax**:
+## Measures — colon aggregation
 
-```python
-fields=[
-    "*:count",                          # COUNT(*)
-    "revenue:sum",                      # SUM(revenue)
-    "revenue:avg",                      # AVG(revenue)
-    "price:weighted_avg(weight=quantity)",  # weighted average
-    {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
-    "cumsum(revenue:sum)",              # running total
-    "change_pct(revenue:sum)",          # month-over-month growth
-    "last(revenue:sum)",               # most recent period's value
-    "time_shift(revenue:sum, -1, 'year')",  # year-over-year
-    "lag(revenue:sum, 1)",             # previous row (window function)
-    "rank(revenue:sum)",               # ranking
+Each entry in `measures` is either a bare formula string or a `{"formula": ..., "name": ..., "label": ...}` dict. Aggregation is chosen at query time using **colon syntax**:
+
+```json
+"measures": [
+  "*:count",
+  "revenue:sum",
+  "revenue:avg",
+  "price:weighted_avg(weight=quantity)",
+  {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
+  "cumsum(revenue:sum)",
+  "change_pct(revenue:sum)",
+  "last(revenue:sum)",
+  "time_shift(revenue:sum, -1, 'year')",
+  "lag(revenue:sum, 1)",
+  "rank(revenue:sum)"
 ]
 ```
 
-Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`.
+Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`.
 
-`*:count` is always available — no measure definition needed. `col:count` counts non-nulls.
+`*:count` is always available — no column definition needed. `col:count` counts non-nulls.
 
-Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders.count`.
+Saved named formulas (`SlayerModel.measures`) can be referenced by bare name in any formula context: `{"formula": "aov"}`.
+
+Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders._count` (the leading `_` distinguishes it from any user-defined column literally named `count`).
 
 ## Filters
 
-```python
-filters=[
-    "status = 'active'",
-    "amount > 100",
-    "status = 'completed' OR status = 'pending'",
+```json
+"filters": [
+  "status = 'active'",
+  "amount > 100",
+  "status = 'completed' OR status = 'pending'"
 ]
 ```
 
@@ -60,7 +64,9 @@ filters=[
 
 **Boolean logic**: `AND`, `OR`, `NOT`
 
-**Filtering on computed columns**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
+**Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
+
+**Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces.
 
 ## Executing
 
@@ -72,11 +78,14 @@ engine = SlayerQueryEngine(storage=storage)
 # Async (most callers — REST/MCP):
 result = await engine.execute(query=query)  # SlayerResponse with .data, .columns, .row_count, .sql, .attributes
 
-# With runtime variables (always wins over query.variables / model defaults)
+# With runtime variables (highest precedence — wins over query.variables / model defaults):
 result = await engine.execute(query=query, variables={"region": "US"})
 
+# Plan-only modes are engine kwargs (v3) — no longer fields on the query body:
+result = await engine.execute(query=query, dry_run=True)
+result = await engine.execute(query=query, explain=True)
+
 # Run-by-name: execute the stored backing query of a query-backed model.
-# Caller may also request plan-only via dry_run=True / explain=True.
 result = await engine.execute("monthly_revenue", variables={"region": "US"})
 result = await engine.execute("monthly_revenue", dry_run=True)
 
@@ -86,44 +95,61 @@ result = engine.execute_sync(query=query)
 
 Variable precedence (highest first): `runtime kwarg > stage.variables > outer query.variables > model.query_variables`. Runtime kwargs are merged into the available variable set; extra keys simply remain unused if the query does not reference them. Unresolved `{var}` placeholders raise at execute time, naming the model and stage.
 
-## Cross-Model Measures
+## Cross-model measures
 
 Reference measures from joined models with dotted syntax + colon aggregation:
 
-```python
-fields=[
-    "*:count",
-    "customers.score:avg",                  # single hop
-    "cumsum(customers.score:avg)",          # transforms work too
-    "customers.regions.population:sum",    # multi-hop
+```json
+"measures": [
+  "*:count",
+  "customers.score:avg",
+  "cumsum(customers.score:avg)",
+  "customers.regions.population:sum"
 ]
 ```
 
 ## ModelExtension
 
-Extend a model inline with extra dimensions, measures, or joins:
+Extend a model inline with extra columns, named-formula measures, joins, or filters. The stored model is not modified:
 
-```python
-query = SlayerQuery(
-    source_model=ModelExtension(
-        source_name="orders",
-        dimensions=[{"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END"}],
-    ),
-    dimensions=["tier"],
-    fields=["*:count"],
-)
+```json
+{
+  "source_model": {
+    "source_name": "orders",
+    "columns": [
+      {"name": "tier", "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", "type": "string"}
+    ]
+  },
+  "dimensions": ["tier"],
+  "measures": ["*:count"]
+}
 ```
 
-## Query Lists
+Allowed `ModelExtension` keys: `source_name` (required), `columns`, `measures`, `joins`, `filters`.
 
-Pass a list of queries — earlier queries are named sub-queries, last is the main:
+## Query lists
 
-```python
-inner = SlayerQuery(name="monthly", source_model="orders", fields=["*:count", "revenue:sum"], time_dimensions=[...])
-outer = SlayerQuery(source_model="monthly", fields=["*:count"])
-engine.execute(query=[inner, outer])
+Pass a list of queries — earlier queries are named sub-queries; the last is the main one whose result is returned:
+
+```json
+[
+  {
+    "name": "monthly",
+    "source_model": "orders",
+    "measures": ["*:count", "revenue:sum"],
+    "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
+  },
+  {
+    "source_model": "monthly",
+    "measures": ["*:count"]
+  }
+]
 ```
 
-## Result Format
+## Result format
 
-Column keys use `model_name.column_name` format: `"orders.count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. Response includes `attributes` with nested `dimensions` and `measures` dicts, each mapping column aliases to `FieldMetadata` objects (label, format).
+Column keys use `model_name.column_name` format: `"orders._count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. The response also includes `attributes` — a `ResponseAttributes` object with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata` (label, format).
+
+## Strict validation (v3)
+
+`SlayerQuery` v3 sets `extra="forbid"`. Misspelled field names raise a `ValidationError` instead of being silently dropped — typo `dimensios` will not become an empty `dimensions` list.

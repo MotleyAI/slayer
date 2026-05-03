@@ -77,16 +77,17 @@ Or write the transform **inline** in the filter — no need to add it to `measur
 Limitation: bare measure renames like `{"formula": "*:count", "name": "n"}`
 cannot be filtered by `n`. Reference the underlying `*:count` instead.
 
-## Filtered measures — CASE WHEN inside an aggregate
+## Filtered columns — CASE WHEN inside an aggregate
 
-A **measure** can carry a `filter` that restricts which rows participate in the
-aggregate. It becomes CASE WHEN inside the aggregate, so other measures in the
-same query are not affected:
+A **column** can carry a `filter` that restricts which rows participate when
+that column is used as an aggregation source. It becomes CASE WHEN inside the
+aggregate, so other measures in the same query are not affected:
 
 ```yaml
-measures:
+columns:
   - name: active_revenue
     sql: amount
+    type: number
     filter: "status = 'active'"
 ```
 

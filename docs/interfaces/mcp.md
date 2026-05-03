@@ -13,7 +13,7 @@ The agent spawns SLayer as a subprocess and communicates via stdin/stdout. You d
 **Claude Code setup:**
 
 ```bash
-claude mcp add slayer -- slayer mcp --models-dir ./slayer_data
+claude mcp add slayer -- slayer mcp --storage ./slayer_data
 ```
 
 If `slayer` is installed in a virtualenv (e.g. via Poetry), use the full path to the executable so the agent can find it regardless of working directory:
@@ -24,7 +24,7 @@ poetry env info -p
 # e.g. /home/user/.venvs/slayer-abc123
 
 # Register with the full path
-claude mcp add slayer -- /home/user/.venvs/slayer-abc123/bin/slayer mcp --models-dir /path/to/slayer_data
+claude mcp add slayer -- /home/user/.venvs/slayer-abc123/bin/slayer mcp --storage /path/to/slayer_data
 ```
 
 ### SSE (remote)
@@ -33,7 +33,7 @@ MCP over HTTP via Server-Sent Events. You run `slayer serve` yourself — it exp
 
 ```bash
 # 1. Start the server
-slayer serve --models-dir ./slayer_data
+slayer serve --storage ./slayer_data
 # REST API at http://localhost:5143/
 # MCP SSE at http://localhost:5143/mcp/sse
 ```

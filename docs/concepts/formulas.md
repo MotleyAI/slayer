@@ -1,6 +1,6 @@
 # Formulas
 
-SLayer uses formula strings in two places: **fields** (data columns) and **filters** (conditions). Both are compiled to SQL — everything runs in the database. Field formulas are documented below; filter formulas are in [Queries — Filters](queries.md#filters).
+SLayer uses formula strings in two places: **measures** (data columns returned by a query) and **filters** (conditions). Both are compiled to SQL — everything runs in the database. Measure formulas are documented below; filter formulas are in [Queries — Filters](queries.md#filters).
 
 ---
 
@@ -26,7 +26,7 @@ aggregations:
 
 ```json
 {
-  "fields": [
+  "measures": [
     {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
     {"formula": "price:avg(window='1y')", "name": "avg_price_1y"}
   ],

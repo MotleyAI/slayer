@@ -18,11 +18,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from seed import seed
 
+from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
-from slayer.core.query import Field, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.async_utils import run_sync
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -51,7 +51,7 @@ def main():
             model.default_time_dimension = "created_at"
         run_sync(storage.save_model(model))
         has_rollup = " (with rollup)" if model.sql else ""
-        print(f"  {model.name}: {len(model.dimensions)} dims, {len(model.measures)} measures{has_rollup}")
+        print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} named formulas{has_rollup}")
 
     # 4. Run queries
     engine = SlayerQueryEngine(storage=storage)
@@ -59,145 +59,150 @@ def main():
     print("\n=== Query 1: Order count by status ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        fields=[{"formula": "count"}],
-        dimensions=[{"name": "status"}],
+        measures=["*:count"],
+        dimensions=["status"],
     ))
     for row in result.data:
-        print(f"  {row['orders.status']}: {row['orders.count']}")
+        print(f"  {row['orders.status']}: {row['orders._count']}")
 
     print("\n=== Query 2: Revenue by product category (rollup join) ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        fields=[{"formula": "count"}, {"formula": "quantity_sum"}],
-        dimensions=[{"name": "products.category"}],
-        order=[{"column": {"name": "quantity_sum"}, "direction": "desc"}],
+        measures=["*:count", "quantity:sum"],
+        dimensions=["products.category"],
+        order=[{"column": "quantity_sum", "direction": "desc"}],
     ))
     for row in result.data:
-        print(f"  {row['orders.products.category']}: {row['orders.count']} orders, {row['orders.quantity_sum']} units")
+        print(f"  {row['orders.products.category']}: {row['orders._count']} orders, {row['orders.quantity_sum']} units")
 
     print("\n=== Query 3: Orders by customer region (transitive rollup) ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        fields=[{"formula": "count"}],
-        dimensions=[{"name": "regions.name"}],
+        measures=["*:count"],
+        dimensions=["customers.regions.name"],
     ))
     for row in result.data:
-        print(f"  {row['orders.regions.name']}: {row['orders.count']}")
+        print(f"  {row['orders.customers.regions.name']}: {row['orders._count']}")
 
     print("\n=== Query 4: Completed orders only (filter) ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        fields=[{"formula": "count"}, {"formula": "quantity_sum"}],
-        filters=["status == 'completed'"],
+        measures=["*:count", "quantity:sum"],
+        filters=["status = 'completed'"],
     ))
     row = result.data[0]
-    print(f"  Completed: {row['orders.count']} orders, {row['orders.quantity_sum']} units")
+    print(f"  Completed: {row['orders._count']} orders, {row['orders.quantity_sum']} units")
 
     print("\n=== Query 5: Top 3 customers by order count (rollup + order + limit) ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        fields=[{"formula": "count"}],
-        dimensions=[{"name": "customers.name"}],
-        order=[{"column": {"name": "count"}, "direction": "desc"}],
+        measures=["*:count"],
+        dimensions=["customers.name"],
+        order=[{"column": "count", "direction": "desc"}],
         limit=3,
     ))
     for row in result.data:
-        print(f"  {row['orders.customers.name']}: {row['orders.count']}")
+        print(f"  {row['orders.customers.name']}: {row['orders._count']}")
 
-    print("\n=== Query 6: Monthly orders with average quantity (field) ===")
+    print("\n=== Query 6: Monthly orders with average quantity ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[Field(formula="count"), Field(formula="quantity_sum"), Field(formula="quantity_sum / count", name="avg_qty")],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
-    for row in result.data:
-        month = str(row["orders.created_at"])[:7]
-        print(f"  {month}: {row['orders.count']} orders, avg qty {row['orders.avg_qty']:.1f}")
-
-    print("\n=== Query 7: Monthly orders with cumulative sum (field) ===")
-    result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[Field(formula="count"), Field(formula="cumsum(count)", name="cumulative")],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
-    ))
-    for row in result.data:
-        month = str(row["orders.created_at"])[:7]
-        print(f"  {month}: {row['orders.count']} orders, cumulative: {row['orders.cumulative']}")
-
-    print("\n=== Query 8: Monthly orders with month-over-month change (field) ===")
-    result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="time_shift(count, -1)", name="prev_month"),
-            Field(formula="change(count)", name="mom_change"),
+        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        measures=[
+            "*:count",
+            "quantity:sum",
+            {"formula": "quantity:sum / *:count", "name": "avg_qty"},
         ],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        order=[{"column": "created_at", "direction": "asc"}],
     ))
     for row in result.data:
         month = str(row["orders.created_at"])[:7]
-        prev = row["orders.prev_month"] or "-"
+        print(f"  {month}: {row['orders._count']} orders, avg qty {row['orders.avg_qty']:.1f}")
+
+    print("\n=== Query 7: Monthly orders with cumulative sum ===")
+    result = engine.execute_sync(query=SlayerQuery(
+        source_model="orders",
+        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        measures=[
+            "*:count",
+            {"formula": "cumsum(*:count)", "name": "cumulative"},
+        ],
+        order=[{"column": "created_at", "direction": "asc"}],
+    ))
+    for row in result.data:
+        month = str(row["orders.created_at"])[:7]
+        print(f"  {month}: {row['orders._count']} orders, cumulative: {row['orders.cumulative']}")
+
+    print("\n=== Query 8: Monthly orders with month-over-month change ===")
+    result = engine.execute_sync(query=SlayerQuery(
+        source_model="orders",
+        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        measures=[
+            "*:count",
+            {"formula": "time_shift(*:count, -1)", "name": "prev_month"},
+            {"formula": "change(*:count)", "name": "mom_change"},
+        ],
+        order=[{"column": "created_at", "direction": "asc"}],
+    ))
+    for row in result.data:
+        month = str(row["orders.created_at"])[:7]
+        prev = row["orders.prev_month"] if row["orders.prev_month"] is not None else "-"
         chg = row["orders.mom_change"] if row["orders.mom_change"] is not None else "-"
-        print(f"  {month}: {row['orders.count']} orders (prev: {prev}, change: {chg})")
+        print(f"  {month}: {row['orders._count']} orders (prev: {prev}, change: {chg})")
 
-    print("\n=== Query 9: Customer ranking by order count (field) ===")
+    print("\n=== Query 9: Customer ranking by order count ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        dimensions=[{"name": "customers.name"}],
-        fields=[Field(formula="count"), Field(formula="rank(count)", name="rank")],
-        order=[{"column": {"name": "count"}, "direction": "desc"}],
+        dimensions=["customers.name"],
+        measures=["*:count", {"formula": "rank(*:count)", "name": "rk"}],
+        order=[{"column": "count", "direction": "desc"}],
     ))
     for row in result.data:
-        print(f"  #{int(row['orders.rank'])} {row['orders.customers.name']}: {row['orders.count']} orders")
+        print(f"  #{int(row['orders.rk'])} {row['orders.customers.name']}: {row['orders._count']} orders")
 
-    # --- Unified Fields syntax (recommended) ---
-
-    print("\n=== Query 10: Unified fields — measures + expression in one list ===")
+    print("\n=== Query 10: Aggregations + arithmetic in one measures list ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        dimensions=[{"name": "products.category"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="quantity_sum"),
-            Field(formula="quantity_sum / count", name="avg_qty"),
+        dimensions=["products.category"],
+        measures=[
+            "*:count",
+            "quantity:sum",
+            {"formula": "quantity:sum / *:count", "name": "avg_qty"},
         ],
-        order=[{"column": {"name": "count"}, "direction": "desc"}],
+        order=[{"column": "count", "direction": "desc"}],
     ))
     for row in result.data:
-        print(f"  {row['orders.products.category']}: {row['orders.count']} orders, avg qty {row['orders.avg_qty']:.1f}")
+        print(f"  {row['orders.products.category']}: {row['orders._count']} orders, avg qty {row['orders.avg_qty']:.1f}")
 
-    print("\n=== Query 11: Unified fields — cumsum + change as formulas ===")
+    print("\n=== Query 11: cumsum + change as transforms ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="cumsum(count)", name="running_total"),
-            Field(formula="change(count)", name="mom_change"),
+        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        measures=[
+            "*:count",
+            {"formula": "cumsum(*:count)", "name": "running_total"},
+            {"formula": "change(*:count)", "name": "mom_change"},
         ],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        order=[{"column": "created_at", "direction": "asc"}],
     ))
     for row in result.data:
         month = str(row["orders.created_at"])[:7]
         chg = row["orders.mom_change"] if row["orders.mom_change"] is not None else "-"
-        print(f"  {month}: {row['orders.count']} orders, running: {row['orders.running_total']}, MoM: {chg}")
+        print(f"  {month}: {row['orders._count']} orders, running: {row['orders.running_total']}, MoM: {chg}")
 
-    print("\n=== Query 12: Unified fields — last() most recent value ===")
+    print("\n=== Query 12: last() — most recent month's value broadcast ===")
     result = engine.execute_sync(query=SlayerQuery(
         source_model="orders",
-        time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-        fields=[
-            Field(formula="count"),
-            Field(formula="last(count)", name="latest_month"),
+        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        measures=[
+            "*:count",
+            {"formula": "last(*:count)", "name": "latest_month"},
         ],
-        order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+        order=[{"column": "created_at", "direction": "asc"}],
     ))
     for row in result.data:
         month = str(row["orders.created_at"])[:7]
-        print(f"  {month}: {row['orders.count']} orders (latest month: {row['orders.latest_month']})")
+        print(f"  {month}: {row['orders._count']} orders (latest month: {row['orders.latest_month']})")
 
     print(f"\nDone! Database at: {db_path}")
 

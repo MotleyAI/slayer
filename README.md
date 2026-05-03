@@ -70,7 +70,7 @@ Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/
 # Query
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "status"}]}'
+  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
 
 # List models (returns name + description)
 curl http://localhost:5143/models
@@ -106,7 +106,7 @@ Useful for agents working in code execution environments, e.g. for AI data analy
 
 ```python
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.query import SlayerQuery, ColumnRef
+from slayer.core.query import SlayerQuery
 
 # Remote mode (connects to running server)
 client = SlayerClient(url="http://localhost:5143")
@@ -117,9 +117,9 @@ client = SlayerClient(storage=YAMLStorage(base_dir="./my_models"))
 
 # Query data
 query = SlayerQuery(
-    model="orders",
-    fields=[{"formula": "*:count"}, {"formula": "revenue:sum"}],
-    dimensions=[ColumnRef(name="status")],
+    source_model="orders",
+    measures=["*:count", "revenue:sum"],
+    dimensions=["status"],
     limit=10,
 )
 df = client.query_df(query)
@@ -130,7 +130,7 @@ print(df)
 
 ```bash
 # Run a query directly from the terminal
-slayer query '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "status"}]}'
+slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
 
 # Or from a file
 slayer query @query.json --format json
@@ -148,7 +148,9 @@ sql_table: public.orders
 data_source: my_postgres
 description: "Core orders table with revenue metrics"
 
-dimensions:
+# A single `columns` list — every column can be used as a group-by key
+# OR as the input to a query-time aggregation, gated by type/PK rules.
+columns:
   - name: id
     sql: id
     type: number
@@ -159,34 +161,40 @@ dimensions:
   - name: created_at
     sql: created_at
     type: time
-
-measures:
   - name: revenue
     sql: amount
+    type: number
   - name: quantity
     sql: qty
+    type: number
+
+# Optional library of named formulas that queries can reference by bare name.
+measures:
+  - name: aov
+    formula: "revenue:sum / *:count"
+    label: "Average Order Value"
 ```
 
-## Fields
+## Measures
 
-The `fields` parameter specifies what data columns to return.
+The `measures` parameter on a query specifies what data columns to return. Aggregations are picked at query time via colon syntax (`revenue:sum`, `*:count`); transforms wrap them (`cumsum(revenue:sum)`).
 
 ```json
 {
-  "model": "orders",
+  "source_model": "orders",
   "dimensions": ["status"],
   "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-  "fields": [
-    {"formula": "*:count"},
-    {"formula": "revenue:sum"},
+  "measures": [
+    "*:count",
+    "revenue:sum",
     {"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"},
-    {"formula": "cumsum(revenue:sum)"},
-    {"formula": "change_pct(revenue:sum)"},
+    "cumsum(revenue:sum)",
+    "change_pct(revenue:sum)",
     {"formula": "last(revenue:sum)", "name": "latest_rev"},
     {"formula": "time_shift(revenue:sum, -1, 'year')", "name": "rev_last_year"},
     {"formula": "time_shift(revenue:sum, -2)", "name": "rev_2_periods_ago"},
     {"formula": "lag(revenue:sum, 1)", "name": "rev_prev_row"},
-    {"formula": "rank(revenue:sum)"},
+    "rank(revenue:sum)",
     {"formula": "change(cumsum(revenue:sum))", "name": "cumsum_delta"}
   ]
 }
@@ -200,8 +208,8 @@ Filters use simple formula strings — no verbose JSON objects:
 
 ```json
 {
-  "model": "orders",
-  "fields": [{"formula": "*:count"}, {"formula": "revenue:sum"}],
+  "source_model": "orders",
+  "measures": ["*:count", "revenue:sum"],
   "filters": [
     "status == 'completed'",
     "amount > 100"
@@ -315,7 +323,7 @@ The `docs/examples/` directory contains Jupyter notebooks that walk through SLay
 SLayer includes Claude Code skills in `.claude/skills/` to help Claude understand the codebase:
 
 - **slayer-overview** — architecture, package structure, MCP tools list
-- **slayer-query** — how to construct queries with fields, dimensions, filters, time dimensions
+- **slayer-query** — how to construct queries with measures, dimensions, filters, time dimensions
 - **slayer-models** — model definitions, datasource configs, auto-ingestion, incremental editing
 
 ## Known limitations

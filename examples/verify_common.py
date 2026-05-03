@@ -109,7 +109,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "*:count"}],
+            "measures": ["*:count"],
         },
     )
     check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders._count"] == TOTAL_ORDERS)
@@ -119,8 +119,8 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "*:count"}],
-            "dimensions": [{"name": "status"}],
+            "measures": ["*:count"],
+            "dimensions": ["status"],
         },
     )
     by_status = {r["orders.status"]: r["orders._count"] for r in result["data"]}
@@ -132,8 +132,8 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "*:count"}],
-            "filters": ["status == 'completed'"],
+            "measures": ["*:count"],
+            "filters": ["status = 'completed'"],
         },
     )
     check(
@@ -146,9 +146,9 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "fields": [{"formula": "*:count"}],
-            "dimensions": [{"name": "customer_id"}],
-            "order": [{"column": {"name": "_count"}, "direction": "desc"}],
+            "measures": ["*:count"],
+            "dimensions": ["customer_id"],
+            "order": [{"column": "count", "direction": "desc"}],
             "limit": 3,
         },
     )
@@ -159,7 +159,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "products",
-            "fields": [{"formula": "*:count"}],
+            "measures": ["*:count"],
         },
     )
     check("8 products total", result["data"][0]["products._count"] == 8)
@@ -169,7 +169,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "customers",
-            "fields": [{"formula": "*:count"}],
+            "measures": ["*:count"],
         },
     )
     check("10 customers total", result["data"][0]["customers._count"] == 10)
@@ -219,10 +219,10 @@ def check_median_percentile(measure="quantity"):
         "/query",
         {
             "source_model": "orders",
-            "fields": [
-                {"formula": f"{measure}:median"},
-                {"formula": f"{measure}:percentile(p=0.25)"},
-                {"formula": f"{measure}:percentile(p=0.75)"},
+            "measures": [
+                f"{measure}:median",
+                f"{measure}:percentile(p=0.25)",
+                f"{measure}:percentile(p=0.75)",
             ],
         },
     )
@@ -252,11 +252,11 @@ def check_rollup(expect_rollup=True):
                 "/query",
                 {
                     "source_model": "orders",
-                    "fields": [{"formula": "count"}],
-                    "dimensions": [{"name": "products.category"}],
+                    "measures": ["*:count"],
+                    "dimensions": ["products.category"],
                 },
             )
-            by_cat = {r["orders.products.category"]: r["orders.count"] for r in result["data"]}
+            by_cat = {r["orders.products.category"]: r["orders._count"] for r in result["data"]}
             check("query by product category works", len(by_cat) > 0)
             check(f"all categories sum to {TOTAL_ORDERS}", sum(by_cat.values()) == TOTAL_ORDERS)
 
@@ -265,11 +265,11 @@ def check_rollup(expect_rollup=True):
                 "/query",
                 {
                     "source_model": "orders",
-                    "fields": [{"formula": "count"}],
-                    "dimensions": [{"name": "customers.regions.name"}],
+                    "measures": ["*:count"],
+                    "dimensions": ["customers.regions.name"],
                 },
             )
-            by_region = {r["orders.customers.regions.name"]: r["orders.count"] for r in result["data"]}
+            by_region = {r["orders.customers.regions.name"]: r["orders._count"] for r in result["data"]}
             check("transitive join by region works", len(by_region) > 0)
     else:
         check("no joins (expected)", not has_joins)

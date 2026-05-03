@@ -26,7 +26,7 @@ what values a column actually holds before writing a filter.
 4. Add transforms last (`cumsum`, `change`, `time_shift`) — they need a time
    dimension.
 5. If a result looks wrong, pass `show_sql=true` to see the generated SQL.
-6. To preview without executing, use `dry_run=true`. For DB plans, `explain=true`.
+6. To preview without executing, pass `dry_run=true` as an MCP tool kwarg (or `engine.execute(query, dry_run=True)` in Python). For DB plans, `explain=true` works the same way. As of v3, these are execution kwargs — not fields on the query body itself.
 
 ## Connecting a new database
 
