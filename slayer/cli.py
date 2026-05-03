@@ -131,7 +131,11 @@ examples:
     )
     query_parser.add_argument(
         "query_json",
-        help="JSON query string, or @file.json to read from a file",
+        help=(
+            "JSON query (e.g. '{\"source_model\": ...}'), @file.json to read "
+            "from a file, or a model name to run a query-backed model's "
+            "stored backing query."
+        ),
     )
     _add_storage_arg(query_parser)
     query_parser.add_argument(
@@ -142,6 +146,21 @@ examples:
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
     query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
+    query_parser.add_argument(
+        "--variables",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help=(
+            "Set a runtime variable (repeatable). Overrides query.variables and "
+            "model.query_variables. Example: --variables threshold=100 --variables region=US."
+        ),
+    )
+    query_parser.add_argument(
+        "--variables-json",
+        default=None,
+        help="Set runtime variables from a JSON object string. Mutually exclusive with --variables.",
+    )
 
     # ── ingest ────────────────────────────────────────────────────────
     ingest_parser = subparsers.add_parser(
@@ -366,35 +385,93 @@ def _run_help(args):
     print(render_help(topic=args.topic))
 
 
-def _run_query(args):
+def _parse_cli_variables(args) -> dict:
+    """Combine ``--variables KEY=VALUE`` (repeatable) and ``--variables-json``
+    into a single dict. Errors out if both forms are mixed.
+    """
+    import json as _json
+
+    has_kv = bool(args.variables)
+    has_json = args.variables_json is not None
+    if has_kv and has_json:
+        raise SystemExit(
+            "--variables and --variables-json are mutually exclusive."
+        )
+    if has_json:
+        try:
+            parsed = _json.loads(args.variables_json)
+        except _json.JSONDecodeError as exc:
+            raise SystemExit(f"--variables-json contains invalid JSON: {exc}") from None
+        if not isinstance(parsed, dict):
+            raise SystemExit("--variables-json must decode to a JSON object.")
+        return parsed
+    out: dict = {}
+    for raw in args.variables or []:
+        if "=" not in raw:
+            raise SystemExit(
+                f"--variables expects KEY=VALUE form, got: {raw!r}"
+            )
+        key, value = raw.split("=", 1)
+        out[key] = value
+    return out
+
+
+def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
     import json
 
     from slayer.core.query import SlayerQuery
     from slayer.engine.query_engine import SlayerQueryEngine
 
     query_input = args.query_json
-    if query_input.startswith("@"):
-        with open(query_input[1:]) as f:
-            query_input = f.read()
-    data = json.loads(query_input)
-    if args.dry_run:
-        data["dry_run"] = True
-    if args.explain:
-        data["explain"] = True
-    slayer_query = SlayerQuery.model_validate(data)
+    runtime_kwarg = _parse_cli_variables(args)
 
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
-    result = engine.execute_sync(query=slayer_query)
 
-    if slayer_query.dry_run:
+    if query_input.startswith("@"):
+        with open(query_input[1:]) as f:
+            query_input = f.read()
+        is_json = True
+    else:
+        # Heuristic: a JSON query starts with '{' or '['; anything else
+        # is treated as a model name for run-by-name dispatch.
+        stripped = query_input.lstrip()
+        is_json = stripped.startswith("{") or stripped.startswith("[")
+
+    if is_json:
+        data = json.loads(query_input)
+        if args.dry_run:
+            data["dry_run"] = True
+        if args.explain:
+            data["explain"] = True
+        slayer_query = SlayerQuery.model_validate(data)
+        result = engine.execute_sync(
+            query=slayer_query, variables=runtime_kwarg or None
+        )
+        explain_set = slayer_query.explain
+        dry_run_set = slayer_query.dry_run
+    else:
+        # Run-by-name: the positional arg is a model name.
+        # ``execute_sync(str, dry_run=..., explain=...)`` honors the flags
+        # via the engine's run-by-name path, which also enforces the
+        # "model must be query-backed" check uniformly.
+        result = engine.execute_sync(
+            query_input,
+            variables=runtime_kwarg,
+            dry_run=bool(args.dry_run),
+            explain=bool(args.explain),
+        )
+        explain_set = bool(args.explain)
+        dry_run_set = bool(args.dry_run)
+
+    if dry_run_set:
         print(result.sql)
         return
 
     if args.format == "json":
         print(json.dumps(result.data, indent=2, default=str))
     else:
-        if slayer_query.explain:
+        if explain_set:
             print(f"SQL:\n{result.sql}\n")
             print("Query Plan:")
         if not result.data:
@@ -406,7 +483,7 @@ def _run_query(args):
         print(separator)
         for row in result.data:
             print(" | ".join(str(row.get(c, "")) for c in result.columns))
-        if not slayer_query.explain:
+        if not explain_set:
             print(f"\n{result.row_count} row(s)")
 
 
@@ -587,10 +664,15 @@ def _run_models(args):
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
     elif args.models_command == "create":
+        from slayer.engine.query_engine import SlayerQueryEngine
+
         with open(args.file) as f:
             data = yaml.safe_load(f)
         model = SlayerModel.model_validate(data)
-        run_sync(storage.save_model(model))
+        # Route through engine.save_model so query-backed models get cache
+        # populated (and user-supplied cache fields are rejected).
+        engine = SlayerQueryEngine(storage=storage)
+        run_sync(engine.save_model(model))
         print(f"Created model '{model.name}'.")
 
     elif args.models_command == "delete":

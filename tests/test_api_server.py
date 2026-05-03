@@ -214,3 +214,175 @@ class TestQuery:
         assert slayer_query.measures is not None
         assert len(slayer_query.measures) == 1
         assert slayer_query.measures[0].formula == "*:count"
+
+
+class TestQueryBackedModelsAPI:
+    """REST surface for query-backed models — POST /models with source_queries
+    and POST /query with run-by-name body shape.
+    """
+
+    def test_post_models_creates_query_backed_model(
+        self, client: TestClient, storage: YAMLStorage
+    ) -> None:
+        # Set up upstream + a datasource so cache refresh succeeds at save time.
+        from slayer.core.models import DatasourceConfig
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_datasource(DatasourceConfig(
+                name="ds", type="sqlite", database=":memory:"
+            ))
+        )
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_model(SlayerModel(
+                name="upstream", sql_table="t", data_source="ds",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+        )
+        resp = client.post("/models", json={
+            "name": "qb_via_api",
+            "data_source": "ds",
+            "source_queries": [{
+                "source_model": "upstream",
+                "measures": [{"formula": "amount:sum"}],
+                "dry_run": True,
+            }],
+            "query_variables": {},
+        })
+        assert resp.status_code == 200, resp.text
+        # GET returns the model with source_queries + query_variables
+        get_resp = client.get("/models/qb_via_api")
+        assert get_resp.status_code == 200
+        body = get_resp.json()
+        assert "source_queries" in body
+        assert body["source_queries"][0]["source_model"] == "upstream"
+
+    def test_post_models_rejects_user_columns_on_query_backed(
+        self, client: TestClient, storage: YAMLStorage
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_datasource(DatasourceConfig(
+                name="ds", type="sqlite", database=":memory:"
+            ))
+        )
+        asyncio.get_event_loop().run_until_complete(
+            storage.save_model(SlayerModel(
+                name="upstream", sql_table="t", data_source="ds",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+        )
+        resp = client.post("/models", json={
+            "name": "qb_bad",
+            "data_source": "ds",
+            "source_queries": [{
+                "source_model": "upstream",
+                "measures": [{"formula": "amount:sum"}],
+            }],
+            "columns": [{"name": "x", "type": "string"}],
+        })
+        # 400 with "auto-generated" in detail
+        assert resp.status_code == 400
+        assert "auto-generated" in resp.text or "must not be supplied" in resp.text
+
+    def test_post_query_run_by_name_rejects_extra_query_fields(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/query", json={
+            "name": "some_model",
+            "source_model": "other",
+        })
+        assert resp.status_code == 400
+        assert "no other query fields" in resp.text or "may not be set" in resp.text
+
+    def test_post_query_run_by_name_rejects_whole_periods_only(
+        self, client: TestClient
+    ) -> None:
+        # Codex review of PR #67 (commit 73f69b0): the disallowed-field check
+        # had forgotten ``whole_periods_only``. Silently ignoring it is the
+        # worst possible behavior — this test pins the rejection.
+        resp = client.post("/query", json={
+            "name": "some_model",
+            "whole_periods_only": True,
+        })
+        assert resp.status_code == 400
+        assert "no other query fields" in resp.text or "may not be set" in resp.text
+
+    def test_post_query_run_by_name_requires_model(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/query", json={"name": "nonexistent"})
+        assert resp.status_code == 400
+
+    def test_post_query_either_name_or_source_model_required(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/query", json={})
+        assert resp.status_code == 400
+
+
+class TestOpenAPI400Documentation:
+    """Endpoints that raise HTTPException(400) should declare it in OpenAPI
+    so generated SDKs surface the error shape (Sonar S8415).
+    """
+
+    def test_query_endpoint_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/query"]["post"]["responses"]
+        assert "400" in responses
+
+    def test_post_models_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models"]["post"]["responses"]
+        assert "400" in responses
+
+    def test_put_model_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models/{name}"]["put"]["responses"]
+        assert "400" in responses
+
+    def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
+        self, client: TestClient, storage: YAMLStorage
+    ) -> None:
+        """``{"name": "m", "dry_run": true}`` must populate ``sql`` in the response
+        without ever calling the SQL client.
+        """
+        from slayer.core.models import DatasourceConfig
+        import asyncio
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(storage.save_datasource(
+            DatasourceConfig(name="ds", type="sqlite", database=":memory:")
+        ))
+        loop.run_until_complete(storage.save_model(SlayerModel(
+            name="upstream", sql_table="t", data_source="ds",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+        )))
+        # Save a query-backed model whose stage does NOT have dry_run set.
+        client.post("/models", json={
+            "name": "qb_dryrun",
+            "data_source": "ds",
+            "source_queries": [{
+                "source_model": "upstream",
+                "measures": [{"formula": "amount:sum"}],
+            }],
+        })
+
+        from slayer.sql.client import SlayerSQLClient
+        execute_calls = 0
+        real_execute = SlayerSQLClient.execute
+
+        async def counting_execute(self, *a, **kw):
+            nonlocal execute_calls
+            execute_calls += 1
+            return await real_execute(self, *a, **kw)
+
+        SlayerSQLClient.execute = counting_execute  # type: ignore[method-assign]
+        try:
+            resp = client.post("/query", json={"name": "qb_dryrun", "dry_run": True})
+        finally:
+            SlayerSQLClient.execute = real_execute  # type: ignore[method-assign]
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body.get("sql") is not None
+        assert "amount" in body["sql"].lower()
+        assert execute_calls == 0, "dry_run=True must not execute SQL"

@@ -257,24 +257,85 @@ Model filters only support conditions on underlying table columns (WHERE). For m
 
 Since model filters are SQL snippets, multi-hop joined column references should use the `__` alias syntax (e.g., `customers__regions.name`), not dots. Single-dot references like `customers.name` (table.column) are fine. Multi-dot references like `customers.regions.name` are auto-converted to `customers__regions.name` with a warning. The same auto-conversion applies to dimension and measure `sql` fields.
 
-## Creating Models from Queries
+## Source modes
 
-You can save a query's result as a permanent model. The query structure is preserved, and dimensions and measures are auto-introspected:
+A `SlayerModel` has exactly one **source mode**, set by the field that's populated:
+
+- **`sql_table`** — the model is backed by a physical database table, e.g. `public.orders`.
+- **`sql`** — the model is backed by an explicit SQL subquery (a SELECT statement).
+- **`source_queries`** — the model is **query-backed**: its rows are the result of one or more `SlayerQuery` stages.
+
+The three are mutually exclusive — exactly one must be populated; others must be empty.
+
+## Query-backed models
+
+A query-backed model is a queryable relation whose rows are the final-stage result of one or more saved `SlayerQuery` stages. You can save any query as a model and then run it directly by name, or use it as `source_model` in another query (just like any table-backed model).
+
+### Saving a query as a model
 
 ```python
-engine.create_model_from_query(
-    query=SlayerQuery(
-        source_model="orders",
-        time_dimensions=[...],
-        measures=["*:count", "amount:sum"],
-    ),
-    name="monthly_summary",
+await engine.create_model_from_query(
+    query={
+        "source_model": "orders",
+        "measures": [{"formula": "amount:sum"}],
+        "dimensions": ["region"],
+        "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
+    },
+    name="monthly_revenue",
+    description="Monthly revenue by region",
+    variables={"region": "US"},  # default placeholder values, optional
 )
 ```
 
-The saved model can then be queried by name like any other model — useful for materializing complex aggregations.
+This:
+- saves the query structure in `model.source_queries`,
+- saves any defaults in `model.query_variables`,
+- runs save-time validation (any unresolved `{var}` placeholder defaults to `'0'` so SQL generation succeeds),
+- caches the resulting `columns` and the rendered `backing_query_sql` on the model for fast inspection.
 
-Via MCP, use `create_model` with a `query` parameter.
+`create_model_from_query` accepts a single `SlayerQuery` or a list of stages; for multi-stage queries, every non-final stage must have a `name` so it can be referenced.
+
+### Two ways to use a saved query
+
+**Run the backing query directly by name** — returns the final-stage result:
+
+```python
+await engine.execute("monthly_revenue", variables={"region": "US"})
+```
+
+**Use the saved result as a model in another query**:
+
+```python
+{
+    "source_model": "monthly_revenue",
+    "measures": [{"formula": "amount_sum:avg"}],
+    "dimensions": ["region"],
+}
+```
+
+### Variable precedence
+
+When a query-backed model references `{var}` placeholders, values flow in this order (highest precedence first):
+
+1. **Runtime kwarg** — the `variables=` argument to `engine.execute(...)` (also exposed by REST `/query`, MCP `query`/`create_model`, and CLI `--variables` / `--variables-json`). Wins at every nesting level.
+2. **Stage `.variables`** — set on an individual `SlayerQuery` stage.
+3. **Outer query `.variables`** — when a query-backed model is used as `source_model` in another query.
+4. **Model defaults** — `model.query_variables`.
+
+Unresolved placeholders raise a clear error at execute time, naming the model and the missing variable. Variables in the runtime kwarg that don't appear anywhere are silently ignored.
+
+### What gets cached
+
+For a query-backed model, the engine caches:
+
+- `model.columns` — the final-stage output columns (a discoverability snapshot).
+- `model.backing_query_sql` — the rendered backing-query SQL.
+
+The cache refreshes whenever the model is saved or executed (real run, dry-run, or explain) — write-if-changed semantics. Inspect tools (`inspect_model`, `models_summary`, REST `GET /models/{name}`) read the cache directly.
+
+You **cannot** supply `columns` or `backing_query_sql` yourself when creating a query-backed model — they're engine-managed, and any user-supplied value is rejected at save with a clear error.
+
+Via MCP, use `create_model` with `query=` (and optional `variables=`); via REST, `POST /models` with `source_queries`; via CLI, `slayer models create model.yaml` where the YAML has a `source_queries` field.
 
 ### Column naming in query-derived models
 
@@ -300,11 +361,14 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 | `name` | string | Yes | — | Unique model name |
 | `sql_table` | string | One of | — | Database table (e.g. `public.orders`) |
 | `sql` | string | these | — | Custom SQL subquery |
+| `source_queries` | list[SlayerQuery] | three | — | Saved query stages — makes the model **query-backed**. Multi-stage queries: every non-final stage must have a `name`. |
 | `data_source` | string | Yes | — | Datasource name |
-| `columns` | list | No | `[]` | Column definitions (`Column`) — usable as group-by keys or aggregation sources, gated per query |
+| `columns` | list | No | `[]` | Column definitions (`Column`). For query-backed models this is an **engine-managed cache** auto-derived from the backing query — supplying it on save raises a clear error. |
 | `measures` | list | No | `[]` | Library of named formulas (`ModelMeasure`) — referenced by bare name in queries |
 | `joins` | list | No | `[]` | JOIN relationships to other models |
 | `filters` | list[str] | No | `[]` | Model-level WHERE filters (always applied, e.g., `"deleted_at IS NULL"`) |
+| `query_variables` | dict | No | `{}` | Default values for `{var}` placeholders in `source_queries`. Lowest layer of the variable-precedence stack (see [Variable precedence](#variable-precedence)). Only meaningful for query-backed models. |
+| `backing_query_sql` | string | No | — | Engine-managed cache of the rendered backing query (canonical placeholder-fill render). Read-only; user-supplied values are rejected at save. |
 | `description` | string | No | — | Helps agents and users understand the model |
 | `hidden` | bool | No | `false` | Hide from model listings |
 | `default_time_dimension` | string | No | — | Default time dimension name for time-dependent formulas (e.g. `"created_at"`) |

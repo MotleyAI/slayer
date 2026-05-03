@@ -8,10 +8,13 @@ description: How to create and manage SLayer models and datasources. Use when de
 
 ```yaml
 name: orders
-sql_table: public.orders         # or sql: "SELECT * FROM ..."
+sql_table: public.orders         # one of: sql_table, sql, or source_queries
 data_source: my_postgres
 
-dimensions:
+# v2: a single `columns` list replaces v1's separate `dimensions` and `measures`.
+# Whether a column is used as a group-by dimension or as a measure source is
+# decided per query.
+columns:
   - name: id
     sql: "id"
     type: number
@@ -22,21 +25,29 @@ dimensions:
   - name: created_at
     sql: "created_at"
     type: time
+  - name: amount
+    sql: "amount"
+    type: number
+  - name: quantity
+    sql: "quantity"
+    type: number
 
 default_time_dimension: created_at  # Optional: used by time-dependent formulas
 
+# `measures` is a library of saved named formulas (not row-level columns).
+# Each entry has the same shape as inline `SlayerQuery.measures`.
 measures:
   - name: revenue
-    sql: "amount"          # Row-level expression — aggregation chosen at query time
-  - name: quantity
-    sql: "quantity"
+    formula: "amount:sum"
+  - name: aov
+    formula: "amount:sum / *:count"
 ```
 
-Measures are **row-level expressions** — no aggregation type in the definition. Aggregation is specified at query time with colon syntax: `"revenue:sum"`, `"revenue:avg"`, `"*:count"`.
+Aggregation is specified at query time with **colon syntax**: `"amount:sum"`, `"amount:avg"`, `"*:count"`. A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model.
 
 ## Data Types
 
-**Dimension types**: `string`, `number`, `boolean`, `time` (timestamp), `date`
+**Column types**: `string`, `number`, `boolean`, `time` (timestamp), `date`
 
 ## Joins
 
@@ -54,9 +65,24 @@ Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`cus
 
 Models can have always-applied WHERE filters: `filters: ["deleted_at IS NULL"]`. Only WHERE conditions on underlying table columns.
 
-## Creating Models from Queries
+## Source modes
 
-`create_model_from_query(query, name)` saves a query's SQL as a permanent model with auto-introspected dimensions and measures.
+A SlayerModel has exactly one source mode (mutually exclusive):
+- `sql_table`: physical table.
+- `sql`: explicit SQL subquery.
+- `source_queries`: list of `SlayerQuery` stages — the model is **query-backed**.
+
+## Query-backed models
+
+`create_model_from_query(query, name, variables=None)` saves a query (or list of stages) as a query-backed model. It populates `model.source_queries`, optional `model.query_variables` defaults, and caches `model.columns` + `model.backing_query_sql` from a save-time dry-run (unresolved `{var}` placeholders default to `'0'`).
+
+Saved query-backed models support two access patterns:
+- **Run by name**: `engine.execute("monthly_revenue", variables={...})` runs the stored backing query.
+- **Use as source_model**: `{"source_model": "monthly_revenue", ...}` treats the saved result as a model in another query.
+
+Variable precedence (highest first): runtime kwarg > stage `.variables` > outer query `.variables` > `model.query_variables`.
+
+You **cannot** supply `columns` or `backing_query_sql` when saving a query-backed model — they're engine-managed cache; the save path rejects them. Caches refresh on every execute (real / dry-run / explain).
 
 ## SQL Expressions
 
@@ -87,19 +113,20 @@ models = ingest_datasource(datasource=ds, schema="public")
 ```
 
 Generates:
-- Dimensions for all columns
-- One measure per non-ID column (e.g., `{name: "amount", sql: "amount"}`) — aggregation chosen at query time
-- `*:count` is always available without a measure definition
-- **Dynamic joins**: detects FK relationships, creates models with explicit join metadata (LEFT JOINs built at query time)
-- FK columns are excluded; ID-like columns (`*_id`, `*_key`) are dimensions only
+- One `Column` per non-joined database column (with `type` inferred). PK columns get `primary_key=True`. A column literally named `count` is renamed to `count_col` to avoid clashing with `*:count`.
+- `*:count` is always available without an explicit definition; aggregation is picked per query via colon syntax (e.g., `amount:sum`).
+- **Dynamic joins**: detects FK relationships and emits explicit join metadata (LEFT JOINs built at query time).
+- FK columns are excluded from joinable models; ID-like columns (`*_id`, `*_key`) are usable as group-by columns only via the `primary_key` flag.
 
 ## MCP Incremental Editing
 
-Via MCP, agents can edit models incrementally:
-- `update_model(model_name="orders", description="Core orders table")`
-- `add_measures(model_name="orders", measures=[{"name": "margin", "sql": "amount - cost"}])`
-- `add_dimensions(model_name="orders", dimensions=[{"name": "region", "sql": "region", "type": "string"}])`
-- `delete_measures_dimensions(model_name="orders", names=["margin"])`
+Via MCP, agents edit models through the unified `edit_model` tool:
+- `edit_model(model_name="orders", description="Core orders table")`
+- `edit_model(model_name="orders", columns=[{"name": "region", "sql": "region", "type": "string"}])` — upserts columns by name
+- `edit_model(model_name="orders", measures=[{"name": "margin", "formula": "(amount - cost):sum"}])` — upserts named ModelMeasure formulas
+- `edit_model(model_name="orders", delete_columns=["legacy_field"])`, `delete_measures=["margin"]`
+
+For query-backed models, `columns` and `backing_query_sql` are **engine-managed cache** — `edit_model` rejects user-supplied `columns` on a query-backed save with a clear error. Edit `source_queries` or `query_variables` instead.
 
 ## Storage Backends
 
