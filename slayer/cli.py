@@ -1,6 +1,7 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import json
 import os
 import sys
 
@@ -389,8 +390,6 @@ def _parse_cli_variables(args) -> dict:
     """Combine ``--variables KEY=VALUE`` (repeatable) and ``--variables-json``
     into a single dict. Errors out if both forms are mixed.
     """
-    import json as _json
-
     has_kv = bool(args.variables)
     has_json = args.variables_json is not None
     if has_kv and has_json:
@@ -399,8 +398,8 @@ def _parse_cli_variables(args) -> dict:
         )
     if has_json:
         try:
-            parsed = _json.loads(args.variables_json)
-        except _json.JSONDecodeError as exc:
+            parsed = json.loads(args.variables_json)
+        except json.JSONDecodeError as exc:
             raise SystemExit(f"--variables-json contains invalid JSON: {exc}") from None
         if not isinstance(parsed, dict):
             raise SystemExit("--variables-json must decode to a JSON object.")
@@ -417,8 +416,6 @@ def _parse_cli_variables(args) -> dict:
 
 
 def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
-    import json
-
     from slayer.core.query import SlayerQuery
     from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -429,8 +426,14 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
     engine = SlayerQueryEngine(storage=storage)
 
     if query_input.startswith("@"):
-        with open(query_input[1:]) as f:
-            query_input = f.read()
+        filepath = query_input[1:]
+        try:
+            with open(filepath) as f:
+                query_input = f.read()
+        except FileNotFoundError:
+            raise SystemExit(f"Query file not found: {filepath}") from None
+        except OSError as e:
+            raise SystemExit(f"Error reading query file: {e}") from None
         is_json = True
     else:
         # Heuristic: a JSON query starts with '{' or '['; anything else
@@ -440,24 +443,40 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
 
     if is_json:
         data = json.loads(query_input)
-        if args.dry_run:
-            data["dry_run"] = True
-        if args.explain:
-            data["explain"] = True
-        slayer_query = SlayerQuery.model_validate(data)
-        result = engine.execute_sync(
-            query=slayer_query, variables=runtime_kwarg or None
-        )
-        explain_set = slayer_query.explain
-        dry_run_set = slayer_query.dry_run
+        if isinstance(data, list):
+            if not data:
+                raise SystemExit("Query list cannot be empty.")
+            final_stage = dict(data[-1])
+            if args.dry_run:
+                final_stage["dry_run"] = True
+            if args.explain:
+                final_stage["explain"] = True
+            data = [*data[:-1], final_stage]
+            result = engine.execute_sync(
+                query=data, variables=runtime_kwarg or None
+            )
+            final_query = SlayerQuery.model_validate(final_stage)
+            explain_set = final_query.explain
+            dry_run_set = final_query.dry_run
+        else:
+            if args.dry_run:
+                data["dry_run"] = True
+            if args.explain:
+                data["explain"] = True
+            slayer_query = SlayerQuery.model_validate(data)
+            result = engine.execute_sync(
+                query=slayer_query, variables=runtime_kwarg or None
+            )
+            explain_set = slayer_query.explain
+            dry_run_set = slayer_query.dry_run
     else:
         # Run-by-name: the positional arg is a model name.
         # ``execute_sync(str, dry_run=..., explain=...)`` honors the flags
         # via the engine's run-by-name path, which also enforces the
         # "model must be query-backed" check uniformly.
         result = engine.execute_sync(
-            query_input,
-            variables=runtime_kwarg,
+            query=query_input,
+            variables=runtime_kwarg or None,
             dry_run=bool(args.dry_run),
             explain=bool(args.explain),
         )
@@ -672,7 +691,11 @@ def _run_models(args):
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
         engine = SlayerQueryEngine(storage=storage)
-        run_sync(engine.save_model(model))
+        try:
+            run_sync(engine.save_model(model))
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         print(f"Created model '{model.name}'.")
 
     elif args.models_command == "delete":
@@ -891,7 +914,7 @@ def _run_datasources_create(args, storage):
     _persist_ingested_models(models, storage, assume_yes=args.yes)
 
 
-def _run_datasources_create_demo(args, storage):
+def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic
     from slayer.demo import (
         DEFAULT_TIME_DIMENSIONS,
         DEMO_NAME,
