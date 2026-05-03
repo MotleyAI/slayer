@@ -363,6 +363,8 @@ async def _retry_with_backoff(
     from `exc.orig` (e.g. sqlite3.OperationalError("database is locked"));
     without it the warning would be uninformative.
     """
+    if max_attempts < 1:
+        raise ValueError(f"max_attempts must be >= 1, got {max_attempts}")
     delay = initial_delay
     for attempt in range(max_attempts):
         try:
