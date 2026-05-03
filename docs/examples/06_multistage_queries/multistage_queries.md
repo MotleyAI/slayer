@@ -60,7 +60,7 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
     "source_model": {
       "source_name": "orders",
       "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}],
-      "dimensions": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "string"}]
+      "columns": [{"name": "activity_bucket", "sql": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "type": "string"}]
     },
     "measures": ["*:count", "order_total:sum"],
     "dimensions": ["activity_bucket"]

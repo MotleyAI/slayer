@@ -9,7 +9,7 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 | `name` | string | No | Name for this query — used to reference it from other queries in a list |
 | `source_model` | string, SlayerModel, or ModelExtension | Yes | Source model name, inline model, or model extension (adds columns/measures/joins) |
 | `measures` | list[ModelMeasure] | No | Computed/aggregated values — formulas, arithmetic, transforms. See [Formulas](formulas.md). |
-| `dimensions` | list[ColumnRef] | No | Columns to group by. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
+| `dimensions` | list[str \| ColumnRef] | No | Columns to group by — bare strings (`"status"`) or `{"name": "status"}` dicts. Supports dotted names for joined models (`customers.name`, `customers.regions.name`). |
 | `time_dimensions` | list[TimeDimension] | No | Time dimensions with granularity |
 | `main_time_dimension` | string | No | Explicit time dimension name for transforms (overrides auto-detection) |
 | `filters` | list[str] | No | Conditions as formula strings. Supports `{variable}` placeholders. See [Filters](#filters). |
@@ -21,25 +21,25 @@ A `SlayerQuery` specifies what data to retrieve from a model.
 
 You can pass a single query or a **list of queries** to `execute()`. When passing a list, earlier queries are named sub-queries that later queries can reference. The last query in the list is the main one whose results are returned. See [Query Lists](#query-lists) for examples.
 
-## ColumnRef
+## Dimensions
 
-A reference to a model dimension. Supports dotted names for joined models.
+Each entry in `dimensions` is either a bare string (the canonical short form for a column without a custom label) or a `ColumnRef` dict with `name` and optional `label`. Both styles support dotted paths for joined models, auto-resolved via the join graph.
 
 ```json
-{"name": "status"}
-{"name": "status", "label": "Order Status"}
-{"name": "customers.name"}
-{"name": "customers.regions.name"}
+"dimensions": [
+  "status",
+  "customers.name",
+  "customers.regions.name",
+  {"name": "status", "label": "Order Status"}
+]
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Dimension name. Supports dotted paths for joined models (auto-resolved via join graph). |
+| `name` | string | Column name. Supports dotted paths for joined models. |
 | `label` | string | Optional human-readable display name |
 
 For computed columns (SQL expressions like CASE), use [ModelExtension](#modelextension) on the query's `source_model` field. For derived metrics, use [formulas](formulas.md) in `measures`.
-
-Via MCP, simple dimensions are passed as strings: `dimensions=["status"]`
 
 ## TimeDimension
 
@@ -71,7 +71,7 @@ Query results are returned as a `SlayerResponse`:
 | Field | Type | Description |
 |-------|------|-------------|
 | `data` | list[dict] | Rows as dictionaries |
-| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders.count"`, `"orders.customers.regions.name"` for multi-hop) |
+| `columns` | list[str] | Column names in `model_name.column_name` format (e.g., `"orders._count"`, `"orders.customers.regions.name"` for multi-hop) |
 | `row_count` | int | Number of rows |
 | `sql` | string | The generated SQL (useful for debugging) |
 | `attributes` | ResponseAttributes | Field metadata split by type: `attributes.dimensions` and `attributes.measures`, each a dict of column alias → FieldMetadata (label, format) |
@@ -79,10 +79,10 @@ Query results are returned as a `SlayerResponse`:
 ```json
 {
   "data": [
-    {"orders.status": "completed", "orders.count": 42},
-    {"orders.status": "pending", "orders.count": 15}
+    {"orders.status": "completed", "orders._count": 42},
+    {"orders.status": "pending", "orders._count": 15}
   ],
-  "columns": ["orders.status", "orders.count"],
+  "columns": ["orders.status", "orders._count"],
   "row_count": 2,
   "sql": "SELECT ..."
 }

@@ -12,7 +12,7 @@ a named model for the lifetime of this query:
 {
   "source_model": {
     "source_name": "orders",
-    "dimensions": [{
+    "columns": [{
       "name": "tier",
       "sql": "CASE WHEN amount > 100 THEN 'high' ELSE 'low' END",
       "type": "string"
@@ -25,8 +25,8 @@ a named model for the lifetime of this query:
 }
 ```
 
-Fields allowed on `ModelExtension`: `dimensions`, `measures`, `joins`,
-`filters`. All optional. The stored `orders` model is not modified.
+Fields allowed on `ModelExtension`: `columns`, `measures` (named formulas),
+`joins`, `filters`. All optional. The stored `orders` model is not modified.
 
 Use this when the concept is one-off — don't clutter the persisted model with
 it.
@@ -65,15 +65,19 @@ dotted name in the inner (`stores.name`) is rewritten to `__`
 ## create_model_from_query — persist as a real model
 
 If the sub-query is useful beyond one call, persist it. Via MCP: call
-`create_model` with a `query` parameter. The query's SQL becomes the source
-and dimensions and measures are auto-introspected. It then behaves like any
-other model — editable, queryable by name.
+`create_model` with a `query` parameter. The saved model becomes
+**query-backed**: its `source_queries` field stores the query stages, and a
+save-time dry-run populates `columns` + `backing_query_sql` as a cache. It
+then behaves like any other model — queryable by name (`engine.execute("name",
+variables=...)`) or usable as `source_model` in another query — and is
+editable. Variable defaults can live in `query_variables`. The cache is
+refreshed only when you save the model again, never during execution.
 
 ## When to use which
 
 | Need | Use |
 |------|-----|
-| One-off expression dimension | `ModelExtension.dimensions` |
+| One-off expression column | `ModelExtension.columns` |
 | One-off filter in SQL | `ModelExtension.filters` |
 | Re-aggregate an aggregate | Query list (two queries) |
 | Persist a multi-stage result | `create_model_from_query` |

@@ -190,9 +190,10 @@ Aggregation is applied at query time via colon syntax: `measure_name:aggregation
 `first` and `last` return the value from the **earliest or most recent record** within each grouped bucket — like `min`/`max`, but ordered by time instead of value. Useful for snapshot metrics like balances, inventory counts, or status fields where you want the latest state.
 
 ```yaml
-measures:
+columns:
   - name: balance
     sql: balance
+    type: number
 ```
 
 At query time, use `balance:last(updated_at)` to get the most recent balance per group, or `balance:first(updated_at)` for the earliest. When grouped by month, each month returns the `balance` value from the latest (or earliest) record in that month. If no time column is specified, the time column for ordering is resolved via: query's `main_time_dimension` → first time/date dimension in the query → first time dimension in filters → model's `default_time_dimension`.
@@ -396,7 +397,7 @@ Behaviour:
 
 - **On save**, SLayer always writes the current schema version. New `SlayerModel` and `SlayerQuery` objects default `version` to `3`; new `DatasourceConfig` objects default to `1`.
 - **On load**, if the file's version is older than the current schema, SLayer runs a chain of pure dict→dict converters before Pydantic validates the data. This means hand-edited or older files keep working when the schema evolves.
-- **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis (unknown fields are ignored). It is not downgraded.
+- **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis. For `SlayerModel` and `DatasourceConfig`, unknown fields are ignored. `SlayerQuery` v3 sets `extra="forbid"`, so any unknown field on a future-version query raises a `ValidationError` rather than being silently dropped — this catches typos but means a future schema's new fields will not load on an older SLayer.
 - **Round-tripping** an older file (load → save) upgrades it on disk to the current schema.
 
 The v2→v3 converter (in `slayer/storage/v3_migration.py`) drops the legacy `dry_run` and `explain` fields from `SlayerQuery` — they were execution-mode flags that had no business being persisted. Pass them as kwargs to `engine.execute(query, dry_run=..., explain=...)` instead. Each migrated query emits one `logger.warning` and one `DeprecationWarning` on first load. `SlayerQuery` v3 is also strict (`extra="forbid"`), so unknown fields raise a `ValidationError`.
@@ -405,9 +406,9 @@ Migrations are defined in `slayer/storage/migrations.py` and apply at the Pydant
 
 ## Result Column Format
 
-Query results use `model_name.column_name` format for column keys. Colon syntax in field names is converted: `revenue:sum` becomes `orders.revenue_sum`, and `*:count` becomes `orders.count`. For multi-hop joined dimensions, the full path is included:
+Query results use `model_name.column_name` format for column keys. Colon syntax in field names is converted: `revenue:sum` becomes `orders.revenue_sum`, and `*:count` becomes `orders._count` (the leading underscore is kept so the alias never collides with a user-defined column literally named `count`). For multi-hop joined dimensions, the full path is included:
 
 ```json
-{"orders.status": "completed", "orders.count": 42, "orders.revenue_sum": 1500}
-{"orders.customers.regions.name": "US", "orders.count": 3}
+{"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 1500}
+{"orders.customers.regions.name": "US", "orders._count": 3}
 ```

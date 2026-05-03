@@ -4,19 +4,23 @@ Key terms used throughout SLayer documentation and code.
 
 ## Data Structure
 
-**Model** — A semantic layer definition that maps a database table (or SQL subquery) to queryable dimensions and measures. Defined as YAML files or auto-generated via ingestion.
+**Model** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable columns. Defined as YAML files or auto-generated via ingestion.
 
-**Dimension** — A column used for grouping and filtering. Examples: `status`, `region`, `customer_name`. Dimensions are not aggregated — they appear in GROUP BY clauses.
+**Column** — The unified row-level building block of a model (`SlayerModel.columns`). Each column has a `name`, `sql` expression, and `type` (`string`/`number`/`boolean`/`time`/`date`). At query time a column can be used as a group-by key (a dimension), as the input to an aggregation (a measure), or both. Columns can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (CASE-WHEN at aggregation time), `format`, `label`, and `meta`.
 
-**Measure** — A named row-level SQL expression defined on a model. Each measure has a name and a SQL expression (e.g., `{name: "revenue", sql: "amount"}`). Aggregation is specified at query time using colon syntax — see **Aggregation** below.
+**Dimension** — How a column is *used* in a query when it's a GROUP BY key. The column itself isn't a dimension or measure intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the columns to group/filter by.
 
-**Aggregation** — Specifies how a measure is aggregated. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
+**Measure (in a query)** — A formula entry in `SlayerQuery.measures`. Examples: `"revenue:sum"`, `"*:count"`, `{"formula": "revenue:sum / *:count", "name": "aov"}`, `"cumsum(revenue:sum)"`. Each entry compiles to one output column.
+
+**Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
+
+**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
 
 **Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
 
-**Cross-model measure** — A measure from a joined model, referenced with dotted syntax and colon aggregation (`customers.score:avg`, or multi-hop: `customers.regions.population:sum`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(customers.score:avg)`.
+**Cross-model measure** — An aggregation over a joined model's column, referenced with dotted syntax and colon aggregation (`customers.score:avg`, or multi-hop: `customers.regions.population:sum`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(customers.score:avg)`.
 
-**ModelExtension** — Extends a model inline on a query with extra dimensions, measures, or joins — without modifying the stored model. Used for SQL expression dimensions, ad-hoc joins, or adding measures.
+**ModelExtension** — Extends a model inline on a query with extra `columns`, `measures` (named formulas), `joins`, or `filters` — without modifying the stored model. Used for ad-hoc expression columns, derived buckets, or one-off joins.
 
 **Model filter** — A WHERE filter defined on a model, always applied to every query on that model (e.g., `"deleted_at IS NULL"`).
 
@@ -26,9 +30,9 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Field** — A data column returned by a query. Defined by a formula string. A field can be an aggregated measure reference (`"revenue:sum"`), a count (`"*:count"`), arithmetic on aggregated measures (`"revenue:sum / *:count"`), or a transform function (`"cumsum(revenue:sum)"`). Fields support an optional `label` for human-readable display. See [Formulas](formulas.md).
+**Measure entry** — A formula entry in `SlayerQuery.measures` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"revenue:sum"`), `*`-count (`"*:count"`), arithmetic on aggregated measures (`"revenue:sum / *:count"`), transform function (`"cumsum(revenue:sum)"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
 
-**Label** — An optional human-readable display name for a field, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}`.
+**Label** — An optional human-readable display name for a measure entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "revenue:sum / *:count", "name": "aov", "label": "Average Order Value"}`.
 
 **Filter** — A condition that restricts which rows are included. Defined as a formula string: `"status = 'completed'"`, `"amount > 100"`. See [Filter Formulas](formulas.md#filter-formulas).
 
@@ -55,7 +59,7 @@ Key terms used throughout SLayer documentation and code.
 
 ## Ingestion
 
-**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates models with direct joins (one per FK on the source table). Columns from transitively reachable tables appear as dotted dimensions (e.g., `customers.name`, `customers.regions.name`). Multi-hop JOINs are resolved dynamically at query time by walking each intermediate model's own joins.
+**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates models with direct joins (one per FK on the source table). Columns from transitively reachable tables appear as dotted references (e.g., `customers.name`, `customers.regions.name`) usable as dimensions or in formulas. Multi-hop JOINs are resolved dynamically at query time by walking each intermediate model's own joins.
 
 **Transitive closure** — The set of all tables reachable from a source table via foreign key chains. For `orders → customers → regions`, the transitive closure of `orders` includes both `customers` and `regions`. Used during ingestion for FK graph analysis and column introspection (determining which dotted dimensions to create), but not baked into model joins — each model only stores direct joins from its own FKs.
 

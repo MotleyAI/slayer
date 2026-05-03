@@ -82,7 +82,7 @@ Saved query-backed models support two access patterns:
 
 Variable precedence (highest first): runtime kwarg > stage `.variables` > outer query `.variables` > `model.query_variables`.
 
-You **cannot** supply `columns` or `backing_query_sql` when saving a query-backed model — they're engine-managed cache; the save path rejects them. Caches refresh on every execute (real / dry-run / explain).
+You **cannot** supply `columns` or `backing_query_sql` when saving a query-backed model — they're engine-managed cache; the save path rejects them. Caches refresh **only on save paths**: `engine.save_model()` and `create_model_from_query(save=True)`. `engine.execute()` never writes to storage — even on stale or empty caches.
 
 ## SQL Expressions
 

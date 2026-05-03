@@ -119,8 +119,8 @@ slayer query '{"source_model": "orders", "measures": ["*:count"]}'
 Expected output:
 
 ```
-orders.count
-------------
+orders._count
+-------------
 42
 
 1 row(s)

@@ -15,32 +15,45 @@ Exactly one of:
 
 Either becomes the FROM clause at query time.
 
-## Dimensions
+## Columns
+
+A model has a single `columns` list. Each column is a row-level SQL expression
+that can be used as a group-by key, an aggregation source, or both — the role
+is decided per query.
 
 ```yaml
-dimensions:
+columns:
   - {name: id, sql: id, type: number, primary_key: true}
   - {name: status, sql: status, type: string}
   - {name: created_at, sql: created_at, type: time}
+  - {name: revenue, sql: amount, type: number}
+  - {name: quantity, sql: qty, type: number, allowed_aggregations: [sum, avg, min, max]}
 ```
 
 Types: `string`, `number`, `boolean`, `time`, `date`. `label` is optional and
-propagates to query result metadata.
-
-## Measures
+propagates to query result metadata. A column's `sql` is a **row-level**
+expression, not an aggregate. Plain column names are fine; for complex
+expressions prefix with the model name:
 
 ```yaml
-measures:
-  - {name: revenue, sql: amount}
-  - {name: quantity, sql: qty, allowed_aggregations: [sum, avg, min, max]}
+columns:
+  - {name: line_total, sql: "orders.amount * orders.quantity", type: number}
 ```
 
-A measure's `sql` is a **row-level** expression, not an aggregate. Plain column
-names are fine; for complex expressions prefix with the model name:
+`primary_key: true` restricts the column to `count`/`count_distinct`
+aggregations regardless of its type. `allowed_aggregations` further narrows
+the type-default whitelist (validated at model construction).
+
+## Named-formula measures
+
+`measures` is an optional library of saved formulas — same shape as a
+query's inline `measures` entries. Queries reference them by bare name.
 
 ```yaml
 measures:
-  - {name: line_total, sql: "orders.amount * orders.quantity"}
+  - name: aov
+    formula: "revenue:sum / *:count"
+    label: "Average Order Value"
 ```
 
 ## default_time_dimension
@@ -69,14 +82,16 @@ SLayer returns columns as `{model}.{col}`:
 
 | Query field | Result column |
 |-------------|--------------|
-| `*:count` on `orders` | `orders.count` |
+| `*:count` on `orders` | `orders._count` |
 | `revenue:sum` on `orders` | `orders.revenue_sum` |
 | `customers.name` dimension | `orders.customers.name` |
 | `customers.regions.name` multi-hop | `orders.customers.regions.name` |
 
-Colon becomes underscore; `*:count` collapses to `count`. Remember these when
-writing `order` clauses — use the canonical name (`revenue_sum`, `count`), not
-the colon form. Example: `{"column": "revenue_sum", "direction": "desc"}`.
+Colon becomes underscore; `*:count` keeps a leading `_` so the alias never
+collides with a user-defined column literally named `count`. When writing
+`order` clauses, use the short canonical name (`revenue_sum`, `count`) — not
+the colon form. Example: `{"column": "revenue_sum", "direction": "desc"}` or
+`{"column": "count", "direction": "desc"}`.
 
 ## Saving a query as a model
 

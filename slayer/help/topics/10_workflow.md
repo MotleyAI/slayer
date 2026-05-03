@@ -26,7 +26,7 @@ what values a column actually holds before writing a filter.
 4. Add transforms last (`cumsum`, `change`, `time_shift`) — they need a time
    dimension.
 5. If a result looks wrong, pass `show_sql=true` to see the generated SQL.
-6. To preview without executing, use `dry_run=true`. For DB plans, `explain=true`.
+6. To preview without executing, pass `dry_run=true` as an MCP tool kwarg (or `engine.execute(query, dry_run=True)` in Python). For DB plans, `explain=true` works the same way. As of v3, these are execution kwargs — not fields on the query body itself.
 
 ## Connecting a new database
 
@@ -50,8 +50,10 @@ Two paths.
 
 ## Iterating on a model
 
-- Missing a measure? `edit_model` with a `measures` upsert. Example spec:
-  `{"name": "margin", "sql": "revenue - cost"}`.
+- Missing a row-level field? `edit_model` with a `columns` upsert.
+  Example: `columns=[{"name": "margin", "sql": "revenue - cost", "type": "number"}]`.
+- Missing a saved aggregated formula? `edit_model` with a `measures` upsert.
+  Example: `measures=[{"name": "avg_margin", "formula": "margin:sum / *:count"}]`.
 - One-off concept for a single query? Use `ModelExtension` inside
   `source_model` instead of editing the model — see `help(topic='extending')`.
 - Multi-stage result you'd like to reuse? `create_model` with a `query`

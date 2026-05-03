@@ -39,9 +39,9 @@ poetry run ruff check slayer/ tests/
 slayer/
   core/
     enums.py              # DataType, TimeGranularity, OrderDirection
-    models.py             # SlayerModel, Dimension, Measure, DatasourceConfig
+    models.py             # SlayerModel, Column, ModelMeasure, DatasourceConfig
     query.py              # SlayerQuery, ColumnRef, TimeDimension, OrderItem
-    formula.py            # Formula parser (Python ast-based) for `fields` API
+    formula.py            # Formula parser (Python ast-based) for `measures` API
   sql/
     generator.py          # SQLGenerator — sqlglot AST-based SQL generation
     client.py             # SlayerSQLClient — SQLAlchemy execution with retry

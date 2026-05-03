@@ -53,7 +53,7 @@ Don't confuse:
 ```json
 {
   "source_model": "orders",
-  "fields": [
+  "measures": [
     {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
     {"formula": "revenue:avg(window='1y2m')", "name": "avg_14m"}
   ],
@@ -68,12 +68,13 @@ in `1y2m3w5d6h7min8s`, `90d`, `6h`, or `15min`.
 
 ## Allowed aggregations (whitelist)
 
-A measure can restrict which aggregations make sense. Model-side:
+A column can restrict which aggregations make sense. Model-side:
 
 ```yaml
-measures:
+columns:
   - name: customer_id
     sql: customer_id
+    type: number
     allowed_aggregations: [count, count_distinct]
 ```
 
