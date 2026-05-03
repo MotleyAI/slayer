@@ -475,6 +475,61 @@ class TestCacheRefreshOnExecute:
             tmp.cleanup()
 
 
+class TestQueryBackedColumnTypes:
+    """``engine.get_column_types`` must derive its datasource from the
+    expanded query-backed model, not from the (possibly stale or blank)
+    stored ``data_source`` on the unexpanded record.
+    """
+
+    async def test_get_column_types_uses_resolved_datasource(self) -> None:
+        from slayer.core.enums import DataType
+        from slayer.core.models import Column, DatasourceConfig
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            storage = YAMLStorage(base_dir=tmp.name)
+            ds_path = f"{tmp.name}/probe.db"  # file-backed so the table persists across connections
+            await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=ds_path))
+            await storage.save_model(SlayerModel(
+                name="t_b", sql_table="orders_t", data_source="ds_b",
+                columns=[
+                    Column(name="amount", sql="amount", type=DataType.NUMBER),
+                ],
+            ))
+            engine = SlayerQueryEngine(storage=storage)
+
+            # Pre-create the table so the type probe can run.
+            # SlayerSQLClient.execute() expects rowsets, so use sqlite3 directly for DDL.
+            import sqlite3
+            conn = sqlite3.connect(ds_path)
+            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
+            conn.commit()
+            conn.close()
+
+            # Save query-backed model via raw storage (NOT engine.save_model) so
+            # its data_source is left blank — the bug fires only when the
+            # stored data_source disagrees with the resolved virtual model's.
+            await storage.save_model(SlayerModel(
+                name="qb",
+                source_queries=[SlayerQuery(
+                    source_model="t_b",
+                    measures=[{"formula": "amount:sum"}],
+                )],
+            ))
+            stored = await storage.get_model("qb")
+            assert not stored.data_source, (
+                "test setup expects blank data_source on the raw-saved model"
+            )
+
+            # Should resolve datasource from the expanded model (ds_b), open
+            # the right SQLite file, and successfully probe.
+            types = await engine.get_column_types("qb")
+            assert types, "expected non-empty column type map"
+        finally:
+            tmp.cleanup()
+
+
 class TestBackingQuerySQLCacheHygiene:
     """``backing_query_sql`` is the canonical placeholder-fill render and must
     not capture per-request runtime variables.

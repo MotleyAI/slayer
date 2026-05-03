@@ -518,6 +518,23 @@ class SlayerQueryEngine:
         model = await self.storage.get_model(model_name)
         if model is None:
             return {}
+
+        # For query-backed models, expand FIRST so the resolved virtual model
+        # (with refreshed ``data_source`` from its final stage AND with
+        # ``columns`` derived from the inner query) drives both the
+        # datasource selection and the probeable-columns check. Otherwise a
+        # stale or blank stored ``model.data_source``/``columns`` would point
+        # us at the wrong backend or short-circuit on an empty column list.
+        if model.source_queries:
+            try:
+                model = await self._resolve_model(model_name=model_name)
+            except Exception:
+                logger.warning(
+                    "get_column_types: failed to resolve query-backed model '%s'",
+                    model_name,
+                )
+                return {}
+
         probeable = [c for c in model.columns if not c.hidden and not c.primary_key]
         if not probeable:
             return {}
@@ -531,20 +548,6 @@ class SlayerQueryEngine:
         if ds_key not in self._sql_clients:
             self._sql_clients[ds_key] = SlayerSQLClient(datasource=datasource)
         client = self._sql_clients[ds_key]
-
-        # For query-backed models, resolve through the engine so the virtual
-        # model (with rendered SQL) is enriched against — otherwise the
-        # generator would see ``model.sql_table is None and model.sql is None``
-        # and fail.
-        if model.source_queries:
-            try:
-                model = await self._resolve_model(model_name=model_name)
-            except Exception:
-                logger.warning(
-                    "get_column_types: failed to resolve query-backed model '%s'",
-                    model_name,
-                )
-                return {}
 
         probe_query = self._build_type_probe_query(model=model)
         try:
