@@ -258,11 +258,16 @@ def check_stddev_var(measure="quantity"):
     """
     print("\nStddev / variance:")
 
-    quantities = [o[3] for o in ORDERS]
-    expected_stddev_samp = statistics.stdev(quantities)
-    expected_stddev_pop = statistics.pstdev(quantities)
-    expected_var_samp = statistics.variance(quantities)
-    expected_var_pop = statistics.pvariance(quantities)
+    # ORDERS tuple is (id, customer_id, product_id, quantity, status, created_at);
+    # honour the requested `measure` so non-default callers compare against the
+    # right baseline. Earlier draft hard-coded `o[3]` regardless of the arg
+    # — flagged by CodeRabbit on PR #82.
+    field_index = {"id": 0, "customer_id": 1, "product_id": 2, "quantity": 3}
+    values = [o[field_index[measure]] for o in ORDERS]
+    expected_stddev_samp = statistics.stdev(values)
+    expected_stddev_pop = statistics.pstdev(values)
+    expected_var_samp = statistics.variance(values)
+    expected_var_pop = statistics.pvariance(values)
 
     result = api(
         "POST",

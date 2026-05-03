@@ -34,9 +34,11 @@ The 2-arg ``log`` UDF takes **base first, value second**:
 * sqlglot's emission across dialects
 
 Python's ``math.log`` reverses this (``math.log(x, base)``), so the
-wrapper internally re-orders the args. The UDF only registers when SQLite
-is **older than 3.35**; on newer versions the built-in is used and our
-``ln`` / ``log10`` UDFs are still registered as friendly aliases.
+wrapper internally re-orders the args. The UDF registers on **every**
+SQLite version, including ≥3.35 where it deliberately overrides the
+built-in. The built-in silently returns NULL on math-domain inputs
+(``log(0, 10)``); the UDF raises ``OperationalError``, matching the
+Postgres-style strict semantics promised by DEV-1317.
 
 Aggregate edge-case semantics (matches Postgres exactly)
 --------------------------------------------------------
@@ -62,7 +64,6 @@ lookup is case-insensitive.
 from __future__ import annotations
 
 import math
-import sqlite3
 from typing import Optional
 
 
@@ -362,11 +363,13 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     # --- Scalar UDFs ------------------------------------------------------
     dbapi_connection.create_function("ln", 1, _ln)
     dbapi_connection.create_function("log10", 1, _log10)
-    # SQLite >= 3.35 ships a built-in ``log()``. To avoid clobbering it,
-    # only register our 2-arg ``log(B, X)`` UDF on older versions. Both
-    # implementations have the same B-first arg order.
-    if sqlite3.sqlite_version_info < (3, 35, 0):
-        dbapi_connection.create_function("log", 2, _log_base_x)
+    # SQLite >= 3.35 ships a built-in ``log(B, X)`` that silently returns
+    # NULL on math-domain inputs (``log(0, 10)``, ``log(-1, 10)``). DEV-1317
+    # promises Postgres-style "errors propagate" semantics, so we register
+    # our UDF on every version — including >=3.35 — to override the
+    # built-in's silent-NULL behaviour. Same B-first arg order in both, so
+    # only the error policy changes.
+    dbapi_connection.create_function("log", 2, _log_base_x)
     dbapi_connection.create_function("exp", 1, _exp)
     dbapi_connection.create_function("sqrt", 1, _sqrt)
     dbapi_connection.create_function("pow", 2, _pow)

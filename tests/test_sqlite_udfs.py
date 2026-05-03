@@ -244,13 +244,12 @@ def test_log10_zero_raises(sqlite_conn):
 # built-in `log(B,X)` and Postgres `LOG(b, x)`.
 
 
-@pytest.mark.skipif(
-    sqlite3.sqlite_version_info >= (3, 35, 0),
-    reason="SQLite >=3.35 ships built-in log(); UDF only registers below that.",
-)
-def test_log_base_x_known_value_when_udf_registered(sqlite_conn):
-    # NOSONAR(python:S125): mathematical equation in prose ("log base 10 of
-    # 1000 equals 3"), not commented-out Python.
+def test_log_base_x_known_value_via_udf(sqlite_conn):
+    # NOSONAR(S125) — mathematical equation in prose ("log base 10 of 1000
+    # equals 3"), not commented-out Python. (Sonar python:S7632 rejects the
+    # `python:S125` form: rule keys inside NOSONAR(...) must be alphanumeric.)
+    # Post-C3 (PR #82): the UDF registers unconditionally, overriding any
+    # built-in `log(B, X)` on SQLite >=3.35 with our strict-error semantics.
     assert _scalar(sqlite_conn, "log(10, 1000)") == pytest.approx(3.0)
 
 
@@ -342,20 +341,23 @@ def test_power_alias_null_propagation(sqlite_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_log_udf_registered_only_when_builtin_absent(monkeypatch):
-    """register_sqlite_udfs must consult sqlite3.sqlite_version_info and
-    skip the `log` UDF when SQLite ships a built-in (>=3.35.0). Below
-    that threshold it must register the UDF so `log(B, X)` works.
+def test_log_udf_registered_unconditionally():
+    """`register_sqlite_udfs` must register the `log(B, X)` UDF on every
+    SQLite version. Earlier draft skipped registration on >=3.35 to avoid
+    clobbering SQLite's built-in `log(B, X)`, but that produced a
+    version-dependent semantic split — built-in `log(0, 10)` returns
+    NULL silently, our UDF raises `OperationalError`, contradicting the
+    "match Postgres exactly — math errors propagate" promise from
+    DEV-1317. Codex review #2 on PR #82.
 
-    We simulate both branches by monkeypatching sqlite_version_info on
-    the slayer.sql.sqlite_udfs module (it inspects the value at the
-    call site). The actual sqlite3 connection still has whatever
-    real version we link against — but we only assert which branch the
-    register function takes via a probe `create_function` spy.
+    The UDF and the built-in have the same arg order (B first, X second)
+    and the UDF's strict-error semantics is exactly what we want, so
+    registering unconditionally just upgrades the built-in's behaviour
+    to match.
     """
-    import slayer.sql.sqlite_udfs as udfs_mod
-
-    # Spy on what gets registered.
+    # Spy on what gets registered. Production code no longer branches on
+    # `sqlite_version_info`, so a single call against a spy connection
+    # is sufficient — we just confirm `log` always appears.
     registered: list[tuple[str, int]] = []
 
     class _SpyConn:
@@ -365,26 +367,26 @@ def test_log_udf_registered_only_when_builtin_absent(monkeypatch):
         def create_aggregate(self, name, narg, cls):  # noqa: ARG002
             pass
 
-    # --- pretend SQLite is 3.34 (built-in log absent) -----------------
-    monkeypatch.setattr(udfs_mod.sqlite3, "sqlite_version_info", (3, 34, 0))
-    registered.clear()
-    udfs_mod.register_sqlite_udfs(_SpyConn())
+    register_sqlite_udfs(_SpyConn())
     names = {n for n, _ in registered}
-    assert "log" in names, f"Expected `log` UDF to register on 3.34; got {names}"
-    # `ln` and `log10` always register.
-    assert "ln" in names
-    assert "log10" in names
-
-    # --- pretend SQLite is 3.35 (built-in log present) ----------------
-    monkeypatch.setattr(udfs_mod.sqlite3, "sqlite_version_info", (3, 35, 0))
-    registered.clear()
-    udfs_mod.register_sqlite_udfs(_SpyConn())
-    names = {n for n, _ in registered}
-    assert "log" not in names, (
-        f"Expected `log` UDF to be skipped on 3.35; got {names}"
+    assert "log" in names, (
+        f"Expected `log` UDF to register on every SQLite version (not "
+        f"just <3.35) so strict-error semantics are uniform; got {names}"
     )
     assert "ln" in names
     assert "log10" in names
+
+
+def test_log_zero_raises_uniformly(sqlite_conn):
+    """Whether SQLite's linked version is <3.35 or >=3.35, `log(B, 0)` must
+    raise `OperationalError` — the strict-Postgres semantics promised by
+    DEV-1317. The UDF override (registered unconditionally) is what makes
+    this hold even when the built-in would silently return NULL.
+    """
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite_conn.execute("SELECT log(10, 0)").fetchone()
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite_conn.execute("SELECT log(10, -1)").fetchone()
 
 
 # ---------------------------------------------------------------------------

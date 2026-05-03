@@ -194,29 +194,38 @@ class TestStatAggregationEligibility:
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
+    # Postgres preserves canonical names (no VAR_SAMP→VARIANCE rewrite —
+    # that's a SQLite/MySQL/DuckDB sqlglot quirk), so we can pin the exact
+    # function-call shape here. `_generate_sql` is hard-coded to Postgres.
     @pytest.mark.parametrize(
-        "agg",
-        ["stddev_samp", "stddev_pop", "var_samp", "var_pop"],
+        "agg,fn",
+        [
+            ("stddev_samp", "STDDEV_SAMP"),
+            ("stddev_pop", "STDDEV_POP"),
+            ("var_samp", "VAR_SAMP"),
+            ("var_pop", "VAR_POP"),
+        ],
     )
     async def test_numeric_column_accepts_stat_agg(
-        self, agg: str, numeric_orders: SlayerModel,
+        self, agg: str, fn: str, numeric_orders: SlayerModel,
     ) -> None:
         sql = await _generate_sql(
             orders=numeric_orders,
             customers=_customers_model(),
             measures=[{"formula": f"amount:{agg}", "name": "result"}],
         )
-        # Generator output is uppercase; sqlglot may transpile to alternate
-        # native names (e.g. VAR_SAMP→VARIANCE on Postgres-derived dialects)
-        # — assert the call is present, not the exact spelling.
-        assert "(" in sql
+        # Pin the function-call shape: family name immediately followed by
+        # the qualified value column. The earlier "( in sql" check passed
+        # for any SELECT and didn't prove the aggregate survived enrichment
+        # (Codex #6 / CodeRabbit nitpick on PR #82).
+        assert f"{fn}(orders.amount)" in sql
 
     @pytest.mark.parametrize(
         "agg,sql_fn",
         [
-            ("corr", "CORR("),
-            ("covar_samp", "COVAR_SAMP("),
-            ("covar_pop", "COVAR_POP("),
+            ("corr", "CORR"),
+            ("covar_samp", "COVAR_SAMP"),
+            ("covar_pop", "COVAR_POP"),
         ],
     )
     async def test_numeric_two_arg_stat_with_other_kwarg_accepted(
@@ -232,7 +241,9 @@ class TestStatAggregationEligibility:
                 {"formula": f"amount:{agg}(other=quantity)", "name": "result"}
             ],
         )
-        assert sql_fn in sql.upper()
+        # Both legs must be qualified and appear in the function call's
+        # two-arg slot in canonical Postgres-style order.
+        assert f"{sql_fn}(orders.amount, orders.quantity)" in sql
 
     @pytest.mark.parametrize(
         "agg",

@@ -1918,18 +1918,20 @@ class SQLGenerator:
         # Resolve {value} and {param_name} via _resolve_sql so bare identifiers
         # are qualified under measure.model_name (matching the standard
         # sum/avg/min/max path). When the measure carries a row-level filter,
-        # wrap *every* row-level reference (the value AND every parameter) in
-        # CASE WHEN so non-matching rows contribute NULL to all terms.
-        # Otherwise formulas like weighted_avg
-        # ("SUM({value}*{weight}) / SUM({weight})") filter the numerator only
-        # and leave the denominator summing all weights.
+        # wrap row-level references (the value AND any column-ref params) in
+        # CASE WHEN so non-matching rows contribute NULL to all terms — but
+        # leave literal-default params unwrapped, since `(CASE WHEN ... THEN
+        # 100 END)` for a constant `scale=100` would turn it into a row
+        # expression and break grouped SQL semantics.
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
         substituted = formula.replace("{value}", col_expr)
         for param_name, param_val in params.items():
-            param_expr = self._resolve_sql(
+            param_ast = self._resolve_sql(
                 sql=param_val, name=param_val, model_name=measure.model_name,
-            ).sql(dialect=self.dialect)
-            param_expr = _wrap_filter(param_expr, measure.filter_sql)
+            )
+            param_expr = param_ast.sql(dialect=self.dialect)
+            if measure.filter_sql and not isinstance(param_ast, exp.Literal):
+                param_expr = _wrap_filter(param_expr, measure.filter_sql)
             substituted = substituted.replace(f"{{{param_name}}}", param_expr)
 
         return sqlglot.parse_one(substituted, dialect=self.dialect)
@@ -1967,6 +1969,25 @@ class SQLGenerator:
         unchanged.
         """
         p = self._resolve_agg_param(measure, name="p", agg_name="percentile")
+        # `p` must be a numeric literal in [0, 1]. Without this guard a
+        # caller could pass `measure:percentile(p=quantity)` (or a model-
+        # level default like `p=pg_sleep(10)` that bypasses
+        # `_validate_agg_param_value`) and have it flow into
+        # PERCENTILE_CONT(p)'s direct-arg slot as a column ref or function
+        # call — failing at the backend with a dialect-specific error
+        # rather than at SLayer's validation boundary. Closes Codex #3 on
+        # PR #82 by catching non-numeric model-level defaults here.
+        try:
+            p_float = float(p)
+        except ValueError:
+            raise ValueError(
+                f"Aggregation 'percentile' parameter 'p' must be a numeric literal "
+                f"in [0, 1]; got {p!r}."
+            ) from None
+        if not 0.0 <= p_float <= 1.0:
+            raise ValueError(
+                f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p_float}."
+            )
 
         if self.dialect == "mysql":
             raise NotImplementedError(
@@ -2009,6 +2030,19 @@ class SQLGenerator:
         contribute NULL — which the aggregates skip.
         """
         agg_name = measure.aggregation
+
+        # Resolve the `other=` kwarg before the MySQL guard so that a
+        # missing-required-param error takes priority over the
+        # MySQL-not-supported error when both conditions hold — the
+        # missing-param message points at the actual user mistake. Closes
+        # Codex #5 on PR #82.
+        other_expr: Optional[str] = None
+        if agg_name in _TWO_ARG_STAT_AGGS:
+            other_expr = _wrap_filter(
+                self._resolve_agg_param(measure, name="other", agg_name=agg_name),
+                measure.filter_sql,
+            )
+
         if agg_name in _TWO_ARG_STAT_AGGS and self.dialect == "mysql":
             raise NotImplementedError(
                 f"Aggregation '{agg_name}' is not supported on MySQL: MySQL has no "
@@ -2019,11 +2053,7 @@ class SQLGenerator:
         col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
 
         if agg_name in _TWO_ARG_STAT_AGGS:
-            other = _wrap_filter(
-                self._resolve_agg_param(measure, name="other", agg_name=agg_name),
-                measure.filter_sql,
-            )
-            sql_str = f"{agg_name.upper()}({col_expr}, {other})"
+            sql_str = f"{agg_name.upper()}({col_expr}, {other_expr})"
         else:
             # stddev_samp, stddev_pop, var_samp, var_pop: emit the
             # canonical Postgres-style name and let sqlglot transpile per
