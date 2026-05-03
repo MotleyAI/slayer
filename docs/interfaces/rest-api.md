@@ -28,6 +28,10 @@ curl http://localhost:5143/health
 POST /query
 ```
 
+The body accepts two shapes:
+
+**Normal query** — provide `source_model` and the usual query fields. Optional `variables` are runtime overrides (always win over query / model defaults).
+
 ```bash
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
@@ -35,8 +39,18 @@ curl -X POST http://localhost:5143/query \
     "source_model": "orders",
     "measures": ["*:count"],
     "dimensions": ["status"],
+    "filters": ["region = '\''{r}'\''"],
+    "variables": {"r": "US"},
     "limit": 10
   }'
+```
+
+**Run-by-name** — for query-backed models, provide `name` and (optionally) `variables`, `dry_run`, and `explain`. Query-defining fields (`source_model`, `measures`, `dimensions`, `filters`, `time_dimensions`, `order`, `limit`, `offset`) are not allowed in this body shape.
+
+```bash
+curl -X POST http://localhost:5143/query \
+  -H "Content-Type: application/json" \
+  -d '{"name": "monthly_revenue", "variables": {"region": "US"}}'
 ```
 
 Response:
@@ -73,7 +87,23 @@ curl http://localhost:5143/models/orders
 curl -X POST http://localhost:5143/models \
   -H "Content-Type: application/json" \
   -d '{"name": "orders", "sql_table": "public.orders", "data_source": "mydb", ...}'
+
+# Create a query-backed model
+curl -X POST http://localhost:5143/models \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "monthly_revenue",
+    "data_source": "mydb",
+    "source_queries": [{
+      "source_model": "orders",
+      "measures": [{"formula": "amount:sum"}],
+      "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
+    }],
+    "query_variables": {"region": "US"}
+  }'
 ```
+
+For query-backed models, do **not** supply `columns` or `backing_query_sql` — they're auto-generated and rejected at save with a 400 error. `GET /models/{name}` returns the saved `source_queries`, `query_variables`, and the cached `columns` / `backing_query_sql`.
 
 ### Datasources
 

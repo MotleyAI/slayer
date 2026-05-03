@@ -104,13 +104,13 @@ def test_register_migration_rejects_duplicates(monkeypatch) -> None:
 
 
 def test_slayer_model_validates_v1_dict() -> None:
-    m = SlayerModel.model_validate({"name": "orders"})
+    m = SlayerModel.model_validate({"name": "orders", "sql_table": "orders"})
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert m.name == "orders"
 
 
 def test_slayer_model_dump_includes_version() -> None:
-    m = SlayerModel(name="orders")
+    m = SlayerModel(name="orders", sql_table="orders")
     dumped = m.model_dump(mode="json", exclude_none=True)
     assert dumped["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
@@ -130,7 +130,9 @@ def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> Non
         data.setdefault("meta", {})["migrated"] = True
         return data
 
-    m = SlayerModel.model_validate({"version": 3, "name": "orders"})
+    m = SlayerModel.model_validate(
+        {"version": 3, "name": "orders", "sql_table": "orders"}
+    )
     assert m.version == 4
     assert m.meta == {"migrated": True}
 
@@ -182,7 +184,10 @@ async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
         storage = YAMLStorage(base_dir=tmpdir)
         legacy_path = os.path.join(storage.models_dir, "orders.yaml")
         with open(legacy_path, "w") as f:
-            yaml.dump({"version": next_version - 1, "name": "orders"}, f)
+            yaml.dump(
+                {"version": next_version - 1, "name": "orders", "sql_table": "orders"},
+                f,
+            )
 
         loaded = await storage.get_model("orders")
         assert loaded is not None
@@ -205,7 +210,9 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "slayer.db")
         storage = SQLiteStorage(db_path=db_path)
-        legacy_blob = json.dumps({"version": next_version - 1, "name": "orders"})
+        legacy_blob = json.dumps(
+            {"version": next_version - 1, "name": "orders", "sql_table": "orders"}
+        )
         with sqlite3.connect(db_path) as conn:
             conn.execute(
                 "INSERT INTO models (name, data) VALUES (?, ?)",
@@ -221,7 +228,7 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None
 async def test_yaml_round_trip_preserves_version() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_model(SlayerModel(name="orders"))
+        await storage.save_model(SlayerModel(name="orders", sql_table="orders"))
         loaded = await storage.get_model("orders")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
@@ -240,6 +247,7 @@ def test_model_v1_to_v2_dimensions_only() -> None:
     m = SlayerModel.model_validate({
         "version": 1,
         "name": "orders",
+        "sql_table": "orders",
         "dimensions": [
             {"name": "status", "type": "string"},
             {"name": "id", "type": "number", "primary_key": True},
@@ -257,6 +265,7 @@ def test_model_v1_to_v2_measures_only() -> None:
     m = SlayerModel.model_validate({
         "version": 1,
         "name": "orders",
+        "sql_table": "orders",
         "measures": [
             {"name": "revenue", "sql": "amount"},
             {"name": "high_value", "sql": "amount", "filter": "amount > 100",
@@ -277,6 +286,7 @@ def test_model_v1_to_v2_dim_and_measure() -> None:
     m = SlayerModel.model_validate({
         "version": 1,
         "name": "orders",
+        "sql_table": "orders",
         "dimensions": [{"name": "status"}],
         "measures": [{"name": "revenue", "sql": "amount"}],
     })
@@ -300,6 +310,7 @@ def test_model_v1_to_v2_legacy_type_alias() -> None:
     m = SlayerModel.model_validate({
         "version": 1,
         "name": "orders",
+        "sql_table": "orders",
         "measures": [{"name": "revenue", "sql": "amount", "type": "sum"}],
     })
     col = m.columns[0]
@@ -313,6 +324,7 @@ def test_model_v1_to_v2_legacy_type_alias_respects_explicit_whitelist() -> None:
     m = SlayerModel.model_validate({
         "version": 1,
         "name": "orders",
+        "sql_table": "orders",
         "measures": [{
             "name": "revenue",
             "sql": "amount",
@@ -342,6 +354,7 @@ def test_model_v2_input_is_noop() -> None:
     m = SlayerModel.model_validate({
         "version": 2,
         "name": "orders",
+        "sql_table": "orders",
         "columns": [{"name": "status", "type": "string"}],
         "measures": [],
     })
@@ -354,6 +367,7 @@ def test_model_forward_version_passes_through() -> None:
     m = SlayerModel.model_validate({
         "version": 99,
         "name": "orders",
+        "sql_table": "orders",
         "columns": [{"name": "status", "type": "string"}],
         "measures": [],
         "future_field": "ignored",
@@ -453,12 +467,17 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     })
     assert m.source_queries is not None
     assert len(m.source_queries) == 1
+    # source_queries entries are parsed into SlayerQuery instances by
+    # SlayerModel's before-validator after the v1→v2 rename runs.
     inner = m.source_queries[0]
-    # After migration, the inner query is up to current SlayerQuery shape:
-    # 'fields' renamed to 'measures', no 'fields' key remains, version bumped.
-    assert "fields" not in inner
-    assert inner["measures"] == [{"formula": "revenue:sum", "name": "rev"}]
-    assert inner.get("version") == mig.CURRENT_VERSIONS["SlayerQuery"]
+    # After migration the inner query is parsed into a SlayerQuery instance
+    # (per SlayerModel.source_queries' BeforeValidator); 'fields' has been
+    # renamed to 'measures' and version bumped to current.
+    assert isinstance(inner, SlayerQuery)
+    assert inner.measures is not None
+    assert inner.measures[0].formula == "revenue:sum"
+    assert inner.measures[0].name == "rev"
+    assert inner.version == mig.CURRENT_VERSIONS["SlayerQuery"]
 
 
 def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
@@ -480,7 +499,11 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
         }],
     })
     inner = m.source_queries[0]
-    src = inner["source_model"]
+    assert isinstance(inner, SlayerQuery)
+    # source_model on a SlayerQuery is typed as ``object`` and stays a dict
+    # (ModelExtension shape) for the engine to interpret later.
+    src = inner.source_model
+    assert isinstance(src, dict)
     assert "dimensions" not in src
     # Merged into columns (status from dimensions + revenue from measures)
     col_names = sorted(c["name"] for c in src["columns"])
@@ -502,8 +525,10 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
         }],
     })
     inner = m.source_queries[0]
-    assert inner["measures"] == [{"formula": "revenue:sum", "name": "rev"}]
-    assert "fields" not in inner
+    assert isinstance(inner, SlayerQuery)
+    assert inner.measures is not None
+    assert inner.measures[0].formula == "revenue:sum"
+    assert inner.measures[0].name == "rev"
 
 
 async def test_v1_yaml_round_trip_to_v2() -> None:
@@ -685,15 +710,6 @@ async def _build_engine_with_orders(tmpdir: str):
     return SlayerQueryEngine(storage=storage)
 
 
-async def test_engine_dry_run_kwarg_str_input() -> None:
-    """dry_run=True kwarg with str input returns SQL without executing."""
-    with tempfile.TemporaryDirectory() as tmp:
-        engine = await _build_engine_with_orders(tmp)
-        result = await engine.execute(query="orders", dry_run=True)
-        assert result.data == []
-        assert result.sql is not None and "FROM" in result.sql.upper()
-
-
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
@@ -786,7 +802,12 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
         loaded = await storage.get_model("stale")
         assert loaded is not None
         assert loaded.source_queries is not None
-        assert "dry_run" not in loaded.source_queries[0]
+        # source_queries entries are parsed into SlayerQuery instances by
+        # SlayerModel.source_queries' BeforeValidator; v3 SlayerQuery has no
+        # dry_run attribute.
+        inner = loaded.source_queries[0]
+        assert isinstance(inner, SlayerQuery)
+        assert not hasattr(inner, "dry_run")
         # The migration warning identifies the inner query by name.
         assert any(
             "'stale_inner'" in r.message

@@ -12,11 +12,50 @@ Measures and aggregations are separate concepts in SLayer. Measures are named ro
 revenue:sum          — SUM the "revenue" measure
 *:count              — COUNT(*), always available, no measure definition needed
 revenue:avg          — AVG the "revenue" measure
+revenue:sum(window='90d')  — trailing 90-day SUM ending at each output bucket
 price:weighted_avg(weight=quantity)  — weighted average with kwargs
 customers.score:avg  — cross-model: AVG of "score" from the joined "customers" model
 ```
 
 Colon syntax is used everywhere measures appear: in `measures`, in arithmetic expressions, in transform function arguments, and in filters.
+
+### Windowed sum and average
+
+`sum` and `avg` accept an optional `window` parameter for trailing time-window
+aggregations:
+
+```json
+{
+  "fields": [
+    {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
+    {"formula": "price:avg(window='1y')", "name": "avg_price_1y"}
+  ],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
+}
+```
+
+The window is measured against the raw time dimension, not just the output
+rows. For each output bucket, SLayer aggregates source rows in the trailing
+interval ending at that bucket's end. This means the window can be larger than
+the query granularity (overlapping windows), equal to it (equivalent to normal
+`sum`/`avg` for that bucket), or smaller than it (only the trailing part of each
+bucket is included).
+
+Window sizes use compact duration syntax:
+
+| Unit | Meaning |
+|------|---------|
+| `y` | years |
+| `m` | months |
+| `w` | weeks |
+| `d` | days |
+| `h` | hours |
+| `min` | minutes |
+| `s` | seconds |
+
+Units can be combined in descending or practical order, for example
+`'1y2m3w5d6h7min8s'`, `'90d'`, `'6h'`, or `'15min'`. Quote the duration value
+inside the formula.
 
 ---
 
@@ -72,7 +111,7 @@ All three forms below — bare name, transform, arithmetic — work as query mea
 
 Bare-name references are inline-expanded at parse time into the saved formula's text, so queries that use the saved name produce the same SQL as queries with the formula written out longhand. Saved formulas can reference other saved formulas (transitively) — cycles like `a → b → a` are detected and rejected with the chain in the error message.
 
-The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`, `change_pct`) are rejected at model construction time.
+The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`, `change_pct`, `consecutive_periods`) are rejected at model construction time.
 
 Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
@@ -82,18 +121,23 @@ Functions apply window operations to measures:
 
 | Function | Description | SQL Generated |
 |----------|-------------|---------------|
-| `cumsum(x)` | Running total over time | `SUM(x) OVER (ORDER BY time)` |
+| `cumsum(x)` | Running total over time | `SUM(x) OVER (PARTITION BY dims ORDER BY time)` |
 | `time_shift(x, n)` | Value N periods back/ahead | Self-join CTE with INTERVAL offset |
 | `time_shift(x, offset, gran)` | Value from a different time bucket | Self-join CTE with INTERVAL offset |
-| `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (ORDER BY time)` |
-| `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (ORDER BY time)` |
+| `lag(x, n)` | Value N rows back (window function) | `LAG(x, n) OVER (PARTITION BY dims ORDER BY time)` |
+| `lead(x, n)` | Value N rows ahead (window function) | `LEAD(x, n) OVER (PARTITION BY dims ORDER BY time)` |
 | `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
 | `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
+| `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
 | `rank(x)` | Ranking by value (descending) | `RANK() OVER (ORDER BY x DESC)` |
 | `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
+
+Time-ordered window transforms partition by the query's non-time dimensions.
+For example, `cumsum(revenue:sum)` grouped by `status` computes one running
+total per status, not one running total across the whole result set.
 
 **Self-join transforms vs window-function transforms:**
 
@@ -103,6 +147,20 @@ Functions apply window operations to measures:
 
 - **Edge NULLs**: the first/last N rows always return NULL since window functions can only see rows within the current result set.
 - **Gap sensitivity**: if there are missing time periods in your data, `lag` shifts by row position, not by logical period — so the "previous row" might not be the previous calendar period.
+
+`consecutive_periods(predicate)` evaluates a predicate at the query grain and
+returns an integer streak length for the current row. False or NULL breaks the
+run and returns 0. The result composes with normal comparisons:
+
+```json
+{
+  "measures": [
+    {"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_run"},
+    {"formula": "consecutive_periods(revenue:sum > 0) >= 3", "name": "positive_3_periods"}
+  ],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
+}
+```
 
 ### Nesting
 

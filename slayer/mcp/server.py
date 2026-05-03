@@ -28,6 +28,16 @@ _UNSET = object()  # Sentinel to distinguish "not provided" from "explicitly set
 # no time-column context needed.
 _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_distinct", "median"})
 
+# Section-level budgeting for inspect_model output.
+# columns/measures/aggregations/joins fall back to a names-only CSV when the
+# caller drops the section from `sections`; reachable_fields/samples are fully
+# omitted (they have no natural "names" to list).
+_INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
+_INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples")
+_VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
+_TRUNCATION_MARKER = " ... [truncated]"
+_MAX_REACHABLE_FIELDS_DEPTH = 20
+
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
@@ -151,6 +161,81 @@ def _cell_is_present(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value.strip())
     return True
+
+
+def _truncate_description(text: Optional[str], max_chars: Optional[int]) -> Optional[str]:
+    """Trim a description to ``max_chars`` and append the truncation marker.
+
+    Returns the input unchanged when ``max_chars`` is ``None`` or the text is
+    already short enough. ``max_chars=0`` is allowed and yields just the
+    marker for any non-empty input.
+    """
+    if text is None or max_chars is None:
+        return text
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + _TRUNCATION_MARKER
+
+
+def _resolve_inspect_sections(
+    sections: Optional[List[str]],
+) -> Tuple[List[str], List[str]]:
+    """Validate and normalise the ``sections`` argument for ``inspect_model``.
+
+    Returns ``(resolved, unknown)`` where ``resolved`` is the list of valid
+    section names to render (preserving the canonical order, not the caller's
+    order) and ``unknown`` is the unrecognised entries (in caller order) for
+    the warning line.
+
+    ``sections=None`` and ``sections=[]`` both resolve to all six valid
+    sections — that's the documented "I want everything" path.
+
+    A non-empty list of *only* unknown names resolves to ``[]`` (not all six):
+    "all sections" is reserved for the explicit None/[] forms so a typo like
+    ``sections=["sample"]`` can't silently trigger the full expensive payload.
+    The footer warns about the unknown names and lists what was dropped, so
+    the caller can correct and re-call.
+    """
+    if not sections:
+        return list(_VALID_INSPECT_SECTIONS), []
+    valid_set = {s for s in sections if s in _VALID_INSPECT_SECTIONS}
+    unknown = [s for s in sections if s not in _VALID_INSPECT_SECTIONS]
+    # Canonical order so output is stable regardless of caller's order
+    resolved = [s for s in _VALID_INSPECT_SECTIONS if s in valid_set]
+    return resolved, unknown
+
+
+def _render_inspect_footer(
+    *,
+    included: List[str],
+    names_only: List[str],
+    omitted: List[str],
+    unknown: List[str],
+) -> Optional[str]:
+    """Build the per-call truncation footer for ``inspect_model``.
+
+    Returns ``None`` when there is nothing to report (no trimming, no
+    unknown names). Otherwise returns a quoted-markdown block.
+    """
+    if not (names_only or omitted or unknown):
+        return None
+    lines: List[str] = []
+    if unknown:
+        # repr() escapes newlines / quote chars so a caller-supplied value
+        # like "foo\n> evil" can't forge additional footer lines.
+        quoted = ", ".join(repr(u) for u in unknown)
+        lines.append(
+            f"> Warning: ignored unknown sections: {quoted}. "
+            f"Valid: {', '.join(_VALID_INSPECT_SECTIONS)}."
+        )
+    if names_only or omitted:
+        lines.append(f"> Sections shown: {', '.join(included) if included else '(none)'}.")
+        if names_only:
+            lines.append(f"> Names-only: {', '.join(names_only)}.")
+        if omitted:
+            lines.append(f"> Omitted: {', '.join(omitted)}.")
+        lines.append("> Re-call inspect_model with `sections=[...]` to fetch.")
+    return "\n".join(lines) if lines else None
 
 
 def _markdown_table(rows: List[Dict[str, Any]], columns: List[str]) -> str:
@@ -534,6 +619,122 @@ async def _collect_reachable_fields(
     return sorted(reachable_dims), sorted(reachable_measures)
 
 
+def _build_backing_query_info(model: SlayerModel) -> Optional[dict]:
+    """Build the ``backing_query`` block for inspect_model output.
+
+    Returns ``None`` for non-query-backed models. For query-backed models,
+    returns ``{variables, required_variables, stages}`` where:
+
+    - ``variables``: ``model.query_variables`` (defaults).
+    - ``required_variables``: placeholder names that have no default.
+    - ``stages``: each stage dumped as a dict, ready for JSON output.
+    """
+    if not model.source_queries:
+        return None
+    from slayer.core.query import extract_placeholder_names
+
+    all_placeholders: set = set()
+    stage_dicts: List[dict] = []
+    # A placeholder is "required" only if it has no default at any layer the
+    # engine consults: model.query_variables OR the stage's own variables.
+    defaulted: set = set(model.query_variables.keys())
+    for q in model.source_queries:
+        all_placeholders |= extract_placeholder_names(q)
+        if q.variables:
+            defaulted |= set(q.variables.keys())
+        stage_dicts.append(q.model_dump(mode="json", exclude_none=True))
+    required = sorted(all_placeholders - defaulted)
+    return {
+        "variables": dict(model.query_variables),
+        "required_variables": required,
+        "stages": stage_dicts,
+    }
+
+
+def _render_field_value(v: Any) -> str:
+    """Pick the most descriptive label out of a query-stage field value.
+
+    Stage list entries can be plain strings, simple `{name}` dicts, formula
+    dicts, or wrapper dicts like `{"dimension": {"name": ...}}`. Try each
+    shape in priority order and fall back to `str(v)` if nothing matches.
+    """
+    if not isinstance(v, dict):
+        return str(v)
+    name = v.get("name")
+    if name:
+        return str(name)
+    formula = v.get("formula")
+    if formula:
+        return str(formula)
+    inner = v.get("dimension")
+    if isinstance(inner, dict):
+        inner_name = inner.get("name")
+        if inner_name:
+            return str(inner_name)
+    return str(v)
+
+
+def _render_stage_field_list(key: str, val: list) -> str:
+    """Render a stage's field list (dimensions / measures / filters / etc.)."""
+    if key == "filters":
+        return "; ".join(f"`{f}`" for f in val)
+    return "; ".join(_render_field_value(v) for v in val)
+
+
+def _render_source_model(src: Any) -> Optional[str]:
+    """Render a stage's ``source_model`` (str or ModelExtension dict)."""
+    if isinstance(src, str):
+        return f"- source_model: `{src}`"
+    if isinstance(src, dict):
+        sn = src.get("source_name") or src.get("name")
+        if sn:
+            return f"- source_model: `{sn}` (extension)"
+    return None
+
+
+def _render_stage(i: int, stage: dict, total: int) -> List[str]:
+    """Render one stage's markdown lines."""
+    title = stage.get("name") or ("final" if i == total else f"stage {i}")
+    out: List[str] = [f"\n**{i}. {title}**"]
+    src_line = _render_source_model(stage.get("source_model"))
+    if src_line:
+        out.append(src_line)
+    for key in ("dimensions", "time_dimensions", "measures", "filters"):
+        val = stage.get(key)
+        if not val:
+            continue
+        out.append(f"- {key}: {_render_stage_field_list(key, val)}")
+    return out
+
+
+def _backing_query_markdown_section(info: dict) -> str:
+    """Format the ``backing_query`` info as a markdown section."""
+    lines: List[str] = ["## Backing Query"]
+    stages = info.get("stages") or []
+    for i, stage in enumerate(stages, start=1):
+        lines.extend(_render_stage(i, stage, len(stages)))
+    variables = info.get("variables") or {}
+    required = info.get("required_variables") or []
+    if variables or required:
+        lines.append("\n**Variables:**")
+        for k, v in variables.items():
+            lines.append(f"- `{k}`: default `{v}`")
+        for k in required:
+            lines.append(f"- `{k}`: required")
+    return "\n".join(lines)
+
+
+def _source_type_for(model: SlayerModel) -> str:
+    """Classify a model's source mode for summary/inspect output."""
+    if model.source_queries:
+        return "query"
+    if model.sql_table:
+        return "table"
+    if model.sql:
+        return "sql"
+    return "unknown"
+
+
 def _model_to_summary(model: SlayerModel) -> dict:
     """Convert a SlayerModel to a summary dict."""
     columns = []
@@ -565,6 +766,7 @@ def _model_to_summary(model: SlayerModel) -> dict:
     return {
         "name": model.name,
         "description": model.description,
+        "source_type": _source_type_for(model),
         "columns": columns,
         "measures": measures,
     }
@@ -601,7 +803,7 @@ def create_mcp_server(storage: StorageBackend):
         return render_help(topic=topic)
 
     @mcp.tool()
-    async def query(
+    async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
         source_model: str,
         measures: Optional[List[Dict[str, str]]] = None,
         dimensions: Optional[List[str]] = None,
@@ -615,6 +817,7 @@ def create_mcp_server(storage: StorageBackend):
         dry_run: bool = False,
         explain: bool = False,
         format: str = "markdown",
+        variables: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Query data from a semantic model. Call inspect_model first to see available columns and measures.
 
@@ -663,13 +866,48 @@ def create_mcp_server(storage: StorageBackend):
             data["whole_periods_only"] = True
         if measures:
             data["measures"] = measures
+        if variables:
+            data["variables"] = dict(variables)
         try:
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
+            # Run-by-name shortcut: when only source_model is given (no
+            # measures / dimensions / filters / time_dimensions / order /
+            # limit / offset), dispatch through ``engine.execute(str)`` so
+            # the model's stored backing query runs directly. Variables flow
+            # through with the documented run-by-name precedence.
+            no_overrides = (
+                not measures and not dimensions and not filters
+                and not time_dimensions and not order
+                and limit is None and offset is None
+                and not whole_periods_only
+            )
+            if no_overrides:
+                target = await storage.get_model(source_model)
+                if target is not None and target.source_queries:
+                    result = await engine.execute(
+                        source_model,
+                        variables=variables or {},
+                        dry_run=dry_run,
+                        explain=explain,
+                    )
+                    if dry_run:
+                        return f"SQL:\n{result.sql}"
+                    if explain:
+                        output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
+                        output += _format_output(result=result, fmt=fmt)
+                        return output
+                    output = _format_output(result=result, fmt=fmt)
+                    if show_sql and result.sql:
+                        output = f"SQL:\n{result.sql}\n\n{output}"
+                    return output
             slayer_query = SlayerQuery.model_validate(data)
             result = await engine.execute(
-                query=slayer_query, dry_run=dry_run, explain=explain
+                query=slayer_query,
+                variables=variables,
+                dry_run=dry_run,
+                explain=explain,
             )
             if dry_run:
                 return f"SQL:\n{result.sql}"
@@ -810,37 +1048,76 @@ def create_mcp_server(storage: StorageBackend):
         num_rows: int = 3,
         show_sql: bool = False,
         format: str = "markdown",
+        sections: Optional[List[str]] = None,
+        descriptions_max_chars: Optional[int] = None,
+        reachable_fields_depth: int = 5,
     ) -> str:
         """Return a complete-yet-compact view of a semantic model.
 
-        Sections always emitted (when non-empty): model header + description,
+        Always emitted (regardless of ``sections``): model header + description,
         metadata bullets (data_source, sql_table, default_time_dimension,
-        hidden, row_count), custom SQL block, model-level filters, dimensions
-        table (includes a ``sampled`` column — distinct values for
-        string/boolean dims, ``min .. max`` for number/date/time dims, or
-        ``> 20 distinct`` for high-cardinality categoricals), measures table,
-        custom aggregations, joins, reachable fields via joins up to depth 5,
-        and a sample-data table with ``COUNT(*)`` plus one aggregation per
-        measure (``avg`` when permitted, else the first allowed aggregation).
+        hidden, row_count), backing-query structure for query-backed models,
+        and — when ``show_sql=True`` — the custom SQL block, model-level
+        filters, and the cached backing-query SQL.
 
-        Every markdown table in the response auto-prunes columns whose cells
-        are entirely empty, and collapses to a comma-separated backticked list
-        when only one column survives pruning.
+        Section-gated parts (subset selectable via ``sections``):
+
+        - ``columns`` — unified row-level columns table with a ``sampled``
+          column (distinct values for string/boolean, ``min .. max`` for
+          number/date/time, or ``> 20 distinct`` for high-cardinality
+          categoricals).
+        - ``measures`` — named-formula library.
+        - ``aggregations`` — custom aggregation definitions. The ``formula``
+          column and the ``sql`` field of each ``params[]`` entry are gated
+          by ``show_sql``.
+        - ``joins`` — join definitions.
+        - ``reachable_fields`` — BFS-walked fields reachable via joins.
+        - ``samples`` — live sample-data query (``COUNT(*)`` plus one
+          aggregation per column).
+
+        When a section is omitted from ``sections``: ``columns``, ``measures``,
+        ``aggregations`` and ``joins`` collapse to a one-line backticked CSV
+        of names; ``reachable_fields`` and ``samples`` are dropped entirely.
+        A footer at the end of the response lists what was trimmed and how
+        to fetch more.
 
         Args:
             model_name: Name of the model to inspect.
             num_rows: Max sample-data rows (default: 3).
             show_sql: When true, include the generated SQL for the sample-data
-                query in the response (useful for debugging or understanding
-                how SLayer translates the model to SQL).
-            format: Output format — "markdown" (default, rich structured
-                document), or "json" (structured JSON with all model metadata
-                and sample data). Case-insensitive.
+                query, the custom SQL block, model-level filters, the cached
+                backing-query SQL, and aggregation formulas/param SQL.
+            format: Output format — ``"markdown"`` (default) or ``"json"``.
+                Case-insensitive.
+            sections: Subset of ``["columns", "measures", "aggregations",
+                "joins", "reachable_fields", "samples"]``. Default (``None``
+                or empty list) renders all six. Unknown names are ignored
+                with a warning line at the end of the response. A non-empty
+                list of *only* unknown names resolves to no sections (not
+                all six) — "all sections" is reserved for ``None``/``[]`` so
+                a typo can't silently trigger the full expensive payload.
+            descriptions_max_chars: When set, every description field (model,
+                column, measure, aggregation) longer than this is truncated
+                with a ``... [truncated]`` suffix. Must be ``>= 0``. ``None``
+                (default) means no truncation.
+            reachable_fields_depth: Max BFS depth (in path segments) for the
+                reachable-fields walk. Default 5; allowed range
+                ``[0, 20]``. Ignored when ``reachable_fields`` is not in
+                ``sections``.
         """
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
             raise ValueError(
                 f"Invalid format '{format}' for inspect_model. Must be 'markdown' or 'json'."
+            )
+        if descriptions_max_chars is not None and descriptions_max_chars < 0:
+            raise ValueError(
+                f"descriptions_max_chars must be >= 0, got {descriptions_max_chars}."
+            )
+        if reachable_fields_depth < 0 or reachable_fields_depth > _MAX_REACHABLE_FIELDS_DEPTH:
+            raise ValueError(
+                f"reachable_fields_depth must be between 0 and {_MAX_REACHABLE_FIELDS_DEPTH}, "
+                f"got {reachable_fields_depth}."
             )
 
         model = await storage.get_model(model_name)
@@ -854,9 +1131,24 @@ def create_mcp_server(storage: StorageBackend):
             available.sort()
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
 
-        sections: List[str] = [f"# Model: `{model.name}`"]
-        if model.description:
-            sections.append(model.description)
+        # Resolve section gating up front so we can short-circuit DB calls
+        # for parts the caller doesn't want.
+        included, unknown = _resolve_inspect_sections(sections)
+        included_set = set(included)
+
+        # Categorise non-included sections into "names-only" (still listed,
+        # just collapsed to CSV) vs "fully omitted" (no heading at all).
+        names_only_sections = [
+            s for s in _INSPECT_SECTIONS_NAMES_ONLY if s not in included_set
+        ]
+        omitted_sections = [
+            s for s in _INSPECT_SECTIONS_OMITTABLE if s not in included_set
+        ]
+
+        truncated_model_desc = _truncate_description(model.description, descriptions_max_chars)
+        out_sections: List[str] = [f"# Model: `{model.name}`"]
+        if truncated_model_desc:
+            out_sections.append(truncated_model_desc)
 
         # Metadata bullets (incl. row_count from a cheap *:count query)
         meta: List[str] = []
@@ -874,239 +1166,360 @@ def create_mcp_server(storage: StorageBackend):
         if row_count is not None:
             meta.append(f"- **row_count:** {row_count:,}")
         if meta:
-            sections.append("\n".join(meta))
+            out_sections.append("\n".join(meta))
 
         if show_sql and model.sql:
-            sections.append(f"## SQL\n\n```sql\n{model.sql}\n```")
+            out_sections.append(f"## SQL\n\n```sql\n{model.sql}\n```")
 
         if show_sql and model.filters:
             filter_lines = "\n".join(f"- `{f}`" for f in model.filters)
-            sections.append(f"## Filters (model-level)\n\n{filter_lines}")
+            out_sections.append(f"## Filters (model-level)\n\n{filter_lines}")
 
-        # Dimension profile (distinct values / min-max) — folded into the
-        # Dimensions table as a ``sampled`` column so there's one table per
-        # dimension rather than a separate section the LLM has to cross-join by
-        # name.
-        profile_entries = await _collect_dim_profile(model=model, engine=engine)
-        profile_by_name: Dict[str, str] = {
-            e.name: _format_dim_profile_value(e) for e in profile_entries
-        }
-
-        # Infer column types via LIMIT 0 probe + min/max profile
-        measure_types = await engine.get_column_types(model_name=model.name)
-        measure_profile = await _collect_measure_profile(model=model, engine=engine)
-
-        # Columns table (the unified row-level definitions — every column can
-        # be used as either a dimension or a measure, gated by data type and
-        # ``allowed_aggregations``).
-        col_rows: List[Dict[str, Any]] = []
-        for c in model.columns:
-            if c.hidden:
-                continue
-            aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
-            col_rows.append({
-                "name": c.name,
-                "type": str(c.type),
-                "primary_key": "yes" if c.primary_key else "",
-                "sql": c.sql if c.sql else c.name,
-                "allowed_aggregations": aggs,
-                "filter": c.filter,
-                "label": c.label,
-                "description": c.description,
-                "sampled": (
-                    profile_by_name.get(c.name)
-                    or measure_profile.get(c.name)
-                ),
-            })
-        col_columns = [
-            "name", "type", "primary_key", "sql", "allowed_aggregations",
-            "filter", "label", "description", "sampled",
-        ]
-        if not show_sql:
-            col_columns = [c for c in col_columns if c not in ("sql", "filter")]
-        sections.append(
-            f"## Columns ({len(col_rows)})\n\n"
-            + _markdown_table(rows=col_rows, columns=col_columns)
-        )
-
-        # Measures (named formula library) — empty by default after a v1→v2
-        # migration; users populate this via ``edit_model`` to give recurring
-        # formulas a stable name.
-        measure_rows: List[Dict[str, Any]] = []
-        for mm in model.measures:
-            measure_rows.append({
-                "name": mm.name,
-                "formula": mm.formula,
-                "label": mm.label,
-                "description": mm.description,
-            })
-        sections.append(
-            f"## Measures ({len(measure_rows)})\n\n"
-            + _markdown_table(
-                rows=measure_rows,
-                columns=["name", "formula", "label", "description"],
-            )
-        )
-
-        # Custom aggregations (if any)
-        if model.aggregations:
-            agg_rows: List[Dict[str, Any]] = []
-            for a in model.aggregations:
-                params = (
-                    "; ".join(f"{p.name}={p.sql}" for p in a.params) if a.params else None
+        # Backing-query section (query-backed models only). Structure is
+        # always-on (it's the model's identity for query-backed models, like
+        # `sql_table` is for table-backed); only the SQL cache is gated by
+        # show_sql.
+        backing_info = _build_backing_query_info(model)
+        if backing_info is not None:
+            out_sections.append(_backing_query_markdown_section(backing_info))
+            if show_sql and model.backing_query_sql:
+                out_sections.append(
+                    f"## Backing Query SQL\n\n```sql\n{model.backing_query_sql}\n```"
                 )
-                agg_rows.append({
-                    "name": a.name,
-                    "formula": a.formula or "(built-in override)",
-                    "params": params,
-                    "description": a.description,
+
+        # ------------------------------------------------------------------
+        # DB-hitting computations — skip when their consumers aren't requested.
+        # ------------------------------------------------------------------
+        # Dimension/measure profile populates the ``sampled`` column of the
+        # columns table. Only needed when ``columns`` is fully included.
+        profile_by_name: Dict[str, str] = {}
+        measure_profile: Dict[str, str] = {}
+        if "columns" in included_set:
+            profile_entries = await _collect_dim_profile(model=model, engine=engine)
+            profile_by_name = {
+                e.name: _format_dim_profile_value(e) for e in profile_entries
+            }
+            measure_profile = await _collect_measure_profile(model=model, engine=engine)
+
+        # ``measure_types`` informs the sample query's choice of avg vs
+        # count_distinct. Only needed when ``samples`` is in the included set.
+        measure_types: Dict[str, str] = {}
+        if "samples" in included_set:
+            measure_types = await engine.get_column_types(model_name=model.name)
+
+        # ------------------------------------------------------------------
+        # Columns section
+        # ------------------------------------------------------------------
+        visible_columns = [c for c in model.columns if not c.hidden]
+        if "columns" in included_set:
+            col_rows: List[Dict[str, Any]] = []
+            for c in visible_columns:
+                aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
+                col_rows.append({
+                    "name": c.name,
+                    "type": str(c.type),
+                    "primary_key": "yes" if c.primary_key else "",
+                    "sql": c.sql if c.sql else c.name,
+                    "allowed_aggregations": aggs,
+                    "filter": c.filter,
+                    "label": c.label,
+                    "description": _truncate_description(c.description, descriptions_max_chars),
+                    "sampled": (
+                        profile_by_name.get(c.name)
+                        or measure_profile.get(c.name)
+                    ),
                 })
-            sections.append(
-                f"## Aggregations ({len(agg_rows)})\n\n"
+            col_columns = [
+                "name", "type", "primary_key", "sql", "allowed_aggregations",
+                "filter", "label", "description", "sampled",
+            ]
+            if not show_sql:
+                col_columns = [c for c in col_columns if c not in ("sql", "filter")]
+            out_sections.append(
+                f"## Columns ({len(col_rows)})\n\n"
+                + _markdown_table(rows=col_rows, columns=col_columns)
+            )
+        elif visible_columns:
+            csv = ", ".join(_md_code_span(c.name) for c in visible_columns)
+            out_sections.append(
+                f"## Columns ({len(visible_columns)} — names only)\n\n{csv}"
+            )
+
+        # ------------------------------------------------------------------
+        # Measures section
+        # ------------------------------------------------------------------
+        if "measures" in included_set:
+            measure_rows: List[Dict[str, Any]] = []
+            for mm in model.measures:
+                measure_rows.append({
+                    "name": mm.name,
+                    "formula": mm.formula,
+                    "label": mm.label,
+                    "description": _truncate_description(mm.description, descriptions_max_chars),
+                })
+            out_sections.append(
+                f"## Measures ({len(measure_rows)})\n\n"
                 + _markdown_table(
-                    rows=agg_rows,
-                    columns=["name", "formula", "params", "description"],
+                    rows=measure_rows,
+                    columns=["name", "formula", "label", "description"],
                 )
             )
-
-        # Joins table (always rendered, even when empty, to keep structure predictable)
-        join_rows: List[Dict[str, Any]] = []
-        for j in model.joins:
-            pairs = "; ".join(f"{src} = {tgt}" for src, tgt in j.join_pairs)
-            join_rows.append({
-                "target_model": j.target_model,
-                "join_pairs": pairs,
-            })
-        sections.append(
-            f"## Joins ({len(join_rows)})\n\n"
-            + _markdown_table(
-                rows=join_rows,
-                columns=["target_model", "join_pairs"],
+        elif model.measures:
+            csv = ", ".join(_md_code_span(mm.name) for mm in model.measures)
+            out_sections.append(
+                f"## Measures ({len(model.measures)} — names only)\n\n{csv}"
             )
-        )
 
-        # Reachable via joins (omitted when empty)
-        reach_dims, reach_measures = await _collect_reachable_fields(
-            model=model, storage=storage,
-        )
-        if reach_dims or reach_measures:
-            lines = ["## Reachable via joins (max depth: 5)", ""]
-            if reach_dims:
-                rendered = ", ".join(f"`{d}`" for d in reach_dims)
-                lines.append(f"**Dimensions ({len(reach_dims)}):** {rendered}")
-            if reach_measures:
-                rendered = ", ".join(f"`{m}`" for m in reach_measures)
-                lines.append(f"**Measures ({len(reach_measures)}):** {rendered}")
-            sections.append("\n".join(lines))
+        # ------------------------------------------------------------------
+        # Aggregations section
+        # ------------------------------------------------------------------
+        if "aggregations" in included_set:
+            if model.aggregations:
+                agg_rows: List[Dict[str, Any]] = []
+                for a in model.aggregations:
+                    if a.params:
+                        if show_sql:
+                            params = "; ".join(f"{p.name}={p.sql}" for p in a.params)
+                        else:
+                            params = ", ".join(p.name for p in a.params)
+                    else:
+                        params = None
+                    agg_rows.append({
+                        "name": a.name,
+                        "formula": a.formula or "(built-in override)",
+                        "params": params,
+                        "description": _truncate_description(
+                            a.description, descriptions_max_chars,
+                        ),
+                    })
+                agg_columns = ["name", "formula", "params", "description"]
+                if not show_sql:
+                    agg_columns = [c for c in agg_columns if c != "formula"]
+                out_sections.append(
+                    f"## Aggregations ({len(agg_rows)})\n\n"
+                    + _markdown_table(rows=agg_rows, columns=agg_columns)
+                )
+        elif model.aggregations:
+            csv = ", ".join(_md_code_span(a.name) for a in model.aggregations)
+            out_sections.append(
+                f"## Aggregations ({len(model.aggregations)} — names only)\n\n{csv}"
+            )
 
-        # Sample data via a regular SlayerQuery (same path the `query` MCP tool takes)
-        query_args = _build_sample_query_args(
-            model=model, num_rows=num_rows, measure_types=measure_types,
-        )
+        # ------------------------------------------------------------------
+        # Joins section
+        # ------------------------------------------------------------------
+        if "joins" in included_set:
+            join_rows: List[Dict[str, Any]] = []
+            for j in model.joins:
+                pairs = "; ".join(f"{src} = {tgt}" for src, tgt in j.join_pairs)
+                join_rows.append({
+                    "target_model": j.target_model,
+                    "join_pairs": pairs,
+                })
+            out_sections.append(
+                f"## Joins ({len(join_rows)})\n\n"
+                + _markdown_table(
+                    rows=join_rows,
+                    columns=["target_model", "join_pairs"],
+                )
+            )
+        elif model.joins:
+            csv = ", ".join(_md_code_span(j.target_model) for j in model.joins)
+            out_sections.append(
+                f"## Joins ({len(model.joins)} — names only)\n\n{csv}"
+            )
+
+        # ------------------------------------------------------------------
+        # Reachable via joins (fully omitted when not in sections)
+        # ------------------------------------------------------------------
+        reach_dims: List[str] = []
+        reach_measures: List[str] = []
+        if "reachable_fields" in included_set:
+            reach_dims, reach_measures = await _collect_reachable_fields(
+                model=model, storage=storage, max_depth=reachable_fields_depth,
+            )
+            if reach_dims or reach_measures:
+                lines = [
+                    f"## Reachable via joins (max depth: {reachable_fields_depth})", "",
+                ]
+                if reach_dims:
+                    rendered = ", ".join(f"`{d}`" for d in reach_dims)
+                    lines.append(f"**Dimensions ({len(reach_dims)}):** {rendered}")
+                if reach_measures:
+                    rendered = ", ".join(f"`{m}`" for m in reach_measures)
+                    lines.append(f"**Measures ({len(reach_measures)}):** {rendered}")
+                out_sections.append("\n".join(lines))
+
+        # ------------------------------------------------------------------
+        # Sample data (fully omitted when not in sections)
+        # ------------------------------------------------------------------
         sample_sql: Optional[str] = None
         sample_data: Optional[Dict[str, Any]] = None
         sample_error: Optional[str] = None
-        try:
-            sample_query = SlayerQuery.model_validate(query_args)
-            sample_result = await engine.execute(query=sample_query)
-            sample_sql = sample_result.sql
-            cols, data = _strip_model_prefix(
-                columns=sample_result.columns,
-                data=sample_result.data,
-                model_name=model.name,
+        if "samples" in included_set:
+            query_args = _build_sample_query_args(
+                model=model, num_rows=num_rows, measure_types=measure_types,
             )
-            sample_data = {"columns": cols, "rows": data}
-            sample_result.columns = cols
-            sample_result.data = data
-            sample_section = f"## Sample Data\n\n{sample_result.to_markdown()}"
-            if show_sql and sample_sql:
-                sample_section = (
-                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
-                    + sample_section
+            try:
+                sample_query = SlayerQuery.model_validate(query_args)
+                sample_result = await engine.execute(query=sample_query)
+                sample_sql = sample_result.sql
+                cols, data = _strip_model_prefix(
+                    columns=sample_result.columns,
+                    data=sample_result.data,
+                    model_name=model.name,
                 )
-            sections.append(sample_section)
-        except Exception as e:
-            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
-                err = _friendly_db_error(e)
-            else:
-                err = str(e)
-            sample_error = err
-            sample_section = f"## Sample Data\n\n_Error fetching sample data: {err}_"
-            if show_sql and sample_sql:
-                sample_section = (
-                    f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
-                    + sample_section
-                )
-            sections.append(sample_section)
+                sample_data = {"columns": cols, "rows": data}
+                sample_result.columns = cols
+                sample_result.data = data
+                sample_section = f"## Sample Data\n\n{sample_result.to_markdown()}"
+                if show_sql and sample_sql:
+                    sample_section = (
+                        f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                        + sample_section
+                    )
+                out_sections.append(sample_section)
+            except Exception as e:
+                if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                    err = _friendly_db_error(e)
+                else:
+                    err = str(e)
+                sample_error = err
+                sample_section = f"## Sample Data\n\n_Error fetching sample data: {err}_"
+                if show_sql and sample_sql:
+                    sample_section = (
+                        f"## Sample Data SQL\n\n```sql\n{sample_sql}\n```\n\n"
+                        + sample_section
+                    )
+                out_sections.append(sample_section)
+
+        # ------------------------------------------------------------------
+        # Per-call truncation footer (only when something was trimmed or an
+        # unknown section name was supplied).
+        # ------------------------------------------------------------------
+        footer = _render_inspect_footer(
+            included=included,
+            names_only=names_only_sections,
+            omitted=omitted_sections,
+            unknown=unknown,
+        )
 
         if fmt == "json":
-            # Return a structured JSON representation instead of the markdown document
-            return json.dumps(
-                {
-                    "model_name": model.name,
-                    "description": model.description,
-                    "data_source": model.data_source,
-                    **({"sql_table": model.sql_table} if show_sql else {}),
-                    **({"sql": model.sql} if show_sql else {}),
-                    "default_time_dimension": model.default_time_dimension,
-                    "hidden": model.hidden,
-                    "row_count": row_count,
-                    **({"filters": model.filters} if show_sql else {}),
-                    "columns": [
-                        {
-                            "name": c.name,
-                            "type": str(c.type),
-                            "primary_key": c.primary_key,
-                            **({"sql": c.sql} if show_sql else {}),
-                            "allowed_aggregations": c.allowed_aggregations,
-                            **({"filter": c.filter} if show_sql else {}),
-                            "label": c.label,
-                            "description": c.description,
-                            "sampled": (
-                                profile_by_name.get(c.name)
-                                or measure_profile.get(c.name)
-                            ),
-                        }
-                        for c in model.columns if not c.hidden
-                    ],
-                    "measures": [
-                        {
-                            "name": mm.name,
-                            "formula": mm.formula,
-                            "label": mm.label,
-                            "description": mm.description,
-                        }
-                        for mm in model.measures
-                    ],
-                    "aggregations": [
-                        {
-                            "name": a.name,
-                            "formula": a.formula,
-                            "params": [
-                                {"name": p.name, "sql": p.sql} for p in (a.params or [])
-                            ],
-                            "description": a.description,
-                        }
-                        for a in model.aggregations
-                    ],
-                    "joins": [
-                        {
-                            "target_model": j.target_model,
-                            "join_pairs": j.join_pairs,
-                        }
-                        for j in model.joins
-                    ],
-                    "reachable_dimensions": reach_dims,
-                    "reachable_measures": reach_measures,
-                    "sample_data": sample_data,
-                    "sample_data_error": sample_error,
-                    **({"sample_sql": sample_sql} if show_sql and sample_sql else {}),
-                },
-                indent=2,
-                default=str,
-            )
+            payload: Dict[str, Any] = {
+                "model_name": model.name,
+                "description": truncated_model_desc,
+                "data_source": model.data_source,
+                "source_type": _source_type_for(model),
+            }
+            if show_sql:
+                payload["sql_table"] = model.sql_table
+                payload["sql"] = model.sql
+            if backing_info is not None:
+                payload["backing_query"] = backing_info
+                if show_sql and model.backing_query_sql:
+                    payload["backing_query_sql"] = model.backing_query_sql
+            payload["default_time_dimension"] = model.default_time_dimension
+            payload["hidden"] = model.hidden
+            payload["row_count"] = row_count
+            if show_sql:
+                payload["filters"] = model.filters
 
-        return "\n\n".join(sections)
+            # Columns
+            if "columns" in included_set:
+                payload["columns"] = [
+                    {
+                        "name": c.name,
+                        "type": str(c.type),
+                        "primary_key": c.primary_key,
+                        **({"sql": c.sql} if show_sql else {}),
+                        "allowed_aggregations": c.allowed_aggregations,
+                        **({"filter": c.filter} if show_sql else {}),
+                        "label": c.label,
+                        "description": _truncate_description(
+                            c.description, descriptions_max_chars,
+                        ),
+                        "sampled": (
+                            profile_by_name.get(c.name)
+                            or measure_profile.get(c.name)
+                        ),
+                    }
+                    for c in visible_columns
+                ]
+            elif visible_columns:
+                payload["columns_names"] = [c.name for c in visible_columns]
+
+            # Measures
+            if "measures" in included_set:
+                payload["measures"] = [
+                    {
+                        "name": mm.name,
+                        "formula": mm.formula,
+                        "label": mm.label,
+                        "description": _truncate_description(
+                            mm.description, descriptions_max_chars,
+                        ),
+                    }
+                    for mm in model.measures
+                ]
+            elif model.measures:
+                payload["measures_names"] = [mm.name for mm in model.measures]
+
+            # Aggregations
+            if "aggregations" in included_set:
+                payload["aggregations"] = [
+                    {
+                        "name": a.name,
+                        **({"formula": a.formula} if show_sql else {}),
+                        "params": [
+                            ({"name": p.name, "sql": p.sql} if show_sql else {"name": p.name})
+                            for p in (a.params or [])
+                        ],
+                        "description": _truncate_description(
+                            a.description, descriptions_max_chars,
+                        ),
+                    }
+                    for a in model.aggregations
+                ]
+            elif model.aggregations:
+                payload["aggregations_names"] = [a.name for a in model.aggregations]
+
+            # Joins
+            if "joins" in included_set:
+                payload["joins"] = [
+                    {
+                        "target_model": j.target_model,
+                        "join_pairs": j.join_pairs,
+                    }
+                    for j in model.joins
+                ]
+            elif model.joins:
+                payload["joins_names"] = [j.target_model for j in model.joins]
+
+            # Reachable fields
+            if "reachable_fields" in included_set:
+                payload["reachable_dimensions"] = reach_dims
+                payload["reachable_measures"] = reach_measures
+
+            # Samples
+            if "samples" in included_set:
+                payload["sample_data"] = sample_data
+                payload["sample_data_error"] = sample_error
+                if show_sql and sample_sql:
+                    payload["sample_sql"] = sample_sql
+
+            # Top-level gating-state arrays (only when non-empty)
+            if names_only_sections:
+                payload["names_only_sections"] = names_only_sections
+            if omitted_sections:
+                payload["omitted_sections"] = omitted_sections
+            if unknown:
+                payload["unknown_sections"] = unknown
+
+            return json.dumps(payload, indent=2, default=str)
+
+        if footer:
+            out_sections.append(footer)
+        return "\n\n".join(out_sections)
 
     # -----------------------------------------------------------------------
     # Model creation and editing
@@ -1121,7 +1534,8 @@ def create_mcp_server(storage: StorageBackend):
         description: Optional[str] = None,
         columns: Optional[List[Dict[str, Any]]] = None,
         measures: Optional[List[Dict[str, str]]] = None,
-        query: Optional[Dict] = None,
+        query: Optional[Any] = None,
+        variables: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Create a new semantic model, either from a database table or from a query.
 
@@ -1148,9 +1562,13 @@ def create_mcp_server(storage: StorageBackend):
             measures: List of named formula definitions on the model. Each:
                 {"name": "aov", "formula": "revenue:sum / *:count", "label": "..."}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
-            query: A SLayer query dict. When provided, the query's SQL becomes the model source
-                and columns are auto-introspected. Mutually exclusive with
-                sql_table, sql, columns, and measures.
+            query: A SLayer query dict (or list of stage dicts for a multi-stage backing
+                query). When provided, the query is saved as the model's ``source_queries``
+                and the model becomes query-backed. Mutually exclusive with sql_table, sql,
+                columns, and measures.
+            variables: Default values for ``{var}`` placeholders in the backing query.
+                Saved as ``query_variables`` on the model. Only meaningful when ``query``
+                is provided.
         """
         if query is not None:
             table_params = {
@@ -1166,9 +1584,16 @@ def create_mcp_server(storage: StorageBackend):
                     "Use 'query' alone to create from a query, or provide table details without 'query'."
                 )
             try:
-                parsed_query = SlayerQuery.model_validate(query)
+                # Accept a single SlayerQuery dict or a list of stage dicts.
+                if isinstance(query, list):
+                    parsed_query = [SlayerQuery.model_validate(q) for q in query]
+                else:
+                    parsed_query = SlayerQuery.model_validate(query)
                 model = await engine.create_model_from_query(
-                    query=parsed_query, name=name, description=description or "",
+                    query=parsed_query,
+                    name=name,
+                    description=description or "",
+                    variables=variables,
                 )
             except Exception as e:
                 if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
@@ -1243,6 +1668,8 @@ def create_mcp_server(storage: StorageBackend):
         default_time_dimension: Optional[str] = None,
         sql_table: Optional[str] = None,
         sql: Optional[str] = None,
+        source_queries: Optional[List[Dict[str, Any]]] = None,
+        query_variables: Any = _UNSET,
         hidden: Optional[bool] = None,
         columns: Optional[List[Dict[str, Any]]] = None,
         measures: Optional[List[Dict[str, Any]]] = None,
@@ -1262,8 +1689,15 @@ def create_mcp_server(storage: StorageBackend):
             data_source: New data source name.
             default_time_dimension: Default time dimension (a column of type date/time) for
                 time-dependent transforms.
-            sql_table: Database table name.
-            sql: Custom SQL expression for the model source.
+            sql_table: Database table name. Setting this clears ``sql`` and ``source_queries``.
+            sql: Custom SQL expression for the model source. Setting this clears ``sql_table`` and ``source_queries``.
+            source_queries: Replace the model's backing query with this list of stages.
+                Each stage is a SlayerQuery dict; non-final stages must have a ``name``.
+                Setting this clears ``sql_table`` and ``sql``, makes the model query-backed,
+                and refreshes the cached ``columns`` and ``backing_query_sql``.
+            query_variables: Replace the model's default ``{var}`` placeholder values for
+                its backing query. Pass null/None to clear. Only meaningful for
+                query-backed models.
             hidden: Whether this model is hidden from discovery.
             meta: Arbitrary JSON metadata for the model (replaces existing meta). Pass null/None to clear.
             columns: Columns to create or update (upsert by name). Each dict:
@@ -1310,17 +1744,43 @@ def create_mcp_server(storage: StorageBackend):
         if default_time_dimension is not None:
             model.default_time_dimension = default_time_dimension
             changes.append(f"set default_time_dimension to '{default_time_dimension}'")
-        if sql_table is not None and sql is not None:
-            return "Specify only one of 'sql_table' or 'sql' when editing a model."
+        explicit_sources = sum(
+            1 for v in (sql_table, sql, source_queries) if v is not None
+        )
+        if explicit_sources > 1:
+            return (
+                "Specify at most one of 'sql_table', 'sql', or 'source_queries' "
+                "when editing a model — the three source modes are mutually exclusive."
+            )
 
         if sql_table is not None:
             model.sql_table = sql_table
             model.sql = None
+            model.source_queries = None
             changes.append(f"set sql_table to '{sql_table}'")
         if sql is not None:
             model.sql = sql
             model.sql_table = None
+            model.source_queries = None
             changes.append(f"set sql to '{sql}'")
+        if source_queries is not None:
+            # Switching to query-backed source mode. Cache columns and
+            # backing_query_sql get refreshed when we save via engine.save_model.
+            from slayer.core.query import SlayerQuery as _SlayerQuery
+            model.source_queries = [_SlayerQuery.model_validate(q) for q in source_queries]
+            model.sql_table = None
+            model.sql = None
+            # Clear the user-managed columns so the cache write succeeds.
+            model.columns = []
+            model.backing_query_sql = None
+            changes.append(f"set source_queries ({len(source_queries)} stage(s))")
+        if query_variables is not _UNSET:
+            model.query_variables = query_variables or {}
+            changes.append(
+                "updated query_variables"
+                if query_variables
+                else "cleared query_variables"
+            )
         if hidden is not None:
             model.hidden = hidden
             changes.append(f"set hidden to {hidden}")
@@ -1418,12 +1878,40 @@ def create_mcp_server(storage: StorageBackend):
             return f"No changes specified for model '{model_name}'."
 
         # --- Phase 5: Validate and save ---
+        # For query-backed models, columns are an engine-managed cache.
+        # If we end up with source_queries set after this edit, we route through
+        # engine.save_model so the cache is refreshed (and any user-supplied
+        # cache fields are rejected). Otherwise, persist directly via storage.
         try:
             validated = SlayerModel.model_validate(model.model_dump(mode="json"))
         except Exception as exc:
             return f"Validation error: {exc}"
 
-        await storage.save_model(validated)
+        if validated.source_queries:
+            # ``columns`` and ``backing_query_sql`` are engine-managed for
+            # query-backed models. Reject explicit user supply rather than
+            # silently dropping (which would let the API report a successful
+            # column edit that never persists).
+            if columns is not None:
+                return (
+                    "Validation error: cannot supply 'columns' on a "
+                    f"query-backed model ('{model_name}'). Columns are "
+                    "engine-managed (auto-derived from the backing query)."
+                )
+            # Strip cache fields before save so engine.save_model can repopulate
+            # them from a fresh _query_as_model pass. (These are present here
+            # only because they were on the existing stored model, not from
+            # this edit.)
+            validated = validated.model_copy(update={
+                "columns": [],
+                "backing_query_sql": None,
+            })
+            try:
+                await engine.save_model(validated)
+            except Exception as exc:
+                return f"Validation error: {exc}"
+        else:
+            await storage.save_model(validated)
         return json.dumps({
             "success": True,
             "model_name": model_name,
@@ -1690,7 +2178,7 @@ def create_mcp_server(storage: StorageBackend):
 
         lines = [f"Ingested {len(models)} model(s):"]
         for m in models:
-            lines.append(f"- {m.name} ({len(m.dimensions)} dims, {len(m.measures)} measures)")
+            lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
         lines.append("")
         lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
         return "\n".join(lines)

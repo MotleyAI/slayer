@@ -3,9 +3,9 @@
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
 from slayer.core.format import NumberFormat
@@ -220,6 +220,36 @@ class Aggregation(BaseModel):
         return self
 
 
+def _coerce_source_queries(v: Any) -> Any:
+    """Parse source_queries entries: dicts → SlayerQuery instances.
+
+    Imports SlayerQuery lazily to avoid the slayer.core.models ↔
+    slayer.core.query import cycle (query.py imports ModelMeasure from
+    models.py).
+
+    Raises ``ValueError`` (not ``TypeError``) for bad input so Pydantic v2
+    wraps it into a ``ValidationError`` — required for REST/MCP/CLI callers
+    to get structured error responses instead of raw tracebacks.
+    """
+    if v is None:
+        return v
+    if not isinstance(v, list):
+        raise ValueError(f"source_queries must be a list, got {type(v).__name__}")
+    from slayer.core.query import SlayerQuery
+    result = []
+    for i, item in enumerate(v):
+        if isinstance(item, SlayerQuery):
+            result.append(item)
+        elif isinstance(item, dict):
+            result.append(SlayerQuery.model_validate(item))
+        else:
+            raise ValueError(
+                f"source_queries[{i}] must be a SlayerQuery or dict, "
+                f"got {type(item).__name__}"
+            )
+    return result
+
+
 class ModelJoin(BaseModel):
     """A join relationship to another model."""
     target_model: str                               # Name of the joined model
@@ -244,7 +274,11 @@ class SlayerModel(BaseModel):
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
-    source_queries: Optional[List] = None  # List of SlayerQuery dicts — saved query structure
+    source_queries: Annotated[
+        Optional[List], BeforeValidator(_coerce_source_queries)
+    ] = None  # List of SlayerQuery — query-backed source mode
+    query_variables: Dict[str, Any] = Field(default_factory=dict)
+    backing_query_sql: Optional[str] = None
     data_source: str = ""
     columns: List[Column] = Field(default_factory=list)
     measures: List[ModelMeasure] = Field(default_factory=list)
@@ -379,6 +413,75 @@ class SlayerModel(BaseModel):
                         f"{sorted(allowed_for_type)} (plus any custom "
                         f"aggregations defined on this model)."
                     )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_source_mode_exclusivity(self) -> "SlayerModel":
+        """Exactly one of sql_table, sql, source_queries must be populated.
+
+        Empty source_queries=[] is rejected with a specific message. None / 0
+        / 2+ populated source modes raise a generic exclusivity error listing
+        which modes were set.
+        """
+        if self.source_queries is not None and len(self.source_queries) == 0:
+            raise ValueError(
+                f"Model '{self.name}': source_queries cannot be an empty list. "
+                f"Provide one or more stages, or omit the field entirely."
+            )
+        populated = []
+        if self.sql_table:
+            populated.append("sql_table")
+        if self.sql:
+            populated.append("sql")
+        if self.source_queries:
+            populated.append("source_queries")
+        if len(populated) == 0:
+            raise ValueError(
+                f"Model '{self.name}' must specify exactly one source: "
+                f"sql_table, sql, or source_queries (none specified)."
+            )
+        if len(populated) > 1:
+            raise ValueError(
+                f"Model '{self.name}' must specify exactly one source: "
+                f"sql_table, sql, or source_queries (got: {populated})."
+            )
+        return self
+
+    # NOSONAR S3516 — Pydantic v2 @model_validator(mode="after") is required to
+    # return ``self``; the rule's "always returns same value" warning doesn't
+    # apply to validator methods.
+    @model_validator(mode="after")
+    def _validate_source_query_stages(self) -> "SlayerModel":
+        """Validate stage-name rules on source_queries.
+
+        - All non-final stages must have a non-empty name (so later stages
+          and the outer query can reference them by name).
+        - Stage names (across all stages, not just non-final) must be unique.
+        """
+        if not self.source_queries:
+            return self
+        stages = self.source_queries
+        if len(stages) > 1:
+            for i, stage in enumerate(stages[:-1]):
+                if not getattr(stage, "name", None):
+                    raise ValueError(
+                        f"Model '{self.name}': non-final stage at index {i} "
+                        f"in source_queries must have a 'name'."
+                    )
+        seen: set = set()
+        dupes: List[str] = []
+        for stage in stages:
+            n = getattr(stage, "name", None)
+            if not n:
+                continue
+            if n in seen and n not in dupes:
+                dupes.append(n)
+            seen.add(n)
+        if dupes:
+            raise ValueError(
+                f"Model '{self.name}': duplicate stage name(s) in "
+                f"source_queries: {sorted(dupes)}."
+            )
         return self
 
     def get_column(self, name: str) -> Optional[Column]:

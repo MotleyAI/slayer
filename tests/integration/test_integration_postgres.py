@@ -241,6 +241,30 @@ class TestPostgresQueries:
         # Previous month (Feb) fetched from DB, not NULL
         assert float(result.data[0]["orders.prev_month"]) == pytest.approx(200.0)
 
+    async def test_consecutive_periods_with_boolean_predicate(self, pg_env: SlayerQueryEngine) -> None:
+        """consecutive_periods on a comparison predicate must work on Postgres.
+
+        Postgres rejects `boolean <> integer`, so the CTE generator's numeric
+        predicate `<expr> IS NOT NULL AND <expr> <> 0` cannot be used when the
+        argument is already boolean. The boolean-aware path must use the
+        column directly inside CASE WHEN.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH,
+            )],
+            measures=[
+                ModelMeasure(formula="total:sum"),
+                ModelMeasure(formula="consecutive_periods(total:sum > 200)", name="positive_run"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        )
+        result = await pg_env.execute(query=query)
+        # Monthly totals: Jan=300 (>200, true), Feb=200 (==200, false),
+        # Mar=375 (>200, true). Trailing run lengths: 1, 0, 1.
+        assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
+
     async def test_change_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         """change() with date_range should fetch previous period from outside the filtered range."""
         query = SlayerQuery(

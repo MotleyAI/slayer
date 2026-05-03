@@ -324,6 +324,129 @@ async def test_nested_cumsum_of_cumsum(integration_env):
     assert vals == [2, 6, 12]
 
 
+async def test_consecutive_periods_counts_trailing_true_run(integration_env):
+    """consecutive_periods returns the current trailing run length at the query grain."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(formula="consecutive_periods(total_amount:sum > 200)", name="positive_run"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 3
+    # Monthly totals are Jan=300 (true), Feb=125 (false), Mar=325 (true).
+    assert [r["orders.positive_run"] for r in response.data] == [1, 0, 1]
+
+
+async def test_consecutive_periods_with_non_boolean_argument(integration_env):
+    """consecutive_periods on a non-boolean argument treats NULL/0 as false.
+
+    The CTE wraps the argument in `IS NOT NULL AND <> 0` so behaviour is
+    portable across dialects rather than relying on each engine's
+    truthiness coercion in CASE WHEN.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="total_amount:sum"),
+            ModelMeasure(formula="consecutive_periods(total_amount:sum)", name="any_revenue_run"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 3
+    # Every month has nonzero revenue (Jan=300, Feb=125, Mar=325) so the run
+    # is monotonically increasing with no resets.
+    assert [r["orders.any_revenue_run"] for r in response.data] == [1, 2, 3]
+
+
+async def test_consecutive_periods_partitions_by_dimension(integration_env):
+    """Runs reset independently for each non-time dimension."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="status")],
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="*:count"),
+            ModelMeasure(formula="consecutive_periods(*:count > 0)", name="status_run"),
+        ],
+        order=[
+            OrderItem(column=ColumnRef(name="status"), direction="asc"),
+            OrderItem(column=ColumnRef(name="created_at"), direction="asc"),
+        ],
+    )
+    response = await engine.execute(query)
+
+    by_status = {}
+    for row in response.data:
+        by_status.setdefault(row["orders.status"], []).append(row["orders.status_run"])
+
+    assert by_status["completed"] == [1, 2]
+    assert by_status["pending"] == [1, 2]
+    assert by_status["cancelled"] == [1]
+
+
+async def test_consecutive_periods_comparison_is_selectable(integration_env):
+    """The integer streak result composes with normal comparison syntax."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[
+            ModelMeasure(formula="consecutive_periods(total_amount:sum > 0) >= 2", name="has_two_month_run"),
+        ],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    assert [bool(r["orders.has_two_month_run"]) for r in response.data] == [False, True, True]
+
+
+async def test_consecutive_periods_comparison_is_filterable(integration_env):
+    """Inline consecutive_periods comparisons can be used as post-filters."""
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        time_dimensions=[TimeDimension(
+            dimension=ColumnRef(name="created_at"),
+            granularity=TimeGranularity.MONTH,
+        )],
+        measures=[ModelMeasure(formula="total_amount:sum")],
+        filters=["consecutive_periods(total_amount:sum > 0) >= 2"],
+        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 2
+    assert [r["orders.created_at"] for r in response.data] == ["2025-02-01", "2025-03-01"]
+
+
 async def test_arithmetic_expression(integration_env):
     """Arithmetic field: total_amount / count = average."""
     engine = integration_env
