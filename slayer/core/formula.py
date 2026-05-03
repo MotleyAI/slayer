@@ -1,4 +1,4 @@
-"""Formula parser for SLayer fields.
+"""Formula parser for SLayer measure formulas.
 
 Parses formula strings into structured FieldSpec objects using Python's ast module.
 

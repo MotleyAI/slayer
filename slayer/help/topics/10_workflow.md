@@ -50,8 +50,10 @@ Two paths.
 
 ## Iterating on a model
 
-- Missing a measure? `edit_model` with a `measures` upsert. Example spec:
-  `{"name": "margin", "sql": "revenue - cost"}`.
+- Missing a row-level field? `edit_model` with a `columns` upsert.
+  Example: `columns=[{"name": "margin", "sql": "revenue - cost", "type": "number"}]`.
+- Missing a saved aggregated formula? `edit_model` with a `measures` upsert.
+  Example: `measures=[{"name": "avg_margin", "formula": "margin:sum / *:count"}]`.
 - One-off concept for a single query? Use `ModelExtension` inside
   `source_model` instead of editing the model — see `help(topic='extending')`.
 - Multi-stage result you'd like to reuse? `create_model` with a `query`
