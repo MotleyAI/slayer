@@ -917,7 +917,7 @@ def _run_datasources_create(args, storage):
         print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
 
 
-def _run_datasources_create_demo(args, storage):
+def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic
     from slayer.demo import (
         DEFAULT_TIME_DIMENSIONS,
         DEMO_NAME,

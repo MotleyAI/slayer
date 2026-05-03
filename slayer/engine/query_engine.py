@@ -898,7 +898,7 @@ class SlayerQueryEngine:
         })
         await self.storage.save_model(updated)
 
-    async def _enrich(
+    async def _enrich(  # NOSONAR S3776 — closure-heavy join-target resolution; the three target-source branches (named-query, cached backing-SQL, fallback expansion) form one conceptual unit
         self,
         query: SlayerQuery,
         model: SlayerModel,
