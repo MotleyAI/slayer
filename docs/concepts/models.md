@@ -331,7 +331,7 @@ For a query-backed model, the engine caches:
 - `model.columns` — the final-stage output columns (a discoverability snapshot).
 - `model.backing_query_sql` — the rendered backing-query SQL.
 
-The cache refreshes whenever the model is saved or executed (real run, dry-run, or explain) — write-if-changed semantics. Inspect tools (`inspect_model`, `models_summary`, REST `GET /models/{name}`) read the cache directly.
+The cache is populated **only** when the model is saved via `engine.save_model` (also reached by REST `POST/PUT /models` and MCP `create_model` / `edit_model`). **Read operations do not write to storage** — `engine.execute`, `inspect_model`, `get_column_types`, MCP `query`, and REST `/query` will never modify the persisted cache. If a query-backed model is written directly to storage outside `engine.save_model` (bypassing the engine), `model.columns` and `model.backing_query_sql` will remain stale until the next save through the engine. Inspect tools (`inspect_model`, `models_summary`, REST `GET /models/{name}`) read the cache directly.
 
 You **cannot** supply `columns` or `backing_query_sql` yourself when creating a query-backed model — they're engine-managed, and any user-supplied value is rejected at save with a clear error.
 

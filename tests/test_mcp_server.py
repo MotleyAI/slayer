@@ -313,6 +313,7 @@ class TestInspectModelQueryBacked:
     async def _setup(self, storage: YAMLStorage) -> None:
         from slayer.core.models import DatasourceConfig
         from slayer.core.query import SlayerQuery
+        from slayer.engine.query_engine import SlayerQueryEngine
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
@@ -323,7 +324,11 @@ class TestInspectModelQueryBacked:
                 Column(name="region", sql="region", type=DataType.STRING),
             ],
         ))
-        await storage.save_model(SlayerModel(
+        # Route the query-backed model through engine.save_model so the cache
+        # (columns + backing_query_sql) is populated at save time. Read paths
+        # never write to storage (issue #74), so cache must be warmed here.
+        engine = SlayerQueryEngine(storage=storage)
+        await engine.save_model(SlayerModel(
             name="qb",
             data_source="test",
             source_queries=[SlayerQuery(
@@ -354,23 +359,14 @@ class TestInspectModelQueryBacked:
     async def test_json_show_sql_includes_backing_query_sql(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        """After save / cache refresh, ``backing_query_sql`` is included when
-        ``show_sql=True``.
+        """After save populates the cache, ``backing_query_sql`` is included
+        when ``show_sql=True``.
         """
-        await self._setup(storage)
-        # Pre-populate the cache by triggering inspect_model once (which routes
-        # through engine internals that refresh the cache as a side effect of
-        # resolving the model).
-        await _call(mcp_server, name="inspect_model", arguments={
-            "model_name": "qb", "format": "json",
-        })
+        await self._setup(storage)  # populates cache at save time
         result = await _call(mcp_server, name="inspect_model", arguments={
             "model_name": "qb", "format": "json", "show_sql": True,
         })
         parsed = json.loads(result)
-        # The pre-warm above triggers the engine's cache-refresh path, so the
-        # field MUST be present here — a soft `if parsed.get(...)` would mask
-        # regressions in that path.
         assert "backing_query_sql" in parsed
         assert parsed["backing_query_sql"]
         assert "amount" in parsed["backing_query_sql"].lower()
