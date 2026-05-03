@@ -9,6 +9,7 @@ not baked into the measure definition.
 |-------------|---------|-----|
 | `sum` | `revenue:sum` | `SUM(expr)` |
 | `avg` | `revenue:avg` | `AVG(expr)` |
+| `sum` / `avg` with `window` | `revenue:sum(window='90d')` | trailing range aggregate |
 | `min` / `max` | `revenue:min` | `MIN(expr)` / `MAX(expr)` |
 | `count` | `*:count` | `COUNT(*)` |
 | `count` (non-null) | `email:count` | `COUNT(email)` |
@@ -37,6 +38,26 @@ Don't confuse:
 - `:first`/`:last` aggregation — per-group record's earliest/latest value.
 - `first(x)`/`last(x)` transform — broadcasts the earliest/most recent bucket's
   aggregated value to every row. See `help(topic='transforms')`.
+
+## Windowed sum and average
+
+`sum` and `avg` accept `window='...'` for trailing time-window aggregations:
+
+```json
+{
+  "source_model": "orders",
+  "fields": [
+    {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
+    {"formula": "revenue:avg(window='1y2m')", "name": "avg_14m"}
+  ],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
+}
+```
+
+The window is applied to raw source rows and ends at each output bucket's end.
+It can be larger than, equal to, or smaller than the query time granularity.
+Duration syntax is compact: `y`, `m`, `w`, `d`, `h`, `min`, `s`, combinable as
+in `1y2m3w5d6h7min8s`, `90d`, `6h`, or `15min`.
 
 ## Allowed aggregations (whitelist)
 
