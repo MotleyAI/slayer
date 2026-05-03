@@ -33,7 +33,26 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
     "median": "MEDIAN",
     # "first", "last" use special ROW_NUMBER + conditional aggregate
     # "weighted_avg" and custom aggregations use formula substitution
+    # "percentile", "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    # "corr" are dialect-dependent and routed through dedicated builders
+    # (_build_percentile / _build_stat_agg) — they are intentionally
+    # absent from this map.
 }
+
+# DEV-1317: statistical aggregations routed through _build_stat_agg.
+# stddev_samp/_pop and var_samp/_pop are 1-arg; corr / covar_samp /
+# covar_pop are 2-arg via the `other=` kwarg. SQLite gets these through
+# registered Python UDFs; Postgres/DuckDB/MySQL/ClickHouse use the
+# native function emitted via sqlglot transpilation. MySQL has no
+# native CORR / COVAR_SAMP / COVAR_POP — _build_stat_agg raises
+# NotImplementedError there, mirroring _build_median.
+_STAT_AGG_NAMES: frozenset[str] = frozenset({
+    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    "corr", "covar_samp", "covar_pop",
+})
+
+# Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
+_TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
@@ -1754,6 +1773,11 @@ class SQLGenerator:
             # going through the BUILTIN_AGGREGATION_FORMULAS path.
             if agg_name == "percentile":
                 return self._build_percentile(measure), True
+            # Statistical aggregates also dispatch to a dedicated builder so
+            # the SQLite-UDF / native-function / NotImplementedError split
+            # mirrors _build_median.
+            if agg_name in _STAT_AGG_NAMES:
+                return self._build_stat_agg(measure), True
             return self._build_formula_agg(measure, agg_name), True
 
         # --- Resolve inner expression ---
@@ -1913,6 +1937,66 @@ class SQLGenerator:
             sql_str = f"quantile({p})({col_expr})"
         else:
             sql_str = f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {col_expr})"
+
+        return sqlglot.parse_one(sql_str, dialect=self.dialect)
+
+    def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:
+        """Build SQL for the statistical aggregations added in DEV-1317.
+
+        Handles ``stddev_samp``, ``stddev_pop``, ``var_samp``, ``var_pop``
+        (1-arg) and ``corr`` (2-arg via ``other=`` kwarg). All five are
+        native on Postgres / DuckDB / ClickHouse; ``stddev*`` / ``var*``
+        are also native on MySQL but ``corr`` is not. SQLite gets them
+        via Python UDFs registered in ``slayer.sql.sqlite_udfs`` — the
+        UDFs alias sqlglot's transpiled names (e.g. ``var_samp`` →
+        ``VARIANCE`` on SQLite) so generator output resolves at runtime.
+
+        Filter handling matches ``_build_percentile`` /
+        ``_build_formula_agg``: when the measure carries a row-level
+        filter, both the value column and (for ``corr``) the ``other``
+        column are wrapped in ``CASE WHEN filter THEN col END`` so
+        non-matching rows contribute NULL — which the aggregates skip.
+        """
+        agg_name = measure.aggregation
+        if agg_name in _TWO_ARG_STAT_AGGS and self.dialect == "mysql":
+            raise NotImplementedError(
+                f"Aggregation '{agg_name}' is not supported on MySQL: MySQL has no "
+                f"native {agg_name.upper()} function and no Python UDF mechanism. "
+                f"Use MariaDB or compute the value client-side."
+            )
+
+        col_expr = measure.sql or measure.name
+        if measure.filter_sql:
+            col_expr = f"(CASE WHEN {measure.filter_sql} THEN {col_expr} END)"
+
+        if agg_name in _TWO_ARG_STAT_AGGS:
+            other = measure.agg_kwargs.get("other")
+            if other is None and measure.aggregation_def:
+                for param in measure.aggregation_def.params:
+                    if param.name == "other":
+                        other = param.sql
+                        break
+            if other is None:
+                raise ValueError(
+                    f"Aggregation '{agg_name}' requires parameter 'other'. "
+                    f"Set it in the model's aggregation definition or at query time "
+                    f"(e.g., 'measure:{agg_name}(other=column)')."
+                )
+            # Validate query-time `other=` for SQL-injection (model-level
+            # defaults are trusted, mirroring weighted_avg's `weight=`).
+            if "other" in measure.agg_kwargs:
+                _validate_agg_param_value(other, "other", agg_name)
+            if measure.filter_sql:
+                other = f"(CASE WHEN {measure.filter_sql} THEN {other} END)"
+            sql_str = f"{agg_name.upper()}({col_expr}, {other})"
+        else:
+            # stddev_samp, stddev_pop, var_samp, var_pop: emit the
+            # canonical Postgres-style name and let sqlglot transpile per
+            # dialect (e.g., var_samp → VARIANCE on SQLite/DuckDB/MySQL,
+            # var_pop → VARIANCE_POP on SQLite/MySQL). Both spellings
+            # resolve via the SQLite UDF aliases.
+            sql_func = agg_name.upper()
+            sql_str = f"{sql_func}({col_expr})"
 
         return sqlglot.parse_one(sql_str, dialect=self.dialect)
 

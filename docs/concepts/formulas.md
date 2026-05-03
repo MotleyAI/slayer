@@ -14,6 +14,11 @@ revenue:sum          — SUM the "revenue" measure
 revenue:avg          — AVG the "revenue" measure
 revenue:sum(window='90d')  — trailing 90-day SUM ending at each output bucket
 price:weighted_avg(weight=quantity)  — weighted average with kwargs
+latency:stddev_samp  — sample standard deviation
+latency:var_pop      — population variance
+price:corr(other=quantity)  — Pearson correlation between two columns (named `other` kwarg)
+price:covar_samp(other=quantity)  — sample covariance (Bessel-corrected)
+price:covar_pop(other=quantity)   — population covariance
 customers.score:avg  — cross-model: AVG of "score" from the joined "customers" model
 ```
 
@@ -231,6 +236,31 @@ This returns monthly revenue with extra columns showing the first and last month
 Both `first()` and `last()` require a time dimension with granularity in the query (same resolution as `time_shift`).
 
 Not to be confused with the [`first`/`last` aggregation types](models.md#the-last-aggregation-type), which are per-group aggregates returning the earliest/latest *record's* value within each bucket.
+
+---
+
+## Scalar Math Functions
+
+Inside `Column.sql`, `ModelMeasure.formula`, or any `Aggregation.formula`, you can call standard scalar math functions. They pass through to the underlying database via sqlglot — the formula parser does not need to know about them.
+
+| Function | Args | Behaviour |
+|----------|------|-----------|
+| `ln(x)` | 1 | Natural logarithm |
+| `log10(x)` | 1 | Base-10 logarithm |
+| `log(B, X)` | 2 | log base B of X — **base first, value second**. Matches SQLite ≥3.35 built-in `log(B, X)`, Postgres `LOG(b, x)`, and sqlglot transpilation. |
+| `exp(x)` | 1 | `e^x` |
+| `sqrt(x)` | 1 | Square root |
+| `pow(x, n)` / `power(x, n)` | 2 | `x^n`. Both spellings are accepted (sqlglot may emit either depending on origin dialect). |
+
+These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/sqlite_udfs.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
+
+The 2-arg `log(B, X)` UDF is registered only on SQLite < 3.35; newer versions ship the built-in (with the same B-first arg order) and we use that. `ln` and `log10` always register.
+
+```python
+# Examples (in Column.sql):
+Column(name="ln_amount", sql="ln(amount)", type=DataType.NUMBER)
+Column(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", type=DataType.NUMBER)
+```
 
 ---
 

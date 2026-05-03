@@ -124,6 +124,9 @@ BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "first", "last",
     "weighted_avg",
     "median", "percentile",
+    "stddev_samp", "stddev_pop",
+    "var_samp", "var_pop",
+    "corr", "covar_samp", "covar_pop",
 })
 
 # Built-in aggregation SQL formulas (for aggregations that use a template).
@@ -138,6 +141,9 @@ BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
 # Percentile's required-param check lives in generator._build_percentile.
 BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
     "weighted_avg": ["weight"],
+    "corr": ["other"],
+    "covar_samp": ["other"],
+    "covar_pop": ["other"],
 }
 
 # Aggregations that only make sense on numeric-valued measures. Applying them
@@ -147,6 +153,8 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
 # in this set.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "median", "weighted_avg", "percentile",
+    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    "corr", "covar_samp", "covar_pop",
 })
 
 
@@ -158,6 +166,8 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.NUMBER: frozenset({
         "sum", "avg", "min", "max", "count", "count_distinct",
         "median", "weighted_avg", "percentile", "first", "last",
+        "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+        "corr", "covar_samp", "covar_pop",
     }),
     DataType.STRING: frozenset({
         "count", "count_distinct", "first", "last", "min", "max",

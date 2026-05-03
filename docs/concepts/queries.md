@@ -290,6 +290,30 @@ MCP equivalent: `query(source_model="<model>", variables={...}, dry_run=True/Fal
 }
 ```
 
+### Statistical aggregations
+
+The `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, and `covar_pop` aggregations behave like the rest of the colon-syntax measures. `corr` / `covar_samp` / `covar_pop` are two-column — the second column rides as a named `other` parameter, the same way `weighted_avg` takes `weight`:
+
+```json
+{
+  "source_model": "orders",
+  "measures": [
+    {"formula": "latency:stddev_samp", "name": "latency_sd"},
+    {"formula": "latency:var_pop", "name": "latency_var_pop"},
+    {"formula": "price:corr(other=quantity)", "name": "price_qty_corr"},
+    {"formula": "price:covar_samp(other=quantity)", "name": "price_qty_cov"}
+  ],
+  "dimensions": [{"name": "status"}]
+}
+```
+
+Edge cases match Postgres exactly:
+- sample stddev/variance/covariance return NULL when N ≤ 1
+- population stddev/variance/covariance return 0 at N = 1 and NULL at N = 0
+- `corr` additionally returns NULL when either side has zero variance (covariance is well-defined in that case and just returns 0)
+
+See [database-support.md](../database-support.md#aggregation-support) for the per-engine support matrix.
+
 ### Cross-model measures
 
 When models have [joins](models.md#joins), you can reference measures from joined models using dotted syntax with colon aggregation — `model_name.measure_name:aggregation`:

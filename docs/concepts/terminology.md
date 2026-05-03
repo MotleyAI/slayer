@@ -10,7 +10,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Measure** — A named row-level SQL expression defined on a model. Each measure has a name and a SQL expression (e.g., `{name: "revenue", sql: "amount"}`). Aggregation is specified at query time using colon syntax — see **Aggregation** below.
 
-**Aggregation** — Specifies how a measure is aggregated. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`.
+**Aggregation** — Specifies how a measure is aggregated. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Custom aggregations can be defined at model level. Applied at query time via colon syntax: `revenue:sum`, `*:count`, `price:weighted_avg(weight=quantity)`, `price:corr(other=quantity)`.
 
 **Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
 

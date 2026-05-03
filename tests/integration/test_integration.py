@@ -2020,3 +2020,298 @@ async def test_sqlite_udf_pool_reuse(integration_env):
     r2 = await engine.execute(q)
     assert r1.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
     assert r2.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1317 — math/stat UDFs end-to-end on SQLite
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def stat_env(tmp_path):
+    """Independent fixture with a richer numeric dataset for stat UDFs."""
+    import statistics
+
+    db_path = tmp_path / "stat.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE samples (
+            id INTEGER PRIMARY KEY,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            bucket TEXT NOT NULL
+        )
+        """
+    )
+    rows = [
+        # bucket "a": linearly correlated x,y (corr ≈ 1)
+        (1, 1.0, 2.0, "a"),
+        (2, 2.0, 4.0, "a"),
+        (3, 3.0, 6.0, "a"),
+        (4, 4.0, 8.0, "a"),
+        (5, 5.0, 10.0, "a"),
+        # bucket "b": noisy positive correlation
+        (6, 1.0, 1.9, "b"),
+        (7, 2.0, 4.2, "b"),
+        (8, 3.0, 5.7, "b"),
+        (9, 4.0, 8.1, "b"),
+        (10, 5.0, 10.3, "b"),
+    ]
+    cur.executemany("INSERT INTO samples VALUES (?, ?, ?, ?)", rows)
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="stat_sqlite", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="samples",
+            sql_table="samples",
+            data_source="stat_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="x", sql="x", type=DataType.NUMBER),
+                Column(name="y", sql="y", type=DataType.NUMBER),
+                Column(name="bucket", sql="bucket", type=DataType.STRING),
+                # Column.sql exercising scalar math UDFs
+                Column(name="ln_x", sql="ln(x)", type=DataType.NUMBER),
+                Column(name="sqrt_x", sql="sqrt(x)", type=DataType.NUMBER),
+                Column(name="x_squared", sql="pow(x, 2)", type=DataType.NUMBER),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage), statistics
+
+
+async def test_stddev_samp_sqlite(stat_env):
+    """latency:stddev_samp end-to-end on SQLite — value matches Python."""
+    engine, statistics = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:stddev_samp")],
+        )
+    )
+    assert response.data[0]["samples.x_stddev_samp"] == pytest.approx(
+        statistics.stdev([1, 2, 3, 4, 5, 1, 2, 3, 4, 5]), rel=1e-9
+    )
+
+
+async def test_stddev_pop_sqlite(stat_env):
+    engine, statistics = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:stddev_pop")],
+        )
+    )
+    assert response.data[0]["samples.x_stddev_pop"] == pytest.approx(
+        statistics.pstdev([1, 2, 3, 4, 5, 1, 2, 3, 4, 5]), rel=1e-9
+    )
+
+
+async def test_var_samp_sqlite(stat_env):
+    engine, statistics = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:var_samp")],
+        )
+    )
+    assert response.data[0]["samples.x_var_samp"] == pytest.approx(
+        statistics.variance([1, 2, 3, 4, 5, 1, 2, 3, 4, 5]), rel=1e-9
+    )
+
+
+async def test_var_pop_sqlite(stat_env):
+    engine, statistics = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:var_pop")],
+        )
+    )
+    assert response.data[0]["samples.x_var_pop"] == pytest.approx(
+        statistics.pvariance([1, 2, 3, 4, 5, 1, 2, 3, 4, 5]), rel=1e-9
+    )
+
+
+async def test_corr_sqlite(stat_env):
+    """price:corr(other=quantity) — perfect-positive bucket "a" yields 1.0."""
+    engine, _ = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:corr(other=y)")],
+            dimensions=[ColumnRef(name="bucket")],
+        )
+    )
+    by_bucket = {
+        row["samples.bucket"]: row["samples.x_corr_other_y"]
+        for row in response.data
+    }
+    assert by_bucket["a"] == pytest.approx(1.0, abs=1e-9)
+    # bucket "b" should be very close to 1 but not exactly.
+    assert 0.99 < by_bucket["b"] < 1.0
+
+
+async def test_covar_samp_sqlite(stat_env):
+    """price:covar_samp(other=quantity) end-to-end on SQLite."""
+    engine, _ = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:covar_samp(other=y)")],
+            dimensions=[ColumnRef(name="bucket")],
+        )
+    )
+    by_bucket = {
+        row["samples.bucket"]: row["samples.x_covar_samp_other_y"]
+        for row in response.data
+    }
+    # Bucket "a" is exactly y = 2x; sample covariance of [1..5] with [2..10]
+    # is (5*1 + 4*2 + 3*3 + 2*4 + 1*5) ... compute via Python directly.
+    xs_a = [1, 2, 3, 4, 5]
+    ys_a = [2, 4, 6, 8, 10]
+    mx, my = sum(xs_a) / 5, sum(ys_a) / 5
+    expected_a = sum((x - mx) * (y - my) for x, y in zip(xs_a, ys_a)) / 4
+    assert by_bucket["a"] == pytest.approx(expected_a, rel=1e-9)
+
+
+async def test_covar_pop_sqlite(stat_env):
+    engine, _ = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:covar_pop(other=y)")],
+            dimensions=[ColumnRef(name="bucket")],
+        )
+    )
+    by_bucket = {
+        row["samples.bucket"]: row["samples.x_covar_pop_other_y"]
+        for row in response.data
+    }
+    xs_a = [1, 2, 3, 4, 5]
+    ys_a = [2, 4, 6, 8, 10]
+    mx, my = sum(xs_a) / 5, sum(ys_a) / 5
+    expected_a = sum((x - mx) * (y - my) for x, y in zip(xs_a, ys_a)) / 5
+    assert by_bucket["a"] == pytest.approx(expected_a, rel=1e-9)
+
+
+async def test_stat_aggs_per_group_sqlite(stat_env):
+    """stddev_samp per bucket — confirms UDFs reset state between groups."""
+    engine, statistics = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x:stddev_samp")],
+            dimensions=[ColumnRef(name="bucket")],
+        )
+    )
+    by_bucket = {
+        row["samples.bucket"]: row["samples.x_stddev_samp"]
+        for row in response.data
+    }
+    assert by_bucket["a"] == pytest.approx(statistics.stdev([1, 2, 3, 4, 5]), rel=1e-9)
+    assert by_bucket["b"] == pytest.approx(statistics.stdev([1, 2, 3, 4, 5]), rel=1e-9)
+
+
+async def test_scalar_ln_in_column_sql(stat_env):
+    """A Column.sql containing `ln(x)` must execute on SQLite (UDF lookup)
+    and return the math.log of every row.
+    """
+    import math
+
+    engine, _ = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="ln_x:sum")],
+        )
+    )
+    expected = sum(math.log(v) for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
+    assert response.data[0]["samples.ln_x_sum"] == pytest.approx(expected, rel=1e-9)
+
+
+async def test_scalar_sqrt_in_column_sql(stat_env):
+    import math
+
+    engine, _ = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="sqrt_x:sum")],
+        )
+    )
+    expected = sum(math.sqrt(v) for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
+    assert response.data[0]["samples.sqrt_x_sum"] == pytest.approx(expected, rel=1e-9)
+
+
+async def test_scalar_pow_in_column_sql(stat_env):
+    """`pow(x, 2)` exercises the 2-arg power UDF."""
+    engine, _ = stat_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="samples",
+            measures=[ModelMeasure(formula="x_squared:sum")],
+        )
+    )
+    expected = sum(v ** 2 for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
+    assert response.data[0]["samples.x_squared_sum"] == pytest.approx(expected, rel=1e-9)
+
+
+async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
+    """With a single sample, stddev_samp/var_samp must be NULL and
+    stddev_pop/var_pop must be 0 — matching Postgres."""
+    db_path = tmp_path / "single.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE one (id INTEGER PRIMARY KEY, x REAL NOT NULL)")
+    cur.execute("INSERT INTO one VALUES (1, 42.0)")
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="one_sqlite", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="one",
+            sql_table="one",
+            data_source="one_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="x", sql="x", type=DataType.NUMBER),
+            ],
+        )
+    )
+    engine = SlayerQueryEngine(storage=storage)
+
+    r_samp = await engine.execute(
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:stddev_samp")])
+    )
+    assert r_samp.data[0]["one.x_stddev_samp"] is None
+
+    r_var_samp = await engine.execute(
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:var_samp")])
+    )
+    assert r_var_samp.data[0]["one.x_var_samp"] is None
+
+    r_pop = await engine.execute(
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:stddev_pop")])
+    )
+    assert r_pop.data[0]["one.x_stddev_pop"] == 0
+
+    r_var_pop = await engine.execute(
+        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:var_pop")])
+    )
+    assert r_var_pop.data[0]["one.x_var_pop"] == 0

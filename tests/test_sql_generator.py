@@ -1793,6 +1793,247 @@ class TestMedianPercentilePerDialect:
         assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY amount)"
 
 
+class TestStatAggsPerDialect:
+    """Per-dialect SQL emission for the new statistical aggregations
+    (DEV-1317): stddev_samp, stddev_pop, var_samp, var_pop, corr.
+
+    These pin the observed SQL output for each dialect — including
+    sqlglot's transpilation quirks (e.g., var_samp → VARIANCE on SQLite,
+    var_pop → VARIANCE_POP on SQLite/MySQL) — so the SQLite UDF
+    registration knows which names to alias.
+    """
+
+    def _measure(
+        self,
+        *,
+        agg: str,
+        agg_kwargs: dict[str, str] | None = None,
+    ) -> EnrichedMeasure:
+        return EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias=f"amount_{agg}",
+            aggregation=agg,
+            agg_kwargs=agg_kwargs or {},
+        )
+
+    # --- stddev_samp -------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "STDDEV_SAMP(amount)"),
+            ("duckdb", "STDDEV_SAMP(amount)"),
+            ("mysql", "STDDEV_SAMP(amount)"),
+            ("sqlite", "STDDEV_SAMP(amount)"),
+        ],
+    )
+    def test_build_stddev_samp(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="stddev_samp")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- stddev_pop --------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "STDDEV_POP(amount)"),
+            ("duckdb", "STDDEV_POP(amount)"),
+            ("mysql", "STDDEV_POP(amount)"),
+            ("sqlite", "STDDEV_POP(amount)"),
+        ],
+    )
+    def test_build_stddev_pop(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="stddev_pop")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- var_samp ----------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "VAR_SAMP(amount)"),
+            # sqlglot rewrites VAR_SAMP → VARIANCE on SQLite/DuckDB/MySQL;
+            # the SQLite UDF must therefore be registered under the alias
+            # `variance` so generator output still resolves at runtime.
+            ("duckdb", "VARIANCE(amount)"),
+            ("mysql", "VARIANCE(amount)"),
+            ("sqlite", "VARIANCE(amount)"),
+        ],
+    )
+    def test_build_var_samp(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="var_samp")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- var_pop -----------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "VAR_POP(amount)"),
+            ("duckdb", "VAR_POP(amount)"),
+            # sqlglot rewrites VAR_POP → VARIANCE_POP on SQLite/MySQL.
+            ("mysql", "VARIANCE_POP(amount)"),
+            ("sqlite", "VARIANCE_POP(amount)"),
+        ],
+    )
+    def test_build_var_pop(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="var_pop")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- corr (2-arg via `other=` kwarg) ----------------------------------
+
+    # corr / covar_samp / covar_pop all share the 2-arg shape and the
+    # `other=` kwarg parameter; parametrize once instead of repeating.
+    @pytest.mark.parametrize(
+        "agg,sql_fn",
+        [
+            ("corr", "CORR"),
+            ("covar_samp", "COVAR_SAMP"),
+            ("covar_pop", "COVAR_POP"),
+        ],
+    )
+    @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
+    def test_build_two_arg_stat_emits_two_arg_call(
+        self, dialect: str, agg: str, sql_fn: str,
+    ) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == f"{sql_fn}(amount, quantity)"
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
+        sql = gen._build_agg(measure=m)[0].sql(dialect="clickhouse")
+        # ClickHouse casing is its own thing; assert the call shape only.
+        assert sql.lower() == f"{agg.lower()}(amount, quantity)"
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_mysql_raises(self, agg: str) -> None:
+        # MySQL has no native CORR / COVAR_SAMP / COVAR_POP and no Python-
+        # UDF mechanism, so all three raise at SQL generation time.
+        gen = SQLGenerator(dialect="mysql")
+        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
+        with pytest.raises(NotImplementedError, match="MySQL"):
+            gen._build_agg(measure=m)
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_missing_other_raises(self, agg: str) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg=agg, agg_kwargs={})
+        with pytest.raises(ValueError, match=r"requires parameter 'other'|other="):
+            gen._build_agg(measure=m)
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_unsafe_other_rejected(self, agg: str) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(
+            agg=agg,
+            agg_kwargs={"other": "quantity); DROP TABLE x; --"},
+        )
+        with pytest.raises(ValueError, match="Unsafe value"):
+            gen._build_agg(measure=m)
+
+    # --- filter wrapping ---------------------------------------------------
+
+    def test_build_stddev_samp_with_filter_wraps_value(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_stddev_samp",
+            aggregation="stddev_samp",
+            agg_kwargs={},
+            filter_sql="status = 'completed'",
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="postgres")
+        assert "CASE WHEN status = 'completed' THEN amount END" in sql
+        assert "STDDEV_SAMP" in sql
+
+    def test_build_corr_with_filter_wraps_both_columns(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_corr",
+            aggregation="corr",
+            agg_kwargs={"other": "quantity"},
+            filter_sql="status = 'completed'",
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="postgres")
+        # Both legs of corr() must be wrapped in CASE WHEN so non-matching
+        # rows contribute NULL pairs (which the aggregate skips entirely).
+        assert sql.count("CASE WHEN status = 'completed'") == 2
+        assert "CORR(" in sql
+
+
+class TestStatAggsViaQueryEnrichment:
+    """End-to-end aggregator-level checks (parser → enricher → generator).
+    Confirms the new aggregations are reachable from query syntax, not
+    just the internal _build_agg builder."""
+
+    @pytest.fixture
+    def sales_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="sales",
+            sql_table="public.sales",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="price", sql="price", type=DataType.NUMBER),
+                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+                Column(name="latency", sql="latency", type=DataType.NUMBER),
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "formula,expected_fragment",
+        [
+            ("latency:stddev_samp", "STDDEV_SAMP"),
+            ("latency:stddev_pop", "STDDEV_POP"),
+            ("latency:var_samp", "VAR_SAMP"),
+            ("latency:var_pop", "VAR_POP"),
+        ],
+    )
+    async def test_stat_agg_via_colon_syntax(
+        self,
+        formula: str,
+        expected_fragment: str,
+        sales_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="sales",
+            measures=[ModelMeasure(formula=formula)],
+        )
+        sql = await _generate(gen, query, sales_model)
+        assert expected_fragment in sql
+
+    async def test_corr_via_colon_syntax_with_other_kwarg(
+        self, sales_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="sales",
+            measures=[ModelMeasure(formula="price:corr(other=quantity)")],
+        )
+        sql = await _generate(gen, query, sales_model)
+        assert "CORR(price, quantity)" in sql
+
+
 class TestPathAliasJoinInference:
     """Test that __-delimited path aliases in inline SQL cause multi-hop join inference via graph walk."""
 
