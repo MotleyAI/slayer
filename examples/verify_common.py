@@ -19,6 +19,9 @@ STATUS_COUNTS = {}
 for o in ORDERS:
     STATUS_COUNTS[o[4]] = STATUS_COUNTS.get(o[4], 0) + 1
 
+# Repeated string literal hoisted to a constant (Sonar python:S1192).
+COUNT_MEASURE = "*:count"
+
 BASE_URL = "http://localhost:5143"
 
 _passed = 0
@@ -109,7 +112,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
         },
     )
     check(f"total orders = {TOTAL_ORDERS}", result["data"][0]["orders._count"] == TOTAL_ORDERS)
@@ -119,7 +122,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
             "dimensions": ["status"],
         },
     )
@@ -132,7 +135,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
             "filters": ["status = 'completed'"],
         },
     )
@@ -146,7 +149,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "orders",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
             "dimensions": ["customer_id"],
             "order": [{"column": "count", "direction": "desc"}],
             "limit": 3,
@@ -159,7 +162,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "products",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
         },
     )
     check("8 products total", result["data"][0]["products._count"] == 8)
@@ -169,7 +172,7 @@ def run_common_checks():
         "/query",
         {
             "source_model": "customers",
-            "measures": ["*:count"],
+            "measures": [COUNT_MEASURE],
         },
     )
     check("10 customers total", result["data"][0]["customers._count"] == 10)
@@ -252,7 +255,7 @@ def check_rollup(expect_rollup=True):
                 "/query",
                 {
                     "source_model": "orders",
-                    "measures": ["*:count"],
+                    "measures": [COUNT_MEASURE],
                     "dimensions": ["products.category"],
                 },
             )
@@ -265,7 +268,7 @@ def check_rollup(expect_rollup=True):
                 "/query",
                 {
                     "source_model": "orders",
-                    "measures": ["*:count"],
+                    "measures": [COUNT_MEASURE],
                     "dimensions": ["customers.regions.name"],
                 },
             )

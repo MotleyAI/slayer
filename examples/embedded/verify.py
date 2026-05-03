@@ -21,6 +21,11 @@ from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
+# Repeated string literals hoisted to constants (Sonar python:S1192).
+COUNT_MEASURE = "*:count"
+COUNT_KEY = "orders._count"
+CUMSUM_CHANGE_KEY = "orders.cumsum_change"
+
 # Derive expected counts from seed data
 TOTAL_ORDERS = len(ORDERS)
 STATUS_COUNTS = {}
@@ -84,19 +89,19 @@ def main():
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            measures=["*:count"],
+            measures=[COUNT_MEASURE],
         )
     )
-    check(f"total orders = {TOTAL_ORDERS}", result.data[0]["orders._count"] == TOTAL_ORDERS)
+    check(f"total orders = {TOTAL_ORDERS}", result.data[0][COUNT_KEY] == TOTAL_ORDERS)
 
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            measures=["*:count"],
+            measures=[COUNT_MEASURE],
             dimensions=["status"],
         )
     )
-    by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
+    by_status = {r["orders.status"]: r[COUNT_KEY] for r in result.data}
     for status, expected in STATUS_COUNTS.items():
         check(f"{status} orders = {expected}", by_status.get(status) == expected)
 
@@ -104,31 +109,31 @@ def main():
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            measures=["*:count"],
+            measures=[COUNT_MEASURE],
             dimensions=["products.category"],
         )
     )
-    by_cat = {r["orders.products.category"]: r["orders._count"] for r in result.data}
+    by_cat = {r["orders.products.category"]: r[COUNT_KEY] for r in result.data}
     check("all categories sum to total", sum(by_cat.values()) == TOTAL_ORDERS)
 
     # Filter
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            measures=["*:count"],
+            measures=[COUNT_MEASURE],
             filters=["status = 'completed'"],
         )
     )
     check(
         f"filtered completed = {STATUS_COUNTS['completed']}",
-        result.data[0]["orders._count"] == STATUS_COUNTS["completed"],
+        result.data[0][COUNT_KEY] == STATUS_COUNTS["completed"],
     )
 
     # Order + limit
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            measures=["*:count"],
+            measures=[COUNT_MEASURE],
             dimensions=["customers.name"],
             order=[{"column": "count", "direction": "desc"}],
             limit=3,
@@ -144,7 +149,7 @@ def main():
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
-                "*:count",
+                COUNT_MEASURE,
                 "quantity:sum",
                 {"formula": "quantity:sum / *:count", "name": "avg_qty"},
             ],
@@ -163,7 +168,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=["*:count", {"formula": "cumsum(*:count)", "name": "cumulative"}],
+            measures=[COUNT_MEASURE, {"formula": "cumsum(*:count)", "name": "cumulative"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -178,14 +183,14 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=["*:count", {"formula": "time_shift(*:count, -1)", "name": "prev"}],
+            measures=[COUNT_MEASURE, {"formula": "time_shift(*:count, -1)", "name": "prev"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
     check("time_shift first month is null", result.data[0]["orders.prev"] is None)
     check(
         "time_shift second month = first month count",
-        result.data[1]["orders.prev"] == result.data[0]["orders._count"],
+        result.data[1]["orders.prev"] == result.data[0][COUNT_KEY],
     )
 
     # Change
@@ -193,12 +198,12 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=["*:count", {"formula": "change(*:count)", "name": "chg"}],
+            measures=[COUNT_MEASURE, {"formula": "change(*:count)", "name": "chg"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
     check("change first month is null", result.data[0]["orders.chg"] is None)
-    expected_change = result.data[1]["orders._count"] - result.data[0]["orders._count"]
+    expected_change = result.data[1][COUNT_KEY] - result.data[0][COUNT_KEY]
     check(f"change second month = {expected_change}", result.data[1]["orders.chg"] == expected_change)
 
     # Rank
@@ -206,7 +211,7 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             dimensions=["customers.name"],
-            measures=["*:count", {"formula": "rank(*:count)", "name": "rnk"}],
+            measures=[COUNT_MEASURE, {"formula": "rank(*:count)", "name": "rnk"}],
             order=[{"column": "count", "direction": "desc"}],
         )
     )
@@ -221,7 +226,7 @@ def main():
             source_model="orders",
             dimensions=["products.category"],
             measures=[
-                "*:count",
+                COUNT_MEASURE,
                 "quantity:sum",
                 {"formula": "quantity:sum / *:count", "name": "avg_qty"},
             ],
@@ -229,7 +234,7 @@ def main():
     )
     check("combined measures produce results", result.row_count > 0)
     check("expression column exists", "orders.avg_qty" in result.columns)
-    check("count column exists", "orders._count" in result.columns)
+    check("count column exists", COUNT_KEY in result.columns)
 
     # cumsum + change in one query
     result = engine.execute_sync(
@@ -237,7 +242,7 @@ def main():
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
-                "*:count",
+                COUNT_MEASURE,
                 {"formula": "cumsum(*:count)", "name": "running"},
                 {"formula": "change(*:count)", "name": "chg"},
             ],
@@ -254,14 +259,14 @@ def main():
         query=SlayerQuery(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=["*:count", {"formula": "last(*:count)", "name": "latest"}],
+            measures=[COUNT_MEASURE, {"formula": "last(*:count)", "name": "latest"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
     check("last column exists", "orders.latest" in result.columns)
     latest_vals = [r["orders.latest"] for r in result.data]
     check("last() is constant across rows", len(set(latest_vals)) == 1)
-    check("last() equals last month count", latest_vals[0] == result.data[-1]["orders._count"])
+    check("last() equals last month count", latest_vals[0] == result.data[-1][COUNT_KEY])
 
     # --- Nested transforms ---
     print("\nNested transforms:")
@@ -273,18 +278,18 @@ def main():
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
             measures=[
-                "*:count",
+                COUNT_MEASURE,
                 {"formula": "cumsum(change(*:count))", "name": "cumsum_change"},
             ],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("nested cumsum(change()) works", "orders.cumsum_change" in result.columns)
+    check("nested cumsum(change()) works", CUMSUM_CHANGE_KEY in result.columns)
     check("cumsum_change has 12 rows", result.row_count == 12)
     # The first row's change is NULL, so cumsum_change[0] is NULL too.
-    check("cumsum_change first row is null", result.data[0]["orders.cumsum_change"] is None)
+    check("cumsum_change first row is null", result.data[0][CUMSUM_CHANGE_KEY] is None)
     # Subsequent rows accumulate the per-period changes.
-    non_null = [r["orders.cumsum_change"] for r in result.data[1:] if r["orders.cumsum_change"] is not None]
+    non_null = [r[CUMSUM_CHANGE_KEY] for r in result.data[1:] if r[CUMSUM_CHANGE_KEY] is not None]
     check("cumsum_change has 11 non-null values from row 2", len(non_null) == 11)
 
     # --- Summary ---

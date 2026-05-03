@@ -92,7 +92,7 @@ The positional argument is interpreted as:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--storage` | `./slayer_data` | Storage path |
+| `--storage` | platform-appropriate path | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run EXPLAIN ANALYZE on the query |

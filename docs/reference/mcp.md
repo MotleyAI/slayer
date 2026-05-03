@@ -142,10 +142,10 @@ To explore first without auto-ingesting:
 ```
 1. edit_model(
      model_name="orders",
-     measures=[{"name": "avg_amount", "sql": "amount"}],
-     dimensions=[{"name": "priority", "sql": "priority", "type": "string"}],
-     remove={"measures": ["amount_sum"]}
+     columns=[{"name": "priority", "sql": "priority", "type": "string"}],
+     measures=[{"name": "aov", "formula": "revenue:sum / *:count", "label": "Average Order Value"}],
+     remove={"columns": ["legacy_field"]}
    )
 ```
 
-Upsert semantics: if a measure/dimension/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"dimensions"`, `"measures"`, `"aggregations"`, `"joins"`).
+Upsert semantics: if a column/measure/aggregation/join with that name already exists, only the provided fields are updated. To remove entities, use the `remove` dict keyed by type (`"columns"`, `"measures"`, `"aggregations"`, `"joins"`). `measures` here are named formulas (`{formula, name, label, description}`) — the row-level `sql` definitions live under `columns`.
