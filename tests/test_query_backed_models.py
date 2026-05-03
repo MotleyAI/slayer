@@ -475,6 +475,106 @@ class TestCacheRefreshOnExecute:
             tmp.cleanup()
 
 
+class TestQueryBackedColumnTypes:
+    """``engine.get_column_types`` must derive its datasource from the
+    expanded query-backed model, not from the (possibly stale or blank)
+    stored ``data_source`` on the unexpanded record.
+    """
+
+    async def test_get_column_types_uses_resolved_datasource(self) -> None:
+        from slayer.core.enums import DataType
+        from slayer.core.models import Column, DatasourceConfig
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            storage = YAMLStorage(base_dir=tmp.name)
+            ds_path = f"{tmp.name}/probe.db"  # file-backed so the table persists across connections
+            await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=ds_path))
+            await storage.save_model(SlayerModel(
+                name="t_b", sql_table="orders_t", data_source="ds_b",
+                columns=[
+                    Column(name="amount", sql="amount", type=DataType.NUMBER),
+                ],
+            ))
+            engine = SlayerQueryEngine(storage=storage)
+
+            # Pre-create the table so the type probe can run.
+            # SlayerSQLClient.execute() expects rowsets, so use sqlite3 directly for DDL.
+            import sqlite3
+            conn = sqlite3.connect(ds_path)
+            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
+            conn.commit()
+            conn.close()
+
+            # Save query-backed model via raw storage (NOT engine.save_model) so
+            # its data_source is left blank — the bug fires only when the
+            # stored data_source disagrees with the resolved virtual model's.
+            await storage.save_model(SlayerModel(
+                name="qb",
+                source_queries=[SlayerQuery(
+                    source_model="t_b",
+                    measures=[{"formula": "amount:sum"}],
+                )],
+            ))
+            stored = await storage.get_model("qb")
+            assert not stored.data_source, (
+                "test setup expects blank data_source on the raw-saved model"
+            )
+
+            # Should resolve datasource from the expanded model (ds_b), open
+            # the right SQLite file, and successfully probe.
+            types = await engine.get_column_types("qb")
+            assert types, "expected non-empty column type map"
+        finally:
+            tmp.cleanup()
+
+    async def test_get_column_types_with_required_unbound_variable(self) -> None:
+        """A query-backed model with a required-but-undefaulted ``{var}``
+        placeholder should still produce a column-type map (the type probe
+        runs with placeholder fill, not with caller variables). Codex review
+        of PR #67 commit 73f69b0.
+        """
+        from slayer.core.enums import DataType
+        from slayer.core.models import Column, DatasourceConfig
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            storage = YAMLStorage(base_dir=tmp.name)
+            ds_path = f"{tmp.name}/probe.db"
+            await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=ds_path))
+            await storage.save_model(SlayerModel(
+                name="t", sql_table="orders_t", data_source="ds",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+            import sqlite3
+            conn = sqlite3.connect(ds_path)
+            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
+            conn.commit()
+            conn.close()
+
+            # `{threshold}` is referenced in the filter but no default is set
+            # at either model.query_variables or stage.variables.
+            engine = SlayerQueryEngine(storage=storage)
+            await engine.save_model(SlayerModel(
+                name="qb_unbound",
+                source_queries=[SlayerQuery(
+                    source_model="t",
+                    measures=[{"formula": "amount:sum"}],
+                    filters=["amount > {threshold}"],
+                )],
+                # NO query_variables — threshold is required at run time.
+            ))
+            types = await engine.get_column_types("qb_unbound")
+            assert types, (
+                "type probing must succeed for query-backed models with "
+                "unbound required variables (placeholder fill applies)"
+            )
+        finally:
+            tmp.cleanup()
+
+
 class TestBackingQuerySQLCacheHygiene:
     """``backing_query_sql`` is the canonical placeholder-fill render and must
     not capture per-request runtime variables.
@@ -514,6 +614,100 @@ class TestBackingQuerySQLCacheHygiene:
             assert after is not None
             assert "'REQUEST_VAL'" not in (after.backing_query_sql or "")
             assert after.backing_query_sql == initial_sql
+        finally:
+            tmp.cleanup()
+
+    async def test_outer_query_variables_do_not_leak_into_persisted_sql(
+        self,
+    ) -> None:
+        """Variables coming from an enclosing ``SlayerQuery.variables`` (not from
+        the runtime kwarg) must also be excluded from ``backing_query_sql``.
+        """
+        engine, tmp = await _engine_with_orders()
+        try:
+            await engine.save_model(SlayerModel(
+                name="rev_filtered",
+                data_source="ds",
+                source_queries=[SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["region"],
+                    filters=["region = '{r}'"],
+                    dry_run=True,
+                )],
+                query_variables={"r": "DEFAULT_R"},
+            ))
+            initial_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
+            assert initial_sql and "'DEFAULT_R'" in initial_sql
+
+            # Outer query supplies r via SlayerQuery.variables (NOT runtime kwarg).
+            outer = SlayerQuery(
+                source_model="rev_filtered",
+                dimensions=["region"],
+                measures=[{"formula": "amount_sum:max"}],
+                variables={"r": "OUTER_VAL"},
+                dry_run=True,
+            )
+            await engine.execute(outer)
+            after_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
+            assert "'OUTER_VAL'" not in (after_sql or ""), (
+                f"outer query variables must not be persisted, got:\n{after_sql}"
+            )
+            assert after_sql == initial_sql
+        finally:
+            tmp.cleanup()
+
+    async def test_data_source_refreshed_when_backing_query_changes(self) -> None:
+        """Editing a query-backed model so its final stage now resolves through
+        a different datasource must update the persisted ``data_source`` even
+        when the caller still passes the old one — otherwise
+        ``get_column_types()`` opens the wrong client.
+        """
+        from slayer.core.enums import DataType
+        from slayer.core.models import Column, DatasourceConfig
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            storage = YAMLStorage(base_dir=tmp.name)
+            await storage.save_datasource(DatasourceConfig(name="ds_a", type="sqlite", database=":memory:"))
+            await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=":memory:"))
+            await storage.save_model(SlayerModel(
+                name="t_a", sql_table="t_a", data_source="ds_a",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+            await storage.save_model(SlayerModel(
+                name="t_b", sql_table="t_b", data_source="ds_b",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+            engine = SlayerQueryEngine(storage=storage)
+
+            await engine.save_model(SlayerModel(
+                name="qb",
+                data_source="ds_a",
+                source_queries=[SlayerQuery(
+                    source_model="t_a",
+                    measures=[{"formula": "amount:sum"}],
+                    dry_run=True,
+                )],
+            ))
+            assert (await storage.get_model("qb")).data_source == "ds_a"
+
+            # Edit: backing query now resolves through ds_b, but the caller
+            # still passes the stale data_source="ds_a". The engine must
+            # overwrite from the virtual model.
+            await engine.save_model(SlayerModel(
+                name="qb",
+                data_source="ds_a",  # stale!
+                source_queries=[SlayerQuery(
+                    source_model="t_b",
+                    measures=[{"formula": "amount:sum"}],
+                    dry_run=True,
+                )],
+            ))
+            assert (await storage.get_model("qb")).data_source == "ds_b", (
+                "data_source must be refreshed from the virtual model, not "
+                "preserved from the stale caller-supplied value"
+            )
         finally:
             tmp.cleanup()
 
@@ -579,6 +773,95 @@ class TestJoinTargetIsQueryBacked:
     expanded through the same resolution path so its rendered SQL is
     available as the join source.
     """
+
+    async def test_join_target_with_variables_uses_runtime_value(self) -> None:
+        """Saved query-backed join target with `filters=["amount > {threshold}"]`
+        must see the enclosing query's runtime ``variables`` — not the cached
+        placeholder-fill or model defaults.
+        """
+        from slayer.core.models import ModelJoin
+
+        engine, tmp = await _engine_with_orders()
+        try:
+            # Save a query-backed rollup whose stage filter references {threshold}.
+            await engine.save_model(SlayerModel(
+                name="rev_filtered",
+                data_source="ds",
+                source_queries=[SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["region"],
+                    filters=["amount > {threshold}"],
+                    dry_run=True,
+                )],
+                query_variables={"threshold": 0},  # save-time default
+            ))
+            # Add a join from orders → rev_filtered on region.
+            orders = await engine.storage.get_model("orders")
+            orders = orders.model_copy(update={
+                "joins": [ModelJoin(
+                    target_model="rev_filtered",
+                    join_pairs=[["region", "region"]],
+                )],
+            })
+            await engine.storage.save_model(orders)
+
+            # Outer query passes a runtime value for {threshold}; the join
+            # target's rendered SQL must use 999, not the saved 0.
+            outer = SlayerQuery(
+                source_model="orders",
+                dimensions=["region", "rev_filtered.amount_sum"],
+                measures=[{"formula": "*:count"}],
+                variables={"threshold": 999},
+                dry_run=True,
+            )
+            resp = await engine.execute(outer)
+            assert resp.sql is not None
+            assert "999" in resp.sql, (
+                f"join target should use runtime threshold=999, got SQL:\n{resp.sql}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_join_target_resolving_set_is_per_context(self) -> None:
+        """The recursion guard set must be isolated per asyncio task / request,
+        not shared on the engine instance. Two tasks each push a unique name
+        into the set and assert they only see their own.
+        """
+        import asyncio
+
+        engine, tmp = await _engine_with_orders()
+        try:
+            both_started = asyncio.Event()
+            checked = asyncio.Event()
+
+            async def task(my_name: str, started: asyncio.Event) -> set:
+                s = engine._get_join_target_resolving()
+                s.add(my_name)
+                started.set()
+                # Wait until both tasks have populated their own sets, then
+                # observe — if the set were instance-shared, each task would
+                # see both names.
+                await both_started.wait()
+                snapshot = set(engine._get_join_target_resolving())
+                checked.set()
+                return snapshot
+
+            e1 = asyncio.Event()
+            e2 = asyncio.Event()
+
+            async def gate():
+                await asyncio.gather(e1.wait(), e2.wait())
+                both_started.set()
+
+            t1 = asyncio.create_task(task("alpha", e1))
+            t2 = asyncio.create_task(task("beta", e2))
+            await gate()
+            s1, s2 = await asyncio.gather(t1, t2)
+            assert s1 == {"alpha"}, f"task 1 leaked sibling state: {s1}"
+            assert s2 == {"beta"}, f"task 2 leaked sibling state: {s2}"
+        finally:
+            tmp.cleanup()
 
     async def test_join_target_is_query_backed_model(self) -> None:
         from slayer.core.models import ModelJoin

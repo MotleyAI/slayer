@@ -298,8 +298,9 @@ class TestQueryBackedModelsAPI:
     def test_post_query_run_by_name_rejects_whole_periods_only(
         self, client: TestClient
     ) -> None:
-        # ``whole_periods_only`` is not forwarded by run-by-name dispatch, so
-        # the API must reject it rather than silently dropping the flag.
+        # Codex review of PR #67 (commit 73f69b0): the disallowed-field check
+        # had forgotten ``whole_periods_only``. Silently ignoring it is the
+        # worst possible behavior — this test pins the rejection.
         resp = client.post("/query", json={
             "name": "some_model",
             "whole_periods_only": True,
