@@ -31,6 +31,10 @@ _ASYNC_DRIVERS = {
 # Engine caches — reuse connection pools across queries
 # ---------------------------------------------------------------------------
 
+# DBAPI sentinel for SQLite in-memory databases. Appears as either the bare
+# value or the path component of `sqlite:///:memory:` connection strings.
+_MEMORY_DB_NAME = ":memory:"
+
 _sync_engines: Dict[str, sa.Engine] = {}
 
 
@@ -64,7 +68,7 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
     (``file::memory:?cache=shared&uri=true``, ``mode=memory`` query param)
     in addition to the bare ``:memory:`` and ``sqlite:///:memory:`` forms.
     """
-    if connection_string == ":memory:":
+    if connection_string == _MEMORY_DB_NAME:
         return True
     try:
         url = sqlalchemy.engine.url.make_url(connection_string)
@@ -73,10 +77,10 @@ def _is_in_memory_sqlite(connection_string: str) -> bool:
     if not url.drivername.startswith("sqlite"):
         return False
     database = url.database
-    if not database or database == ":memory:":
+    if not database or database == _MEMORY_DB_NAME:
         return True
     query: Dict[str, Any] = dict(url.query) if url.query else {}
-    if database.startswith("file:") and (query.get("mode") == "memory" or ":memory:" in database):
+    if database.startswith("file:") and (query.get("mode") == "memory" or _MEMORY_DB_NAME in database):
         return True
     if "mode=memory" in connection_string:
         return True
@@ -443,6 +447,17 @@ class SlayerSQLClient:
 # ---------------------------------------------------------------------------
 
 
+# Substituted into the retry-warning when the SQL is empty/whitespace, so the
+# log line still has a recognisable "what was running" field.
+_EMPTY_SQL_PLACEHOLDER = "<empty sql>"
+
+# Format string for the warning logged on each retry attempt. Args are:
+# attempt index (1-based), delay seconds, underlying DBAPI exception, SQL excerpt.
+_TRANSIENT_RETRY_LOG_FORMAT = (
+    "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s"
+)
+
+
 async def _retry_with_backoff(
     *,
     sql: str,
@@ -468,9 +483,9 @@ async def _retry_with_backoff(
             if attempt == max_attempts - 1:
                 raise
             sql_lines = (sql or "").strip().splitlines()
-            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
+            sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
             logger.warning(
-                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
+                _TRANSIENT_RETRY_LOG_FORMAT,
                 attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
             )
             await asyncio.sleep(delay)
@@ -577,9 +592,9 @@ def _execute_with_retry_sync(
             if attempt == max_attempts - 1:
                 raise
             sql_lines = (sql or "").strip().splitlines()
-            sql_excerpt = sql_lines[0][:120] if sql_lines else "<empty sql>"
+            sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
             logger.warning(
-                "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s",
+                _TRANSIENT_RETRY_LOG_FORMAT,
                 attempt + 1, delay, getattr(exc, "orig", exc), sql_excerpt,
             )
             time.sleep(delay)
