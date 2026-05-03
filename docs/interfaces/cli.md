@@ -65,6 +65,13 @@ slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": 
 # From a file
 slayer query @query.json
 
+# Run a saved query-backed model by name
+slayer query monthly_revenue
+
+# Pass runtime variables (always overrides query.variables / model.query_variables)
+slayer query monthly_revenue --variables region=US --variables threshold=100
+slayer query @query.json --variables-json '{"region": "US"}'
+
 # JSON output
 slayer query '{"source_model": "orders", "measures": ["*:count"]}' --format json
 
@@ -75,12 +82,20 @@ slayer query '{"source_model": "orders", "measures": ["*:count"]}' --dry-run
 slayer query @query.json --explain
 ```
 
+The positional argument is interpreted as:
+
+- a JSON query if it starts with `{` or `[`,
+- a file path if it starts with `@`,
+- otherwise, a **model name** — runs the stored backing query for the named query-backed model.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | `./slayer_data` | Storage path |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run EXPLAIN ANALYZE on the query |
+| `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `model.query_variables`. |
+| `--variables-json '{...}'` | | Runtime variables from a JSON object. Mutually exclusive with `--variables`. |
 
 ### `slayer ingest`
 
@@ -114,7 +129,6 @@ slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-mod
 |------|----------|-------------|
 | `dbt_project_path` | Yes | Path to the dbt project root (or a models directory) |
 | `--datasource` | Yes | SLayer datasource name for the imported models |
-| `--no-strict-aggregations` | No | Don't restrict measures to their dbt-defined aggregation types |
 | `--include-hidden-models` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer models via SQL introspection. Requires the `dbt` extra. |
 | `--storage` | No | Storage path |
 

@@ -3,13 +3,15 @@
 import textwrap
 from unittest.mock import MagicMock, patch
 
+import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormatType
 from slayer.core.models import Column, SlayerModel
 from slayer.dbt import converter as converter_module
-from slayer.dbt.converter import DbtToSlayerConverter
+from slayer.dbt.converter import DbtConversionError, DbtToSlayerConverter
 from slayer.dbt.models import (
     DbtColumnMeta,
     DbtDefaults,
@@ -24,6 +26,40 @@ from slayer.dbt.models import (
     DbtSemanticModel,
 )
 from slayer.dbt.parser import parse_dbt_project
+
+
+@pytest.fixture
+def aov_ratio_project() -> DbtProject:
+    """Minimal dbt project: an ``orders`` semantic model with two measures
+    and a single ratio metric ``aov = total_amount / order_count``.
+
+    Shared between the ratio-becomes-ModelMeasure and the
+    _find_metric_source_model regression tests, which previously copy-pasted
+    this same project literal.
+    """
+    return DbtProject(
+        semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                measures=[
+                    DbtMeasure(name="total_amount", agg="sum", expr="amount"),
+                    DbtMeasure(name="order_count", agg="count", expr="id"),
+                ],
+            ),
+        ],
+        metrics=[
+            DbtMetric(
+                name="aov",
+                type="ratio",
+                type_params=DbtMetricTypeParams(
+                    numerator=DbtMetricInput(name="total_amount"),
+                    denominator=DbtMetricInput(name="order_count"),
+                ),
+            ),
+        ],
+    )
 
 
 def _make_simple_project():
@@ -99,16 +135,32 @@ class TestBasicConversion:
         assert order_date.type == DataType.TIMESTAMP
 
     def test_measures(self) -> None:
-        """v2 dbt converter emits all dim/measure/entity columns into ``columns``."""
+        """v2 dbt converter splits dbt measures: a Column per unique expr,
+        a ModelMeasure per dbt measure carrying the agg as colon syntax.
+        """
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.models if m.name == "orders")
-        # dbt measures appear as Columns with allowed_aggregations + numeric type.
-        amount = next(c for c in orders.columns if c.name == "total_amount")
-        assert amount.sql == "amount"
-        assert amount.allowed_aggregations == ["sum"]
-        order_count = next(c for c in orders.columns if c.name == "order_count")
-        assert order_count.allowed_aggregations == ["count"]
+
+        col_names = {c.name for c in orders.columns}
+        # Bare-identifier exprs become Column names directly (Q-1 / Q-I).
+        assert "amount" in col_names
+        # ``order_count`` had ``expr=id`` but ``id`` is the entity PK already on the
+        # model, so the measure-derived Column gets a ``_col`` suffix (Q-2 / Q-I).
+        assert "id_col" in col_names
+
+        amount = next(c for c in orders.columns if c.name == "amount")
+        assert amount.allowed_aggregations is None
+        assert amount.format is not None
+        assert amount.format.type == NumberFormatType.FLOAT
+        assert amount.hidden is False  # Q-A
+
+        # ModelMeasures carry the agg + the dbt name.
+        measures_by_name = {m.name: m for m in orders.measures}
+        assert "total_amount" in measures_by_name
+        assert measures_by_name["total_amount"].formula == "amount:sum"
+        assert "order_count" in measures_by_name
+        assert measures_by_name["order_count"].formula == "id_col:count"
 
     def test_primary_key_dimension(self) -> None:
         project = _make_simple_project()
@@ -241,7 +293,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
 
 class TestMeasureConsolidation:
     def test_same_expr_consolidated(self) -> None:
-        """Measures with same expr but different aggs become one SLayer column."""
+        """Measures with same expr collapse into one SLayer column; one ModelMeasure per dbt measure."""
         project = DbtProject(semantic_models=[
             DbtSemanticModel(
                 name="orders",
@@ -255,12 +307,17 @@ class TestMeasureConsolidation:
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
-        m = next(c for c in orders.columns if c.name == "revenue_sum")
-        assert m.sql == "amount"
-        assert "sum" in (m.allowed_aggregations or [])
-        assert "avg" in (m.allowed_aggregations or [])
-        assert "revenue_sum" in (m.description or "")
-        assert "revenue_avg" in (m.description or "")
+
+        # One Column for the shared expr; consolidation description (Q-C) dropped.
+        amount_cols = [c for c in orders.columns if c.name == "amount"]
+        assert len(amount_cols) == 1
+        assert amount_cols[0].description in (None, "")
+        assert amount_cols[0].allowed_aggregations is None
+
+        # One ModelMeasure per dbt measure, formula carries the agg.
+        by_name = {m.name: m for m in orders.measures}
+        assert by_name["revenue_sum"].formula == "amount:sum"
+        assert by_name["revenue_avg"].formula == "amount:avg"
 
     def test_different_expr_not_consolidated(self) -> None:
         """Measures with different exprs stay separate columns."""
@@ -277,28 +334,14 @@ class TestMeasureConsolidation:
         ])
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
-        # Both measure columns plus the entity PK column.
-        names = {c.name for c in orders.columns}
-        assert "revenue" in names
-        assert "quantity" in names
+        col_names = {c.name for c in orders.columns}
+        # Bare-identifier exprs become the Column names.
+        assert "amount" in col_names
+        assert "qty" in col_names
 
-    def test_no_strict_aggregations(self) -> None:
-        project = DbtProject(semantic_models=[
-            DbtSemanticModel(
-                name="orders",
-                model="orders",
-                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
-                measures=[
-DbtMeasure(name="revenue", agg="sum", expr="amount")
-                ,
-                ],
-            ),
-        ])
-        result = DbtToSlayerConverter(
-            project=project, data_source="test", strict_aggregations=False,
-        ).convert()
-        m = next(c for c in result.models[0].columns if c.name == "revenue")
-        assert m.allowed_aggregations is None
+        measures_by_name = {m.name: m for m in orders.measures}
+        assert measures_by_name["revenue"].formula == "amount:sum"
+        assert measures_by_name["quantity"].formula == "qty:sum"
 
     def test_primary_entity_does_not_duplicate_pk_column(self) -> None:
         """When primary_entity resolves to the same column the entity loop already
@@ -346,12 +389,17 @@ DbtMeasure(name="total_amount", agg="sum", expr="amount")
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
-        # Should have the original measure plus the filtered one
-        filtered = [m for m in orders.columns if m.name == "completed_amount"]
-        assert len(filtered) == 1
-        assert filtered[0].filter is not None
-        assert "completed" in filtered[0].filter
-        assert filtered[0].label == "Completed Amount"
+        # Filtered simple metric: a Column carries the WHERE filter (no
+        # allowed_aggregations whitelist), and a ModelMeasure points at it
+        # using the dbt measure's aggregation.
+        filtered_cols = [c for c in orders.columns if c.filter is not None and "completed" in c.filter]
+        assert len(filtered_cols) == 1
+        assert filtered_cols[0].allowed_aggregations is None
+
+        completed = next(m for m in orders.measures if m.name == "completed_amount")
+        assert completed.label == "Completed Amount"
+        # Formula references the filter-bearing column with the dbt agg.
+        assert completed.formula == f"{filtered_cols[0].name}:sum"
 
     def test_filtered_metric_collision_with_existing_column_skipped(self) -> None:
         """Filtered metric whose name collides with an existing column on the model
@@ -385,14 +433,16 @@ DbtMeasure(name="total_amount", agg="sum", expr="amount")
         orders = next(m for m in result.models if m.name == "orders")
         # Exactly one column named "status" — no duplicate appended.
         assert [c.name for c in orders.columns].count("status") == 1
-        # And a warning was emitted explaining why.
+        # No ModelMeasure with the colliding name was added either.
+        assert not any(m.name == "status" for m in orders.measures)
         warning_msgs = [w.message for w in result.warnings]
         assert any("status" in m and "collide" in m.lower() for m in warning_msgs), (
             f"Expected collision warning, got: {warning_msgs}"
         )
 
     def test_unfiltered_simple_metric_no_extra_measure(self) -> None:
-        """Simple metric without filter doesn't add anything."""
+        """Simple metric without filter doesn't add anything — the underlying
+        ModelMeasure is already addressable on its own model."""
         project = DbtProject(
             semantic_models=[
                 DbtSemanticModel(
@@ -415,11 +465,11 @@ DbtMeasure(name="total_amount", agg="sum", expr="amount")
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = result.models[0]
-        # The metric matches an existing measure name → no duplicate column.
-        # v2: the entity 'order_id' is also added as a PK column, so we just
-        # check that no extra "total_amount" column was added.
-        names = [c.name for c in orders.columns]
-        assert names.count("total_amount") == 1
+        # No extra Column added — only the original "amount" expr column.
+        amount_cols = [c for c in orders.columns if c.name == "amount"]
+        assert len(amount_cols) == 1
+        # Exactly one ModelMeasure named total_amount.
+        assert [m.name for m in orders.measures].count("total_amount") == 1
 
 
 class TestDerivedMetricConversion:
@@ -464,22 +514,21 @@ class TestDerivedMetricConversion:
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
-        q = next(qq for qq in result.queries if qq["name"] == "weird_ratio")
-        formula = q["measures"][0]["formula"]
-        # `total:sum`, `subtotal:sum`, and `total_orders:count` should all appear,
-        # each as a complete token. The bug would have produced something like
-        # `subtotal:sum + total:sum) / total:sum_orders` because plain replace
-        # rewrites the "total" substring inside "subtotal" and "total_orders".
-        assert "total:sum" in formula
-        assert "subtotal:sum" in formula
-        assert "total_orders:count" in formula
-        # Bug check: the "total" inside "subtotal" was NOT mangled into "total:sum"
-        assert "subtotal:sum" in formula
-        assert "subtotal:sum:sum" not in formula
-        # Bug check: the "total" inside "total_orders" was NOT mangled
+        # Derived metric is a ModelMeasure on the orders model; bare-name refs
+        # (Q-5) — the formula references each input metric by its name, no
+        # colon-aggregation suffix.
+        orders = next(m for m in result.models if m.name == "orders")
+        weird = next(m for m in orders.measures if m.name == "weird_ratio")
+        formula = weird.formula
+        # All three input names appear as complete tokens.
+        assert "total" in formula
+        assert "subtotal" in formula
+        assert "total_orders" in formula
+        # Token-aware substitution didn't mangle "subtotal" or "total_orders".
+        assert "subtotal:sum" not in formula
         assert "total:sum_orders" not in formula
 
-    def test_derived_metric_generates_query(self) -> None:
+    def test_derived_metric_becomes_model_measure(self) -> None:
         project = DbtProject(
             semantic_models=[
                 DbtSemanticModel(
@@ -519,15 +568,19 @@ class TestDerivedMetricConversion:
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
-        assert len(result.queries) == 1
-        q = result.queries[0]
-        assert q["name"] == "avg_order_value"
-        assert "source_model" in q
-        assert len(q["measures"]) == 1
+        # Derived metric folded into a ModelMeasure on the source model — no
+        # SlayerQuery dicts are produced. The two referenced metrics are
+        # *unfiltered* simple metrics so they were never materialized as
+        # ModelMeasures; the formula must point at the backing dbt measures
+        # (which are the actual ModelMeasure names on the model).
+        orders = next(m for m in result.models if m.name == "orders")
+        m = next(mm for mm in orders.measures if mm.name == "avg_order_value")
+        assert m.formula == "total_amount / order_count"
+        assert m.description == "Average order value"
 
 
 class TestConversionWarnings:
-    def test_conversion_metric_warning(self) -> None:
+    def test_conversion_metric_routed_to_unconverted(self) -> None:
         project = DbtProject(
             semantic_models=[],
             metrics=[
@@ -535,10 +588,10 @@ class TestConversionWarnings:
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
-        assert len(result.warnings) == 1
-        assert "not supported" in result.warnings[0].message.lower()
+        assert len(result.unconverted_metrics) == 1
+        assert "not supported" in result.unconverted_metrics[0].message.lower()
 
-    def test_unknown_metric_type_warning(self) -> None:
+    def test_unknown_metric_type_routed_to_unconverted(self) -> None:
         project = DbtProject(
             semantic_models=[],
             metrics=[
@@ -546,35 +599,7 @@ class TestConversionWarnings:
             ],
         )
         result = DbtToSlayerConverter(project=project, data_source="test").convert()
-        assert len(result.warnings) == 1
-
-
-class TestQueriesDirForStorage:
-    """Regression tests for CodeRabbit #1 — _queries_dir_for_storage helper.
-
-    `slayer import-dbt --storage slayer.db` must write queries.yaml beside the
-    SQLite file, not inside `slayer.db/queries.yaml` (which would fail because
-    the .db file is not a directory).
-    """
-
-    def test_directory_storage_path_returned_as_is(self) -> None:
-        from slayer.cli import _queries_dir_for_storage
-
-        assert _queries_dir_for_storage("./slayer_data") == "./slayer_data"
-        assert _queries_dir_for_storage("/tmp/models") == "/tmp/models"
-
-    def test_sqlite_db_uses_parent_directory(self) -> None:
-        from slayer.cli import _queries_dir_for_storage
-
-        assert _queries_dir_for_storage("/tmp/slayer.db") == "/tmp"
-        assert _queries_dir_for_storage("./data/slayer.sqlite") == "./data"
-        assert _queries_dir_for_storage("project.sqlite3") == "."
-
-    def test_bare_sqlite_filename_in_cwd(self) -> None:
-        """A bare 'slayer.db' (no directory) should write to the current dir."""
-        from slayer.cli import _queries_dir_for_storage
-
-        assert _queries_dir_for_storage("slayer.db") == "."
+        assert len(result.unconverted_metrics) == 1
 
 
 class TestImportDbtCli:
@@ -623,7 +648,6 @@ class TestImportDbtCli:
             datasource="test_db",
             storage=str(storage_dir),
             models_dir=None,
-            no_strict_aggregations=False,
             include_hidden_models=False,
         )
 
@@ -638,7 +662,8 @@ class TestImportDbtCli:
             "was likely discarded without run_sync"
         )
         assert persisted.name == "orders"
-        assert any(m.name == "total" for m in persisted.columns)
+        # The dbt measure 'total' becomes a ModelMeasure (not a Column) under v2.
+        assert any(m.name == "total" for m in persisted.measures)
 
 
 class TestParserRoundTrip:
@@ -683,13 +708,16 @@ class TestParserRoundTrip:
         assert m.data_source == "mydb"
         assert m.default_time_dimension == "order_date"
 
-        # Labels preserved
+        # Dimension labels preserved on Columns.
         status_dim = next(d for d in m.columns if d.name == "status")
         assert status_dim.label == "Order Status"
 
-        rev_measure = next(me for me in m.columns if me.name == "revenue")
+        # Measure labels live on the ModelMeasure (Q-D); the dbt measure
+        # 'revenue' has expr=amount so it lowers into a Column 'amount' and
+        # a ModelMeasure 'revenue' carrying the agg + label.
+        rev_measure = next(me for me in m.measures if me.name == "revenue")
         assert rev_measure.label == "Revenue"
-        assert rev_measure.allowed_aggregations == ["sum"]
+        assert rev_measure.formula == "amount:sum"
 
 
 def _sample_slayer_model(name: str = "raw_events") -> SlayerModel:
@@ -932,14 +960,20 @@ DbtMeasure(name="total_claim_amount", agg="sum", expr="claim_amount")
                 ),
             ],
         )
-        result = DbtToSlayerConverter(project=project, data_source="test", strict_aggregations=True).convert()
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
         ca = next(m for m in result.models if m.name == "claim_amount")
-        filtered_measure = next((m for m in ca.columns if m.name == "loss_payment_amount"), None)
-        assert filtered_measure is not None, "Filtered measure not created"
-        # The filter must be qualified with the peer model name
-        assert "loss_payment.has_loss_payment" in filtered_measure.filter, (
-            f"Filter not qualified: {filtered_measure.filter!r}"
+        # The filtered metric becomes a (Column with .filter) + (ModelMeasure
+        # pointing at it). Find the Column carrying the filter.
+        filtered_cols = [c for c in ca.columns if c.filter is not None]
+        assert len(filtered_cols) == 1, "Filtered Column not created"
+        actual_filter = filtered_cols[0].filter or ""
+        assert "loss_payment.has_loss_payment" in actual_filter, (
+            f"Filter not qualified: {actual_filter!r}"
         )
+        # And the ModelMeasure references that column.
+        loss_metric = next(m for m in ca.measures if m.name == "loss_payment_amount")
+        assert loss_metric.label == "Loss Payment Amount"
+        assert loss_metric.formula == f"{filtered_cols[0].name}:sum"
 
     def test_filter_dim_on_source_model_stays_bare(self) -> None:
         """Dimension('orders__status') where status exists on orders → bare 'status'."""
@@ -967,11 +1001,15 @@ DbtMeasure(name="revenue", agg="sum", expr="amount")
                 ),
             ],
         )
-        result = DbtToSlayerConverter(project=project, data_source="test", strict_aggregations=True).convert()
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
         orders = next(m for m in result.models if m.name == "orders")
-        filtered_measure = next((m for m in orders.columns if m.name == "active_revenue"), None)
-        assert filtered_measure is not None
-        assert filtered_measure.filter == "status = 'active'", f"Got: {filtered_measure.filter!r}"
+        filtered_cols = [c for c in orders.columns if c.filter is not None]
+        assert len(filtered_cols) == 1
+        assert filtered_cols[0].filter == "status = 'active'", (
+            f"Got: {filtered_cols[0].filter!r}"
+        )
+        active_rev = next(m for m in orders.measures if m.name == "active_revenue")
+        assert active_rev.label == "Active Revenue"
         assert not result.models[0].hidden
 
 
@@ -1043,3 +1081,387 @@ class TestJoinTypeFromDbt:
         assert reverse is not None, f"Missing reverse join. Policy joins: {[j.target_model for j in policy.joins]}"
         assert str(reverse.join_type) == "inner"
         assert reverse.join_pairs == [["id", "policy_id"]]
+
+
+class TestColumnNamingS4:
+    """S4 specifics: Column-name resolution rules in _convert_measures."""
+
+    def test_non_identifier_expr_uses_first_name_col_suffix(self) -> None:
+        """Q-I: a SQL fragment expr (not a bare identifier) gets the first
+        dbt measure's name + ``_col`` as the SLayer Column name.
+        """
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                measures=[
+                    DbtMeasure(name="line_total", agg="sum", expr="amount * quantity"),
+                    DbtMeasure(name="line_max", agg="max", expr="amount * quantity"),
+                ],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = result.models[0]
+
+        # One Column for the SQL fragment, named after the first dbt measure.
+        col_names = {c.name for c in orders.columns}
+        assert "line_total_col" in col_names
+        line_col = next(c for c in orders.columns if c.name == "line_total_col")
+        assert line_col.sql == "amount * quantity"
+        assert line_col.allowed_aggregations is None
+        assert line_col.format is not None
+        assert line_col.format.type == NumberFormatType.FLOAT
+
+        # ModelMeasures point at that column with their respective aggs.
+        by_name = {m.name: m for m in orders.measures}
+        assert by_name["line_total"].formula == "line_total_col:sum"
+        assert by_name["line_max"].formula == "line_total_col:max"
+
+    def test_column_name_collision_with_measure_name_suffixed_with_col(self) -> None:
+        """Q-2: when the natural Column name (= the bare expr) would collide
+        with a ModelMeasure name, suffix the Column with ``_col``.
+        """
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                measures=[
+                    # expr == name → Column would naturally be named "revenue",
+                    # but the ModelMeasure for this same dbt measure is also
+                    # named "revenue". Suffix the Column to break the tie.
+                    DbtMeasure(name="revenue", agg="sum", expr="revenue"),
+                ],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = result.models[0]
+
+        col_names = {c.name for c in orders.columns}
+        assert "revenue_col" in col_names
+        # Bare "revenue" must NOT also be a Column — it's the ModelMeasure name.
+        assert "revenue" not in col_names
+
+        rev_meas = next(m for m in orders.measures if m.name == "revenue")
+        assert rev_meas.formula == "revenue_col:sum"
+
+    def test_label_and_description_on_model_measure_only(self) -> None:
+        """Q-D: label/description live on the ModelMeasure verbatim — no
+        ``Default aggregation: …`` tail, and the Column itself has neither.
+        """
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                measures=[
+                    DbtMeasure(
+                        name="revenue",
+                        agg="sum",
+                        expr="amount",
+                        label="Revenue",
+                        description="Total revenue",
+                    ),
+                ],
+            ),
+        ])
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = result.models[0]
+
+        amount_col = next(c for c in orders.columns if c.name == "amount")
+        assert amount_col.label is None
+        assert amount_col.description is None
+
+        rev = next(m for m in orders.measures if m.name == "revenue")
+        assert rev.label == "Revenue"
+        assert rev.description == "Total revenue"
+
+
+class TestDbtMeasureToModelMeasure:
+    """Step 7 (Q-1, Q-5, Q-6): metrics fold into ModelMeasures, not SlayerQuery dicts."""
+
+    def test_ratio_metric_becomes_model_measure(self, aov_ratio_project) -> None:
+        result = DbtToSlayerConverter(project=aov_ratio_project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+
+        aov = next(m for m in orders.measures if m.name == "aov")
+        # Q-5: bare ModelMeasure names — formula refs total_amount / order_count
+        assert aov.formula == "total_amount / order_count"
+
+    def test_cumulative_metric_becomes_model_measure(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[
+                        DbtMeasure(name="revenue", agg="sum", expr="amount"),
+                    ],
+                ),
+            ],
+            metrics=[
+                DbtMetric(
+                    name="cumulative_revenue",
+                    type="cumulative",
+                    type_params=DbtMetricTypeParams(measure="revenue"),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        cum = next(m for m in orders.measures if m.name == "cumulative_revenue")
+        assert cum.formula == "cumsum(revenue)"
+
+
+class TestFindMetricSourceModelRatio:
+    """Q-E regression: _find_metric_source_model must walk numerator/denominator."""
+
+    def test_find_metric_source_model_resolves_ratio_numerator_denominator(
+        self, aov_ratio_project
+    ) -> None:
+        """A ratio metric whose source is reachable only through its
+        numerator (or denominator) must still resolve."""
+        result = DbtToSlayerConverter(project=aov_ratio_project, data_source="test").convert()
+        # Source resolution worked — the ModelMeasure ended up on orders.
+        orders = next(m for m in result.models if m.name == "orders")
+        assert any(m.name == "aov" for m in orders.measures), (
+            "Ratio metric source model not resolved via numerator/denominator"
+        )
+
+
+class TestMultiSourceMetricRouting:
+    """Metrics whose inputs span multiple semantic models must be routed to
+    ``unconverted_metrics`` rather than silently anchored to whichever model
+    happens to be discovered first (CodeRabbit 1a)."""
+
+    def test_derived_metric_spanning_two_models_is_unconverted(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                ),
+                DbtSemanticModel(
+                    name="customers",
+                    model="customers",
+                    entities=[DbtEntity(name="customer_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="customer_count", agg="count", expr="id")],
+                ),
+            ],
+            metrics=[
+                # Derived metric whose two referenced measures live on
+                # different semantic models.
+                DbtMetric(
+                    name="amount_per_customer",
+                    type="derived",
+                    type_params=DbtMetricTypeParams(
+                        expr="total_amount / customer_count",
+                        metrics=[
+                            DbtMetricInput(name="total_amount"),
+                            DbtMetricInput(name="customer_count"),
+                        ],
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+
+        orders = next(m for m in result.models if m.name == "orders")
+        customers = next(m for m in result.models if m.name == "customers")
+        assert not any(m.name == "amount_per_customer" for m in orders.measures), (
+            "Cross-model derived metric should not be anchored to 'orders'"
+        )
+        assert not any(m.name == "amount_per_customer" for m in customers.measures), (
+            "Cross-model derived metric should not be anchored to 'customers'"
+        )
+        assert any(
+            u.metric_name == "amount_per_customer" for u in result.unconverted_metrics
+        ), "Cross-model derived metric should be routed to unconverted_metrics"
+
+    def test_ratio_metric_spanning_two_models_is_unconverted(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                ),
+                DbtSemanticModel(
+                    name="customers",
+                    model="customers",
+                    entities=[DbtEntity(name="customer_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="customer_count", agg="count", expr="id")],
+                ),
+            ],
+            metrics=[
+                DbtMetric(
+                    name="amount_per_customer_ratio",
+                    type="ratio",
+                    type_params=DbtMetricTypeParams(
+                        numerator=DbtMetricInput(name="total_amount"),
+                        denominator=DbtMetricInput(name="customer_count"),
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+
+        orders = next(m for m in result.models if m.name == "orders")
+        customers = next(m for m in result.models if m.name == "customers")
+        assert not any(m.name == "amount_per_customer_ratio" for m in orders.measures)
+        assert not any(m.name == "amount_per_customer_ratio" for m in customers.measures)
+        assert any(
+            u.metric_name == "amount_per_customer_ratio"
+            for u in result.unconverted_metrics
+        )
+
+
+class TestUnfilteredSimpleMetricResolution:
+    """An unfiltered simple metric is not materialized as a ModelMeasure; any
+    derived/ratio formula that references it must resolve to the backing
+    measure's name instead of the (non-existent) metric name (CodeRabbit 1b).
+    """
+
+    def test_derived_metric_referencing_unfiltered_simple_metric_uses_backing_measure(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[DbtMeasure(name="total_amount", agg="sum", expr="amount")],
+                ),
+            ],
+            metrics=[
+                # Simple unfiltered metric — _convert_simple_metric returns
+                # without creating a ModelMeasure for this one.
+                DbtMetric(
+                    name="amount_metric",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="total_amount"),
+                ),
+                # Derived metric referencing the simple metric by name.
+                DbtMetric(
+                    name="double_amount",
+                    type="derived",
+                    type_params=DbtMetricTypeParams(
+                        expr="amount_metric * 2",
+                        metrics=[DbtMetricInput(name="amount_metric")],
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+
+        measure_names = {m.name for m in orders.measures}
+        assert "amount_metric" not in measure_names, (
+            "Unfiltered simple metric should not be materialized as a ModelMeasure"
+        )
+        double = next(m for m in orders.measures if m.name == "double_amount")
+        assert "amount_metric" not in double.formula, (
+            f"Derived formula must not reference unmaterialized metric name; got {double.formula!r}"
+        )
+        assert "total_amount" in double.formula, (
+            f"Derived formula should reference backing measure 'total_amount'; got {double.formula!r}"
+        )
+
+    def test_ratio_metric_referencing_unfiltered_simple_metric_uses_backing_measure(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[
+                        DbtMeasure(name="total_amount", agg="sum", expr="amount"),
+                        DbtMeasure(name="order_count", agg="count", expr="id"),
+                    ],
+                ),
+            ],
+            metrics=[
+                DbtMetric(
+                    name="amount_metric",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="total_amount"),
+                ),
+                DbtMetric(
+                    name="count_metric",
+                    type="simple",
+                    type_params=DbtMetricTypeParams(measure="order_count"),
+                ),
+                DbtMetric(
+                    name="aov_via_metrics",
+                    type="ratio",
+                    type_params=DbtMetricTypeParams(
+                        numerator=DbtMetricInput(name="amount_metric"),
+                        denominator=DbtMetricInput(name="count_metric"),
+                    ),
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        aov = next(m for m in orders.measures if m.name == "aov_via_metrics")
+        assert aov.formula == "total_amount / order_count", (
+            f"Ratio formula should reference backing measures, got {aov.formula!r}"
+        )
+
+
+class TestDbtConversionErrorOnDimMeasureCollision:
+    """Q-G: a semantic model whose dim and measure share a name must hard-fail."""
+
+    def test_dim_measure_name_collision_raises_dbt_conversion_error(self) -> None:
+        project = DbtProject(semantic_models=[
+            DbtSemanticModel(
+                name="orders",
+                model="orders",
+                entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                dimensions=[DbtDimension(name="amount", type="categorical")],
+                measures=[DbtMeasure(name="amount", agg="sum", expr="amount")],
+            ),
+        ])
+        with pytest.raises(DbtConversionError) as exc_info:
+            DbtToSlayerConverter(project=project, data_source="test").convert()
+        msg = str(exc_info.value)
+        assert "orders" in msg
+        assert "amount" in msg
+
+
+class TestUnconvertedTransformShadowing:
+    """Q-F: a dbt measure or metric named after a SLayer transform is routed
+    to ``unconverted_metrics`` rather than crashing."""
+
+    def test_unconverted_metrics_for_transform_shadowing_name(self) -> None:
+        project = DbtProject(
+            semantic_models=[
+                DbtSemanticModel(
+                    name="orders",
+                    model="orders",
+                    entities=[DbtEntity(name="order_id", type="primary", expr="id")],
+                    measures=[
+                        # Valid measure to anchor the model (so we can test
+                        # the metric-side transform shadowing path).
+                        DbtMeasure(name="total", agg="sum", expr="amount"),
+                        # ``cumsum`` is a SLayer transform — ModelMeasure
+                        # construction must reject it and route to unconverted.
+                        DbtMeasure(name="cumsum", agg="sum", expr="amount"),
+                    ],
+                ),
+            ],
+        )
+        result = DbtToSlayerConverter(project=project, data_source="test").convert()
+
+        # The good measure converted normally.
+        orders = next(m for m in result.models if m.name == "orders")
+        assert any(m.name == "total" for m in orders.measures)
+        # The shadowing measure was routed to unconverted_metrics.
+        assert any(
+            u.metric_name == "cumsum"
+            for u in result.unconverted_metrics
+        )

@@ -117,7 +117,6 @@ slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-mod
 |------|----------|-------------|
 | `dbt_project_path` | Yes | Path to the dbt project root (or a models directory) |
 | `--datasource` | Yes | SLayer datasource name for the imported models |
-| `--no-strict-aggregations` | No | Don't restrict measures to their dbt-defined aggregation types |
 | `--include-hidden-models` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer models via SQL introspection. Requires the `dbt` extra (`pip install 'motley-slayer[dbt]'`). See [dbt Import](../dbt/dbt_import.md#regular-dbt-models-hidden-import). |
 | `--storage` | No | Storage path |
 

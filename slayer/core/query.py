@@ -68,6 +68,22 @@ def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
     return _VAR_PATTERN.sub(_replace, filter_str)
 
 
+def extract_placeholder_names(query: "SlayerQuery") -> set:
+    """Return the set of valid {var} placeholder names referenced in
+    ``query.filters``. Used to compute required-variable lists and to
+    inject placeholder defaults during save-time dry-run validation.
+    """
+    found: set = set()
+    for f in (query.filters or []):
+        for match in _VAR_PATTERN.finditer(f):
+            if match.group(0) in ("{{", "}}"):
+                continue
+            valid_name = match.group(1)
+            if valid_name:
+                found.add(valid_name)
+    return found
+
+
 class ColumnRef(BaseModel):
     """Reference to a dimension by name.
 
@@ -418,8 +434,12 @@ class SlayerQuery(BaseModel):
         if not updates:
             return self
 
+        # Sanitize for log injection (S5145): model names are usually trusted
+        # internal identifiers, but they originate from user input via the
+        # public API, so strip CR/LF before logging.
+        safe_name = model_name.replace("\r", "\\r").replace("\n", "\\n")
         logger.info(
             "Stripped source model prefix '%s.' from query references",
-            model_name,
+            safe_name,
         )
         return self.model_copy(update=updates)

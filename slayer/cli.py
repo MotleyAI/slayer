@@ -1,11 +1,12 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import json
 import os
 import sys
 
 from slayer.async_utils import run_sync
-from slayer.storage.base import default_storage_path, storage_base_dir
+from slayer.storage.base import default_storage_path
 
 _STORAGE_DEFAULT = default_storage_path()
 _STORAGE_HELP = (
@@ -30,11 +31,6 @@ def _resolve_storage(args):
 
     path = args.storage or args.models_dir or _STORAGE_DEFAULT
     return resolve_storage(path)
-
-
-def _queries_dir_for_storage(storage_path: str) -> str:
-    """Return the directory where queries.yaml should be written."""
-    return storage_base_dir(storage_path)
 
 
 def main():
@@ -136,7 +132,11 @@ examples:
     )
     query_parser.add_argument(
         "query_json",
-        help="JSON query string, or @file.json to read from a file",
+        help=(
+            "JSON query (e.g. '{\"source_model\": ...}'), @file.json to read "
+            "from a file, or a model name to run a query-backed model's "
+            "stored backing query."
+        ),
     )
     _add_storage_arg(query_parser)
     query_parser.add_argument(
@@ -147,6 +147,21 @@ examples:
     )
     query_parser.add_argument("--dry-run", action="store_true", help="Generate SQL without executing")
     query_parser.add_argument("--explain", action="store_true", help="Run EXPLAIN ANALYZE on the query")
+    query_parser.add_argument(
+        "--variables",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help=(
+            "Set a runtime variable (repeatable). Overrides query.variables and "
+            "model.query_variables. Example: --variables threshold=100 --variables region=US."
+        ),
+    )
+    query_parser.add_argument(
+        "--variables-json",
+        default=None,
+        help="Set runtime variables from a JSON object string. Mutually exclusive with --variables.",
+    )
 
     # ── ingest ────────────────────────────────────────────────────────
     ingest_parser = subparsers.add_parser(
@@ -188,11 +203,6 @@ examples:
     )
     import_dbt_parser.add_argument("dbt_project_path", help="Path to dbt project root or models directory")
     import_dbt_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
-    import_dbt_parser.add_argument(
-        "--no-strict-aggregations",
-        action="store_true",
-        help="Don't restrict measures to their dbt-defined aggregation types",
-    )
     import_dbt_parser.add_argument(
         "--include-hidden-models",
         action="store_true",
@@ -376,35 +386,111 @@ def _run_help(args):
     print(render_help(topic=args.topic))
 
 
-def _run_query(args):
-    import json
+def _parse_cli_variables(args) -> dict:
+    """Combine ``--variables KEY=VALUE`` (repeatable) and ``--variables-json``
+    into a single dict. Errors out if both forms are mixed.
+    """
+    has_kv = bool(args.variables)
+    has_json = args.variables_json is not None
+    if has_kv and has_json:
+        raise SystemExit(
+            "--variables and --variables-json are mutually exclusive."
+        )
+    if has_json:
+        try:
+            parsed = json.loads(args.variables_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--variables-json contains invalid JSON: {exc}") from None
+        if not isinstance(parsed, dict):
+            raise SystemExit("--variables-json must decode to a JSON object.")
+        return parsed
+    out: dict = {}
+    for raw in args.variables or []:
+        if "=" not in raw:
+            raise SystemExit(
+                f"--variables expects KEY=VALUE form, got: {raw!r}"
+            )
+        key, value = raw.split("=", 1)
+        out[key] = value
+    return out
 
+
+def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
     from slayer.core.query import SlayerQuery
     from slayer.engine.query_engine import SlayerQueryEngine
 
     query_input = args.query_json
-    if query_input.startswith("@"):
-        with open(query_input[1:]) as f:
-            query_input = f.read()
-    data = json.loads(query_input)
-    if args.dry_run:
-        data["dry_run"] = True
-    if args.explain:
-        data["explain"] = True
-    slayer_query = SlayerQuery.model_validate(data)
+    runtime_kwarg = _parse_cli_variables(args)
 
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
-    result = engine.execute_sync(query=slayer_query)
 
-    if slayer_query.dry_run:
+    if query_input.startswith("@"):
+        filepath = query_input[1:]
+        try:
+            with open(filepath) as f:
+                query_input = f.read()
+        except FileNotFoundError:
+            raise SystemExit(f"Query file not found: {filepath}") from None
+        except OSError as e:
+            raise SystemExit(f"Error reading query file: {e}") from None
+        is_json = True
+    else:
+        # Heuristic: a JSON query starts with '{' or '['; anything else
+        # is treated as a model name for run-by-name dispatch.
+        stripped = query_input.lstrip()
+        is_json = stripped.startswith("{") or stripped.startswith("[")
+
+    if is_json:
+        data = json.loads(query_input)
+        if isinstance(data, list):
+            if not data:
+                raise SystemExit("Query list cannot be empty.")
+            final_stage = dict(data[-1])
+            if args.dry_run:
+                final_stage["dry_run"] = True
+            if args.explain:
+                final_stage["explain"] = True
+            data = [*data[:-1], final_stage]
+            result = engine.execute_sync(
+                query=data, variables=runtime_kwarg or None
+            )
+            final_query = SlayerQuery.model_validate(final_stage)
+            explain_set = final_query.explain
+            dry_run_set = final_query.dry_run
+        else:
+            if args.dry_run:
+                data["dry_run"] = True
+            if args.explain:
+                data["explain"] = True
+            slayer_query = SlayerQuery.model_validate(data)
+            result = engine.execute_sync(
+                query=slayer_query, variables=runtime_kwarg or None
+            )
+            explain_set = slayer_query.explain
+            dry_run_set = slayer_query.dry_run
+    else:
+        # Run-by-name: the positional arg is a model name.
+        # ``execute_sync(str, dry_run=..., explain=...)`` honors the flags
+        # via the engine's run-by-name path, which also enforces the
+        # "model must be query-backed" check uniformly.
+        result = engine.execute_sync(
+            query=query_input,
+            variables=runtime_kwarg or None,
+            dry_run=bool(args.dry_run),
+            explain=bool(args.explain),
+        )
+        explain_set = bool(args.explain)
+        dry_run_set = bool(args.dry_run)
+
+    if dry_run_set:
         print(result.sql)
         return
 
     if args.format == "json":
         print(json.dumps(result.data, indent=2, default=str))
     else:
-        if slayer_query.explain:
+        if explain_set:
             print(f"SQL:\n{result.sql}\n")
             print("Query Plan:")
         if not result.data:
@@ -416,7 +502,7 @@ def _run_query(args):
         print(separator)
         for row in result.data:
             print(" | ".join(str(row.get(c, "")) for c in result.columns))
-        if not slayer_query.explain:
+        if not explain_set:
             print(f"\n{result.row_count} row(s)")
 
 
@@ -503,7 +589,6 @@ def _run_ingest(args):
 
 def _run_import_dbt(args):
     import sqlalchemy as sa
-    import yaml as _yaml
 
     from slayer.dbt.converter import DbtToSlayerConverter
     from slayer.dbt.parser import parse_dbt_project
@@ -535,7 +620,6 @@ def _run_import_dbt(args):
         converter = DbtToSlayerConverter(
             project=project,
             data_source=args.datasource,
-            strict_aggregations=not args.no_strict_aggregations,
             sa_engine=sa_engine,
             include_hidden_models=include_hidden,
         )
@@ -544,7 +628,6 @@ def _run_import_dbt(args):
         if sa_engine is not None:
             sa_engine.dispose()
 
-    # Save models
     hidden_count = 0
     for model in result.models:
         run_sync(storage.save_model(model))
@@ -556,17 +639,10 @@ def _run_import_dbt(args):
             f"({len(model.columns)} columns, {len(model.measures)} measures)"
         )
 
-    # Save queries to queries.yaml if any
-    if result.queries:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-        queries_dir = _queries_dir_for_storage(storage_path)
-        os.makedirs(queries_dir, exist_ok=True)
-        queries_path = os.path.join(queries_dir, "queries.yaml")
-        with open(queries_path, "w", encoding="utf-8") as f:
-            _yaml.dump(result.queries, f, sort_keys=False, default_flow_style=False)
-        print(f"Generated {len(result.queries)} metric queries → {queries_path}")
+    for u in result.unconverted_metrics:
+        context = u.model_name or u.metric_name or "general"
+        print(f"  UNCONVERTED [{context}]: {u.message}")
 
-    # Print warnings
     for w in result.warnings:
         context = w.model_name or w.metric_name or "general"
         print(f"  WARNING [{context}]: {w.message}")
@@ -574,7 +650,8 @@ def _run_import_dbt(args):
     visible_count = len(result.models) - hidden_count
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
-        f"{len(result.queries)} queries, {len(result.warnings)} warnings"
+        f"{len(result.unconverted_metrics)} unconverted metrics, "
+        f"{len(result.warnings)} warnings"
     )
 
 
@@ -606,10 +683,19 @@ def _run_models(args):
         print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
     elif args.models_command == "create":
+        from slayer.engine.query_engine import SlayerQueryEngine
+
         with open(args.file) as f:
             data = yaml.safe_load(f)
         model = SlayerModel.model_validate(data)
-        run_sync(storage.save_model(model))
+        # Route through engine.save_model so query-backed models get cache
+        # populated (and user-supplied cache fields are rejected).
+        engine = SlayerQueryEngine(storage=storage)
+        try:
+            run_sync(engine.save_model(model))
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         print(f"Created model '{model.name}'.")
 
     elif args.models_command == "delete":
@@ -746,6 +832,33 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
+def _persist_ingested_models(models, storage, *, assume_yes: bool, pre_save=None) -> None:
+    """Persist freshly-ingested models, after a collision-confirmation prompt.
+
+    Used by both ``datasources create`` (with ``--ingest``) and
+    ``datasources create demo --ingest``. ``pre_save`` is an optional hook
+    called once per model just before saving — the demo path uses it to
+    apply ``default_time_dimension`` overrides.
+    """
+    if not models:
+        print("No models were generated.")
+        return
+
+    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
+    if colliding and not _confirm(
+        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
+        assume_yes=assume_yes,
+    ):
+        print("Aborted before writing models.")
+        sys.exit(1)
+
+    for model in models:
+        if pre_save is not None:
+            pre_save(model)
+        run_sync(storage.save_model(model))
+        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+
+
 def _run_datasources_create(args, storage):
     if (args.connection_string or "").strip().lower() == "demo":
         _run_datasources_create_demo(args, storage)
@@ -798,24 +911,10 @@ def _run_datasources_create(args, storage):
         print(f"Ingestion failed: {e}")
         sys.exit(1)
 
-    if not models:
-        print("No models were generated.")
-        return
-
-    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
-    if colliding and not _confirm(
-        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
-        assume_yes=args.yes,
-    ):
-        print("Aborted before writing models.")
-        sys.exit(1)
-
-    for model in models:
-        run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+    _persist_ingested_models(models, storage, assume_yes=args.yes)
 
 
-def _run_datasources_create_demo(args, storage):
+def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear demo-bootstrap flow (build → confirm → save → optional ingest); branches are sequential UX guards, not nested logic
     from slayer.demo import (
         DEFAULT_TIME_DIMENSIONS,
         DEMO_NAME,
@@ -875,23 +974,13 @@ def _run_datasources_create_demo(args, storage):
         print(f"Ingestion failed: {e}")
         sys.exit(1)
 
-    if not models:
-        print("No models were generated.")
-        return
-
-    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
-    if colliding and not _confirm(
-        f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
-        assume_yes=args.yes,
-    ):
-        print("Aborted before writing models.")
-        sys.exit(1)
-
-    for model in models:
+    def _apply_demo_time_dim(model):
         if model.name in DEFAULT_TIME_DIMENSIONS:
             model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
-        run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+
+    _persist_ingested_models(
+        models, storage, assume_yes=args.yes, pre_save=_apply_demo_time_dim
+    )
 
 
 if __name__ == "__main__":

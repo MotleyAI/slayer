@@ -24,12 +24,75 @@ from pydantic import BaseModel, Field
 from slayer.core.enums import BUILTIN_AGGREGATIONS
 
 # Transforms that require a time dimension for ORDER BY
-TIME_TRANSFORMS = {"cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead"}
+TIME_TRANSFORMS = {
+    "cumsum",
+    "change",
+    "change_pct",
+    "time_shift",
+    "first",
+    "last",
+    "lag",
+    "lead",
+    "consecutive_periods",
+}
 
 # Transforms that don't need time ordering
 TIMELESS_TRANSFORMS = {"rank"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
+
+
+_NON_IDENT_RE = re.compile(r"\W+")
+
+
+def _agg_signature_suffix(
+    agg_args: Optional[list],
+    agg_kwargs: Optional[dict],
+) -> str:
+    """Build a deterministic identifier suffix from aggregation args/kwargs.
+
+    Returns the empty string when both are empty so unparameterized aggregations
+    keep their existing canonical names. For parameterized variants (e.g.
+    ``last(created_at)`` vs ``last(updated_at)``, ``percentile(p=0.5)`` vs
+    ``percentile(p=0.95)``, ``sum(window='90d')`` vs ``sum(window='30d')``)
+    the suffix differentiates them so they don't collapse onto a single
+    hidden alias.
+    """
+    args = agg_args or []
+    kwargs = agg_kwargs or {}
+    if not args and not kwargs:
+        return ""
+    parts: List[str] = []
+    for a in args:
+        sanitized = _NON_IDENT_RE.sub("_", str(a)).strip("_")
+        if sanitized:
+            parts.append(sanitized)
+    for k in sorted(kwargs.keys()):
+        sk = _NON_IDENT_RE.sub("_", str(k)).strip("_")
+        sv = _NON_IDENT_RE.sub("_", str(kwargs[k])).strip("_")
+        if sk:
+            parts.append(sk)
+        if sv:
+            parts.append(sv)
+    return "_" + "_".join(parts) if parts else ""
+
+
+def canonical_agg_name(
+    measure_name: str,
+    aggregation_name: str,
+    agg_args: Optional[list] = None,
+    agg_kwargs: Optional[dict] = None,
+) -> str:
+    """Canonical hidden-column name for an aggregated measure ref.
+
+    ``revenue:sum`` → ``revenue_sum``; ``*:count`` → ``_count``;
+    ``revenue:percentile(p=0.5)`` → ``revenue_percentile_p_0_5``;
+    ``revenue:sum(window='90d')`` → ``revenue_sum_window_90d``.
+    """
+    suffix = _agg_signature_suffix(agg_args, agg_kwargs)
+    if measure_name == "*":
+        return f"_{aggregation_name}{suffix}"
+    return f"{measure_name}_{aggregation_name}{suffix}"
 
 
 class AggregatedMeasureRef(BaseModel):
@@ -55,11 +118,17 @@ class ArithmeticField(BaseModel):
     sql: str = Field(description="Preprocessed formula with placeholders for aggregated refs")
     measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
     agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
+    is_predicate: bool = Field(
+        default=False,
+        description="True when the top-level AST node is a comparison or boolean op "
+        "(so the field renders as a boolean expression). Drives boolean-aware SQL "
+        "generation for transforms like consecutive_periods.",
+    )
 
 
 class TransformField(BaseModel):
     """A transform function call, possibly wrapping another transform or arithmetic."""
-    transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, time_shift, first, last")
+    transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, time_shift, first, last, consecutive_periods")
     inner: "FieldSpec" = Field(description="The measure or expression being transformed")
     args: List[Any] = Field(default_factory=list, description="Extra transform args (offset, granularity, etc.)")
 
@@ -74,6 +143,12 @@ class MixedArithmeticField(BaseModel):
     measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
     sub_transforms: List[tuple] = Field(description="List of (placeholder_name, TransformField)")
     agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
+    is_predicate: bool = Field(
+        default=False,
+        description="True when the top-level AST node is a comparison or boolean op "
+        "(so the field renders as a boolean expression). Drives boolean-aware SQL "
+        "generation for transforms like consecutive_periods.",
+    )
 
 
 # The parsed result of a single field
@@ -509,8 +584,8 @@ def _parse_node(
 
         return TransformField(transform=func_name, inner=inner, args=extra_args)
 
-    # Binary/unary operation → check if it contains transform calls
-    if isinstance(node, (ast.BinOp, ast.UnaryOp)):
+    # Binary/unary/comparison/boolean operation → check if it contains transform calls
+    if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp)):
         if _contains_call(node):
             return _parse_mixed_arithmetic(node, original, agg_refs)
         measure_names = _collect_names(node)
@@ -532,6 +607,7 @@ def _parse_node(
             sql=ast.unparse(node),
             measure_names=measure_names,
             agg_refs=field_agg_refs,
+            is_predicate=isinstance(node, (ast.Compare, ast.BoolOp)),
         )
 
     # Constant (bare number)
@@ -547,6 +623,57 @@ def _contains_call(node: ast.AST) -> bool:
         if isinstance(child, ast.Call):
             return True
     return False
+
+
+def _replace_calls_in_arith(
+    node: ast.AST,
+    *,
+    sub_transforms: list[tuple],
+    measure_names: list[str],
+    counter: list[int],
+    agg_refs: Dict[str, AggregatedMeasureRef],
+    original: str,
+) -> ast.AST:
+    """Walk the AST, replacing transform Call nodes with Name placeholders."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ALL_TRANSFORMS:
+        placeholder = f"_t{counter[0]}"
+        counter[0] += 1
+        transform = _parse_node(node, original, agg_refs)
+        sub_transforms.append((placeholder, transform))
+        return ast.Name(id=placeholder, ctx=ast.Load())
+
+    kwargs = {
+        "sub_transforms": sub_transforms,
+        "measure_names": measure_names,
+        "counter": counter,
+        "agg_refs": agg_refs,
+        "original": original,
+    }
+
+    if isinstance(node, ast.Name):
+        if node.id not in [p for p, _ in sub_transforms]:
+            measure_names.append(node.id)
+        return node
+
+    if isinstance(node, ast.BinOp):
+        node.left = _replace_calls_in_arith(node.left, **kwargs)
+        node.right = _replace_calls_in_arith(node.right, **kwargs)
+        return node
+
+    if isinstance(node, ast.UnaryOp):
+        node.operand = _replace_calls_in_arith(node.operand, **kwargs)
+        return node
+
+    if isinstance(node, ast.Compare):
+        node.left = _replace_calls_in_arith(node.left, **kwargs)
+        node.comparators = [_replace_calls_in_arith(c, **kwargs) for c in node.comparators]
+        return node
+
+    if isinstance(node, ast.BoolOp):
+        node.values = [_replace_calls_in_arith(v, **kwargs) for v in node.values]
+        return node
+
+    return node
 
 
 def _parse_mixed_arithmetic(
@@ -566,43 +693,25 @@ def _parse_mixed_arithmetic(
     measure_names: list[str] = []
     counter = [0]
 
-    def _replace_calls(n: ast.AST) -> ast.AST:
-        """Walk the AST, replacing Call nodes with Name placeholders."""
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ALL_TRANSFORMS:
-            placeholder = f"_t{counter[0]}"
-            counter[0] += 1
-            # Parse the call as a transform
-            transform = _parse_node(n, original, agg_refs)
-            sub_transforms.append((placeholder, transform))
-            return ast.Name(id=placeholder, ctx=ast.Load())
-
-        if isinstance(n, ast.Name):
-            if n.id not in [p for p, _ in sub_transforms]:
-                measure_names.append(n.id)
-            return n
-
-        if isinstance(n, ast.BinOp):
-            n.left = _replace_calls(n.left)
-            n.right = _replace_calls(n.right)
-            return n
-
-        if isinstance(n, ast.UnaryOp):
-            n.operand = _replace_calls(n.operand)
-            return n
-
-        return n
-
-    modified = _replace_calls(node)
-    # Reconstruct SQL from modified AST
+    modified = _replace_calls_in_arith(
+        node,
+        sub_transforms=sub_transforms,
+        measure_names=measure_names,
+        counter=counter,
+        agg_refs=agg_refs,
+        original=original,
+    )
     modified_sql = ast.unparse(modified)
 
     field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}
+    is_predicate = isinstance(node, (ast.Compare, ast.BoolOp))
 
     return MixedArithmeticField(
         sql=modified_sql,
         measure_names=measure_names,
         sub_transforms=sub_transforms,
         agg_refs=field_agg_refs,
+        is_predicate=is_predicate,
     )
 
 
@@ -738,14 +847,19 @@ def parse_filter(
     processed = _preprocess_like(processed)
     # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names
     processed, agg_refs = _preprocess_agg_refs(processed)
-    # Build reverse map: placeholder → canonical name (measure_aggregation)
-    agg_canonical = {}
-    for ph, ref in agg_refs.items():
-        if ref.measure_name == "*":
-            canonical = f"_{ref.aggregation_name}"
-        else:
-            canonical = f"{ref.measure_name}_{ref.aggregation_name}"
-        agg_canonical[ph] = canonical
+    # Build reverse map: placeholder → canonical name (measure_aggregation[_args])
+    # Include agg args/kwargs in the canonical name so e.g.
+    # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
+    # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
+    agg_canonical = {
+        ph: canonical_agg_name(
+            measure_name=ref.measure_name,
+            aggregation_name=ref.aggregation_name,
+            agg_args=ref.agg_args,
+            agg_kwargs=ref.agg_kwargs,
+        )
+        for ph, ref in agg_refs.items()
+    }
     # Replace placeholders with canonical names in the formula
     for ph, canonical in agg_canonical.items():
         processed = processed.replace(ph, canonical)
