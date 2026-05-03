@@ -5,8 +5,8 @@ SLayer provides a FastAPI-based REST API on port **5143** by default.
 ## Start the Server
 
 ```bash
-slayer serve --models-dir ./slayer_data
-slayer serve --host 0.0.0.0 --port 8080 --models-dir ./slayer_data
+slayer serve --storage ./slayer_data
+slayer serve --host 0.0.0.0 --port 8080 --storage ./slayer_data
 ```
 
 ## Endpoints
@@ -44,11 +44,11 @@ Response:
 ```json
 {
   "data": [
-    {"orders.status": "completed", "orders.count": 42},
-    {"orders.status": "pending", "orders.count": 15}
+    {"orders.status": "completed", "orders._count": 42},
+    {"orders.status": "pending", "orders._count": 15}
   ],
   "row_count": 2,
-  "columns": ["orders.status", "orders.count"]
+  "columns": ["orders.status", "orders._count"]
 }
 ```
 

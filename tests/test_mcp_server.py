@@ -1478,7 +1478,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_mixed_params(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
-            "query": {"source_model": "orders", "fields": ["*:count"]},
+            "query": {"source_model": "orders", "measures": ["*:count"]},
             "sql_table": "public.orders",
         })
         assert "Error" in result
@@ -1488,7 +1488,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_data_source(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
-            "query": {"source_model": "orders", "fields": ["*:count"]},
+            "query": {"source_model": "orders", "measures": ["*:count"]},
             "data_source": "mydb",
         })
         assert "Error" in result
@@ -1502,7 +1502,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
-            "query": {"source_model": "orders", "fields": ["amount:sum"]},
+            "query": {"source_model": "orders", "measures": ["amount:sum"]},
             "dimensions": [],
             "measures": [],
         })
@@ -1518,7 +1518,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
-            "query": {"source_model": "orders", "fields": ["amount:sum"]},
+            "query": {"source_model": "orders", "measures": ["amount:sum"]},
         })
         # Should fail on missing datasource, not on "missing sql_table"
         assert "Datasource" in result
@@ -1544,8 +1544,7 @@ class TestCreateModel:
             "name": "summary",
             "query": {
                 "source_model": "orders",
-                "fields": ["amount:sum"],
-                "dry_run": True,
+                "measures": ["amount:sum"],
             },
         })
         assert "Error" not in result, result

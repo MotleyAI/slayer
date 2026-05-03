@@ -1,21 +1,24 @@
-# Measures and Aggregations Are Separate Things
+# Columns and Aggregations Are Separate Things
 
-Most semantic layers force you to bake the aggregation into the measure definition. You want revenue? Define `revenue_sum`. Want average revenue too? Define `revenue_avg`. Five aggregation types per numeric column, times twenty columns, and you're staring at a hundred measure definitions before you've written a single query.
+Most semantic layers force you to bake the aggregation into the column definition. You want revenue? Define `revenue_sum`. Want average revenue too? Define `revenue_avg`. Five aggregation types per numeric column, times twenty columns, and you're staring at a hundred definitions before you've written a single query.
 
-SLayer takes a different approach: **a measure is just a named SQL expression** — a row-level fact about your data. The **aggregation** — how you want to roll it up — is specified when you query, not when you define the model.
+SLayer takes a different approach: **a column is just a named SQL expression** — a row-level fact about your data. The **aggregation** — how you want to roll it up — is specified when you query, not when you define the model.
 
 ## What this looks like
 
-A model defines measures as bare expressions:
+A model defines columns as bare expressions:
 
 ```yaml
-measures:
+columns:
   - name: revenue
     sql: amount
+    type: number
   - name: price
     sql: unit_price
+    type: number
   - name: quantity
     sql: qty
+    type: number
 ```
 
 No `type: sum` or `type: avg`. Just what the column is.
@@ -30,7 +33,7 @@ At query time, you pick the aggregation with colon syntax:
 }
 ```
 
-`revenue:sum` means "take the `revenue` measure (which is the `amount` column) and SUM it." `price:min` means "take the `price` measure and find the MIN." One measure definition, as many aggregations as you need.
+`revenue:sum` means "take the `revenue` column (which is the `amount` value) and SUM it." `price:min` means "take the `price` column and find the MIN." One column definition, as many aggregations as you need.
 
 ## COUNT(*) and the star measure
 
@@ -80,7 +83,7 @@ dimension:
 
 ```json
 {
-  "fields": [
+  "measures": [
     {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
     {"formula": "revenue:avg(window='1y2m3w5d6h7min8s')", "name": "avg_window"}
   ],
@@ -127,15 +130,17 @@ Now `price:weighted_avg` uses `quantity` as the weight without you specifying it
 
 ## Controlling which aggregations apply
 
-Not every aggregation makes sense for every measure. `customer_id:avg`? Probably not useful. The `allowed_aggregations` field lets you whitelist:
+Not every aggregation makes sense for every column. `customer_id:avg`? Probably not useful. The `allowed_aggregations` field lets you whitelist:
 
 ```yaml
-measures:
+columns:
   - name: customer_id
     sql: customer_id
+    type: number
     allowed_aggregations: [count, count_distinct]
   - name: revenue
     sql: amount
+    type: number
     allowed_aggregations: [sum, avg, min, max, weighted_avg]
 ```
 

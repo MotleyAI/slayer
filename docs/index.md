@@ -34,7 +34,7 @@ Given an `orders` [model](concepts/models.md) with a `revenue` measure and joins
     "date_range": ["2025-01-01", "2025-12-31"]
   }],
   "filters": ["status = 'completed'", "change(revenue:sum) > 0"],
-  "order": [{"name": "revenue_sum", "direction": "desc"}]
+  "order": [{"column": "revenue_sum", "direction": "desc"}]
 }
 ```
 
@@ -68,7 +68,7 @@ One query, and SLayer handles:
 ```
 Agent --> MCP / REST API / Python SDK
               |
-         SlayerQuery (model, fields, dimensions, filters)
+         SlayerQuery (source_model, measures, dimensions, filters)
               |
          SlayerQueryEngine (resolves model definitions from storage)
               |

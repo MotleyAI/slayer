@@ -62,7 +62,7 @@ result = engine.execute_sync(query=SlayerQuery(
 
 for row in result.data:
     print(row)
-# {"orders.status": "completed", "orders.count": 42, "orders.revenue_sum": 12345.67}
+# {"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 12345.67}
 ```
 
 The response object:

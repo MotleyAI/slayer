@@ -25,17 +25,17 @@ curl http://localhost:5143/models
 # Query: orders by status
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "status"}]}'
+  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
 
 # Query: orders by product category (rollup join)
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "products.category"}]}'
+  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["products.category"]}'
 
 # Query: orders by region (transitive rollup)
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"model": "orders", "fields": [{"formula": "*:count"}], "dimensions": [{"name": "regions.name"}]}'
+  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["regions.name"]}'
 ```
 
 ## Verify
@@ -51,7 +51,7 @@ Runs assertions against the REST API to validate everything works.
 You can also connect Claude Code to the Postgres instance directly:
 
 ```bash
-claude mcp add slayer -- slayer mcp --models-dir ./slayer_data
+claude mcp add slayer -- slayer mcp --storage ./slayer_data
 ```
 
 ## Clean Up

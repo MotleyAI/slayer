@@ -14,7 +14,7 @@ slayer serve --storage ./slayer_data
 slayer serve --storage slayer.db
 ```
 
-The default is `./slayer_data` (YAML). Override with `$SLAYER_STORAGE` or `$SLAYER_MODELS_DIR` env vars.
+If unset, SLayer uses a platform-appropriate path: `~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows. Override with `$SLAYER_STORAGE`.
 
 The legacy `--models-dir` flag still works but is deprecated in favor of `--storage`.
 
@@ -34,7 +34,8 @@ slayer serve --storage slayer.db
 |------|---------|-------------|
 | `--host` | `0.0.0.0` | Bind address |
 | `--port` | `5143` | Port number |
-| `--storage` | `./slayer_data` | Storage path (directory for YAML, .db file for SQLite) |
+| `--storage` | platform-appropriate path | Storage path (directory for YAML, `.db` file for SQLite) |
+| `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; requires the `duckdb` extra and `jafgen`. |
 
 ### `slayer mcp`
 
@@ -52,7 +53,8 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--storage` | `./slayer_data` | Storage path |
+| `--storage` | platform-appropriate path | Storage path (directory for YAML, `.db` file for SQLite) |
+| `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; requires the `duckdb` extra and `jafgen`. |
 
 ### `slayer query`
 
@@ -90,7 +92,7 @@ The positional argument is interpreted as:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--storage` | `./slayer_data` | Storage path |
+| `--storage` | platform-appropriate path | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--format` | `table` | Output format: `table` or `json` |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run EXPLAIN ANALYZE on the query |

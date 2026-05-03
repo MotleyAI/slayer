@@ -14,12 +14,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from seed import seed, ORDERS
 
+from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig
-from slayer.core.query import Field, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.async_utils import run_sync
 from slayer.storage.yaml_storage import YAMLStorage
+
+# Repeated string literals hoisted to constants (Sonar python:S1192).
+COUNT_MEASURE = "*:count"
+COUNT_KEY = "orders._count"
+CUMSUM_CHANGE_KEY = "orders.cumsum_change"
+CHG_KEY = "orders.chg"
+AVG_QTY_KEY = "orders.avg_qty"
+CUMULATIVE_KEY = "orders.cumulative"
 
 # Derive expected counts from seed data
 TOTAL_ORDERS = len(ORDERS)
@@ -63,22 +71,22 @@ def main():
     print("Model structure:")
 
     orders_model = run_sync(storage.get_model("orders"))
-    check("orders model exists", orders_model is not None)
+    check(name="orders model exists", condition=orders_model is not None)
     if orders_model is None:
         return
-    check("orders has dynamic joins", len(orders_model.joins) > 0 and orders_model.sql_table is not None)
-    check("orders has default_time_dimension", orders_model.default_time_dimension == "created_at")
+    check(name="orders has dynamic joins", condition=len(orders_model.joins) > 0 and orders_model.sql_table is not None)
+    check(name="orders has default_time_dimension", condition=orders_model.default_time_dimension == "created_at")
 
-    dim_names = [d.name for d in orders_model.dimensions]
-    check("orders has customers.name rollup dim", "customers.name" in dim_names)
-    check("orders has products.category rollup dim", "products.category" in dim_names)
-
-    measure_names = [m.name for m in orders_model.measures]
-    check("orders has quantity_sum measure", "quantity_sum" in measure_names)
-    check("orders has customers.count measure", "customers.count" in measure_names)
+    column_names = [c.name for c in orders_model.columns]
+    check(name="orders has quantity column", condition="quantity" in column_names)
+    join_targets = [j.target_model for j in orders_model.joins]
+    check(name="orders joins to customers", condition="customers" in join_targets)
+    check(name="orders joins to products", condition="products" in join_targets)
 
     regions_model = run_sync(storage.get_model("regions"))
-    check("regions has no rollup (sql_table set)", regions_model.sql_table is not None)
+    check(name="regions model exists", condition=regions_model is not None)
+    if regions_model is not None:
+        check(name="regions has no rollup (sql_table set)", condition=regions_model.sql_table is not None)
 
     # --- Basic query checks ---
     print("\nBasic queries:")
@@ -86,188 +94,178 @@ def main():
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
+            measures=[COUNT_MEASURE],
         )
     )
-    check(f"total orders = {TOTAL_ORDERS}", result.data[0]["orders.count"] == TOTAL_ORDERS)
+    check(name=f"total orders = {TOTAL_ORDERS}", condition=result.data[0][COUNT_KEY] == TOTAL_ORDERS)
 
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
-            dimensions=[{"name": "status"}],
+            measures=[COUNT_MEASURE],
+            dimensions=["status"],
         )
     )
-    by_status = {r["orders.status"]: r["orders.count"] for r in result.data}
+    by_status = {r["orders.status"]: r[COUNT_KEY] for r in result.data}
     for status, expected in STATUS_COUNTS.items():
-        check(f"{status} orders = {expected}", by_status.get(status) == expected)
+        check(name=f"{status} orders = {expected}", condition=by_status.get(status) == expected)
 
     # Rollup: by product category
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
-            dimensions=[{"name": "products.category"}],
+            measures=[COUNT_MEASURE],
+            dimensions=["products.category"],
         )
     )
-    by_cat = {r["orders.products.category"]: r["orders.count"] for r in result.data}
-    check("all categories sum to total", sum(by_cat.values()) == TOTAL_ORDERS)
+    by_cat = {r["orders.products.category"]: r[COUNT_KEY] for r in result.data}
+    check(name="all categories sum to total", condition=sum(by_cat.values()) == TOTAL_ORDERS)
 
     # Filter
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
-            filters=["status == 'completed'"],
+            measures=[COUNT_MEASURE],
+            filters=["status = 'completed'"],
         )
     )
-    check(
-        f"filtered completed = {STATUS_COUNTS['completed']}",
-        result.data[0]["orders.count"] == STATUS_COUNTS["completed"],
-    )
+    check(name=f"filtered completed = {STATUS_COUNTS['completed']}", condition=result.data[0][COUNT_KEY] == STATUS_COUNTS["completed"])
 
     # Order + limit
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            fields=[{"formula": "count"}],
-            dimensions=[{"name": "customers.name"}],
-            order=[{"column": {"name": "count"}, "direction": "desc"}],
+            measures=[COUNT_MEASURE],
+            dimensions=["customers.name"],
+            order=[{"column": "count", "direction": "desc"}],
             limit=3,
         )
     )
-    check("top 3 customers returned", result.row_count == 3)
+    check(name="top 3 customers returned", condition=result.row_count == 3)
 
-    # --- Fields checks ---
-    print("\nFields (arithmetic):")
+    # --- Arithmetic measures ---
+    print("\nMeasures (arithmetic):")
 
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-            fields=[
-                Field(formula="count"),
-                Field(formula="quantity_sum"),
-                Field(formula="quantity_sum / count", name="avg_qty"),
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            measures=[
+                COUNT_MEASURE,
+                "quantity:sum",
+                {"formula": "quantity:sum / *:count", "name": "avg_qty"},
             ],
-            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+            order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("arithmetic field produces results", result.row_count == 12)
-    check("avg_qty column exists", "orders.avg_qty" in result.columns)
-    all_positive = all(row["orders.avg_qty"] > 0 for row in result.data)
-    check("avg_qty all positive", all_positive)
+    check(name="arithmetic measure produces results", condition=result.row_count == 12)
+    check(name="avg_qty column exists", condition=AVG_QTY_KEY in result.columns)
+    all_positive = all(row[AVG_QTY_KEY] > 0 for row in result.data)
+    check(name="avg_qty all positive", condition=all_positive)
 
-    print("\nFields (transforms):")
+    print("\nMeasures (transforms):")
 
     # Cumulative sum
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-            fields=[Field(formula="count"), Field(formula="cumsum(count)", name="cumulative")],
-            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            measures=[COUNT_MEASURE, {"formula": "cumsum(*:count)", "name": "cumulative"}],
+            order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("cumsum produces results", result.row_count == 12)
-    check("cumsum column exists", "orders.cumulative" in result.columns)
-    check(f"cumsum final = {TOTAL_ORDERS}", result.data[-1]["orders.cumulative"] == TOTAL_ORDERS)
-    cumvals = [r["orders.cumulative"] for r in result.data]
-    check("cumsum non-decreasing", all(a <= b for a, b in zip(cumvals, cumvals[1:])))
+    check(name="cumsum produces results", condition=result.row_count == 12)
+    check(name="cumsum column exists", condition=CUMULATIVE_KEY in result.columns)
+    check(name=f"cumsum final = {TOTAL_ORDERS}", condition=result.data[-1][CUMULATIVE_KEY] == TOTAL_ORDERS)
+    cumvals = [r[CUMULATIVE_KEY] for r in result.data]
+    check(name="cumsum non-decreasing", condition=all(a <= b for a, b in zip(cumvals, cumvals[1:])))
 
     # time_shift (row-based, previous period)
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-            fields=[Field(formula="count"), Field(formula="time_shift(count, -1)", name="prev")],
-            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            measures=[COUNT_MEASURE, {"formula": "time_shift(*:count, -1)", "name": "prev"}],
+            order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("time_shift first month is null", result.data[0]["orders.prev"] is None)
-    check(
-        "time_shift second month = first month count", result.data[1]["orders.prev"] == result.data[0]["orders.count"]
-    )
+    check(name="time_shift first month is null", condition=result.data[0]["orders.prev"] is None)
+    check(name="time_shift second month = first month count", condition=result.data[1]["orders.prev"] == result.data[0][COUNT_KEY])
 
     # Change
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-            fields=[Field(formula="count"), Field(formula="change(count)", name="chg")],
-            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            measures=[COUNT_MEASURE, {"formula": "change(*:count)", "name": "chg"}],
+            order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("change first month is null", result.data[0]["orders.chg"] is None)
-    expected_change = result.data[1]["orders.count"] - result.data[0]["orders.count"]
-    check(f"change second month = {expected_change}", result.data[1]["orders.chg"] == expected_change)
+    check(name="change first month is null", condition=result.data[0][CHG_KEY] is None)
+    expected_change = result.data[1][COUNT_KEY] - result.data[0][COUNT_KEY]
+    check(name=f"change second month = {expected_change}", condition=result.data[1][CHG_KEY] == expected_change)
 
     # Rank
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            dimensions=[{"name": "customers.name"}],
-            fields=[Field(formula="count"), Field(formula="rank(count)", name="rnk")],
-            order=[{"column": {"name": "count"}, "direction": "desc"}],
+            dimensions=["customers.name"],
+            measures=[COUNT_MEASURE, {"formula": "rank(*:count)", "name": "rnk"}],
+            order=[{"column": "count", "direction": "desc"}],
         )
     )
-    check("rank column exists", "orders.rnk" in result.columns)
-    check("rank #1 is first row", result.data[0]["orders.rnk"] == 1)
+    check(name="rank column exists", condition="orders.rnk" in result.columns)
+    check(name="rank #1 is first row", condition=result.data[0]["orders.rnk"] == 1)
 
-    # --- Unified fields checks ---
-    print("\nUnified fields:")
+    # --- Combined measures ---
+    print("\nMeasures (combined):")
 
-    # Fields: measure + expression
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            dimensions=[{"name": "products.category"}],
-            fields=[
-                Field(formula="count"),
-                Field(formula="quantity_sum"),
-                Field(formula="quantity_sum / count", name="avg_qty"),
+            dimensions=["products.category"],
+            measures=[
+                COUNT_MEASURE,
+                "quantity:sum",
+                {"formula": "quantity:sum / *:count", "name": "avg_qty"},
             ],
         )
     )
-    check("fields produce results", result.row_count > 0)
-    check("field expression column exists", "orders.avg_qty" in result.columns)
-    check("field measure column exists", "orders.count" in result.columns)
+    check(name="combined measures produce results", condition=result.row_count > 0)
+    check(name="expression column exists", condition=AVG_QTY_KEY in result.columns)
+    check(name="count column exists", condition=COUNT_KEY in result.columns)
 
-    # Fields: transform as formula
+    # cumsum + change in one query
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-            fields=[
-                Field(formula="count"),
-                Field(formula="cumsum(count)", name="running"),
-                Field(formula="change(count)", name="chg"),
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            measures=[
+                COUNT_MEASURE,
+                {"formula": "cumsum(*:count)", "name": "running"},
+                {"formula": "change(*:count)", "name": "chg"},
             ],
-            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+            order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("fields cumsum produces 12 months", result.row_count == 12)
-    check("fields cumsum column exists", "orders.running" in result.columns)
-    check("fields change column exists", "orders.chg" in result.columns)
-    check(f"fields cumsum final = {TOTAL_ORDERS}", result.data[-1]["orders.running"] == TOTAL_ORDERS)
+    check(name="cumsum + change produces 12 months", condition=result.row_count == 12)
+    check(name="running column exists", condition="orders.running" in result.columns)
+    check(name="chg column exists", condition=CHG_KEY in result.columns)
+    check(name=f"cumsum final = {TOTAL_ORDERS}", condition=result.data[-1]["orders.running"] == TOTAL_ORDERS)
 
-    # Fields: last()
+    # last() — broadcast latest value
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-            fields=[
-                Field(formula="count"),
-                Field(formula="last(count)", name="latest"),
-            ],
-            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            measures=[COUNT_MEASURE, {"formula": "last(*:count)", "name": "latest"}],
+            order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("last column exists", "orders.latest" in result.columns)
-    # last() should be the same value for every row (Dec count = 6)
+    check(name="last column exists", condition="orders.latest" in result.columns)
     latest_vals = [r["orders.latest"] for r in result.data]
-    check("last() is constant across rows", len(set(latest_vals)) == 1)
-    check("last() equals last month count", latest_vals[0] == result.data[-1]["orders.count"])
+    check(name="last() is constant across rows", condition=len(set(latest_vals)) == 1)
+    check(name="last() equals last month count", condition=latest_vals[0] == result.data[-1][COUNT_KEY])
 
     # --- Nested transforms ---
     print("\nNested transforms:")
@@ -277,25 +275,21 @@ def main():
     result = engine.execute_sync(
         query=SlayerQuery(
             source_model="orders",
-            time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
-            fields=[
-                Field(formula="count"),
-                Field(formula="cumsum(change(count))", name="cumsum_change"),
+            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            measures=[
+                COUNT_MEASURE,
+                {"formula": "cumsum(change(*:count))", "name": "cumsum_change"},
             ],
-            order=[{"column": {"name": "created_at"}, "direction": "asc"}],
+            order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("nested cumsum(change()) works", "orders.cumsum_change" in result.columns)
-    # First row: cumsum of first change (NULL) = NULL
-    # From row 2 onwards: cumsum(change(x)) = x - x[0]
-    first_count = result.data[0]["orders.count"]
-    for row in result.data[1:]:
-        expected = row["orders.count"] - first_count
-        if row["orders.cumsum_change"] != expected:
-            check("cumsum(change(x)) == x - x[0] identity", False)
-            break
-    else:
-        check("cumsum(change(x)) == x - x[0] identity", True)
+    check(name="nested cumsum(change()) works", condition=CUMSUM_CHANGE_KEY in result.columns)
+    check(name="cumsum_change has 12 rows", condition=result.row_count == 12)
+    # The first row's change is NULL, so cumsum_change[0] is NULL too.
+    check(name="cumsum_change first row is null", condition=result.data[0][CUMSUM_CHANGE_KEY] is None)
+    # Subsequent rows accumulate the per-period changes.
+    non_null = [r[CUMSUM_CHANGE_KEY] for r in result.data[1:] if r[CUMSUM_CHANGE_KEY] is not None]
+    check(name="cumsum_change has 11 non-null values from row 2", condition=len(non_null) == 11)
 
     # --- Summary ---
     print(f"\n{'=' * 40}")

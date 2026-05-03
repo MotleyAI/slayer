@@ -26,7 +26,7 @@ query = {
 
 # Get raw data
 data = client.query(query)
-# [{"orders.status": "completed", "orders.count": 42, ...}, ...]
+# [{"orders.status": "completed", "orders._count": 42, ...}, ...]
 
 # Get pandas DataFrame
 df = client.query_df(query)

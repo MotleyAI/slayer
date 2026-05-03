@@ -70,10 +70,10 @@ Response:
 ```json
 {
   "data": [
-    {"orders.status": "completed", "orders.count": 42},
-    {"orders.status": "pending", "orders.count": 15}
+    {"orders.status": "completed", "orders._count": 42},
+    {"orders.status": "pending", "orders._count": 15}
   ],
-  "columns": ["orders.status", "orders.count"],
+  "columns": ["orders.status", "orders._count"],
   "row_count": 2
 }
 ```
