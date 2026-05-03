@@ -102,13 +102,14 @@ def create_app(storage: StorageBackend) -> FastAPI:
                             "'explain' are allowed)."
                         ),
                     )
+                dry_run = bool(request.dry_run)
+                explain = bool(request.explain)
                 result = await engine.execute(
                     request.name,
                     variables=request.variables or {},
-                    dry_run=bool(request.dry_run),
-                    explain=bool(request.explain),
+                    dry_run=dry_run,
+                    explain=explain,
                 )
-                dry_or_explain = bool(request.dry_run or request.explain)
             else:
                 if request.source_model is None:
                     raise HTTPException(
@@ -120,11 +121,18 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 # SlayerQuery's filter-substitution variables (those merge
                 # automatically via the kwarg path).
                 runtime_kwarg = payload.pop("variables", None)
+                # ``dry_run``/``explain`` are execution-mode flags only — pop
+                # them here and pass as engine kwargs so v3 SlayerQuery
+                # (extra="forbid") doesn't reject them.
+                dry_run = bool(payload.pop("dry_run", False))
+                explain = bool(payload.pop("explain", False))
                 slayer_query = SlayerQuery.model_validate(payload)
                 result = await engine.execute(
-                    query=slayer_query, variables=runtime_kwarg
+                    query=slayer_query,
+                    variables=runtime_kwarg,
+                    dry_run=dry_run,
+                    explain=explain,
                 )
-                dry_or_explain = bool(slayer_query.dry_run or slayer_query.explain)
             attrs = result.attributes
 
             def _convert_meta(d: dict) -> Dict[str, FieldMetadataResponse]:
@@ -142,7 +150,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 columns=result.columns,
                 attributes=attributes,
             )
-            if dry_or_explain:
+            if dry_run or explain:
                 response.sql = result.sql
             return response
         except ValueError as e:

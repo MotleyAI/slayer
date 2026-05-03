@@ -32,6 +32,7 @@ from slayer.demo.jaffle_shop import (
     load_data,
 )
 from slayer.engine.ingestion import ingest_datasource
+from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -200,7 +201,7 @@ def test_jaffle_model_joins(jaffle_models, model_name):
 
 
 async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models):
-    """Saving an ingested model to YAML must produce v2 shape with no v1 keys."""
+    """Saving an ingested model to YAML must produce current-schema shape with no v1 keys."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         for model in jaffle_models.values():
@@ -210,7 +211,7 @@ async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models):
             path = os.path.join(storage.models_dir, f"{model_name}.yaml")
             raw = await asyncio.to_thread(Path(path).read_text)
             on_disk = yaml.safe_load(raw)
-            assert on_disk["version"] == 2, model_name
+            assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"], model_name
             assert "columns" in on_disk, model_name
             assert "dimensions" not in on_disk, (
                 f"{model_name}: v1 'dimensions' key should not be on disk"

@@ -224,15 +224,14 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
         variables: Optional[Dict[str, Any]] = None,
+        *,
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
 
         # Run-by-name dispatch: ``execute("model_name", variables=...)`` runs
-        # the backing query of a query-backed model. ``dry_run``/``explain``
-        # apply only to this overload — for SlayerQuery/dict/list inputs, set
-        # those flags on the SlayerQuery itself.
+        # the backing query of a query-backed model.
         if isinstance(query, str):
             return await self._execute_by_name(
                 name=query,
@@ -240,12 +239,7 @@ class SlayerQueryEngine:
                 dry_run=dry_run,
                 explain=explain,
             )
-        if dry_run or explain:
-            raise ValueError(
-                "dry_run/explain kwargs are only valid for run-by-name "
-                "execute(str, ...); set them on the SlayerQuery itself "
-                "for query-object execution."
-            )
+
 
         # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
@@ -274,6 +268,8 @@ class SlayerQueryEngine:
             query=query,
             named_queries=named_queries,
             runtime_kwarg=runtime_kwarg,
+            dry_run=dry_run,
+            explain=explain,
         )
 
     async def _execute_by_name(
@@ -283,12 +279,7 @@ class SlayerQueryEngine:
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Run the backing query of a query-backed model by name.
-
-        ``dry_run``/``explain`` from the caller take precedence over any flag
-        baked into the stored final stage — required so REST/MCP/CLI run-by-name
-        callers can request plan-only without mutating the stored model.
-        """
+        """Run the backing query of a query-backed model by name."""
         model = await self.storage.get_model(name)
         if model is None:
             raise ValueError(f"Model '{name}' not found")
@@ -319,22 +310,15 @@ class SlayerQueryEngine:
             stage=main_query.variables,
             runtime=runtime_kwarg,
         )
-        updates: Dict[str, Any] = {}
         if merged != (main_query.variables or {}):
-            updates["variables"] = merged
-        # Caller-supplied dry_run / explain wins over any stage-baked value
-        # (only set when truthy so we don't clobber an explicit stage flag with False).
-        if dry_run:
-            updates["dry_run"] = True
-        if explain:
-            updates["explain"] = True
-        if updates:
-            main_query = main_query.model_copy(update=updates)
+            main_query = main_query.model_copy(update={"variables": merged})
 
         return await self._execute_pipeline(
             query=main_query,
             named_queries=named_queries,
             runtime_kwarg=runtime_kwarg,
+            dry_run=dry_run,
+            explain=explain,
         )
 
     async def _execute_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→execute); breaking it up obscures the order of operations
@@ -342,6 +326,9 @@ class SlayerQueryEngine:
         query: SlayerQuery,
         named_queries: Dict[str, SlayerQuery],
         runtime_kwarg: Dict[str, Any],
+        *,
+        dry_run: bool = False,
+        explain: bool = False,
     ) -> SlayerResponse:
         """Shared pipeline used by both ``execute()`` and ``_execute_by_name()``.
 
@@ -429,7 +416,7 @@ class SlayerQueryEngine:
         )
 
         # dry_run: return SQL without executing
-        if query.dry_run:
+        if dry_run:
             return SlayerResponse(data=[], columns=expected_columns, sql=sql, attributes=attributes)
 
         # Execute — reuse SQL client (and its connection pool) per datasource
@@ -439,7 +426,7 @@ class SlayerQueryEngine:
         client = self._sql_clients[ds_key]
 
         # explain: run dialect-appropriate EXPLAIN on the query
-        if query.explain:
+        if explain:
             explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
             rows = await client.execute(sql=explain_sql)
             return SlayerResponse(data=rows, sql=sql, attributes=attributes)
@@ -549,13 +536,16 @@ class SlayerQueryEngine:
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
         variables: Optional[Dict[str, Any]] = None,
+        *,
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
         """Synchronous wrapper for execute(). For CLI, notebooks, and scripts."""
         from slayer.async_utils import run_sync
 
-        return run_sync(self.execute(query, variables=variables, dry_run=dry_run, explain=explain))
+        return run_sync(
+            self.execute(query, variables=variables, dry_run=dry_run, explain=explain)
+        )
 
     def create_model_from_query_sync(
         self,

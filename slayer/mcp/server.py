@@ -864,10 +864,6 @@ def create_mcp_server(storage: StorageBackend):
             data["offset"] = offset
         if whole_periods_only:
             data["whole_periods_only"] = True
-        if dry_run:
-            data["dry_run"] = True
-        if explain:
-            data["explain"] = True
         if measures:
             data["measures"] = measures
         if variables:
@@ -908,7 +904,10 @@ def create_mcp_server(storage: StorageBackend):
                     return output
             slayer_query = SlayerQuery.model_validate(data)
             result = await engine.execute(
-                query=slayer_query, variables=variables
+                query=slayer_query,
+                variables=variables,
+                dry_run=dry_run,
+                explain=explain,
             )
             if dry_run:
                 return f"SQL:\n{result.sql}"

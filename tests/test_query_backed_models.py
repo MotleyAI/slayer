@@ -74,12 +74,11 @@ class TestExecuteByName:
                 source_model="orders",
                 measures=[{"formula": "amount:sum"}],
                 dimensions=["region"],
-                dry_run=True,
             )],
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
-            resp = await engine.execute("rev_by_region")
+            resp = await engine.execute("rev_by_region", dry_run=True)
             assert resp.sql is not None
             assert "amount" in resp.sql.lower()
             assert "region" in resp.sql.lower()
@@ -97,9 +96,8 @@ class TestVariablePrecedence:
                 measures=[{"formula": "*:count"}],
                 filters=["region = '{r}'"],
                 variables={"r": "US"},
-                dry_run=True,
             )
-            resp = await engine.execute(q, variables={"r": "EU"})
+            resp = await engine.execute(q, variables={"r": "EU"}, dry_run=True)
             assert resp.sql is not None
             assert "'EU'" in resp.sql
             assert "'US'" not in resp.sql
@@ -115,9 +113,8 @@ class TestVariablePrecedence:
                 source_model="orders",
                 measures=[{"formula": "*:count"}],
                 filters=["region = '{r}'"],
-                dry_run=True,
             )
-            resp = await engine.execute(q, variables={"r": "EU"})
+            resp = await engine.execute(q, variables={"r": "EU"}, dry_run=True)
             assert resp.sql is not None
             assert "'EU'" in resp.sql
         finally:
@@ -132,9 +129,8 @@ class TestVariablePrecedence:
                 measures=[{"formula": "*:count"}],
                 filters=["region = '{r}'"],
                 variables={"r": "US"},
-                dry_run=True,
             )
-            resp = await engine.execute(q, variables={"unrelated": 99})
+            resp = await engine.execute(q, variables={"unrelated": 99}, dry_run=True)
             # 'r' kept its original value because the kwarg didn't override it
             # ('unrelated' is unknown and silently ignored).
             assert "'US'" in resp.sql
@@ -150,12 +146,11 @@ class TestVariablePrecedence:
                 source_model="orders",
                 measures=[{"formula": "amount:sum"}],
                 filters=["region = '{r}'"],
-                dry_run=True,
             )],
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
-            resp = await engine.execute("rev_filtered", variables={"r": "US"})
+            resp = await engine.execute("rev_filtered", variables={"r": "US"}, dry_run=True)
             assert resp.sql is not None
             assert "'US'" in resp.sql
         finally:
@@ -170,13 +165,12 @@ class TestVariablePrecedence:
                 source_model="orders",
                 measures=[{"formula": "amount:sum"}],
                 filters=["region = '{r}'"],
-                dry_run=True,
             )],
             query_variables={"r": "DEFAULT_R"},
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
-            resp = await engine.execute("rev_filtered")
+            resp = await engine.execute("rev_filtered", dry_run=True)
             assert "'DEFAULT_R'" in resp.sql
         finally:
             tmp.cleanup()
@@ -189,13 +183,12 @@ class TestVariablePrecedence:
                 source_model="orders",
                 measures=[{"formula": "amount:sum"}],
                 filters=["region = '{r}'"],
-                dry_run=True,
             )],
             query_variables={"r": "DEFAULT_R"},
         )
         engine, tmp = await _engine_with_orders(saved)
         try:
-            resp = await engine.execute("rev_filtered", variables={"r": "US"})
+            resp = await engine.execute("rev_filtered", variables={"r": "US"}, dry_run=True)
             assert "'US'" in resp.sql
             assert "DEFAULT_R" not in resp.sql
         finally:
@@ -374,7 +367,6 @@ class TestCacheRefreshOnExecute:
                 source_model="orders",
                 measures=[{"formula": "amount:sum"}],
                 dimensions=["region"],
-                dry_run=True,
             )],
         )
         engine, tmp = await _engine_with_orders()
@@ -385,7 +377,7 @@ class TestCacheRefreshOnExecute:
             assert stored.columns == []
             assert stored.backing_query_sql is None
 
-            await engine.execute("rev_by_region")
+            await engine.execute("rev_by_region", dry_run=True)
             refreshed = await engine.storage.get_model("rev_by_region")
             assert refreshed is not None
             assert refreshed.columns == []
@@ -421,9 +413,8 @@ class TestCacheRefreshOnExecute:
                 },
                 "dimensions": ["region", "is_high_rev"],
                 "measures": [{"formula": "amount_sum:max"}],
-                "dry_run": True,
             })
-            resp = await engine.execute(outer)
+            resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             assert "is_high_rev" in resp.sql
             assert "amount_sum" in resp.sql
@@ -461,10 +452,9 @@ class TestCacheRefreshOnExecute:
                     },
                     "dimensions": ["region", "doubled"],
                     "measures": [{"formula": "amount_sum:max"}],
-                    "dry_run": True,
                 }),
             ]
-            resp = await engine.execute(queries)
+            resp = await engine.execute(queries, dry_run=True)
             assert resp.sql is not None
             assert "doubled" in resp.sql
 
@@ -486,7 +476,6 @@ class TestCacheRefreshOnExecute:
                     source_model="orders",
                     measures=[{"formula": "amount:sum"}],
                     dimensions=["region"],
-                    dry_run=True,
                 ),
                 name="rev_by_region",
             )
@@ -494,7 +483,7 @@ class TestCacheRefreshOnExecute:
             # Case 1: cache freshly populated by save above — execute must not write.
             calls, restore = _wrap_save_counter(engine.storage)
             try:
-                await engine.execute("rev_by_region")
+                await engine.execute("rev_by_region", dry_run=True)
                 assert calls == [], f"populated-cache execute wrote: {calls}"
             finally:
                 restore()
@@ -508,8 +497,7 @@ class TestCacheRefreshOnExecute:
                     dimensions=["region"],
                     measures=[{"formula": "amount_sum:max"}],
                     variables={"unused": "X"},
-                    dry_run=True,
-                ))
+                ), dry_run=True)
                 assert calls == [], f"outer-variables execute wrote: {calls}"
             finally:
                 restore()
@@ -522,12 +510,11 @@ class TestCacheRefreshOnExecute:
                     source_model="orders",
                     measures=[{"formula": "amount:sum"}],
                     dimensions=["region"],
-                    dry_run=True,
                 )],
             ))
             calls, restore = _wrap_save_counter(engine.storage)
             try:
-                await engine.execute("raw_qb")
+                await engine.execute("raw_qb", dry_run=True)
                 assert calls == [], f"empty-cache execute wrote: {calls}"
             finally:
                 restore()
@@ -543,7 +530,7 @@ class TestCacheRefreshOnExecute:
             )
             calls, restore = _wrap_save_counter(engine.storage)
             try:
-                await engine.execute("rev_by_region")
+                await engine.execute("rev_by_region", dry_run=True)
                 assert calls == [], f"stale-cache execute wrote: {calls}"
             finally:
                 restore()
@@ -677,7 +664,6 @@ class TestBackingQuerySQLCacheHygiene:
                     source_model="orders",
                     measures=[{"formula": "amount:sum"}],
                     filters=["region = '{r}'"],
-                    dry_run=True,
                 )],
                 query_variables={"r": "DEFAULT_R"},
             ))
@@ -689,7 +675,7 @@ class TestBackingQuerySQLCacheHygiene:
 
             # Execute with a runtime variable that overrides the default —
             # must not modify the persisted cache.
-            await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"})
+            await engine.execute("rev_filtered", variables={"r": "REQUEST_VAL"}, dry_run=True)
 
             after = await engine.storage.get_model("rev_filtered")
             assert after is not None
@@ -714,7 +700,6 @@ class TestBackingQuerySQLCacheHygiene:
                     measures=[{"formula": "amount:sum"}],
                     dimensions=["region"],
                     filters=["region = '{r}'"],
-                    dry_run=True,
                 )],
                 query_variables={"r": "DEFAULT_R"},
             ))
@@ -727,9 +712,8 @@ class TestBackingQuerySQLCacheHygiene:
                 dimensions=["region"],
                 measures=[{"formula": "amount_sum:max"}],
                 variables={"r": "OUTER_VAL"},
-                dry_run=True,
             )
-            await engine.execute(outer)
+            await engine.execute(outer, dry_run=True)
             after_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
             assert "'OUTER_VAL'" not in (after_sql or ""), (
                 f"outer query variables must not be persisted, got:\n{after_sql}"
@@ -768,7 +752,6 @@ class TestBackingQuerySQLCacheHygiene:
                 source_queries=[SlayerQuery(
                     source_model="t_a",
                     measures=[{"formula": "amount:sum"}],
-                    dry_run=True,
                 )],
             ))
             assert (await storage.get_model("qb")).data_source == "ds_a"
@@ -782,7 +765,6 @@ class TestBackingQuerySQLCacheHygiene:
                 source_queries=[SlayerQuery(
                     source_model="t_b",
                     measures=[{"formula": "amount:sum"}],
-                    dry_run=True,
                 )],
             ))
             assert (await storage.get_model("qb")).data_source == "ds_b", (
@@ -815,9 +797,8 @@ class TestInlineQueryBackedSourceModel:
                 source_model=inline,
                 dimensions=["region"],
                 measures=[{"formula": "amount_sum:max"}],
-                dry_run=True,
             )
-            resp = await engine.execute(outer)
+            resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             # The outer query references amount_sum (the inner result column).
             assert "amount_sum" in resp.sql.lower()
@@ -840,9 +821,8 @@ class TestInlineQueryBackedSourceModel:
                 },
                 "dimensions": ["region"],
                 "measures": [{"formula": "amount_sum:max"}],
-                "dry_run": True,
             })
-            resp = await engine.execute(outer)
+            resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             assert "amount_sum" in resp.sql.lower()
         finally:
@@ -873,7 +853,6 @@ class TestJoinTargetIsQueryBacked:
                     measures=[{"formula": "amount:sum"}],
                     dimensions=["region"],
                     filters=["amount > {threshold}"],
-                    dry_run=True,
                 )],
                 query_variables={"threshold": 0},  # save-time default
             ))
@@ -894,9 +873,8 @@ class TestJoinTargetIsQueryBacked:
                 dimensions=["region", "rev_filtered.amount_sum"],
                 measures=[{"formula": "*:count"}],
                 variables={"threshold": 999},
-                dry_run=True,
             )
-            resp = await engine.execute(outer)
+            resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             assert "999" in resp.sql, (
                 f"join target should use runtime threshold=999, got SQL:\n{resp.sql}"
@@ -955,7 +933,6 @@ class TestJoinTargetIsQueryBacked:
                     source_model="orders",
                     measures=[{"formula": "amount:sum"}],
                     dimensions=["region"],
-                    dry_run=True,
                 ),
                 name="rev_by_region",
             )
@@ -973,9 +950,8 @@ class TestJoinTargetIsQueryBacked:
                 source_model="orders",
                 dimensions=["region", "rev_by_region.amount_sum"],
                 measures=[{"formula": "*:count"}],
-                dry_run=True,
             )
-            resp = await engine.execute(outer)
+            resp = await engine.execute(outer, dry_run=True)
             assert resp.sql is not None
             # The join target should resolve to a sub-query containing the
             # rollup SQL (not raise about missing sql_table).

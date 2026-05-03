@@ -416,7 +416,6 @@ def _parse_cli_variables(args) -> dict:
 
 
 def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
-    from slayer.core.query import SlayerQuery
     from slayer.engine.query_engine import SlayerQueryEngine
 
     query_input = args.query_json
@@ -443,54 +442,31 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
 
     if is_json:
         data = json.loads(query_input)
-        if isinstance(data, list):
-            if not data:
-                raise SystemExit("Query list cannot be empty.")
-            final_stage = dict(data[-1])
-            if args.dry_run:
-                final_stage["dry_run"] = True
-            if args.explain:
-                final_stage["explain"] = True
-            data = [*data[:-1], final_stage]
-            result = engine.execute_sync(
-                query=data, variables=runtime_kwarg or None
-            )
-            final_query = SlayerQuery.model_validate(final_stage)
-            explain_set = final_query.explain
-            dry_run_set = final_query.dry_run
-        else:
-            if args.dry_run:
-                data["dry_run"] = True
-            if args.explain:
-                data["explain"] = True
-            slayer_query = SlayerQuery.model_validate(data)
-            result = engine.execute_sync(
-                query=slayer_query, variables=runtime_kwarg or None
-            )
-            explain_set = slayer_query.explain
-            dry_run_set = slayer_query.dry_run
+        if isinstance(data, list) and not data:
+            raise SystemExit("Query list cannot be empty.")
+        result = engine.execute_sync(
+            query=data,
+            variables=runtime_kwarg or None,
+            dry_run=bool(args.dry_run),
+            explain=bool(args.explain),
+        )
     else:
         # Run-by-name: the positional arg is a model name.
-        # ``execute_sync(str, dry_run=..., explain=...)`` honors the flags
-        # via the engine's run-by-name path, which also enforces the
-        # "model must be query-backed" check uniformly.
         result = engine.execute_sync(
             query=query_input,
             variables=runtime_kwarg or None,
             dry_run=bool(args.dry_run),
             explain=bool(args.explain),
         )
-        explain_set = bool(args.explain)
-        dry_run_set = bool(args.dry_run)
 
-    if dry_run_set:
+    if args.dry_run:
         print(result.sql)
         return
 
     if args.format == "json":
         print(json.dumps(result.data, indent=2, default=str))
     else:
-        if explain_set:
+        if args.explain:
             print(f"SQL:\n{result.sql}\n")
             print("Query Plan:")
         if not result.data:
@@ -502,7 +478,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         print(separator)
         for row in result.data:
             print(" | ".join(str(row.get(c, "")) for c in result.columns))
-        if not explain_set:
+        if not args.explain:
             print(f"\n{result.row_count} row(s)")
 
 

@@ -270,7 +270,7 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 2
+    version: int = 3
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None

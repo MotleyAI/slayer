@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel, BeforeValidator, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.models import ModelMeasure
@@ -290,7 +290,9 @@ class SlayerQuery(BaseModel):
         filters=["status == 'completed'", "amount > 100"]
     """
 
-    version: int = 2
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 3
     name: Optional[str] = None  # For referencing this query from other queries in a list
     source_model: object  # str (model name), SlayerModel (inline), or ModelExtension
     measures: Annotated[Optional[List[ModelMeasure]], BeforeValidator(_coerce_measures)] = None
@@ -318,8 +320,6 @@ class SlayerQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     whole_periods_only: bool = False
-    dry_run: bool = False  # Generate SQL without executing
-    explain: bool = False  # Run EXPLAIN ANALYZE on the generated SQL
 
     def snap_to_whole_periods(self) -> "SlayerQuery":
         """Adjust date filters to align with period boundaries when whole_periods_only=True.

@@ -357,7 +357,7 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `version` | int | No | `2` | Schema version stamp (see [Schema versioning](#schema-versioning)) |
+| `version` | int | No | `3` | Schema version stamp (see [Schema versioning](#schema-versioning)) |
 | `name` | string | Yes | — | Unique model name |
 | `sql_table` | string | One of | — | Database table (e.g. `public.orders`) |
 | `sql` | string | these | — | Custom SQL subquery |
@@ -376,10 +376,10 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field that records the schema it was written against. The current schema is `2` for `SlayerModel` and `SlayerQuery`, and `1` for `DatasourceConfig`.
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field that records the schema it was written against. The current schema is `3` for `SlayerModel` and `SlayerQuery`, and `1` for `DatasourceConfig`.
 
 ```yaml
-version: 2
+version: 3
 name: orders
 sql_table: public.orders
 ...
@@ -387,10 +387,12 @@ sql_table: public.orders
 
 Behaviour:
 
-- **On save**, SLayer always writes the current schema version. New `SlayerModel` and `SlayerQuery` objects default `version` to `2`; new `DatasourceConfig` objects default to `1`.
+- **On save**, SLayer always writes the current schema version. New `SlayerModel` and `SlayerQuery` objects default `version` to `3`; new `DatasourceConfig` objects default to `1`.
 - **On load**, if the file's version is older than the current schema, SLayer runs a chain of pure dict→dict converters before Pydantic validates the data. This means hand-edited or older files keep working when the schema evolves.
 - **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis (unknown fields are ignored). It is not downgraded.
 - **Round-tripping** an older file (load → save) upgrades it on disk to the current schema.
+
+The v2→v3 converter (in `slayer/storage/v3_migration.py`) drops the legacy `dry_run` and `explain` fields from `SlayerQuery` — they were execution-mode flags that had no business being persisted. Pass them as kwargs to `engine.execute(query, dry_run=..., explain=...)` instead. Each migrated query emits one `logger.warning` and one `DeprecationWarning` on first load. `SlayerQuery` v3 is also strict (`extra="forbid"`), so unknown fields raise a `ValidationError`.
 
 Migrations are defined in `slayer/storage/migrations.py` and apply at the Pydantic-validation layer, so every storage backend (YAML, SQLite, third-party backends registered via `register_storage`, plus the HTTP API, MCP server, and dbt importer) gets them automatically.
 
