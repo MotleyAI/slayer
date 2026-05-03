@@ -546,3 +546,37 @@ class TestPrimaryKeyAggregationRule:
         })
         result = await env["engine"].execute(query=q)
         assert result.data
+
+
+class TestIngestDatasourceModelsTool:
+    """Pin the success-message format of the ``ingest_datasource_models`` MCP
+    tool. Pre-v2 the message read ``X dims`` and referenced the long-removed
+    ``SlayerModel.dimensions`` attribute, which would AttributeError on every
+    successful ingest. v2 unifies dims+measures into ``columns``.
+    """
+
+    async def test_success_message_uses_columns_not_dims(self, tmp_path) -> None:
+        db_path = tmp_path / "ingest.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.cursor().execute(
+            "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT, qty INTEGER)"
+        )
+        conn.commit()
+        conn.close()
+
+        storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+        await storage.save_datasource(DatasourceConfig(
+            name="ingest_ds", type="sqlite", database=str(db_path),
+        ))
+
+        server = create_mcp_server(storage=storage)
+        content, _ = await server.call_tool(
+            name="ingest_datasource_models",
+            arguments={"datasource_name": "ingest_ds"},
+        )
+        text = content[0].text
+
+        assert "Ingested 1 model(s):" in text
+        assert "widgets" in text
+        assert "columns" in text  # v2 wording
+        assert "dims" not in text  # v1 leftover would crash before reaching here

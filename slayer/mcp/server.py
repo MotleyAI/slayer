@@ -2159,7 +2159,7 @@ def create_mcp_server(storage: StorageBackend):
 
         lines = [f"Ingested {len(models)} model(s):"]
         for m in models:
-            lines.append(f"- {m.name} ({len(m.dimensions)} dims, {len(m.measures)} measures)")
+            lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
         lines.append("")
         lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
         return "\n".join(lines)
