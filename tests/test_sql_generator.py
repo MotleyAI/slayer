@@ -1523,6 +1523,77 @@ class TestMultiDialectGeneration:
         else:
             assert "INTERVAL" in sql_upper
 
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    async def test_window_measure_multi_unit_interval_dialect_correct(
+        self, dialect: str, orders_model: SlayerModel,
+    ) -> None:
+        """Multi-unit windows (e.g. '1y2m3d') must render as separate per-unit
+        INTERVAL clauses on MySQL and ClickHouse — never as a single
+        Postgres-shaped quoted multi-unit literal which neither dialect parses.
+
+        Codex flagged this as a real correctness bug during PR #64 review:
+        `_duration_interval_sql` had only two branches (SQLite + "Postgres-style"),
+        and the latter emitted `INTERVAL '1 year 2 month 3 day'` for every
+        non-SQLite dialect.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"),
+                              granularity=TimeGranularity.DAY),
+            ],
+            measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')",
+                                   name="rev_w")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        norm = _norm(sql).upper()
+        # The broken Postgres-shape multi-unit literal must NOT appear.
+        assert "INTERVAL '1 YEAR 2 MONTH 3 DAY'" not in norm, (
+            f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
+            f"sql:\n{sql}"
+        )
+        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles
+        # exp.Interval per dialect; MySQL + ClickHouse both render as
+        # `INTERVAL N UNIT` for these AST nodes).
+        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
+            assert piece in norm, (
+                f"Expected dialect-correct '{piece}' in {dialect} output.\n"
+                f"sql:\n{sql}"
+            )
+
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    async def test_window_measure_single_unit_interval_dialect_correct(
+        self, dialect: str, orders_model: SlayerModel,
+    ) -> None:
+        """Even single-unit windows must render unquoted on MySQL/ClickHouse.
+
+        The pre-refactor code emits `INTERVAL '7 day'` for single-unit windows
+        on every non-SQLite dialect, which is invalid MySQL syntax (MySQL wants
+        `INTERVAL 7 DAY`). After the AST refactor, sqlglot's per-dialect
+        transpiler emits the canonical form for each dialect.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"),
+                              granularity=TimeGranularity.DAY),
+            ],
+            measures=[ModelMeasure(formula="revenue:sum(window='7d')",
+                                   name="rev_w")],
+        )
+        sql = await _generate(gen, query, orders_model)
+        norm = _norm(sql).upper()
+        assert "INTERVAL '7 DAY'" not in norm, (
+            f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
+            f"sql:\n{sql}"
+        )
+        assert "INTERVAL 7 DAY" in norm, (
+            f"Expected dialect-correct 'INTERVAL 7 DAY' in {dialect} output.\n"
+            f"sql:\n{sql}"
+        )
+
 
 class TestMedianPercentilePerDialect:
     """Per-dialect SQL emission for median and percentile aggregations.
