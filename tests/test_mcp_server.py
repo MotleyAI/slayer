@@ -1523,6 +1523,40 @@ class TestCreateModel:
         # Should fail on missing datasource, not on "missing sql_table"
         assert "Datasource" in result
 
+    async def test_create_from_query_populates_backing_query_sql(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        """End-to-end MCP write path: ``create_model(query=...)`` must route
+        through ``engine.save_model`` so the persisted query-backed model has
+        ``backing_query_sql`` populated. Read paths no longer warm the cache
+        (issue #74) — a regression that drops the engine routing in
+        ``slayer/mcp/server.py`` would silently leave the cache empty.
+        """
+        from slayer.core.models import DatasourceConfig
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+        ))
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "summary",
+            "query": {
+                "source_model": "orders",
+                "fields": ["amount:sum"],
+                "dry_run": True,
+            },
+        })
+        assert "Error" not in result, result
+        persisted = await storage.get_model("summary")
+        assert persisted is not None
+        assert persisted.backing_query_sql, (
+            "MCP create_model(query=...) must populate backing_query_sql"
+        )
+        assert "amount" in persisted.backing_query_sql.lower()
+        assert persisted.columns, "MCP create_model(query=...) must populate columns"
+
 
 class TestEditModel:
     """Tests for the edit_model MCP tool with upsert semantics."""
@@ -1950,6 +1984,12 @@ class TestEditModel:
         assert len(reloaded.source_queries) == 1
         assert reloaded.source_queries[0].source_model == "orders_source"
         assert not reloaded.sql_table
+        # Cache must be populated by the MCP write path (issue #74) — read
+        # paths no longer warm it.
+        assert reloaded.backing_query_sql, (
+            "MCP edit_model(source_queries=...) must populate backing_query_sql"
+        )
+        assert "amount" in reloaded.backing_query_sql.lower()
 
     async def test_edit_query_variables_on_query_backed_model(
         self, mcp_server, storage: YAMLStorage
