@@ -42,7 +42,7 @@ TIMELESS_TRANSFORMS = {"rank"}
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
 
-_NON_IDENT_RE = re.compile(r"[^a-zA-Z0-9_]+")
+_NON_IDENT_RE = re.compile(r"\W+")
 
 
 def _agg_signature_suffix(
