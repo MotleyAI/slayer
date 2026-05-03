@@ -1286,7 +1286,11 @@ class SQLGenerator:
 
         measure_col = _quoted_col(transform.measure_alias)
         time_col = _quoted_col(transform.time_alias)
-        order = exp.Order(expressions=[exp.Ordered(this=time_col)])
+        # Bare column inside exp.Order, NOT wrapped in exp.Ordered — sqlglot
+        # otherwise injects `NULLS LAST` on SQLite (and Spark/Databricks),
+        # changing streak/reset semantics for any NULL time values vs the
+        # pre-AST string-built `ORDER BY <t>` output.
+        order = exp.Order(expressions=[time_col])
         spec = exp.WindowSpec(
             kind="ROWS",
             start="UNBOUNDED",
