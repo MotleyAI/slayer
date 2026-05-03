@@ -25,6 +25,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 COUNT_MEASURE = "*:count"
 COUNT_KEY = "orders._count"
 CUMSUM_CHANGE_KEY = "orders.cumsum_change"
+CHG_KEY = "orders.chg"
 
 # Derive expected counts from seed data
 TOTAL_ORDERS = len(ORDERS)
@@ -196,9 +197,9 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check(name="change first month is null", condition=result.data[0]["orders.chg"] is None)
+    check(name="change first month is null", condition=result.data[0][CHG_KEY] is None)
     expected_change = result.data[1][COUNT_KEY] - result.data[0][COUNT_KEY]
-    check(name=f"change second month = {expected_change}", condition=result.data[1]["orders.chg"] == expected_change)
+    check(name=f"change second month = {expected_change}", condition=result.data[1][CHG_KEY] == expected_change)
 
     # Rank
     result = engine.execute_sync(
@@ -245,7 +246,7 @@ def main():
     )
     check(name="cumsum + change produces 12 months", condition=result.row_count == 12)
     check(name="running column exists", condition="orders.running" in result.columns)
-    check(name="chg column exists", condition="orders.chg" in result.columns)
+    check(name="chg column exists", condition=CHG_KEY in result.columns)
     check(name=f"cumsum final = {TOTAL_ORDERS}", condition=result.data[-1]["orders.running"] == TOTAL_ORDERS)
 
     # last() — broadcast latest value
