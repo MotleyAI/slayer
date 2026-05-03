@@ -934,12 +934,12 @@ def create_mcp_server(storage: StorageBackend):
     async def models_summary(datasource_name: str, format: str = "markdown") -> str:
         """Brief summary of all (non-hidden) models in a datasource.
 
-        For each model: name, description, a table of its dimensions
-        (just name + description), a table of its measures (just name
-        + description), and a comma-separated list of the model names it joins
-        to. No field types, no distinct values, no sample data, and no
-        expansion of joined models' fields — call inspect_model for any of
-        that.
+        For each model: name, description, a table of its columns (name +
+        type + description), a table of its named-formula measures (name
+        + formula + description), and a comma-separated list of the model
+        names it joins to. No distinct values, no sample data, and no
+        expansion of joined models' fields — call inspect_model for any
+        of that.
 
         Args:
             datasource_name: Name of the datasource (from list_datasources).
