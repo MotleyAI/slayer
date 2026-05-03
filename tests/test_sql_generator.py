@@ -1561,7 +1561,7 @@ class TestMultiDialectGeneration:
             measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')",
                                    name="rev_w")],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(generator=gen, query=query, model=orders_model)
         norm = _norm(sql).upper()
         # The broken Postgres-shape multi-unit literal must NOT appear.
         assert "INTERVAL '1 YEAR 2 MONTH 3 DAY'" not in norm, (
@@ -1598,7 +1598,7 @@ class TestMultiDialectGeneration:
             measures=[ModelMeasure(formula="revenue:sum(window='7d')",
                                    name="rev_w")],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(generator=gen, query=query, model=orders_model)
         norm = _norm(sql).upper()
         assert "INTERVAL '7 DAY'" not in norm, (
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"

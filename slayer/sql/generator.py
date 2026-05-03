@@ -40,6 +40,11 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
 # and handles gaps in time series correctly.
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 
+# Separator used when joining pre-rendered SQL fragments into a conjunctive
+# WHERE/HAVING clause; extracted as a constant so Sonar S1192 doesn't flag it
+# at every join site.
+_SQL_AND_JOINER = " AND "
+
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
     r'^(?:'
@@ -1252,7 +1257,7 @@ class SQLGenerator:
                     qualified = f"{model}.{col_name}"
                     qualified_sql = qualified_sql.replace(qualified, f'"{qualified}"')
                 conditions.append(qualified_sql)
-            where_clause = " AND ".join(conditions)
+            where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
 
         return sql
@@ -1984,12 +1989,12 @@ class SQLGenerator:
 
         where_clause = None
         if where_parts:
-            where_sql = " AND ".join(where_parts)
+            where_sql = _SQL_AND_JOINER.join(where_parts)
             where_clause = sqlglot.parse_one(where_sql, dialect=self.dialect)
 
         having_clause = None
         if having_parts:
-            having_sql = " AND ".join(having_parts)
+            having_sql = _SQL_AND_JOINER.join(having_parts)
             having_clause = sqlglot.parse_one(having_sql, dialect=self.dialect)
 
         return where_clause, having_clause
