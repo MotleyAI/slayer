@@ -249,7 +249,8 @@ def test_log10_zero_raises(sqlite_conn):
     reason="SQLite >=3.35 ships built-in log(); UDF only registers below that.",
 )
 def test_log_base_x_known_value_when_udf_registered(sqlite_conn):
-    # log_10(1000) = 3
+    # NOSONAR(python:S125): mathematical equation in prose ("log base 10 of
+    # 1000 equals 3"), not commented-out Python.
     assert _scalar(sqlite_conn, "log(10, 1000)") == pytest.approx(3.0)
 
 

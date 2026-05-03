@@ -264,6 +264,24 @@ class TestStatAggregationEligibility:
             )
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    async def test_string_column_rejects_two_arg_stat(
+        self, agg: str, numeric_orders: SlayerModel,
+    ) -> None:
+        """A string LHS must be rejected for the 2-arg stats too — closes the
+        coverage gap CodeRabbit flagged: the unary-stat parametrization
+        already covered string LHS, but `corr`/`covar_samp`/`covar_pop`
+        with `other=` slipped past it.
+        """
+        with pytest.raises(ValueError, match="not applicable|string|numeric"):
+            await _generate_sql(
+                orders=numeric_orders,
+                customers=_customers_model(),
+                measures=[
+                    {"formula": f"status:{agg}(other=quantity)", "name": "result"}
+                ],
+            )
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_pk_column_rejects_two_arg_stat(
         self, agg: str, numeric_orders: SlayerModel,
     ) -> None:

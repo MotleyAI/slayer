@@ -14,6 +14,8 @@ from verify_common import (
     run_common_checks,
     check_rollup,
     check_median_percentile,
+    check_stddev_var,
+    check_corr_covar,
     check,
     check_column_types,
     summary,
@@ -64,4 +66,8 @@ if __name__ == "__main__":
     )
     # Exercises the parametric quantile(p)(x) syntax SLayer emits for ClickHouse.
     check_median_percentile()
+    # ClickHouse has native stddev_*/var_*/corr/covar_* (sqlglot transpiles
+    # var_samp -> varSamp and similar). DEV-1317 smoke.
+    check_stddev_var()
+    check_corr_covar()
     summary()

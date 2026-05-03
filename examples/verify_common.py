@@ -240,6 +240,117 @@ def check_median_percentile(measure="quantity"):
     check(f"percentile(p=0.75) = {expected_p75}", abs(got_p75 - expected_p75) < 1e-6)
 
 
+def _covariance(xs, ys, *, ddof):
+    """Hand-rolled covariance — `statistics` doesn't expose it directly.
+
+    `ddof=1` → sample (Bessel-corrected). `ddof=0` → population.
+    """
+    n = len(xs)
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (n - ddof)
+
+
+def check_stddev_var(measure="quantity"):
+    """1-arg stat aggregates: stddev_samp/_pop, var_samp/_pop.
+
+    Safe on every Tier-1 dialect (incl. MySQL — these are native there).
+    """
+    print("\nStddev / variance:")
+
+    quantities = [o[3] for o in ORDERS]
+    expected_stddev_samp = statistics.stdev(quantities)
+    expected_stddev_pop = statistics.pstdev(quantities)
+    expected_var_samp = statistics.variance(quantities)
+    expected_var_pop = statistics.pvariance(quantities)
+
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "measures": [
+                f"{measure}:stddev_samp",
+                f"{measure}:stddev_pop",
+                f"{measure}:var_samp",
+                f"{measure}:var_pop",
+            ],
+        },
+    )
+    row = result["data"][0]
+    got_stddev_samp = float(row[f"orders.{measure}_stddev_samp"])
+    got_stddev_pop = float(row[f"orders.{measure}_stddev_pop"])
+    got_var_samp = float(row[f"orders.{measure}_var_samp"])
+    got_var_pop = float(row[f"orders.{measure}_var_pop"])
+
+    check(
+        f"stddev_samp({measure}) = {expected_stddev_samp}",
+        abs(got_stddev_samp - expected_stddev_samp) < 1e-6,
+    )
+    check(
+        f"stddev_pop({measure}) = {expected_stddev_pop}",
+        abs(got_stddev_pop - expected_stddev_pop) < 1e-6,
+    )
+    check(
+        f"var_samp({measure}) = {expected_var_samp}",
+        abs(got_var_samp - expected_var_samp) < 1e-6,
+    )
+    check(
+        f"var_pop({measure}) = {expected_var_pop}",
+        abs(got_var_pop - expected_var_pop) < 1e-6,
+    )
+
+
+def check_corr_covar(measure="quantity", other="customer_id"):
+    """2-arg stat aggregates: corr, covar_samp, covar_pop.
+
+    Do NOT call from MySQL examples — SLayer raises ``NotImplementedError``
+    for these on MySQL (no native function, no Python-UDF mechanism).
+    Use MariaDB or compute client-side as a workaround.
+    """
+    print("\nCorrelation / covariance:")
+
+    # ORDERS tuple is (id, customer_id, product_id, quantity, status, created_at)
+    # so `quantity` = orders[3], `customer_id` = orders[1].
+    field_index = {"id": 0, "customer_id": 1, "product_id": 2, "quantity": 3}
+    xs = [o[field_index[measure]] for o in ORDERS]
+    ys = [o[field_index[other]] for o in ORDERS]
+
+    expected_corr = statistics.correlation(xs, ys)
+    expected_covar_samp = _covariance(xs, ys, ddof=1)
+    expected_covar_pop = _covariance(xs, ys, ddof=0)
+
+    result = api(
+        "POST",
+        "/query",
+        {
+            "source_model": "orders",
+            "measures": [
+                f"{measure}:corr(other={other})",
+                f"{measure}:covar_samp(other={other})",
+                f"{measure}:covar_pop(other={other})",
+            ],
+        },
+    )
+    row = result["data"][0]
+    got_corr = float(row[f"orders.{measure}_corr_other_{other}"])
+    got_covar_samp = float(row[f"orders.{measure}_covar_samp_other_{other}"])
+    got_covar_pop = float(row[f"orders.{measure}_covar_pop_other_{other}"])
+
+    check(
+        f"corr({measure}, {other}) = {expected_corr}",
+        abs(got_corr - expected_corr) < 1e-6,
+    )
+    check(
+        f"covar_samp({measure}, {other}) = {expected_covar_samp}",
+        abs(got_covar_samp - expected_covar_samp) < 1e-6,
+    )
+    check(
+        f"covar_pop({measure}, {other}) = {expected_covar_pop}",
+        abs(got_covar_pop - expected_covar_pop) < 1e-6,
+    )
+
+
 def check_rollup(expect_rollup=True):
     """Check join-based cross-model queries on the orders model."""
     print("\nJoins:")
