@@ -6,8 +6,10 @@ import time
 from typing import Any, Dict, List, Optional
 
 import sqlalchemy as sa
+import sqlalchemy.engine.url
 import sqlalchemy.event as sa_event
 import sqlalchemy.exc
+from sqlalchemy.pool import StaticPool
 
 from slayer.core.models import DatasourceConfig
 from slayer.sql.sqlite_udfs import register_sqlite_udfs
@@ -37,6 +39,11 @@ def _get_sync_engine(connection_string: str) -> sa.Engine:
     For SQLite, we attach a ``connect`` event listener that registers Python
     aggregate UDFs (median/percentile_cont/percentile_disc) on every new
     connection — SQLite has no native equivalents.
+
+    In-memory SQLite is NOT routed through this cache: each
+    ``SlayerSQLClient`` owns its own per-instance engine (see
+    ``_create_in_memory_sqlite_engine``) so two clients on
+    ``sqlite:///:memory:`` get isolated databases.
     """
     if connection_string not in _sync_engines:
         engine = sa.create_engine(connection_string, pool_pre_ping=True)
@@ -46,6 +53,71 @@ def _get_sync_engine(connection_string: str) -> sa.Engine:
                 register_sqlite_udfs(dbapi_connection)
         _sync_engines[connection_string] = engine
     return _sync_engines[connection_string]
+
+
+def _is_in_memory_sqlite(connection_string: str) -> bool:
+    """Return True iff ``connection_string`` refers to a SQLite in-memory database.
+
+    Uses ``sqlalchemy.engine.url.make_url`` to handle URI-form variants
+    (``file::memory:?cache=shared&uri=true``, ``mode=memory`` query param)
+    in addition to the bare ``:memory:`` and ``sqlite:///:memory:`` forms.
+    """
+    if connection_string == ":memory:":
+        return True
+    try:
+        url = sqlalchemy.engine.url.make_url(connection_string)
+    except sqlalchemy.exc.ArgumentError:
+        return False
+    if not url.drivername.startswith("sqlite"):
+        return False
+    database = url.database
+    if not database or database == ":memory:":
+        return True
+    query: Dict[str, Any] = dict(url.query) if url.query else {}
+    if database.startswith("file:") and (query.get("mode") == "memory" or ":memory:" in database):
+        return True
+    if "mode=memory" in connection_string:
+        return True
+    return False
+
+
+def _create_in_memory_sqlite_engine(connection_string: str) -> sa.Engine:
+    """Create a fresh sync engine for an in-memory SQLite connection string.
+
+    ``StaticPool`` keeps a single connection pinned for the engine's lifetime,
+    and ``check_same_thread=False`` allows that connection to be reused across
+    asyncio worker threads. Together they make ``sqlite:///:memory:`` usable
+    across multiple async calls — without them every ``asyncio.to_thread``
+    call would land on a thread with its own private in-memory database.
+
+    The same ``connect`` event registers Python UDFs (median/percentile_cont/
+    percentile_disc) as ``_get_sync_engine`` does. With StaticPool the event
+    fires exactly once.
+    """
+    engine = sa.create_engine(
+        connection_string,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    @sa_event.listens_for(engine, "connect")
+    def _register_udfs(dbapi_connection, _connection_record):
+        register_sqlite_udfs(dbapi_connection)
+    return engine
+
+
+def _resolve_sync_engine(
+    connection_string: str,
+    override_engine: Optional[sa.Engine] = None,
+) -> sa.Engine:
+    """Choose the engine for a sync DB call.
+
+    If ``override_engine`` is provided (per-client engine for in-memory
+    SQLite, supplied by ``SlayerSQLClient``), use it. Otherwise return the
+    module-cached engine from ``_get_sync_engine``.
+    """
+    if override_engine is not None:
+        return override_engine
+    return _get_sync_engine(connection_string)
 
 
 def _get_async_engine(connection_string: str):
@@ -207,9 +279,10 @@ def _get_column_types_sync(
     sql: str,
     connection_string: str,
     db_type: Optional[str],
+    engine: Optional[sa.Engine] = None,
 ) -> Dict[str, str]:
     """Infer column types. Uses LIMIT 0 for cursor metadata, LIMIT 1 for SQLite."""
-    engine = _get_sync_engine(connection_string)
+    engine = _resolve_sync_engine(connection_string, override_engine=engine)
     limit = 1 if db_type in _NEEDS_ROW_FOR_TYPES else 0
     limit_sql = f"SELECT * FROM ({sql}) AS _types LIMIT {limit}"
     with engine.connect() as conn:
@@ -244,6 +317,7 @@ class SlayerSQLClient:
     def __init__(self, datasource: DatasourceConfig):
         self.datasource = datasource
         self._async_engine = None
+        self._sync_engine: Optional[sa.Engine] = None
 
     def _get_async_engine(self):
         """Get or create the async engine for this client (cached per instance)."""
@@ -255,6 +329,24 @@ class SlayerSQLClient:
             if async_conn_str:
                 self._async_engine = _get_async_engine(async_conn_str)
         return self._async_engine
+
+    def _get_sync_engine_for_client(self) -> Optional[sa.Engine]:
+        """Return a per-client sync engine for in-memory SQLite, else None.
+
+        For ``sqlite:///:memory:`` (and equivalent URI-form variants) every
+        ``SlayerSQLClient`` instance owns its own ``StaticPool`` engine so
+        the single pinned connection is shared across all sync/async paths
+        on this client — but isolated from other clients. For every other
+        connection string this returns ``None`` and the helpers fall back
+        to the module-level engine cache via ``_resolve_sync_engine``.
+        """
+        if self._sync_engine is not None:
+            return self._sync_engine
+        conn_str = self.datasource.get_connection_string()
+        if _is_in_memory_sqlite(conn_str):
+            self._sync_engine = _create_in_memory_sqlite_engine(conn_str)
+            return self._sync_engine
+        return None
 
     async def execute(
         self,
@@ -277,6 +369,7 @@ class SlayerSQLClient:
             connection_string=self.datasource.get_connection_string(),
             db_type=db_type,
             timeout_seconds=timeout_seconds,
+            engine=self._get_sync_engine_for_client(),
         )
 
     async def get_column_types(self, sql: str) -> Dict[str, str]:
@@ -295,6 +388,7 @@ class SlayerSQLClient:
             sql=sql,
             connection_string=self.datasource.get_connection_string(),
             db_type=self.datasource.type,
+            engine=self._get_sync_engine_for_client(),
         )
 
     def execute_sync(
@@ -308,6 +402,7 @@ class SlayerSQLClient:
             connection_string=self.datasource.get_connection_string(),
             db_type=self.datasource.type,
             timeout_seconds=timeout_seconds,
+            engine=self._get_sync_engine_for_client(),
         )
 
 
@@ -384,6 +479,7 @@ async def _execute_with_retry_threaded(
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
+    engine: Optional[sa.Engine] = None,
 ) -> List[Dict[str, Any]]:
     delay = initial_delay
     for attempt in range(max_attempts):
@@ -394,6 +490,7 @@ async def _execute_with_retry_threaded(
                 connection_string,
                 db_type,
                 timeout_seconds,
+                engine,
             )
         except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
             if attempt == max_attempts - 1:
@@ -425,6 +522,7 @@ def _execute_with_retry_sync(
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
+    engine: Optional[sa.Engine] = None,
 ) -> List[Dict[str, Any]]:
     delay = initial_delay
     for attempt in range(max_attempts):
@@ -434,6 +532,7 @@ def _execute_with_retry_sync(
                 connection_string=connection_string,
                 db_type=db_type,
                 timeout_seconds=timeout_seconds,
+                engine=engine,
             )
         except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
             if attempt == max_attempts - 1:
@@ -453,8 +552,9 @@ def _execute_sql_sync(
     connection_string: str,
     db_type: Optional[str],
     timeout_seconds: int = 120,
+    engine: Optional[sa.Engine] = None,
 ) -> List[Dict[str, Any]]:
-    engine = _get_sync_engine(connection_string)
+    engine = _resolve_sync_engine(connection_string, override_engine=engine)
     with engine.connect() as conn:
         timeout_ms = timeout_seconds * 1000
         if db_type in ("mysql", "mariadb"):

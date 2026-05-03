@@ -116,6 +116,8 @@ Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific
 - **MySQL**: `median` and `percentile` are not supported — MySQL has no native function and no Python-UDF mechanism. The generator raises `NotImplementedError` at SQL generation time. Use MariaDB or compute client-side.
 - **Postgres / DuckDB**: native `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x)` (DuckDB via sqlglot's `QUANTILE_CONT` translation).
 
+**In-memory SQLite caveat:** `sqlite:///:memory:` (and equivalent URI variants — `sqlite://`, `sqlite:///file::memory:?…`, `mode=memory`) works across `await` calls on a single `SlayerSQLClient` because the client owns a per-instance `StaticPool` engine with `check_same_thread=False`. Two separate `SlayerSQLClient` instances on `:memory:` are isolated from each other. Use a file path or `mode=memory&cache=shared` URI form to share state across clients. File-backed SQLite is unaffected — it routes through the module-level engine cache as before.
+
 ## Testing
 
 **Important**: Always use `poetry run` to run tests — this ensures the correct Poetry-managed virtualenv is used (not the system or conda Python).
