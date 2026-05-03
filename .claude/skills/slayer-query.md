@@ -84,7 +84,7 @@ result = await engine.execute("monthly_revenue", dry_run=True)
 result = engine.execute_sync(query=query)
 ```
 
-Variable precedence (highest first): `runtime kwarg > stage.variables > outer query.variables > model.query_variables`. Unknown kwarg variables are silently ignored. Unresolved `{var}` placeholders raise at execute time, naming the model and stage.
+Variable precedence (highest first): `runtime kwarg > stage.variables > outer query.variables > model.query_variables`. Runtime kwargs are merged into the available variable set; extra keys simply remain unused if the query does not reference them. Unresolved `{var}` placeholders raise at execute time, naming the model and stage.
 
 ## Cross-Model Measures
 

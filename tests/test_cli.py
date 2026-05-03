@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.cli import _parse_cli_variables, _parse_connection_string
+from slayer.cli import _parse_cli_variables, _parse_connection_string, _run_query
 
 
 class TestParseConnectionString:
@@ -73,3 +73,36 @@ class TestParseCliVariables:
         args = SimpleNamespace(variables=None, variables_json='[1, 2, 3]')
         with pytest.raises(SystemExit, match="must decode to a JSON object"):
             _parse_cli_variables(args)
+
+
+class TestRunQueryFileLoading:
+    """`slayer query @<path>` reads the JSON from disk; missing/unreadable
+    files must produce a clean ``Error: ...`` + exit-1 rather than a Python
+    traceback. Regression for the inconsistency CodeRabbit flagged on
+    PR #70 (discussion r3177821627)."""
+
+    def _args(self, query_input: str, tmp_path) -> SimpleNamespace:
+        return SimpleNamespace(
+            query_json=query_input,
+            variables=None,
+            variables_json=None,
+            storage=str(tmp_path / "storage"),
+            models_dir=None,
+            dry_run=False,
+            explain=False,
+            format="table",
+        )
+
+    def test_missing_file_exits_cleanly(self, tmp_path):
+        args = self._args(f"@{tmp_path}/does-not-exist.json", tmp_path)
+        with pytest.raises(SystemExit, match="Query file not found"):
+            _run_query(args)
+
+    def test_unreadable_file_exits_cleanly(self, tmp_path):
+        # A directory passed where a file is expected → IsADirectoryError,
+        # which is an OSError subclass and should hit the OSError branch.
+        somedir = tmp_path / "actually-a-dir"
+        somedir.mkdir()
+        args = self._args(f"@{somedir}", tmp_path)
+        with pytest.raises(SystemExit, match="Error reading query file"):
+            _run_query(args)

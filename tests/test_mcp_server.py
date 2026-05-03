@@ -528,6 +528,600 @@ Column(name="val", sql="val", filter="val > 0", type=DataType.NUMBER)
             assert "filter" in c
 
 
+class TestInspectModelSectionGating:
+    """``sections`` parameter on inspect_model — markdown rendering."""
+
+    async def _save_rich_model(self, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="rich", sql_table="t", data_source="test",
+            description="A rich model used to exercise inspect_model section gating.",
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", type=DataType.STRING, description="Order state"),
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+            ],
+            measures=[
+                ModelMeasure(name="aov", formula="amount:sum / *:count", description="Average order value"),
+                ModelMeasure(name="rev", formula="amount:sum"),
+            ],
+            aggregations=[
+                Aggregation(
+                    name="wavg",
+                    formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
+                    description="Weighted average",
+                ),
+            ],
+            joins=[
+                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
+            ],
+        ))
+
+    async def test_default_renders_all_sections_no_footer(self, mcp_server, storage: YAMLStorage) -> None:
+        """Default call (no `sections=`) emits all sections and no footer."""
+        await self._save_rich_model(storage)
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "rich"})
+        assert "## Columns (3)" in result
+        assert "## Measures (2)" in result
+        assert "## Joins (2)" in result
+        # Default does not opt into show_sql, so aggregations table appears with name/params/description
+        assert "## Aggregations (1)" in result
+        # The footer only renders when something was trimmed/unknown
+        assert "Sections shown:" not in result
+        assert "Names-only:" not in result
+        assert "Omitted:" not in result
+
+    async def test_columns_only_collapses_others(self, mcp_server, storage: YAMLStorage) -> None:
+        """sections=['columns'] keeps columns full; other parts collapse to names-only or vanish."""
+        await self._save_rich_model(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "sections": ["columns"]},
+        )
+        # Columns full
+        assert "## Columns (3)" in result
+        # Measures, Aggregations, Joins → names-only (CSV under heading)
+        assert "## Measures (2 — names only)" in result
+        assert "`aov`, `rev`" in result
+        assert "## Aggregations (1 — names only)" in result
+        assert "`wavg`" in result
+        assert "## Joins (2 — names only)" in result
+        assert "`customers`, `products`" in result
+        # Reachable fields and samples fully omitted
+        assert "## Reachable" not in result
+        assert "## Sample Data" not in result
+        # Footer present
+        assert "> Sections shown: columns." in result
+        assert "> Names-only: measures, aggregations, joins." in result
+        assert "> Omitted: reachable_fields, samples." in result
+        assert "Re-call inspect_model" in result
+
+    async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
+        """A names-only section with no entities does not emit a heading."""
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="bare", sql_table="t", data_source="test",
+            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True)],
+        ))
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "bare", "sections": ["columns"]},
+        )
+        assert "## Columns" in result
+        # No measures, aggregations, or joins → no headings for them at all
+        assert "## Measures" not in result
+        assert "## Aggregations" not in result
+        assert "## Joins" not in result
+
+    async def test_unknown_section_emits_warning(self, mcp_server, storage: YAMLStorage) -> None:
+        """An unknown section name produces a warning line in the footer."""
+        await self._save_rich_model(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "sections": ["columns", "fish"]},
+        )
+        assert "> Warning: ignored unknown sections: 'fish'." in result
+        assert "Valid: columns, measures, aggregations, joins, reachable_fields, samples." in result
+        # Valid section still rendered
+        assert "## Columns (3)" in result
+
+    async def test_all_unknown_resolves_to_no_sections(self, mcp_server, storage: YAMLStorage) -> None:
+        """When every supplied section is unknown, no sections are selected
+        (the explicit ``None``/``[]`` form is reserved for "all six"). The
+        agent gets the always-on header + every gated section in either
+        names-only or fully-omitted form, plus the warning. They can correct
+        and re-call with valid names."""
+        await self._save_rich_model(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "sections": ["fish", "bird"]},
+        )
+        assert "Warning: ignored unknown sections: 'fish', 'bird'." in result
+        # Always-on header still renders
+        assert "# Model: `rich`" in result
+        # Names-only collapse for the four gateable sections — no full tables
+        assert "## Columns (3 — names only)" in result
+        assert "## Measures (2 — names only)" in result
+        assert "## Joins (2 — names only)" in result
+        # The full-table heading must NOT appear
+        assert "## Columns (3)\n\n|" not in result
+        # reachable_fields and samples are fully omitted (no heading at all)
+        assert "## Reachable" not in result
+        assert "## Sample" not in result
+        # Footer summarises what was dropped — caller can re-call with a
+        # corrected sections= list.
+        assert "Sections shown: (none)" in result
+        assert "Names-only: columns, measures, aggregations, joins" in result
+        assert "Omitted: reachable_fields, samples" in result
+        assert "Re-call inspect_model with `sections=[...]`" in result
+
+    async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
+        """Sections render in canonical order regardless of caller order."""
+        await self._save_rich_model(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "sections": ["measures", "columns"]},
+        )
+        assert result.find("## Columns (3)") < result.find("## Measures (2)")
+
+    async def test_reachable_fields_omitted_no_heading(self, mcp_server, storage: YAMLStorage) -> None:
+        """When reachable_fields is not in sections, no Reachable heading appears."""
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="parent", sql_table="t", data_source="test",
+            columns=[Column(name="child_id", type=DataType.NUMBER, primary_key=True)],
+            joins=[ModelJoin(target_model="child", join_pairs=[["child_id", "id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="child", sql_table="t2", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="label", type=DataType.STRING),
+            ],
+        ))
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "parent", "sections": ["columns", "joins"]},
+        )
+        assert "## Reachable" not in result
+        assert "child.label" not in result
+
+
+class TestInspectModelDescriptionsMaxChars:
+    """``descriptions_max_chars`` parameter — truncation behaviour."""
+
+    async def _save_with_long_descriptions(self, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="test",
+            description="A" * 100,
+            columns=[Column(name="status", type=DataType.STRING, description="B" * 100)],
+            measures=[ModelMeasure(name="rev", formula="*:count", description="C" * 100)],
+            aggregations=[Aggregation(
+                name="wavg", formula="SUM({x})", description="D" * 100,
+            )],
+        ))
+
+    async def test_no_truncation_by_default(self, mcp_server, storage: YAMLStorage) -> None:
+        """descriptions_max_chars=None leaves descriptions untouched."""
+        await self._save_with_long_descriptions(storage)
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "m"})
+        assert "A" * 100 in result
+        assert "B" * 100 in result
+        assert "[truncated]" not in result
+
+    async def test_truncates_descriptions_when_set(self, mcp_server, storage: YAMLStorage) -> None:
+        """All four description fields are truncated to max_chars + marker."""
+        await self._save_with_long_descriptions(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "m", "descriptions_max_chars": 10, "show_sql": True},
+        )
+        # Marker present
+        assert "[truncated]" in result
+        # No 50+ run of the same letter (those would only exist if untruncated)
+        assert "A" * 50 not in result
+        assert "B" * 50 not in result
+        assert "C" * 50 not in result
+        assert "D" * 50 not in result
+
+    async def test_short_descriptions_unchanged(self, mcp_server, storage: YAMLStorage) -> None:
+        """Descriptions shorter than max_chars are not modified."""
+        await storage.save_model(SlayerModel(
+            name="short", sql_table="t", data_source="test",
+            description="hi",
+            columns=[Column(name="x", type=DataType.STRING, description="ok")],
+        ))
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "short", "descriptions_max_chars": 100},
+        )
+        assert "hi" in result
+        assert "ok" in result
+        assert "[truncated]" not in result
+
+    async def test_zero_yields_marker_only(self, mcp_server, storage: YAMLStorage) -> None:
+        """descriptions_max_chars=0 truncates every non-empty description to just the marker."""
+        await self._save_with_long_descriptions(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "m", "descriptions_max_chars": 0},
+        )
+        assert "[truncated]" in result
+        assert "A" * 5 not in result
+
+    async def test_negative_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        """Negative values would silently produce ``str[:-N] + marker`` (i.e.
+        "all but the last N chars" instead of "first N chars"). Rejected at
+        the tool boundary."""
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._save_with_long_descriptions(storage)
+        with pytest.raises(ToolError, match="descriptions_max_chars must be >= 0"):
+            await _call(
+                mcp_server, name="inspect_model",
+                arguments={"model_name": "m", "descriptions_max_chars": -1},
+            )
+
+
+class TestInspectModelReachableFieldsDepth:
+    """``reachable_fields_depth`` parameter."""
+
+    async def _save_chain(self, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="a", sql_table="ta", data_source="test",
+            columns=[Column(name="b_id", type=DataType.NUMBER, primary_key=True)],
+            joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="b", sql_table="tb", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="c_id", type=DataType.NUMBER),
+                Column(name="b_label", type=DataType.STRING),
+            ],
+            joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
+        ))
+        await storage.save_model(SlayerModel(
+            name="c", sql_table="tc", data_source="test",
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="c_label", type=DataType.STRING),
+            ],
+        ))
+
+    async def test_default_depth_5_walks_full_chain(self, mcp_server, storage: YAMLStorage) -> None:
+        await self._save_chain(storage)
+        result = await _call(mcp_server, name="inspect_model", arguments={"model_name": "a"})
+        assert "b.b_label" in result
+        assert "b.c.c_label" in result
+        assert "max depth: 5" in result
+
+    async def test_depth_one_stops_at_direct(self, mcp_server, storage: YAMLStorage) -> None:
+        await self._save_chain(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "a", "reachable_fields_depth": 1},
+        )
+        assert "b.b_label" in result
+        assert "b.c.c_label" not in result
+        assert "max depth: 1" in result
+
+    async def test_depth_zero_yields_no_reachable_section(self, mcp_server, storage: YAMLStorage) -> None:
+        """depth=0 means no reachable fields are reported (section omitted when empty)."""
+        await self._save_chain(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "a", "reachable_fields_depth": 0},
+        )
+        assert "## Reachable" not in result
+
+    async def test_negative_depth_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        """Negative depth would still no-op (the BFS just terminates immediately)
+        but accepting it muddies the contract; reject at the boundary."""
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._save_chain(storage)
+        with pytest.raises(ToolError, match="reachable_fields_depth must be between 0 and 20"):
+            await _call(
+                mcp_server, name="inspect_model",
+                arguments={"model_name": "a", "reachable_fields_depth": -1},
+            )
+
+    async def test_depth_above_max_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        """An unbounded depth defeats the section-budgeting goal — a depth of
+        thousands could enumerate vast join paths and issue many storage
+        lookups on dense graphs. Cap at 20."""
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._save_chain(storage)
+        with pytest.raises(ToolError, match="reachable_fields_depth must be between 0 and 20"):
+            await _call(
+                mcp_server, name="inspect_model",
+                arguments={"model_name": "a", "reachable_fields_depth": 1000},
+            )
+
+
+class TestInspectModelAggregationsShowSql:
+    """show_sql gating on the aggregations section."""
+
+    async def _save_with_aggs(self, storage: YAMLStorage) -> None:
+        from slayer.core.models import AggregationParam
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="test",
+            aggregations=[Aggregation(
+                name="wavg",
+                formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
+                params=[AggregationParam(name="weight", sql="quantity")],
+                description="Weighted avg",
+            )],
+        ))
+
+    async def test_aggregations_full_with_show_sql_true(self, mcp_server, storage: YAMLStorage) -> None:
+        """show_sql=True keeps formula and full params."""
+        await self._save_with_aggs(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "m", "sections": ["aggregations"], "show_sql": True},
+        )
+        assert "## Aggregations (1)" in result
+        assert "SUM({sql} * {weight})" in result
+        assert "weight=quantity" in result
+
+    async def test_aggregations_show_sql_false_drops_formula_and_param_sql(self, mcp_server, storage: YAMLStorage) -> None:
+        """show_sql=False drops formula column and the param SQL (param names only)."""
+        await self._save_with_aggs(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "m", "sections": ["aggregations"], "show_sql": False},
+        )
+        assert "## Aggregations (1)" in result
+        # Formula content is gone (the SQL fragment doesn't appear anywhere)
+        assert "SUM({sql} * {weight})" not in result
+        # `quantity` (the SQL of the param) is gone, but the param `name` should be present
+        assert "quantity" not in result
+        assert "weight" in result
+
+    async def test_aggregations_names_only_when_omitted(self, mcp_server, storage: YAMLStorage) -> None:
+        await self._save_with_aggs(storage)
+        result = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "m", "sections": ["columns"]},
+        )
+        assert "## Aggregations (1 — names only)" in result
+        assert "`wavg`" in result
+        # No param SQL or formula leaks
+        assert "quantity" not in result
+        assert "SUM(" not in result
+
+
+class TestInspectModelJsonGating:
+    """JSON parity for section gating, descriptions, and observability arrays."""
+
+    async def _save_rich(self, storage: YAMLStorage) -> None:
+        from slayer.core.models import AggregationParam
+        await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="rich", sql_table="t", data_source="test",
+            description="X" * 50,
+            columns=[
+                Column(name="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", type=DataType.STRING),
+            ],
+            measures=[ModelMeasure(name="aov", formula="*:count")],
+            aggregations=[Aggregation(
+                name="wavg",
+                formula="SUM({a})",
+                params=[AggregationParam(name="a", sql="amount")],
+            )],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        ))
+
+    async def test_json_columns_only_uses_names_keys(self, mcp_server, storage: YAMLStorage) -> None:
+        await self._save_rich(storage)
+        raw = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "sections": ["columns"], "format": "json"},
+        )
+        parsed = json.loads(raw)
+        # Columns key present (full)
+        assert "columns" in parsed
+        # Measures/aggregations/joins → names-only siblings
+        assert parsed["measures_names"] == ["aov"]
+        assert parsed["aggregations_names"] == ["wavg"]
+        assert parsed["joins_names"] == ["customers"]
+        assert "measures" not in parsed
+        assert "aggregations" not in parsed
+        assert "joins" not in parsed
+        # Reachable / samples → fully absent
+        assert "reachable_dimensions" not in parsed
+        assert "reachable_measures" not in parsed
+        assert "sample_data" not in parsed
+        assert "sample_data_error" not in parsed
+        # Top-level state arrays
+        assert parsed["names_only_sections"] == ["measures", "aggregations", "joins"]
+        assert parsed["omitted_sections"] == ["reachable_fields", "samples"]
+        assert "unknown_sections" not in parsed
+
+    async def test_json_unknown_sections_array(self, mcp_server, storage: YAMLStorage) -> None:
+        await self._save_rich(storage)
+        raw = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "sections": ["columns", "fish"], "format": "json"},
+        )
+        parsed = json.loads(raw)
+        assert parsed["unknown_sections"] == ["fish"]
+
+    async def test_json_aggregations_show_sql_false_drops_formula_and_param_sql(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        await self._save_rich(storage)
+        raw = await _call(
+            mcp_server, name="inspect_model",
+            arguments={
+                "model_name": "rich",
+                "sections": ["aggregations"],
+                "show_sql": False,
+                "format": "json",
+            },
+        )
+        parsed = json.loads(raw)
+        agg = parsed["aggregations"][0]
+        assert "formula" not in agg
+        # Each param dict has only `name`
+        assert agg["params"] == [{"name": "a"}]
+
+    async def test_json_aggregations_show_sql_true_includes_formula_and_param_sql(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        await self._save_rich(storage)
+        raw = await _call(
+            mcp_server, name="inspect_model",
+            arguments={
+                "model_name": "rich",
+                "sections": ["aggregations"],
+                "show_sql": True,
+                "format": "json",
+            },
+        )
+        parsed = json.loads(raw)
+        agg = parsed["aggregations"][0]
+        assert agg["formula"] == "SUM({a})"
+        assert agg["params"] == [{"name": "a", "sql": "amount"}]
+
+    async def test_json_descriptions_truncated(self, mcp_server, storage: YAMLStorage) -> None:
+        await self._save_rich(storage)
+        raw = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "descriptions_max_chars": 5, "format": "json"},
+        )
+        parsed = json.loads(raw)
+        assert parsed["description"].startswith("XXXXX")
+        assert parsed["description"].endswith("[truncated]")
+
+    async def test_json_default_no_gating_arrays(self, mcp_server, storage: YAMLStorage) -> None:
+        """Default call should not include the gating arrays (nothing was trimmed)."""
+        await self._save_rich(storage)
+        raw = await _call(
+            mcp_server, name="inspect_model",
+            arguments={"model_name": "rich", "format": "json"},
+        )
+        parsed = json.loads(raw)
+        assert "names_only_sections" not in parsed
+        assert "omitted_sections" not in parsed
+        assert "unknown_sections" not in parsed
+
+
+class TestInspectModelHelpers:
+    """Direct unit tests for the section-budgeting helpers."""
+
+    def test_truncate_description_none(self) -> None:
+        from slayer.mcp.server import _truncate_description
+        assert _truncate_description(None, 10) is None
+        assert _truncate_description("anything", None) == "anything"
+
+    def test_truncate_description_short_unchanged(self) -> None:
+        from slayer.mcp.server import _truncate_description
+        assert _truncate_description("hello", 10) == "hello"
+        # Boundary: exactly equal to max_chars should not truncate
+        assert _truncate_description("hello", 5) == "hello"
+
+    def test_truncate_description_marks_truncation(self) -> None:
+        from slayer.mcp.server import _truncate_description
+        assert _truncate_description("hello world", 5) == "hello ... [truncated]"
+
+    def test_truncate_description_zero_yields_marker(self) -> None:
+        from slayer.mcp.server import _truncate_description
+        assert _truncate_description("hello", 0) == " ... [truncated]"
+
+    def test_resolve_inspect_sections_none(self) -> None:
+        from slayer.mcp.server import _resolve_inspect_sections
+        resolved, unknown = _resolve_inspect_sections(None)
+        assert resolved == ["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"]
+        assert unknown == []
+
+    def test_resolve_inspect_sections_empty(self) -> None:
+        from slayer.mcp.server import _resolve_inspect_sections
+        resolved, unknown = _resolve_inspect_sections([])
+        assert len(resolved) == 6
+        assert unknown == []
+
+    def test_resolve_inspect_sections_subset_canonical_order(self) -> None:
+        from slayer.mcp.server import _resolve_inspect_sections
+        resolved, unknown = _resolve_inspect_sections(["measures", "columns"])
+        # Canonical order, not caller order
+        assert resolved == ["columns", "measures"]
+        assert unknown == []
+
+    def test_resolve_inspect_sections_unknowns_filtered(self) -> None:
+        from slayer.mcp.server import _resolve_inspect_sections
+        resolved, unknown = _resolve_inspect_sections(["columns", "fish", "samples"])
+        assert resolved == ["columns", "samples"]
+        assert unknown == ["fish"]
+
+    def test_resolve_inspect_sections_all_unknown_returns_empty(self) -> None:
+        """A non-empty list of only-unknown names resolves to no sections.
+        Reserves "all six" for the explicit ``None`` / ``[]`` forms so a typo
+        like ``sections=["sample"]`` can't silently trigger the full expensive
+        payload. The footer's warning + names-only listing tells the caller
+        what they have to work with.
+        """
+        from slayer.mcp.server import _resolve_inspect_sections
+        resolved, unknown = _resolve_inspect_sections(["fish", "bird"])
+        assert resolved == []
+        assert unknown == ["fish", "bird"]
+
+    def test_render_inspect_footer_sanitizes_unknown_section_names(self) -> None:
+        """Caller-supplied unknown names containing newlines / quote-prefix
+        characters must not forge additional footer lines. ``repr()`` escapes
+        control chars so the warning stays a single line.
+        """
+        from slayer.mcp.server import _render_inspect_footer
+        result = _render_inspect_footer(
+            included=["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"],
+            names_only=[], omitted=[], unknown=["foo\n> evil-injected"],
+        )
+        assert result is not None
+        # Newline never reaches the rendered output
+        assert "\n> evil" not in result
+        # The escaped form does
+        assert "\\n" in result and "evil-injected" in result
+
+    def test_render_inspect_footer_none_when_no_trim(self) -> None:
+        from slayer.mcp.server import _render_inspect_footer
+        result = _render_inspect_footer(
+            included=["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"],
+            names_only=[], omitted=[], unknown=[],
+        )
+        assert result is None
+
+    def test_render_inspect_footer_warning_only(self) -> None:
+        """All sections shown but unknown names → warning line only, no other footer text."""
+        from slayer.mcp.server import _render_inspect_footer
+        result = _render_inspect_footer(
+            included=["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"],
+            names_only=[], omitted=[], unknown=["fish"],
+        )
+        assert result is not None
+        assert "Warning" in result
+        assert "Sections shown:" not in result
+
+    def test_render_inspect_footer_full(self) -> None:
+        from slayer.mcp.server import _render_inspect_footer
+        result = _render_inspect_footer(
+            included=["columns"],
+            names_only=["measures", "joins"],
+            omitted=["reachable_fields"],
+            unknown=["fish"],
+        )
+        assert result is not None
+        assert "Warning: ignored unknown sections: 'fish'." in result
+        assert "Sections shown: columns." in result
+        assert "Names-only: measures, joins." in result
+        assert "Omitted: reachable_fields." in result
+        assert "Re-call inspect_model" in result
+
+
 class TestBuildSampleQueryArgs:
     def test_avg_when_allowed(self) -> None:
         model = SlayerModel(
