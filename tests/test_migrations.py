@@ -696,7 +696,7 @@ async def _build_engine_with_orders(tmpdir: str):
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="postgres", host="localhost", port=5432,
-        database="db", username="u", password="p",  # NOSONAR(python:S2068) — test datasource never actually connects (dry_run only)
+        database="db", username="u", password="p",  # NOSONAR(S2068) — test datasource never actually connects (dry_run only)
     ))
     await storage.save_model(SlayerModel(
         name="orders",
@@ -765,7 +765,7 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="postgres", host="localhost", port=5432,
-            database="db", username="u", password="p",  # NOSONAR(python:S2068) — test datasource never actually connects (dry_run only)
+            database="db", username="u", password="p",  # NOSONAR(S2068) — test datasource never actually connects (dry_run only)
         ))
         # Save the underlying physical model the normal way.
         await storage.save_model(SlayerModel(
@@ -783,7 +783,7 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
         models_dir = os.path.join(tmpdir, "models")
         os.makedirs(models_dir, exist_ok=True)
         stale_yaml_path = os.path.join(models_dir, "stale.yaml")
-        with open(stale_yaml_path, "w") as f:  # NOSONAR(python:S7493) — hermetic test fixture I/O; matches test_v1_yaml_round_trip_to_v2 pattern
+        with open(stale_yaml_path, "w") as f:  # NOSONAR(S7493) — hermetic test fixture I/O; matches test_v1_yaml_round_trip_to_v2 pattern
             yaml.dump({
                 "version": 2,
                 "name": "stale",
