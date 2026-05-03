@@ -1208,6 +1208,38 @@ async def resolve_filter_columns(
     return parsed_filters
 
 
+def _classify_one_filter(
+    f,
+    *,
+    measure_names: set,
+    computed_names: set,
+    groupby_names: set,
+    windowed_measure_names: set,
+) -> None:
+    """Mutate one ParsedFilter to set is_post_filter / is_having flags.
+
+    Order matters: post-filter classifications take precedence (computed
+    columns can only be referenced after the base aggregate is built); then
+    windowed-measure refs (their value lives in a downstream CTE so they
+    can't be HAVING); then plain non-windowed measure HAVING.
+    """
+    if any(col in computed_names for col in f.columns):
+        f.is_post_filter = True
+        return
+    if any(col in windowed_measure_names for col in f.columns):
+        f.is_post_filter = True
+        return
+    if any(col in measure_names for col in f.columns):
+        f.is_having = True
+        for col in f.columns:
+            if col not in measure_names and col not in groupby_names:
+                raise ValueError(
+                    f"Filter '{f.sql}' references measure and dimension '{col}', "
+                    f"but '{col}' is not in the query's dimensions or time_dimensions. "
+                    f"Add it to dimensions/time_dimensions or split into separate filters."
+                )
+
+
 def classify_filters(
     filters: list,
     measure_names: set,
@@ -1217,28 +1249,18 @@ def classify_filters(
 ) -> list:
     """Classify filters as WHERE, HAVING, or post-filter.
 
-    Windowed measures live in their own CTE (the windowed value is not present
-    in the base CTE), so a filter referencing one cannot be applied as HAVING
-    on the base — it must be a post-filter applied after the windowed CTE has
-    been LEFT JOINed back into _combined.
+    Delegates per-filter classification to `_classify_one_filter` so this
+    function stays a flat for-loop.
     """
     computed_names = computed_names or set()
     groupby_names = groupby_names or set()
     windowed_measure_names = windowed_measure_names or set()
     for f in filters:
-        if any(col in computed_names for col in f.columns):
-            f.is_post_filter = True
-        elif any(col in windowed_measure_names for col in f.columns):
-            # Windowed measures only exist in the windowed CTE, never in the
-            # base aggregate — apply as post-filter.
-            f.is_post_filter = True
-        elif any(col in measure_names for col in f.columns):
-            f.is_having = True
-            for col in f.columns:
-                if col not in measure_names and col not in groupby_names:
-                    raise ValueError(
-                        f"Filter '{f.sql}' references measure and dimension '{col}', "
-                        f"but '{col}' is not in the query's dimensions or time_dimensions. "
-                        f"Add it to dimensions/time_dimensions or split into separate filters."
-                    )
+        _classify_one_filter(
+            f,
+            measure_names=measure_names,
+            computed_names=computed_names,
+            groupby_names=groupby_names,
+            windowed_measure_names=windowed_measure_names,
+        )
     return filters
