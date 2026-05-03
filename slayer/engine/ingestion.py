@@ -19,6 +19,10 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 
 logger = logging.getLogger(__name__)
 
+# Module-level dedup set for unrecognized SA type warnings (see
+# _sa_type_to_data_type). Keyed by upper-cased class name.
+_logged_unmapped_sa_types: Set[str] = set()
+
 # Map SQLAlchemy types to SLayer DataTypes
 _SA_TYPE_MAP = {
     "INTEGER": DataType.NUMBER,
@@ -44,6 +48,23 @@ _SA_TYPE_MAP = {
     "TIME": DataType.TIMESTAMP,
     "SERIAL": DataType.NUMBER,
     "BIGSERIAL": DataType.NUMBER,
+    # ClickHouse adapter type names (clickhouse-sqlalchemy)
+    "INT8": DataType.NUMBER,
+    "INT16": DataType.NUMBER,
+    "INT32": DataType.NUMBER,
+    "INT64": DataType.NUMBER,
+    "INT128": DataType.NUMBER,
+    "INT256": DataType.NUMBER,
+    "UINT8": DataType.NUMBER,
+    "UINT16": DataType.NUMBER,
+    "UINT32": DataType.NUMBER,
+    "UINT64": DataType.NUMBER,
+    "UINT128": DataType.NUMBER,
+    "UINT256": DataType.NUMBER,
+    "FLOAT32": DataType.NUMBER,
+    "FLOAT64": DataType.NUMBER,
+    "DATETIME64": DataType.TIMESTAMP,
+    "DATE32": DataType.DATE,
 }
 
 _NUMERIC_TYPES = {DataType.NUMBER}
@@ -57,8 +78,16 @@ _FLOAT_LIKE_SA_TYPES = frozenset(
         "REAL",
         "DOUBLE",
         "DOUBLE_PRECISION",
+        # ClickHouse adapter (clickhouse-sqlalchemy)
+        "FLOAT32",
+        "FLOAT64",
     }
 )
+
+# ClickHouse SA wrapper class names — peeled before type lookup.
+# clickhouse-sqlalchemy exposes the inner type via .nested_type on both.
+_CLICKHOUSE_WRAPPER_NAMES = frozenset({"NULLABLE", "LOWCARDINALITY"})
+_CLICKHOUSE_WRAPPER_MAX_DEPTH = 8
 
 # NUMERIC/DECIMAL type names — float-like only when scale > 0
 _NUMERIC_DECIMAL_TYPES = frozenset({"NUMERIC", "DECIMAL"})
@@ -100,13 +129,41 @@ def _is_id_column(name: str) -> bool:
     return lower == "id" or lower.endswith(_ID_SUFFIXES)
 
 
+def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEngine:
+    """Recursively peel ClickHouse Nullable(...) / LowCardinality(...) wrappers.
+
+    Returns the innermost non-wrapper type. Handles arbitrary nesting order
+    (e.g. LowCardinality(Nullable(String))). If the wrapper's `.nested_type`
+    attribute is missing (e.g. an upstream rename), returns the wrapper as-is
+    so the caller's normal fallback path runs.
+    """
+    current = sa_type
+    for _ in range(_CLICKHOUSE_WRAPPER_MAX_DEPTH):
+        if type(current).__name__.upper() not in _CLICKHOUSE_WRAPPER_NAMES:
+            return current
+        inner = getattr(current, "nested_type", None)
+        if inner is None:
+            return current
+        current = inner
+    return current
+
+
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
     type_name = type(sa_type).__name__.upper()
     if type_name in _SA_TYPE_MAP:
         return _SA_TYPE_MAP[type_name]
     type_str = str(sa_type).split("(")[0].upper().strip()
     if type_str in _SA_TYPE_MAP:
         return _SA_TYPE_MAP[type_str]
+    if type_name not in _logged_unmapped_sa_types:
+        _logged_unmapped_sa_types.add(type_name)
+        logger.warning(
+            "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
+            "DataType.STRING. Consider adding to _SA_TYPE_MAP.",
+            type_name,
+            str(sa_type),
+        )
     return DataType.STRING
 
 
@@ -117,6 +174,7 @@ def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
     only when their scale is > 0 (or unknown), so NUMERIC(10,0) is treated as
     integer-like.
     """
+    sa_type = _unwrap_clickhouse_wrappers(sa_type)
     type_name = type(sa_type).__name__.upper()
     if type_name in _FLOAT_LIKE_SA_TYPES:
         return True

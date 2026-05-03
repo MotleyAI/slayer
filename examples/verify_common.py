@@ -47,6 +47,29 @@ def check(name, condition):
         _failed += 1
 
 
+def check_column_types(model_name, expected_types):
+    """Assert /models/{name} returns the expected DataType strings.
+
+    expected_types: dict mapping column name to DataType .value string
+        (e.g. "number", "string", "timestamp", "date"). Columns absent
+        from the dict are ignored — different dialects expose different
+        column sets, and this helper is a positive-coverage check, not
+        an exhaustive schema comparison.
+    """
+    model = api("GET", f"/models/{model_name}")
+    columns_by_name = {c["name"]: c for c in model.get("columns", [])}
+    for col_name, expected_type in expected_types.items():
+        col = columns_by_name.get(col_name)
+        check(f"{model_name}.{col_name} exists", col is not None)
+        if col is None:
+            continue
+        actual = col.get("type")
+        check(
+            f"{model_name}.{col_name} type = {expected_type} (got {actual!r})",
+            actual == expected_type,
+        )
+
+
 def summary():
     """Print summary and exit with appropriate code."""
     print(f"\n{'=' * 40}")
