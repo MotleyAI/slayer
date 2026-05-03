@@ -56,6 +56,7 @@ These are always available — no definition needed:
 |------------|-------------|
 | `sum` | SUM(expr) |
 | `avg` | AVG(expr) |
+| `sum(window='90d')` / `avg(window='90d')` | trailing range SUM/AVG ending at each output bucket |
 | `min` / `max` | MIN/MAX(expr) |
 | `count` | COUNT(expr), or COUNT(\*) with `*` |
 | `count_distinct` | COUNT(DISTINCT expr) |
@@ -73,6 +74,23 @@ These are always available — no definition needed:
 | SQLite | yes | Python aggregate UDFs registered on every connection by SLayer. |
 | ClickHouse | yes | Native `median(x)` and parametric `quantile(p)(x)`. |
 | MySQL | **no** | No native function and no Python-UDF mechanism — SLayer raises `NotImplementedError`. Use MariaDB or compute client-side. |
+
+`sum` and `avg` can take a trailing time `window` when the query has a time
+dimension:
+
+```json
+{
+  "fields": [
+    {"formula": "revenue:sum(window='30d')", "name": "revenue_30d"},
+    {"formula": "revenue:avg(window='1y2m3w5d6h7min8s')", "name": "avg_window"}
+  ],
+  "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]
+}
+```
+
+Duration units are `y`, `m`, `w`, `d`, `h`, `min`, and `s`. The window is
+computed over raw source rows, so it may be larger, equal to, or smaller than
+the query's time granularity.
 
 ## Custom aggregations
 

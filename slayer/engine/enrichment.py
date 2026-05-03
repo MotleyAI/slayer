@@ -18,6 +18,7 @@ from slayer.core.enums import (
     PRIMARY_KEY_AGGREGATIONS,
 )
 from slayer.core.formula import (
+    canonical_agg_name,
     ALL_TRANSFORMS,
     AggregatedMeasureRef,
     ArithmeticField,
@@ -43,55 +44,14 @@ from slayer.engine.enriched import (
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
-_NON_IDENT_RE = re.compile(r"[^a-zA-Z0-9_]+")
+def _strip_string_literal(value: str) -> str:
+    """Strip one layer of single/double quotes from a query parameter value."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
 
 
-def _agg_signature_suffix(
-    agg_args: Optional[list],
-    agg_kwargs: Optional[dict],
-) -> str:
-    """Build a deterministic identifier suffix from aggregation args/kwargs.
-
-    Returns the empty string when both are empty so unparameterized aggregations
-    keep their existing canonical names. For parameterized variants (e.g.
-    ``last(created_at)`` vs ``last(updated_at)``, ``percentile(p=0.5)`` vs
-    ``percentile(p=0.95)``) the suffix differentiates them so they don't
-    collapse onto a single hidden alias.
-    """
-    args = agg_args or []
-    kwargs = agg_kwargs or {}
-    if not args and not kwargs:
-        return ""
-    parts: List[str] = []
-    for a in args:
-        sanitized = _NON_IDENT_RE.sub("_", str(a)).strip("_")
-        if sanitized:
-            parts.append(sanitized)
-    for k in sorted(kwargs.keys()):
-        sk = _NON_IDENT_RE.sub("_", str(k)).strip("_")
-        sv = _NON_IDENT_RE.sub("_", str(kwargs[k])).strip("_")
-        if sk:
-            parts.append(sk)
-        if sv:
-            parts.append(sv)
-    return "_" + "_".join(parts) if parts else ""
-
-
-def _canonical_agg_name(
-    measure_name: str,
-    aggregation_name: str,
-    agg_args: Optional[list] = None,
-    agg_kwargs: Optional[dict] = None,
-) -> str:
-    """Canonical hidden-column name for an aggregated measure ref.
-
-    ``revenue:sum`` → ``revenue_sum``; ``*:count`` → ``_count``;
-    ``revenue:percentile(p=0.5)`` → ``revenue_percentile_p_0_5``.
-    """
-    suffix = _agg_signature_suffix(agg_args, agg_kwargs)
-    if measure_name == "*":
-        return f"_{aggregation_name}{suffix}"
-    return f"{measure_name}_{aggregation_name}{suffix}"
+_canonical_agg_name = canonical_agg_name  # Module-internal alias for the shared helper
 
 
 async def _collect_reachable_agg_names(
@@ -237,7 +197,23 @@ async def enrich_query(
             agg_kwargs: Keyword args from colon syntax (e.g., weight override).
         """
         agg_args = agg_args or []
-        agg_kwargs = agg_kwargs or {}
+        agg_kwargs = {k: _strip_string_literal(v) for k, v in (agg_kwargs or {}).items()}
+
+        window = agg_kwargs.pop("window", None)
+        window_time_alias = None
+        if window is not None:
+            if aggregation_name not in ("sum", "avg"):
+                raise ValueError(
+                    f"Aggregation parameter 'window' is only supported for sum and avg, "
+                    f"not '{aggregation_name}'."
+                )
+            if resolved_time_alias is None:
+                raise ValueError(
+                    f"Windowed aggregation '{measure_name}:{aggregation_name}' requires an "
+                    f"unambiguous time dimension. Add a single time_dimensions entry, or set "
+                    f"main_time_dimension to select among multiple time dimensions."
+                )
+            window_time_alias = resolved_time_alias
 
         # Canonical name for the result column (colon → underscore). Includes a
         # signature suffix when args/kwargs are present so that parameterized
@@ -246,7 +222,7 @@ async def enrich_query(
             measure_name=measure_name,
             aggregation_name=aggregation_name,
             agg_args=agg_args,
-            agg_kwargs=agg_kwargs,
+            agg_kwargs={**agg_kwargs, **({"window": window} if window is not None else {})},
         )
 
         # Skip if already ensured with this alias_key
@@ -347,6 +323,8 @@ async def enrich_query(
                 model_name=model_name_str,
                 aggregation_def=aggregation_def,
                 agg_kwargs=agg_kwargs,
+                window=window,
+                window_time_alias=window_time_alias,
                 label=measure_def.label if measure_def else None,
                 time_column=explicit_time_col,
                 source_measure_name=measure_name,
@@ -364,7 +342,14 @@ async def enrich_query(
             resolved = re.sub(rf'(?<![."])\b{re.escape(name)}\b', f'"{alias}"', resolved)
         return resolved
 
-    def _add_transform(name: str, transform: str, measure_alias: str, offset: int = 1, granularity: str = None):
+    def _add_transform(
+        name: str,
+        transform: str,
+        measure_alias: str,
+        offset: int = 1,
+        granularity: str = None,
+        predicate_is_boolean: bool = False,
+    ):
         needs_time = transform in TIME_TRANSFORMS
         if needs_time and resolved_time_alias is None:
             raise ValueError(
@@ -382,6 +367,8 @@ async def enrich_query(
                 offset=offset,
                 granularity=granularity,
                 time_alias=resolved_time_alias if needs_time else None,
+                partition_aliases=[d.alias for d in dimensions],
+                predicate_is_boolean=predicate_is_boolean,
             )
         )
         known_aliases[name] = alias
@@ -575,12 +562,22 @@ async def enrich_query(
             if len(spec.args) >= 2:
                 granularity = str(spec.args[1])
 
+            # consecutive_periods (and any other transform that wraps a
+            # predicate) needs to know whether the inner expression renders
+            # as boolean — Postgres rejects `boolean <> integer` so the
+            # numeric form `<expr> IS NOT NULL AND <expr> <> 0` cannot be
+            # used for boolean inputs.
+            inner_is_predicate = (
+                isinstance(spec.inner, (ArithmeticField, MixedArithmeticField))
+                and spec.inner.is_predicate
+            )
             _add_transform(
                 name=field_name,
                 transform=spec.transform,
                 measure_alias=inner_alias,
                 offset=offset,
                 granularity=granularity,
+                predicate_is_boolean=inner_is_predicate,
             )
             return f"{model_name_str}.{field_name}"
 
@@ -762,6 +759,7 @@ async def enrich_query(
             measure_names={m.name for m in measures},
             computed_names={t.name for t in enriched_transforms} | {e.name for e in enriched_expressions},
             groupby_names={d.name for d in dimensions} | {td.name for td in time_dimensions},
+            windowed_measure_names={m.name for m in measures if m.window},
         ),
         order=query.order,
         limit=query.limit,
@@ -1210,25 +1208,59 @@ async def resolve_filter_columns(
     return parsed_filters
 
 
+def _classify_one_filter(
+    f,
+    *,
+    measure_names: set,
+    computed_names: set,
+    groupby_names: set,
+    windowed_measure_names: set,
+) -> None:
+    """Mutate one ParsedFilter to set is_post_filter / is_having flags.
+
+    Order matters: post-filter classifications take precedence (computed
+    columns can only be referenced after the base aggregate is built); then
+    windowed-measure refs (their value lives in a downstream CTE so they
+    can't be HAVING); then plain non-windowed measure HAVING.
+    """
+    if any(col in computed_names for col in f.columns):
+        f.is_post_filter = True
+        return
+    if any(col in windowed_measure_names for col in f.columns):
+        f.is_post_filter = True
+        return
+    if any(col in measure_names for col in f.columns):
+        f.is_having = True
+        for col in f.columns:
+            if col not in measure_names and col not in groupby_names:
+                raise ValueError(
+                    f"Filter '{f.sql}' references measure and dimension '{col}', "
+                    f"but '{col}' is not in the query's dimensions or time_dimensions. "
+                    f"Add it to dimensions/time_dimensions or split into separate filters."
+                )
+
+
 def classify_filters(
     filters: list,
     measure_names: set,
     computed_names: Optional[set] = None,
     groupby_names: Optional[set] = None,
+    windowed_measure_names: Optional[set] = None,
 ) -> list:
-    """Classify filters as WHERE, HAVING, or post-filter."""
+    """Classify filters as WHERE, HAVING, or post-filter.
+
+    Delegates per-filter classification to `_classify_one_filter` so this
+    function stays a flat for-loop.
+    """
     computed_names = computed_names or set()
     groupby_names = groupby_names or set()
+    windowed_measure_names = windowed_measure_names or set()
     for f in filters:
-        if any(col in computed_names for col in f.columns):
-            f.is_post_filter = True
-        elif any(col in measure_names for col in f.columns):
-            f.is_having = True
-            for col in f.columns:
-                if col not in measure_names and col not in groupby_names:
-                    raise ValueError(
-                        f"Filter '{f.sql}' references measure and dimension '{col}', "
-                        f"but '{col}' is not in the query's dimensions or time_dimensions. "
-                        f"Add it to dimensions/time_dimensions or split into separate filters."
-                    )
+        _classify_one_filter(
+            f,
+            measure_names=measure_names,
+            computed_names=computed_names,
+            groupby_names=groupby_names,
+            windowed_measure_names=windowed_measure_names,
+        )
     return filters

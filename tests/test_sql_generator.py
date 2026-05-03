@@ -12,10 +12,28 @@ from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator, _validate_agg_param_value
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 async def _noop_async(**kw):
     return None
+
+
+def _norm(s: str) -> str:
+    return " ".join(s.split())
+
+
+def _extract_src_body(sql: str) -> str:
+    """Pull out the `_src` subquery body from a generated window-measure SQL.
+
+    Resilient when the outer query also contains other LEFT JOIN (...) blocks
+    (e.g. cross-model measure subqueries): anchors on the unique `\\n) AS _src`
+    suffix and reverse-searches for the matching `LEFT JOIN (\\n` before it.
+    """
+    end = sql.index("\n) AS _src")
+    open_token = "LEFT JOIN (\n"
+    start = sql.rfind(open_token, 0, end) + len(open_token)
+    return sql[start:end]
 
 
 _SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
@@ -68,6 +86,7 @@ def orders_model() -> SlayerModel:
             Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
             Column(name="status", sql="status", type=DataType.STRING),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="delivery_at", sql="delivery_at", type=DataType.TIMESTAMP),
             Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
 
             Column(name="revenue", sql="amount", type=DataType.NUMBER),
@@ -503,6 +522,311 @@ class TestFields:
         assert "OVER" in sql
         assert "ORDER BY" in sql
         assert "rev_running" in sql.lower()
+
+    async def test_cumsum_partitions_by_dimensions(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "cumsum(revenue:sum)", "name": "running_revenue"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert 'SUM("orders.revenue_sum")' in norm
+        assert "OVER (" in norm
+        assert 'PARTITION BY "orders.status"' in norm
+        assert 'ORDER BY "orders.created_at"' in norm
+
+    async def test_consecutive_periods_uses_reset_group_ctes(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "consecutive_periods(revenue:sum > 0)", "name": "positive_streak"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "cp_reset_" in norm
+        assert "cp_value_" in norm
+        assert "SUM(CASE WHEN" in norm
+        # Reset CTE: partition by query dim, order by query time dim.
+        assert 'PARTITION BY "orders.status"' in norm
+        assert 'ORDER BY "orders.created_at"' in norm
+        # Value CTE: partition adds the reset-group alias.
+        assert '"_cp_reset_orders__positive_streak"' in norm
+        assert '"orders.positive_streak"' in norm
+
+    async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "consecutive_periods(revenue:sum > 0) >= 2", "name": "long_enough"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "cp_reset_" in norm
+        assert "cp_value_" in norm
+        assert '>= 2' in norm
+        assert '"orders.long_enough"' in norm
+
+    async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "_wm_orders__revenue_sum_window_90d" in norm
+        assert "LEFT JOIN" in norm
+        assert "_src._w_time >=" in norm
+        assert "_src._w_time <" in norm
+        assert "INTERVAL '90 day'" in norm
+        assert '_src._w_dim_0 = _base."orders.status"' in norm
+
+    async def test_windowed_sum_preserves_other_time_dim_grain(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """With 2+ time dimensions, the windowed CTE must equality-join on every
+        non-window time dim — otherwise rows from other dim values fan in."""
+        orders_model.default_time_dimension = "created_at"
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+                TimeDimension(dimension=ColumnRef(name="delivery_at"), granularity=TimeGranularity.MONTH),
+            ],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        assert "_w_td_" in sql
+        assert '_base."orders.delivery_at"' in sql
+
+    @pytest.fixture
+    async def orders_with_customers_engine(self, tmp_path):
+        """Storage + engine with an orders→customers join.
+
+        The customers model includes both name and region_id so the two
+        window-CTE join-scoping regression tests below can share one fixture.
+        """
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            ],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        return SlayerQueryEngine(storage=storage), orders
+
+    async def test_windowed_sum_excludes_unrelated_joins(
+        self, generator: SQLGenerator, orders_with_customers_engine,
+    ) -> None:
+        """The window CTE must not pull joins unrelated to the windowed measure.
+
+        Set up a query with:
+          - a windowed measure on orders' revenue (no cross-model refs), and
+          - a sibling cross-model measure that DOES need the customers join.
+
+        The customers join is required at the OUTER query level, but must NOT
+        leak into the windowed measure's _src subquery — otherwise the
+        customers fan-out would distort the trailing aggregation. Per
+        CLAUDE.md core principle: adding a measure must not affect cardinality.
+        """
+        engine, orders = orders_with_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],  # local to orders — no join needed
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[
+                {"formula": "revenue:sum(window='90d')", "name": "revenue_90d"},
+                {"formula": "customers.id:count_distinct", "name": "n_customers"},
+            ],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        # Sanity: the customers join *did* get resolved at the outer level.
+        assert any(alias == "customers" for _, alias, *_ in enriched.resolved_joins)
+
+        sql = generator.generate(enriched=enriched)
+        src_body = _extract_src_body(sql)
+        assert src_body, "Could not isolate _src subquery body"
+        assert "customers" not in src_body, (
+            f"_src subquery must not include the unrelated customers join.\n"
+            f"src_body:\n{src_body}"
+        )
+
+    async def test_windowed_sum_keeps_joins_used_by_query_filter(
+        self, generator: SQLGenerator, orders_with_customers_engine,
+    ) -> None:
+        """Window CTE must keep joins whose alias is referenced by a query-level
+        WHERE filter, even if the windowed measure itself doesn't use them.
+
+        Otherwise the rendered SQL has a WHERE clause referencing an alias
+        whose JOIN was pruned, and the SQL becomes invalid (or silently
+        changes filtering behavior).
+        """
+        engine, orders = orders_with_customers_engine
+        # Filter on customers.region_id forces a customers join. The windowed
+        # measure does not otherwise reference customers, so the join would be
+        # pruned without the filter-aware logic — and then the WHERE clause
+        # below would reference an undefined alias.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            filters=["customers.region_id = 5"],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        assert any(alias == "customers" for _, alias, *_ in enriched.resolved_joins)
+
+        sql = generator.generate(enriched=enriched)
+        src_body = _extract_src_body(sql)
+        assert src_body, "Could not isolate _src subquery body"
+        assert "customers" in src_body, (
+            f"_src subquery must include customers join because the query-level "
+            f"WHERE filter references customers.region_id.\nsrc_body:\n{src_body}"
+        )
+
+    async def test_windowed_sum_keeps_transitive_joins_for_multi_hop_filter(
+        self, generator: SQLGenerator, tmp_path,
+    ) -> None:
+        """Multi-hop filter (e.g. customers.regions.name) must keep the
+        intermediate `customers` join in the _src subquery.
+
+        The path-aliased target_alias `customers__regions` carries a join
+        condition like `customers.region_id = customers__regions.id`, so the
+        prefix `customers` must also appear in the JOIN list — otherwise the
+        rendered SQL references an undefined alias.
+        """
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        await storage.save_model(SlayerModel(
+            name="regions", sql_table="regions", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        ))
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        )
+        await storage.save_model(orders)
+        engine = SlayerQueryEngine(storage=storage)
+
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            filters=["customers.regions.name = 'US'"],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        # Sanity: both joins resolved at outer level.
+        joined_aliases = {alias for _, alias, *_ in enriched.resolved_joins}
+        assert "customers" in joined_aliases
+        assert "customers__regions" in joined_aliases
+
+        sql = generator.generate(enriched=enriched)
+        src_body = _extract_src_body(sql)
+        assert "customers__regions" in src_body, (
+            f"_src must include the multi-hop customers__regions join.\nsrc_body:\n{src_body}"
+        )
+        assert "customers " in src_body or "customers\n" in src_body or "customers." in src_body, (
+            f"_src must also include the transitive customers join — its JOIN ON references customers.\n"
+            f"src_body:\n{src_body}"
+        )
+
+    async def test_filter_on_windowed_measure_is_post_filter(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A filter on a windowed measure must apply post-aggregation, not as
+        HAVING on the base CTE. The base CTE doesn't compute the windowed
+        value — applying a HAVING there would use the wrong (non-windowed)
+        aggregate.
+
+        Verify by checking the generated SQL contains a WHERE on the
+        post-aggregate combined CTE (referenced via the windowed alias),
+        and that the canonical filter alias matches the windowed measure's
+        alias (i.e. the window kwarg is preserved in canonicalization).
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            filters=["revenue:sum(window='90d') > 100"],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        # Canonical filter name must include the window kwarg suffix so it
+        # matches the windowed measure's alias.
+        assert "revenue_sum_window_90d" in norm, (
+            f"Filter canonical name must include window kwarg.\nsql:\n{sql}"
+        )
+        # The filter must be applied OUTSIDE the base CTE (no HAVING on the
+        # plain `SUM(amount)` aggregate — that would use the wrong value).
+        assert "HAVING SUM" not in norm.upper(), (
+            f"Windowed-measure filter must not be applied as HAVING on the base aggregate.\nsql:\n{sql}"
+        )
+
+    async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
+            measures=[{"formula": "revenue:avg(window='1y2m3w5d6h7min8s')", "name": "avg_window"}],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        assert "AVG(_src._w_value)" in norm
+        # The interval *content* is what the test cares about — keep it pinned.
+        assert "INTERVAL '1 year 2 month 3 week 5 day 6 hour 7 minute 8 second'" in norm
+
+    async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.DAY)],
+            measures=[{"formula": "revenue:sum(window='1w2d3h4min5s')", "name": "revenue_window"}],
+        )
+        sql = await _generate(
+            generator=SQLGenerator(dialect="sqlite"),
+            query=query,
+            model=orders_model,
+        )
+        assert "DATETIME(" in sql
+        assert "'-7 days'" in sql
+        assert "'-2 days'" in sql
+        assert "'-3 hours'" in sql
+        assert "'-4 minutes'" in sql
+        assert "'-5 seconds'" in sql
 
     async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
@@ -985,6 +1309,28 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
             await _generate(generator, query, model)
+
+    async def test_consecutive_periods_without_time_dimension_raises(self, generator: SQLGenerator) -> None:
+        """consecutive_periods with only default_time_dimension must error."""
+        model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="created_at", sql="created_at", type=DataType.DATE),
+                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            ],
+            default_time_dimension="created_at",
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="consecutive_periods(revenue:sum > 0)")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
+            await _generate(generator=generator, query=query, model=model)
 
     async def test_cumsum_with_time_dimension_works(self, generator: SQLGenerator) -> None:
         """cumsum with explicit time_dimensions should work fine."""
