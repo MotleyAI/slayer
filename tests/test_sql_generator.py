@@ -556,6 +556,37 @@ class TestFields:
         assert '"_cp_reset_orders__positive_streak"' in norm
         assert '"orders.positive_streak"' in norm
 
+    async def test_consecutive_periods_no_implicit_nulls_last_sqlite(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Regression: sqlglot's `exp.Ordered` injects `NULLS LAST` on SQLite
+        even when not requested, which would change consecutive_periods
+        streak/reset semantics for any NULL time values vs. the pre-AST
+        string-built `ORDER BY <t>` output. The fix is to put a bare column
+        inside `exp.Order` rather than wrapping it in `exp.Ordered`.
+
+        Caught by Codex review of PR #78. SQLite is Tier-1 in this project so
+        this is a real semantic regression even though current integration
+        tests don't exercise null time values.
+        """
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[{"formula": "consecutive_periods(revenue:sum > 0)",
+                       "name": "positive_streak"}],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        assert "NULLS LAST" not in sql.upper(), (
+            f"sqlite consecutive_periods CTE must not emit implicit "
+            f"NULLS LAST (would change streak semantics for NULL time "
+            f"values).\nsql:\n{sql}"
+        )
+
     async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
