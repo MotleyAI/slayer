@@ -8,6 +8,7 @@ remain unconditional.
 import logging
 
 import pytest
+import sqlalchemy as sa
 
 ch_types = pytest.importorskip("clickhouse_sqlalchemy.types")
 
@@ -154,16 +155,17 @@ class TestUnwrapHelper:
         assert _unwrap_clickhouse_wrappers(sa_type) is sa_type
 
 
-class _FakeUnknownType:
-    """Stand-in for an unrecognized SA type — bypasses MagicMock quirks
-    around overriding ``type(obj).__name__``.
+class _FakeUnknownType(sa.types.TypeEngine):
+    """Stand-in for an unrecognized SA type. Inherits TypeEngine so the
+    function-signature contract is satisfied for static analysers without
+    needing per-call type: ignore.
     """
 
     def __str__(self) -> str:
         return "FakeUnknownType()"
 
 
-class _AnotherUnknownType:
+class _AnotherUnknownType(sa.types.TypeEngine):
     def __str__(self) -> str:
         return "AnotherUnknownType(123)"
 
@@ -172,7 +174,7 @@ class TestUnmappedTypeWarning:
     def test_warning_fires_once_per_type_name(self, caplog):
         with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
             for _ in range(3):
-                result = _sa_type_to_data_type(_FakeUnknownType())  # type: ignore[arg-type]
+                result = _sa_type_to_data_type(_FakeUnknownType())
                 assert result is DataType.STRING
 
         relevant = [
@@ -182,7 +184,7 @@ class TestUnmappedTypeWarning:
 
     def test_warning_message_contains_class_name_and_str(self, caplog):
         with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
-            _sa_type_to_data_type(_AnotherUnknownType())  # type: ignore[arg-type]
+            _sa_type_to_data_type(_AnotherUnknownType())
 
         relevant = [
             r
@@ -196,8 +198,8 @@ class TestUnmappedTypeWarning:
 
     def test_warning_dedup_isolated_between_distinct_types(self, caplog):
         with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
-            _sa_type_to_data_type(_FakeUnknownType())  # type: ignore[arg-type]
-            _sa_type_to_data_type(_AnotherUnknownType())  # type: ignore[arg-type]
+            _sa_type_to_data_type(_FakeUnknownType())
+            _sa_type_to_data_type(_AnotherUnknownType())
 
         msgs = [r.getMessage().upper() for r in caplog.records]
         assert any("FAKEUNKNOWNTYPE" in m for m in msgs)
