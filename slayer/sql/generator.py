@@ -166,6 +166,27 @@ def _alias_prefixes(model_name: str) -> list:
     return ["__".join(parts[: i + 1]) for i in range(len(parts))]
 
 
+def _filter_dotted_columns(filters) -> list[str]:
+    """Yield each "__"-joined path-alias prefix referenced by every non-post
+    filter's dotted column.
+
+    A filter on `a.b.c` produces ['a', 'a__b'] — the path-alias forms that
+    correspond to the joins required to evaluate the filter. Used by window
+    CTE pruning to keep filter-driven joins.
+    """
+    out: list[str] = []
+    for f in filters:
+        if getattr(f, "is_post_filter", False):
+            continue
+        for col in f.columns:
+            if "." not in col:
+                continue
+            parts = col.split(".")
+            for i in range(1, len(parts)):
+                out.append("__".join(parts[:i]))
+    return out
+
+
 def _needed_join_aliases(enriched: EnrichedQuery, extra_columns: list = ()) -> set:
     """Compute which resolved_join aliases are needed for dimensions + extra dotted columns."""
     aliases: set = set()
@@ -754,34 +775,18 @@ class SQLGenerator:
         of every non-post query filter (so a WHERE on customers.x keeps the
         customers join even if no other thing references it). Path aliases use
         "__" so each is one identifier token; for multi-hop aliases like
-        "customers__regions" we also add every "__"-split prefix ("customers")
-        so the transitive joins those reference are kept too.
+        "customers__regions" we also include every "__"-split prefix
+        ("customers") via `_alias_prefixes` so the transitive joins those
+        reference are kept too.
         """
-        referenced: set[str] = set()
-
-        def _add_with_prefixes(alias: str) -> None:
-            referenced.add(alias)
-            if "__" in alias:
-                parts = alias.split("__")
-                for i in range(1, len(parts)):
-                    referenced.add("__".join(parts[:i]))
-
         referenced_text = " ".join(source_cols)
         if measure.filter_sql:
             referenced_text += " " + measure.filter_sql
+        referenced: set[str] = set()
         for tok in re.findall(r'(?:^|[^\w."\'])([A-Za-z_]\w*)\.', referenced_text):
-            _add_with_prefixes(tok)
-
-        for f in filters:
-            if f.is_post_filter:
-                continue
-            for col in f.columns:
-                if "." not in col:
-                    continue
-                parts = col.split(".")
-                for i in range(1, len(parts)):
-                    _add_with_prefixes("__".join(parts[:i]))
-
+            referenced.update(_alias_prefixes(tok))
+        for col in _filter_dotted_columns(filters):
+            referenced.update(_alias_prefixes(col))
         return referenced
 
     def _build_window_source_sql(
