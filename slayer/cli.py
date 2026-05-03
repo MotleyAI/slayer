@@ -426,8 +426,14 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
     engine = SlayerQueryEngine(storage=storage)
 
     if query_input.startswith("@"):
-        with open(query_input[1:]) as f:
-            query_input = f.read()
+        filepath = query_input[1:]
+        try:
+            with open(filepath) as f:
+                query_input = f.read()
+        except FileNotFoundError:
+            raise SystemExit(f"Query file not found: {filepath}") from None
+        except OSError as e:
+            raise SystemExit(f"Error reading query file: {e}") from None
         is_json = True
     else:
         # Heuristic: a JSON query starts with '{' or '['; anything else
@@ -470,7 +476,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         # "model must be query-backed" check uniformly.
         result = engine.execute_sync(
             query=query_input,
-            variables=runtime_kwarg,
+            variables=runtime_kwarg or None,
             dry_run=bool(args.dry_run),
             explain=bool(args.explain),
         )
