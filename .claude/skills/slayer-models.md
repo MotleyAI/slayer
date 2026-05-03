@@ -124,7 +124,8 @@ Via MCP, agents edit models through the unified `edit_model` tool:
 - `edit_model(model_name="orders", description="Core orders table")`
 - `edit_model(model_name="orders", columns=[{"name": "region", "sql": "region", "type": "string"}])` — upserts columns by name
 - `edit_model(model_name="orders", measures=[{"name": "margin", "formula": "(amount - cost):sum"}])` — upserts named ModelMeasure formulas
-- `edit_model(model_name="orders", delete_columns=["legacy_field"])`, `delete_measures=["margin"]`
+- `edit_model(model_name="orders", delete_columns=["legacy_field"])`
+- `edit_model(model_name="orders", delete_measures=["margin"])`
 
 For query-backed models, `columns` and `backing_query_sql` are **engine-managed cache** — `edit_model` rejects user-supplied `columns` on a query-backed save with a clear error. Edit `source_queries` or `query_variables` instead.
 

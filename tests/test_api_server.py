@@ -358,7 +358,7 @@ class TestOpenAPI400Documentation:
             columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
         )))
         # Save a query-backed model whose stage does NOT have dry_run set.
-        client.post("/models", json={
+        setup_resp = client.post("/models", json={
             "name": "qb_dryrun",
             "data_source": "ds",
             "source_queries": [{
@@ -366,6 +366,7 @@ class TestOpenAPI400Documentation:
                 "measures": [{"formula": "amount:sum"}],
             }],
         })
+        assert setup_resp.status_code == 200, setup_resp.text
 
         from slayer.sql.client import SlayerSQLClient
         execute_calls = 0
