@@ -313,48 +313,13 @@ class SlayerQueryEngine:
         if merged != (main_query.variables or {}):
             main_query = main_query.model_copy(update={"variables": merged})
 
-        response = await self._execute_pipeline(
+        return await self._execute_pipeline(
             query=main_query,
             named_queries=named_queries,
             runtime_kwarg=runtime_kwarg,
             dry_run=dry_run,
             explain=explain,
         )
-
-        # Refresh the model's cache (columns + backing_query_sql). The
-        # pipeline above does not call ``_resolve_model_inner`` for ``model``
-        # itself (we go directly through its final stage), so cache refresh
-        # has to be wired here. Cost: one extra enrich+SQL-gen pass per
-        # run-by-name, in-process, no DB hit.
-        # Use the ORIGINAL final stage (not the runtime-merged ``main_query``)
-        # and pass ``runtime_kwarg=None`` + ``dry_run_placeholders=True`` so
-        # the cached SQL stays canonical (model-defaults + placeholder fill,
-        # never per-request values).
-        try:
-            virtual = await self._query_as_model(
-                inner_query=stages[-1],
-                named_queries=named_queries,
-                override_name=name,
-                _resolving=set(),
-                outer_vars=dict(model.query_variables),
-                runtime_kwarg=None,
-                dry_run_placeholders=True,
-            )
-            await self._refresh_cache_after_resolution(model, virtual)
-        except Exception:
-            # Pipeline already succeeded; don't fail the user's call on a
-            # cache-side error. Log and move on.
-            # Sanitize for log injection (S5145): name comes from the public
-            # run-by-name API so could contain CR/LF.
-            safe_name = name.replace("\r", "\\r").replace("\n", "\\n")
-            logger.warning(
-                "Cache refresh failed for query-backed model '%s'; "
-                "pipeline result still returned.",
-                safe_name,
-                exc_info=True,
-            )
-
-        return response
 
     async def _execute_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→execute); breaking it up obscures the order of operations
         self,
@@ -610,24 +575,20 @@ class SlayerQueryEngine:
         runtime_kwarg: Optional[Dict[str, Any]],
         dry_run_placeholders: bool,
         _resolving: Optional[set],
-        refresh_cache: bool,
     ) -> SlayerModel:
         """If ``model`` is query-backed, expand its ``source_queries`` into a
         virtual model (with rendered SQL). Otherwise return ``model`` unchanged.
 
-        ``refresh_cache`` controls whether the stored model's cache is updated
-        from the freshly-resolved virtual — only valid for storage-backed
-        models (``model.name`` matches a stored entry); pass False for inline
-        models that aren't persisted. The cache refresh always runs a SECOND,
-        canonical render (no runtime variables, placeholder fill) so per-request
-        values never end up in ``backing_query_sql``.
+        Read-only — never writes to storage. The persisted cache
+        (``columns`` / ``backing_query_sql`` / ``data_source``) is populated
+        only by ``engine.save_model`` / ``create_model_from_query(save=True)``.
         """
         if not model.source_queries:
             return model
         stages = list(model.source_queries)
         merged_outer = {**model.query_variables, **(outer_vars or {})}
         named_q = {q.name: q for q in stages[:-1] if q.name}
-        virtual = await self._query_as_model(
+        return await self._query_as_model(
             inner_query=stages[-1],
             named_queries=named_q,
             override_name=model.name,
@@ -636,34 +597,6 @@ class SlayerQueryEngine:
             runtime_kwarg=runtime_kwarg,
             dry_run_placeholders=dry_run_placeholders,
         )
-        if refresh_cache and not dry_run_placeholders:
-            # Render a canonical version for the cache whenever request-scoped
-            # variables affected the expansion — that's both runtime_kwarg AND
-            # outer_vars beyond model.query_variables (e.g. when this model is
-            # the source_model of an outer SlayerQuery that carries its own
-            # variables). Otherwise the virtual already IS canonical.
-            cache_depends_on_request_vars = (
-                bool(runtime_kwarg)
-                or merged_outer != dict(model.query_variables)
-            )
-            if cache_depends_on_request_vars:
-                try:
-                    canonical = await self._query_as_model(
-                        inner_query=stages[-1],
-                        named_queries=named_q,
-                        override_name=model.name,
-                        _resolving=set(),  # fresh — different render
-                        outer_vars=dict(model.query_variables),
-                        runtime_kwarg=None,
-                        dry_run_placeholders=True,
-                    )
-                except Exception:
-                    canonical = None
-                if canonical is not None:
-                    await self._refresh_cache_after_resolution(model, canonical)
-            else:
-                await self._refresh_cache_after_resolution(model, virtual)
-        return virtual
 
     async def _resolve_query_model(  # NOSONAR S3776 — type-dispatch on str/SlayerModel/ModelExtension/dict; flat is clearer than per-shape helpers here
         self,
@@ -698,7 +631,6 @@ class SlayerQueryEngine:
                 runtime_kwarg=runtime_kwarg,
                 dry_run_placeholders=dry_run_placeholders,
                 _resolving=_resolving,
-                refresh_cache=False,  # inline model isn't stored
             )
         elif isinstance(query_model, ModelExtension):
             base = await self._resolve_model(
@@ -746,7 +678,6 @@ class SlayerQueryEngine:
                     runtime_kwarg=runtime_kwarg,
                     dry_run_placeholders=dry_run_placeholders,
                     _resolving=_resolving,
-                    refresh_cache=False,
                 )
         else:
             raise ValueError(f"Invalid query.source_model type: {type(query_model)}")
@@ -807,17 +738,15 @@ class SlayerQueryEngine:
         if model is None:
             raise ValueError(f"Model '{model_name}' not found")
 
-        # If model has source_queries, re-enrich from stored queries and
-        # refresh the persisted cache. Model-level defaults are folded into
-        # outer_vars by the helper (precedence: runtime > stage > outer >
-        # model_defaults).
+        # If model has source_queries, re-enrich from stored queries.
+        # Model-level defaults are folded into outer_vars by the helper
+        # (precedence: runtime > stage > outer > model_defaults).
         return await self._expand_query_backed_model(
             model=model,
             outer_vars=outer_vars,
             runtime_kwarg=runtime_kwarg,
             dry_run_placeholders=dry_run_placeholders,
             _resolving=_resolving,
-            refresh_cache=True,
         )
 
     async def create_model_from_query(
@@ -913,27 +842,6 @@ class SlayerQueryEngine:
             # from the persisted data_source BEFORE expanding the model.
             "data_source": virtual.data_source,
         })
-
-    async def _refresh_cache_after_resolution(
-        self,
-        stored_model: SlayerModel,
-        virtual: SlayerModel,
-    ) -> None:
-        """Write-if-changed update of a query-backed model's cache fields
-        using a freshly-resolved virtual model. No-op when nothing changed.
-        """
-        if (
-            list(stored_model.columns) == list(virtual.columns)
-            and stored_model.backing_query_sql == virtual.sql
-            and stored_model.data_source == virtual.data_source
-        ):
-            return
-        updated = stored_model.model_copy(update={
-            "columns": list(virtual.columns),
-            "backing_query_sql": virtual.sql,
-            "data_source": virtual.data_source,
-        })
-        await self.storage.save_model(updated)
 
     async def _enrich(  # NOSONAR S3776 — orchestrates resolve-callback closures + cross-model post-processing; splitting into helpers obscures the closure variables threaded through enrich_query
         self,
