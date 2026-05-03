@@ -556,6 +556,37 @@ class TestFields:
         assert '"_cp_reset_orders__positive_streak"' in norm
         assert '"orders.positive_streak"' in norm
 
+    async def test_consecutive_periods_no_implicit_nulls_last_sqlite(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Regression: sqlglot's `exp.Ordered` injects `NULLS LAST` on SQLite
+        even when not requested, which would change consecutive_periods
+        streak/reset semantics for any NULL time values vs. the pre-AST
+        string-built `ORDER BY <t>` output. The fix is to put a bare column
+        inside `exp.Order` rather than wrapping it in `exp.Ordered`.
+
+        Caught by Codex review of PR #78. SQLite is Tier-1 in this project so
+        this is a real semantic regression even though current integration
+        tests don't exercise null time values.
+        """
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            time_dimensions=[TimeDimension(
+                dimension=ColumnRef(name="created_at"),
+                granularity=TimeGranularity.MONTH,
+            )],
+            measures=[{"formula": "consecutive_periods(revenue:sum > 0)",
+                       "name": "positive_streak"}],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        assert "NULLS LAST" not in sql.upper(), (
+            f"sqlite consecutive_periods CTE must not emit implicit "
+            f"NULLS LAST (would change streak semantics for NULL time "
+            f"values).\nsql:\n{sql}"
+        )
+
     async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -582,7 +613,9 @@ class TestFields:
         assert "LEFT JOIN" in norm
         assert "_src._w_time >=" in norm
         assert "_src._w_time <" in norm
-        assert "INTERVAL '90 day'" in norm
+        # AST-based generation renders single-unit intervals via sqlglot's
+        # per-dialect transpiler — Postgres caps the unit name.
+        assert "INTERVAL '90 DAY'" in norm
         assert '_src._w_dim_0 = _base."orders.status"' in norm
 
     async def test_windowed_sum_preserves_other_time_dim_grain(
@@ -807,8 +840,21 @@ class TestFields:
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
         assert "AVG(_src._w_value)" in norm
-        # The interval *content* is what the test cares about — keep it pinned.
-        assert "INTERVAL '1 year 2 month 3 week 5 day 6 hour 7 minute 8 second'" in norm
+        # AST-based generation emits one INTERVAL per parsed (amount, unit)
+        # pair, chained as repeated subtractions — sqlglot then transpiles each
+        # single-unit interval per dialect (so this same compact duration
+        # produces dialect-correct output on MySQL/ClickHouse/BigQuery without
+        # the broken Postgres-shape multi-unit literal).
+        for piece in (
+            "INTERVAL '1 YEAR'",
+            "INTERVAL '2 MONTH'",
+            "INTERVAL '3 WEEK'",
+            "INTERVAL '5 DAY'",
+            "INTERVAL '6 HOUR'",
+            "INTERVAL '7 MINUTE'",
+            "INTERVAL '8 SECOND'",
+        ):
+            assert piece in norm, f"missing per-unit interval clause '{piece}'\nsql:\n{sql}"
 
     async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1522,6 +1568,77 @@ class TestMultiDialectGeneration:
             assert "DATE(" in sql_upper
         else:
             assert "INTERVAL" in sql_upper
+
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    async def test_window_measure_multi_unit_interval_dialect_correct(
+        self, dialect: str, orders_model: SlayerModel,
+    ) -> None:
+        """Multi-unit windows (e.g. '1y2m3d') must render as separate per-unit
+        INTERVAL clauses on MySQL and ClickHouse — never as a single
+        Postgres-shaped quoted multi-unit literal which neither dialect parses.
+
+        Codex flagged this as a real correctness bug during PR #64 review:
+        `_duration_interval_sql` had only two branches (SQLite + "Postgres-style"),
+        and the latter emitted `INTERVAL '1 year 2 month 3 day'` for every
+        non-SQLite dialect.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"),
+                              granularity=TimeGranularity.DAY),
+            ],
+            measures=[ModelMeasure(formula="revenue:sum(window='1y2m3d')",
+                                   name="rev_w")],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        norm = _norm(sql).upper()
+        # The broken Postgres-shape multi-unit literal must NOT appear.
+        assert "INTERVAL '1 YEAR 2 MONTH 3 DAY'" not in norm, (
+            f"Multi-unit Postgres-shape INTERVAL literal is invalid on {dialect}.\n"
+            f"sql:\n{sql}"
+        )
+        # Per-unit INTERVAL clauses must each be present (sqlglot transpiles
+        # exp.Interval per dialect; MySQL + ClickHouse both render as
+        # `INTERVAL N UNIT` for these AST nodes).
+        for piece in ("INTERVAL 1 YEAR", "INTERVAL 2 MONTH", "INTERVAL 3 DAY"):
+            assert piece in norm, (
+                f"Expected dialect-correct '{piece}' in {dialect} output.\n"
+                f"sql:\n{sql}"
+            )
+
+    @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
+    async def test_window_measure_single_unit_interval_dialect_correct(
+        self, dialect: str, orders_model: SlayerModel,
+    ) -> None:
+        """Even single-unit windows must render unquoted on MySQL/ClickHouse.
+
+        The pre-refactor code emits `INTERVAL '7 day'` for single-unit windows
+        on every non-SQLite dialect, which is invalid MySQL syntax (MySQL wants
+        `INTERVAL 7 DAY`). After the AST refactor, sqlglot's per-dialect
+        transpiler emits the canonical form for each dialect.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"),
+                              granularity=TimeGranularity.DAY),
+            ],
+            measures=[ModelMeasure(formula="revenue:sum(window='7d')",
+                                   name="rev_w")],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        norm = _norm(sql).upper()
+        assert "INTERVAL '7 DAY'" not in norm, (
+            f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
+            f"sql:\n{sql}"
+        )
+        assert "INTERVAL 7 DAY" in norm, (
+            f"Expected dialect-correct 'INTERVAL 7 DAY' in {dialect} output.\n"
+            f"sql:\n{sql}"
+        )
 
 
 class TestMedianPercentilePerDialect:

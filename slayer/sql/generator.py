@@ -40,6 +40,11 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
 # and handles gaps in time series correctly.
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 
+# Separator used when joining pre-rendered SQL fragments into a conjunctive
+# WHERE/HAVING clause; extracted as a constant so Sonar S1192 doesn't flag it
+# at every join site.
+_SQL_AND_JOINER = " AND "
+
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
     r'^(?:'
@@ -660,32 +665,55 @@ class SQLGenerator:
                             "SECOND": "seconds"}
             sqlite_unit = sqlite_units.get(unit, unit.lower() + "s")
             sqlite_val = val * 7 if granularity == "week" else val
-            col_sql = col_expr.sql(dialect="sqlite")
-            return sqlglot.parse_one(
-                f"DATE({col_sql}, '{sqlite_val} {sqlite_unit}')", dialect="sqlite"
+            return exp.Anonymous(
+                this="DATE",
+                expressions=[col_expr, exp.Literal.string(f"{sqlite_val} {sqlite_unit}")],
             )
 
-        # Standard SQL: col + INTERVAL 'N' UNIT
-        interval_str = f"INTERVAL '{val}' {unit}"
-        col_sql = col_expr.sql(dialect=self.dialect)
-        return sqlglot.parse_one(f"{col_sql} + {interval_str}", dialect=self.dialect)
+        # Standard SQL: col ± INTERVAL N UNIT (single-unit; sqlglot transpiles
+        # to the dialect-correct form, e.g. MySQL `INTERVAL N UNIT`,
+        # ClickHouse same, BigQuery same).
+        if val >= 0:
+            return exp.Add(this=col_expr, expression=exp.Interval(
+                this=exp.Literal.number(val), unit=exp.Var(this=unit),
+            ))
+        return exp.Sub(this=col_expr, expression=exp.Interval(
+            this=exp.Literal.number(-val), unit=exp.Var(this=unit),
+        ))
 
-    def _duration_interval_sql(self, duration: str, sign: int = 1) -> str:
+    def _duration_interval_exprs(self, duration: str, sign: int = 1) -> list[exp.Expression]:
+        """Return per-unit AST nodes that `_add_intervals_expr` will chain.
+
+        Non-SQLite: one positive `exp.Interval` per parsed (amount, unit) pair.
+        The Add-vs-Sub direction is decided by `_add_intervals_expr` from its
+        own `sign` arg, not baked into the Interval — sqlglot transpiles each
+        single-unit interval per dialect (MySQL: `INTERVAL N UNIT`;
+        ClickHouse: same; BigQuery: same), avoiding the broken Postgres-shape
+        multi-unit literal `INTERVAL '1 year 2 month 3 day'` that fails on
+        every Tier-1+ non-SQLite/non-Postgres dialect.
+
+        SQLite: one DATETIME-modifier string literal per pair, sign baked in.
+        Week is converted to `N*7 days` (SQLite has no week unit).
+        """
         parts = _parse_window_duration(duration)
         if self.dialect == "sqlite":
-            modifiers = []
-            for amount, unit in parts:
-                value = amount * 7 if unit == "w" else amount
-                prefix = "+" if sign >= 0 else "-"
-                modifiers.append(f"'{prefix}{value} {_WINDOW_UNIT_SQLITE[unit]}'")
-            return ", ".join(modifiers)
-        interval_parts = []
-        for amount, unit in parts:
-            interval_parts.append(f"{amount} {_WINDOW_UNIT_SQL[unit]}")
-        prefix = "" if sign >= 0 else "-"
-        return f"{prefix}INTERVAL '{' '.join(interval_parts)}'"
+            prefix = "+" if sign >= 0 else "-"
+            return [
+                exp.Literal.string(
+                    f"{prefix}{(amount * 7 if unit == 'w' else amount)} "
+                    f"{_WINDOW_UNIT_SQLITE[unit]}"
+                )
+                for amount, unit in parts
+            ]
+        return [
+            exp.Interval(
+                this=exp.Literal.number(amount),
+                unit=exp.Var(this=_WINDOW_UNIT_SQL[unit].upper()),
+            )
+            for amount, unit in parts
+        ]
 
-    def _granularity_interval_sql(self, granularity: TimeGranularity, sign: int = 1) -> str:
+    def _granularity_interval_expr(self, granularity: TimeGranularity, sign: int = 1) -> list[exp.Expression]:
         if granularity == TimeGranularity.QUARTER:
             duration = "3m"
         elif granularity == TimeGranularity.WEEK:
@@ -700,15 +728,25 @@ class SQLGenerator:
                 TimeGranularity.SECOND: "1s",
             }
             duration = unit_to_duration[granularity]
-        return self._duration_interval_sql(duration, sign=sign)
+        return self._duration_interval_exprs(duration, sign=sign)
 
-    def _add_intervals_sql(self, expr_sql: str, intervals: list[str]) -> str:
+    def _add_intervals_expr(self, expr: exp.Expression, intervals: list[exp.Expression],
+                            sign: int = 1) -> exp.Expression:
+        """Compose `expr ± interval [± interval ...]` as AST.
+
+        SQLite: wraps as `DATETIME(expr, mod1, mod2, ...)` (sign baked into
+        each modifier by `_duration_interval_exprs`); the `sign` arg is
+        ignored on SQLite.
+        Other dialects: chains `exp.Add` (sign>=0) or `exp.Sub` (sign<0). The
+        result transpiles per dialect via sqlglot — MySQL renders
+        `INTERVAL N UNIT` clauses unquoted, ClickHouse same, etc.
+        """
         if self.dialect == "sqlite":
-            args = ", ".join([expr_sql] + intervals)
-            return f"DATETIME({args})"
-        result = expr_sql
-        for interval in intervals:
-            result = f"({result} + {interval})"
+            return exp.Anonymous(this="DATETIME", expressions=[expr, *intervals])
+        op_cls = exp.Add if sign >= 0 else exp.Sub
+        result = expr
+        for iv in intervals:
+            result = op_cls(this=result, expression=iv)
         return result
 
     def _build_window_source_cols(
@@ -717,21 +755,31 @@ class SQLGenerator:
         enriched: EnrichedQuery,
         td,
         measure: EnrichedMeasure,
-    ) -> tuple[list[str], list[str]]:
+    ) -> tuple[list[exp.Alias], list[exp.Condition]]:
         """Build the SELECT columns and base equality predicates for the _src subquery.
 
         The trailing-window range predicate (`_src._w_time >= ...`) is added later
         by the caller; only the equality joins on dims and other time dims are
         produced here.
+
+        Returns (source_cols, join_eqs) where source_cols are alias-wrapped
+        expressions ready to feed `exp.Select.select(...)` and join_eqs are
+        `exp.EQ` predicates ready to combine with `exp.and_`.
         """
-        source_cols: list[str] = []
-        join_parts: list[str] = []
+        source_cols: list[exp.Alias] = []
+        join_eqs: list[exp.Condition] = []
+
+        def _src_col(name: str) -> exp.Column:
+            return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier("_src"))
+
+        def _base_col(alias: str) -> exp.Column:
+            return exp.Column(this=exp.to_identifier(alias), table=exp.to_identifier("_base"))
 
         for idx, dim in enumerate(enriched.dimensions):
             col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
             src_alias = f"_w_dim_{idx}"
-            source_cols.append(f"{col_expr.sql(dialect=self.dialect)} AS {src_alias}")
-            join_parts.append(f'_src.{src_alias} = _base."{dim.alias}"')
+            source_cols.append(col_expr.as_(src_alias))
+            join_eqs.append(exp.EQ(this=_src_col(src_alias), expression=_base_col(dim.alias)))
 
         # Equality-join on every other time dim so the trailing window does not
         # fan out across their values when the query has 2+ time dimensions.
@@ -748,38 +796,42 @@ class SQLGenerator:
                 granularity=other_td.granularity,
             )
             other_alias = f"_w_td_{idx}"
-            source_cols.append(f"{other_bucket.sql(dialect=self.dialect)} AS {other_alias}")
-            join_parts.append(f'_src.{other_alias} = _base."{other_td.alias}"')
+            source_cols.append(other_bucket.as_(other_alias))
+            join_eqs.append(exp.EQ(this=_src_col(other_alias), expression=_base_col(other_td.alias)))
 
         raw_time_expr = self._resolve_sql(sql=td.sql or td.name, name=td.name, model_name=td.model_name)
-        source_cols.append(f"{raw_time_expr.sql(dialect=self.dialect)} AS _w_time")
+        source_cols.append(raw_time_expr.as_("_w_time"))
 
         value_expr = self._resolve_sql(sql=measure.sql or measure.name, name=measure.name, model_name=measure.model_name)
-        value_sql = value_expr.sql(dialect=self.dialect)
         if measure.filter_sql:
-            value_sql = f"CASE WHEN {measure.filter_sql} THEN {value_sql} END"
-        source_cols.append(f"{value_sql} AS _w_value")
+            # measure.filter_sql is a raw SQL string (originates upstream); parse
+            # it once via sqlglot so the CASE WHEN ... THEN ... END is a true
+            # AST node rather than text glued in.
+            filter_ast = sqlglot.parse_one(measure.filter_sql, dialect=self.dialect)
+            value_expr = exp.Case(ifs=[exp.If(this=filter_ast, true=value_expr)])
+        source_cols.append(value_expr.as_("_w_value"))
 
-        return source_cols, join_parts
+        return source_cols, join_eqs
 
-    @staticmethod
     def _window_referenced_aliases(
+        self,
         *,
-        source_cols: list[str],
+        source_cols: list[exp.Alias],
         measure: EnrichedMeasure,
         filters,
     ) -> set[str]:
         """Aliases the windowed-CTE actually references; drives join pruning.
 
-        Scans rendered source_cols, the measure's filter_sql, and column paths
-        of every non-post query filter (so a WHERE on customers.x keeps the
-        customers join even if no other thing references it). Path aliases use
-        "__" so each is one identifier token; for multi-hop aliases like
+        Scans rendered `source_cols` SQL, the measure's filter_sql, and column
+        paths of every non-post query filter (so a WHERE on customers.x keeps
+        the customers join even if no other thing references it). Path aliases
+        use "__" so each is one identifier token; for multi-hop aliases like
         "customers__regions" we also include every "__"-split prefix
         ("customers") via `_alias_prefixes` so the transitive joins those
         reference are kept too.
         """
-        referenced_text = " ".join(source_cols)
+        rendered_cols = " ".join(c.sql(dialect=self.dialect) for c in source_cols)
+        referenced_text = rendered_cols
         if measure.filter_sql:
             referenced_text += " " + measure.filter_sql
         referenced: set[str] = set()
@@ -789,22 +841,21 @@ class SQLGenerator:
             referenced.update(_alias_prefixes(col))
         return referenced
 
-    def _build_window_source_sql(
+    def _build_window_source_select(
         self,
         *,
         enriched: EnrichedQuery,
-        source_cols: list[str],
+        source_cols: list[exp.Alias],
         measure: EnrichedMeasure,
-    ) -> str:
-        """Render the _src subquery: SELECT ... FROM ... [filtered JOINs] [WHERE ...].
+    ) -> exp.Select:
+        """Build the _src subquery: SELECT ... FROM ... [filtered JOINs] [WHERE ...] as AST.
 
         Only joins whose target_alias is referenced by source_cols (or by the
         measure's filter SQL) are included — pulling in unrelated joins can
         change row multiplicity for the windowed aggregation, breaking the
         "adding a measure must not affect cardinality" core principle.
         """
-        source_from = self._build_from_clause(enriched=enriched).sql(dialect=self.dialect)
-        source_sql = "SELECT\n    " + ",\n    ".join(source_cols) + f"\nFROM {source_from}"
+        select = exp.Select().select(*source_cols).from_(self._build_from_clause(enriched=enriched))
         referenced = self._window_referenced_aliases(
             source_cols=source_cols, measure=measure, filters=enriched.filters,
         )
@@ -813,10 +864,14 @@ class SQLGenerator:
             if target_alias not in referenced:
                 continue
             if target_table.startswith("("):
-                join_target = f"{target_table} AS {target_alias}"
+                join_target = exp.Subquery(
+                    this=sqlglot.parse_one(target_table, dialect=self.dialect),
+                    alias=exp.to_identifier(target_alias),
+                )
             else:
-                join_target = exp.to_table(target_table, alias=target_alias).sql(dialect=self.dialect)
-            source_sql += f"\n{jtype.upper()} JOIN {join_target} ON {join_cond}"
+                join_target = exp.to_table(target_table, alias=target_alias)
+            join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+            select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
         scoped = copy.copy(enriched)
         scoped.time_dimensions = [
@@ -824,9 +879,9 @@ class SQLGenerator:
         ]
         where_clause, _ = self._build_where_and_having(enriched=scoped)
         if where_clause is not None:
-            source_sql += f"\nWHERE {where_clause.sql(dialect=self.dialect)}"
+            select = select.where(where_clause)
 
-        return source_sql
+        return select
 
     def _generate_window_measure_cte(self, enriched: EnrichedQuery, measure: EnrichedMeasure) -> str:
         if measure.aggregation not in ("sum", "avg"):
@@ -839,40 +894,47 @@ class SQLGenerator:
             raise ValueError(f"Windowed measure '{measure.alias}' could not resolve its time dimension")
 
         group_aliases = [d.alias for d in enriched.dimensions] + [t.alias for t in enriched.time_dimensions]
-        source_cols, join_parts = self._build_window_source_cols(
+        source_cols, join_eqs = self._build_window_source_cols(
             enriched=enriched, td=td, measure=measure,
         )
-        source_sql = self._build_window_source_sql(
+        src_select = self._build_window_source_select(
             enriched=enriched, source_cols=source_cols, measure=measure,
         )
+        src_subq = exp.Subquery(this=src_select, alias=exp.TableAlias(this=exp.to_identifier("_src")))
 
-        frame_time = f'_base."{td.alias}"'
-        bucket_end = self._add_intervals_sql(
+        frame_time = exp.Column(this=exp.to_identifier(td.alias), table=exp.to_identifier("_base"))
+        bucket_end = self._add_intervals_expr(
             frame_time,
-            [self._granularity_interval_sql(td.granularity, sign=1)],
+            self._granularity_interval_expr(td.granularity, sign=1),
+            sign=1,
         )
-        lower_bound = self._add_intervals_sql(
+        lower_bound = self._add_intervals_expr(
             bucket_end,
-            [self._duration_interval_sql(measure.window, sign=-1)],
+            self._duration_interval_exprs(measure.window, sign=-1),
+            sign=-1,
         )
-        join_parts.append(f"_src._w_time >= {lower_bound}")
-        join_parts.append(f"_src._w_time < {bucket_end}")
+        src_w_time = exp.Column(this=exp.to_identifier("_w_time"), table=exp.to_identifier("_src"))
+        # bucket_end may be referenced both as upper bound and as base for the
+        # lower bound — clone so the AST has independent subtrees.
+        on_expr = exp.and_(
+            *join_eqs,
+            exp.GTE(this=src_w_time, expression=lower_bound),
+            exp.LT(this=src_w_time.copy(), expression=bucket_end.copy()),
+        )
 
-        agg_func = "SUM" if measure.aggregation == "sum" else "AVG"
-        select_parts = [f'_base."{a}"' for a in group_aliases]
-        select_parts.append(f'{agg_func}(_src._w_value) AS "{measure.alias}"')
-        group_parts = [f'_base."{a}"' for a in group_aliases]
-        return (
-            "SELECT\n    "
-            + ",\n    ".join(select_parts)
-            + "\nFROM _base\n"
-            + "LEFT JOIN (\n"
-            + source_sql
-            + "\n) AS _src\n    ON "
-            + " AND ".join(join_parts)
-            + "\nGROUP BY "
-            + ", ".join(group_parts)
-        )
+        agg_cls = exp.Sum if measure.aggregation == "sum" else exp.Avg
+        agg_input = exp.Column(this=exp.to_identifier("_w_value"), table=exp.to_identifier("_src"))
+
+        outer = exp.Select()
+        for a in group_aliases:
+            outer = outer.select(exp.Column(this=exp.to_identifier(a), table=exp.to_identifier("_base")))
+        outer = outer.select(agg_cls(this=agg_input).as_(measure.alias))
+        outer = outer.from_(exp.Table(this=exp.to_identifier("_base")))
+        outer = outer.join(src_subq, on=on_expr, join_type="LEFT")
+        for a in group_aliases:
+            outer = outer.group_by(exp.Column(this=exp.to_identifier(a), table=exp.to_identifier("_base")))
+
+        return outer.sql(dialect=self.dialect, pretty=True)
 
     def _generate_base(self, enriched: EnrichedQuery,
                         skip_isolated: bool = False) -> str:
@@ -1195,7 +1257,7 @@ class SQLGenerator:
                     qualified = f"{model}.{col_name}"
                     qualified_sql = qualified_sql.replace(qualified, f'"{qualified}"')
                 conditions.append(qualified_sql)
-            where_clause = " AND ".join(conditions)
+            where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
 
         return sql
@@ -1207,27 +1269,34 @@ class SQLGenerator:
         refs = re.findall(r'"([^"]+)"', sql)
         return all(ref in available for ref in refs)
 
-    @staticmethod
     def _build_consecutive_periods_ctes(
+        self,
         transform,
         source_cte: str,
         available_aliases: set[str],
         layer_num: int,
     ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        measure = f'"{transform.measure_alias}"'
-        time_col = f'"{transform.time_alias}"'
         partition_aliases = getattr(transform, "partition_aliases", []) or []
-        partition_cols = [f'"{a}"' for a in partition_aliases]
-        partition_clause = (
-            "PARTITION BY " + ", ".join(partition_cols)
-            if partition_cols
-            else ""
-        )
-        order_clause = f"ORDER BY {time_col}"
-        reset_over = " ".join(p for p in (partition_clause, order_clause) if p)
         reset_alias = _cte_name_from_alias("_cp_reset_", transform.alias)
         reset_cte = _cte_name_from_alias(f"cp_reset_{layer_num}_", transform.alias)
         value_cte = _cte_name_from_alias(f"cp_value_{layer_num}_", transform.alias)
+
+        def _quoted_col(name: str) -> exp.Column:
+            return exp.Column(this=exp.to_identifier(name, quoted=True))
+
+        measure_col = _quoted_col(transform.measure_alias)
+        time_col = _quoted_col(transform.time_alias)
+        # Bare column inside exp.Order, NOT wrapped in exp.Ordered — sqlglot
+        # otherwise injects `NULLS LAST` on SQLite (and Spark/Databricks),
+        # changing streak/reset semantics for any NULL time values vs the
+        # pre-AST string-built `ORDER BY <t>` output.
+        order = exp.Order(expressions=[time_col])
+        spec = exp.WindowSpec(
+            kind="ROWS",
+            start="UNBOUNDED",
+            start_side="PRECEDING",
+            end="CURRENT ROW",
+        )
 
         # Wrap measure in an explicit boolean predicate so non-boolean argument
         # expressions don't rely on dialect-specific truthiness coercion in
@@ -1237,31 +1306,66 @@ class SQLGenerator:
         # `consecutive_periods(revenue:sum > 0)`), the numeric `<> 0` form
         # is itself rejected by Postgres ("operator does not exist:
         # boolean <> integer"), so we use the column directly inside CASE WHEN.
-        if getattr(transform, "predicate_is_boolean", False):
-            predicate = f"COALESCE({measure}, FALSE)"
-        else:
-            predicate = f"({measure}) IS NOT NULL AND ({measure}) <> 0"
-        source_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
-        reset_sql = (
-            f"SELECT {source_cols}, "
-            f"SUM(CASE WHEN {predicate} THEN 0 ELSE 1 END) "
-            f"OVER ({reset_over} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) "
-            f'AS "{reset_alias}"\n'
-            f"FROM {source_cte}"
+        def _predicate() -> exp.Expression:
+            if getattr(transform, "predicate_is_boolean", False):
+                return exp.func("COALESCE", measure_col.copy(), exp.false())
+            return exp.and_(
+                exp.Is(this=measure_col.copy(), expression=exp.Not(this=exp.Null())),
+                exp.NEQ(this=measure_col.copy(), expression=exp.Literal.number(0)),
+            )
+
+        source_col_exprs = [_quoted_col(a) for a in sorted(available_aliases)]
+
+        # reset CTE: SELECT <available>, SUM(CASE WHEN pred THEN 0 ELSE 1 END)
+        #   OVER (PARTITION BY ... ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        #   AS "<reset_alias>" FROM source_cte
+        reset_case = exp.Case(
+            ifs=[exp.If(this=_predicate(), true=exp.Literal.number(0))],
+            default=exp.Literal.number(1),
+        )
+        reset_window = exp.Window(
+            this=exp.Sum(this=reset_case),
+            partition_by=[_quoted_col(a) for a in partition_aliases] or None,
+            order=order,
+            spec=spec,
+        )
+        reset_select = (
+            exp.Select()
+            .select(*[c.copy() for c in source_col_exprs])
+            .select(reset_window.as_(reset_alias, quoted=True))
+            .from_(exp.Table(this=exp.to_identifier(source_cte)))
         )
 
-        value_partition_cols = partition_cols + [f'"{reset_alias}"']
-        value_partition_clause = "PARTITION BY " + ", ".join(value_partition_cols)
-        value_over = f"{value_partition_clause} {order_clause}"
-        value_sql = (
-            f"SELECT {source_cols}, "
-            f"CASE WHEN {predicate} THEN "
-            f"SUM(CASE WHEN {predicate} THEN 1 ELSE 0 END) "
-            f"OVER ({value_over} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) "
-            f"ELSE 0 END AS \"{transform.alias}\"\n"
-            f"FROM {reset_cte}"
+        # value CTE: SELECT <available>,
+        #   CASE WHEN pred THEN SUM(CASE WHEN pred THEN 1 ELSE 0 END)
+        #     OVER (PARTITION BY ..., "<reset_alias>" ORDER BY t ROWS ...) ELSE 0 END
+        #   AS "<transform.alias>" FROM reset_cte
+        value_inner_case = exp.Case(
+            ifs=[exp.If(this=_predicate(), true=exp.Literal.number(1))],
+            default=exp.Literal.number(0),
+        )
+        value_partition = (
+            [_quoted_col(a) for a in partition_aliases] + [_quoted_col(reset_alias)]
+        )
+        value_window = exp.Window(
+            this=exp.Sum(this=value_inner_case),
+            partition_by=value_partition,
+            order=order.copy(),
+            spec=spec.copy(),
+        )
+        value_outer_case = exp.Case(
+            ifs=[exp.If(this=_predicate(), true=value_window)],
+            default=exp.Literal.number(0),
+        )
+        value_select = (
+            exp.Select()
+            .select(*[c.copy() for c in source_col_exprs])
+            .select(value_outer_case.as_(transform.alias, quoted=True))
+            .from_(exp.Table(this=exp.to_identifier(reset_cte)))
         )
 
+        reset_sql = reset_select.sql(dialect=self.dialect, pretty=True)
+        value_sql = value_select.sql(dialect=self.dialect, pretty=True)
         return [(reset_cte, reset_sql)], [(value_cte, value_sql)]
 
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
@@ -1889,12 +1993,12 @@ class SQLGenerator:
 
         where_clause = None
         if where_parts:
-            where_sql = " AND ".join(where_parts)
+            where_sql = _SQL_AND_JOINER.join(where_parts)
             where_clause = sqlglot.parse_one(where_sql, dialect=self.dialect)
 
         having_clause = None
         if having_parts:
-            having_sql = " AND ".join(having_parts)
+            having_sql = _SQL_AND_JOINER.join(having_parts)
             having_clause = sqlglot.parse_one(having_sql, dialect=self.dialect)
 
         return where_clause, having_clause
