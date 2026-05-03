@@ -529,6 +529,51 @@ class TestQueryBackedColumnTypes:
         finally:
             tmp.cleanup()
 
+    async def test_get_column_types_with_required_unbound_variable(self) -> None:
+        """A query-backed model with a required-but-undefaulted ``{var}``
+        placeholder should still produce a column-type map (the type probe
+        runs with placeholder fill, not with caller variables). Codex review
+        of PR #67 commit 73f69b0.
+        """
+        from slayer.core.enums import DataType
+        from slayer.core.models import Column, DatasourceConfig
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            storage = YAMLStorage(base_dir=tmp.name)
+            ds_path = f"{tmp.name}/probe.db"
+            await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=ds_path))
+            await storage.save_model(SlayerModel(
+                name="t", sql_table="orders_t", data_source="ds",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+            import sqlite3
+            conn = sqlite3.connect(ds_path)
+            conn.execute("CREATE TABLE orders_t (amount NUMERIC)")
+            conn.execute("INSERT INTO orders_t (amount) VALUES (1)")
+            conn.commit()
+            conn.close()
+
+            # `{threshold}` is referenced in the filter but no default is set
+            # at either model.query_variables or stage.variables.
+            engine = SlayerQueryEngine(storage=storage)
+            await engine.save_model(SlayerModel(
+                name="qb_unbound",
+                source_queries=[SlayerQuery(
+                    source_model="t",
+                    measures=[{"formula": "amount:sum"}],
+                    filters=["amount > {threshold}"],
+                )],
+                # NO query_variables — threshold is required at run time.
+            ))
+            types = await engine.get_column_types("qb_unbound")
+            assert types, (
+                "type probing must succeed for query-backed models with "
+                "unbound required variables (placeholder fill applies)"
+            )
+        finally:
+            tmp.cleanup()
+
 
 class TestBackingQuerySQLCacheHygiene:
     """``backing_query_sql`` is the canonical placeholder-fill render and must

@@ -527,7 +527,15 @@ class SlayerQueryEngine:
         # us at the wrong backend or short-circuit on an empty column list.
         if model.source_queries:
             try:
-                model = await self._resolve_model(model_name=model_name)
+                # Type probing has no caller-supplied variables, so any
+                # required-but-undefaulted ``{var}`` placeholder would fail at
+                # SQL-gen and we'd return {}. Use the same canonical
+                # placeholder-fill render that save-time validation uses
+                # (``dry_run_placeholders=True`` substitutes literal ``0``).
+                model = await self._resolve_model(
+                    model_name=model_name,
+                    dry_run_placeholders=True,
+                )
             except Exception:
                 logger.warning(
                     "get_column_types: failed to resolve query-backed model '%s'",

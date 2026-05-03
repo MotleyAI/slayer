@@ -90,7 +90,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
                     f for f in (
                         request.source_model, request.measures, request.dimensions,
                         request.time_dimensions, request.filters, request.order,
-                        request.limit, request.offset,
+                        request.limit, request.offset, request.whole_periods_only,
                     ) if f is not None
                 ]
                 if disallowed:
