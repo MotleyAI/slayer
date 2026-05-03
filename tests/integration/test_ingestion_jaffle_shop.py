@@ -32,6 +32,7 @@ from slayer.demo.jaffle_shop import (
     load_data,
 )
 from slayer.engine.ingestion import ingest_datasource
+from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -201,8 +202,6 @@ def test_jaffle_model_joins(jaffle_models, model_name):
 
 async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models):
     """Saving an ingested model to YAML must produce current-schema shape with no v1 keys."""
-    from slayer.storage import migrations as mig
-
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         for model in jaffle_models.values():
