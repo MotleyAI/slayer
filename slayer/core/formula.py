@@ -42,6 +42,59 @@ TIMELESS_TRANSFORMS = {"rank"}
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
 
+_NON_IDENT_RE = re.compile(r"[^a-zA-Z0-9_]+")
+
+
+def _agg_signature_suffix(
+    agg_args: Optional[list],
+    agg_kwargs: Optional[dict],
+) -> str:
+    """Build a deterministic identifier suffix from aggregation args/kwargs.
+
+    Returns the empty string when both are empty so unparameterized aggregations
+    keep their existing canonical names. For parameterized variants (e.g.
+    ``last(created_at)`` vs ``last(updated_at)``, ``percentile(p=0.5)`` vs
+    ``percentile(p=0.95)``, ``sum(window='90d')`` vs ``sum(window='30d')``)
+    the suffix differentiates them so they don't collapse onto a single
+    hidden alias.
+    """
+    args = agg_args or []
+    kwargs = agg_kwargs or {}
+    if not args and not kwargs:
+        return ""
+    parts: List[str] = []
+    for a in args:
+        sanitized = _NON_IDENT_RE.sub("_", str(a)).strip("_")
+        if sanitized:
+            parts.append(sanitized)
+    for k in sorted(kwargs.keys()):
+        sk = _NON_IDENT_RE.sub("_", str(k)).strip("_")
+        sv = _NON_IDENT_RE.sub("_", str(kwargs[k])).strip("_")
+        if sk:
+            parts.append(sk)
+        if sv:
+            parts.append(sv)
+    return "_" + "_".join(parts) if parts else ""
+
+
+def canonical_agg_name(
+    measure_name: str,
+    aggregation_name: str,
+    agg_args: Optional[list] = None,
+    agg_kwargs: Optional[dict] = None,
+) -> str:
+    """Canonical hidden-column name for an aggregated measure ref.
+
+    ``revenue:sum`` → ``revenue_sum``; ``*:count`` → ``_count``;
+    ``revenue:percentile(p=0.5)`` → ``revenue_percentile_p_0_5``;
+    ``revenue:sum(window='90d')`` → ``revenue_sum_window_90d``.
+    """
+    suffix = _agg_signature_suffix(agg_args, agg_kwargs)
+    if measure_name == "*":
+        return f"_{aggregation_name}{suffix}"
+    return f"{measure_name}_{aggregation_name}{suffix}"
+
+
 class AggregatedMeasureRef(BaseModel):
     """A measure reference with explicit aggregation (new colon syntax).
 
@@ -794,14 +847,19 @@ def parse_filter(
     processed = _preprocess_like(processed)
     # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names
     processed, agg_refs = _preprocess_agg_refs(processed)
-    # Build reverse map: placeholder → canonical name (measure_aggregation)
-    agg_canonical = {}
-    for ph, ref in agg_refs.items():
-        if ref.measure_name == "*":
-            canonical = f"_{ref.aggregation_name}"
-        else:
-            canonical = f"{ref.measure_name}_{ref.aggregation_name}"
-        agg_canonical[ph] = canonical
+    # Build reverse map: placeholder → canonical name (measure_aggregation[_args])
+    # Include agg args/kwargs in the canonical name so e.g.
+    # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
+    # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
+    agg_canonical = {
+        ph: canonical_agg_name(
+            measure_name=ref.measure_name,
+            aggregation_name=ref.aggregation_name,
+            agg_args=ref.agg_args,
+            agg_kwargs=ref.agg_kwargs,
+        )
+        for ph, ref in agg_refs.items()
+    }
     # Replace placeholders with canonical names in the formula
     for ph, canonical in agg_canonical.items():
         processed = processed.replace(ph, canonical)

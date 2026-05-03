@@ -766,6 +766,38 @@ class TestFields:
             f"src_body:\n{src_body}"
         )
 
+    async def test_filter_on_windowed_measure_is_post_filter(
+        self, generator: SQLGenerator, orders_model: SlayerModel,
+    ) -> None:
+        """A filter on a windowed measure must apply post-aggregation, not as
+        HAVING on the base CTE. The base CTE doesn't compute the windowed
+        value — applying a HAVING there would use the wrong (non-windowed)
+        aggregate.
+
+        Verify by checking the generated SQL contains a WHERE on the
+        post-aggregate combined CTE (referenced via the windowed alias),
+        and that the canonical filter alias matches the windowed measure's
+        alias (i.e. the window kwarg is preserved in canonicalization).
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            measures=[{"formula": "revenue:sum(window='90d')", "name": "revenue_90d"}],
+            filters=["revenue:sum(window='90d') > 100"],
+        )
+        sql = await _generate(generator=generator, query=query, model=orders_model)
+        norm = _norm(sql)
+        # Canonical filter name must include the window kwarg suffix so it
+        # matches the windowed measure's alias.
+        assert "revenue_sum_window_90d" in norm, (
+            f"Filter canonical name must include window kwarg.\nsql:\n{sql}"
+        )
+        # The filter must be applied OUTSIDE the base CTE (no HAVING on the
+        # plain `SUM(amount)` aggregate — that would use the wrong value).
+        assert "HAVING SUM" not in norm.upper(), (
+            f"Windowed-measure filter must not be applied as HAVING on the base aggregate.\nsql:\n{sql}"
+        )
+
     async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
             source_model="orders",
