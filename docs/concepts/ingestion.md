@@ -20,7 +20,7 @@ SLayer introspects foreign key constraints and builds a directed dependency grap
 orders ──FK──→ customers ──FK──→ regions
 ```
 
-The graph is validated to be acyclic (a `RollupGraphError` is raised if cycles are detected). For each table, SLayer computes the **transitive closure** — all tables reachable via FK chains — to determine which columns to introspect for dotted references (e.g. `customers.regions.name`). The transitive closure is used only for column discovery, not for generating joins (see Step 2).
+If the graph is acyclic, SLayer computes the **transitive closure** for each table — all tables reachable via FK chains — to determine which columns to introspect for dotted references (e.g. `customers.regions.name`). The transitive closure is used only for column discovery, not for generating joins (see Step 2). If a cycle is detected, ingestion logs a warning and falls back to simple models without rollup joins (see [Cycle Handling](#cycle-handling) below).
 
 ### Step 2: Build Direct Joins
 

@@ -68,20 +68,20 @@ def main():
     print("Model structure:")
 
     orders_model = run_sync(storage.get_model("orders"))
-    check("orders model exists", orders_model is not None)
+    check(name="orders model exists", condition=orders_model is not None)
     if orders_model is None:
         return
-    check("orders has dynamic joins", len(orders_model.joins) > 0 and orders_model.sql_table is not None)
-    check("orders has default_time_dimension", orders_model.default_time_dimension == "created_at")
+    check(name="orders has dynamic joins", condition=len(orders_model.joins) > 0 and orders_model.sql_table is not None)
+    check(name="orders has default_time_dimension", condition=orders_model.default_time_dimension == "created_at")
 
     column_names = [c.name for c in orders_model.columns]
-    check("orders has quantity column", "quantity" in column_names)
+    check(name="orders has quantity column", condition="quantity" in column_names)
     join_targets = [j.target_model for j in orders_model.joins]
-    check("orders joins to customers", "customers" in join_targets)
-    check("orders joins to products", "products" in join_targets)
+    check(name="orders joins to customers", condition="customers" in join_targets)
+    check(name="orders joins to products", condition="products" in join_targets)
 
     regions_model = run_sync(storage.get_model("regions"))
-    check("regions has no rollup (sql_table set)", regions_model.sql_table is not None)
+    check(name="regions has no rollup (sql_table set)", condition=regions_model.sql_table is not None)
 
     # --- Basic query checks ---
     print("\nBasic queries:")
@@ -92,7 +92,7 @@ def main():
             measures=[COUNT_MEASURE],
         )
     )
-    check(f"total orders = {TOTAL_ORDERS}", result.data[0][COUNT_KEY] == TOTAL_ORDERS)
+    check(name=f"total orders = {TOTAL_ORDERS}", condition=result.data[0][COUNT_KEY] == TOTAL_ORDERS)
 
     result = engine.execute_sync(
         query=SlayerQuery(
@@ -103,7 +103,7 @@ def main():
     )
     by_status = {r["orders.status"]: r[COUNT_KEY] for r in result.data}
     for status, expected in STATUS_COUNTS.items():
-        check(f"{status} orders = {expected}", by_status.get(status) == expected)
+        check(name=f"{status} orders = {expected}", condition=by_status.get(status) == expected)
 
     # Rollup: by product category
     result = engine.execute_sync(
@@ -114,7 +114,7 @@ def main():
         )
     )
     by_cat = {r["orders.products.category"]: r[COUNT_KEY] for r in result.data}
-    check("all categories sum to total", sum(by_cat.values()) == TOTAL_ORDERS)
+    check(name="all categories sum to total", condition=sum(by_cat.values()) == TOTAL_ORDERS)
 
     # Filter
     result = engine.execute_sync(
@@ -124,10 +124,7 @@ def main():
             filters=["status = 'completed'"],
         )
     )
-    check(
-        f"filtered completed = {STATUS_COUNTS['completed']}",
-        result.data[0][COUNT_KEY] == STATUS_COUNTS["completed"],
-    )
+    check(name=f"filtered completed = {STATUS_COUNTS['completed']}", condition=result.data[0][COUNT_KEY] == STATUS_COUNTS["completed"])
 
     # Order + limit
     result = engine.execute_sync(
@@ -139,7 +136,7 @@ def main():
             limit=3,
         )
     )
-    check("top 3 customers returned", result.row_count == 3)
+    check(name="top 3 customers returned", condition=result.row_count == 3)
 
     # --- Arithmetic measures ---
     print("\nMeasures (arithmetic):")
@@ -156,10 +153,10 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("arithmetic measure produces results", result.row_count == 12)
-    check("avg_qty column exists", "orders.avg_qty" in result.columns)
+    check(name="arithmetic measure produces results", condition=result.row_count == 12)
+    check(name="avg_qty column exists", condition="orders.avg_qty" in result.columns)
     all_positive = all(row["orders.avg_qty"] > 0 for row in result.data)
-    check("avg_qty all positive", all_positive)
+    check(name="avg_qty all positive", condition=all_positive)
 
     print("\nMeasures (transforms):")
 
@@ -172,11 +169,11 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("cumsum produces results", result.row_count == 12)
-    check("cumsum column exists", "orders.cumulative" in result.columns)
-    check(f"cumsum final = {TOTAL_ORDERS}", result.data[-1]["orders.cumulative"] == TOTAL_ORDERS)
+    check(name="cumsum produces results", condition=result.row_count == 12)
+    check(name="cumsum column exists", condition="orders.cumulative" in result.columns)
+    check(name=f"cumsum final = {TOTAL_ORDERS}", condition=result.data[-1]["orders.cumulative"] == TOTAL_ORDERS)
     cumvals = [r["orders.cumulative"] for r in result.data]
-    check("cumsum non-decreasing", all(a <= b for a, b in zip(cumvals, cumvals[1:])))
+    check(name="cumsum non-decreasing", condition=all(a <= b for a, b in zip(cumvals, cumvals[1:])))
 
     # time_shift (row-based, previous period)
     result = engine.execute_sync(
@@ -187,11 +184,8 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("time_shift first month is null", result.data[0]["orders.prev"] is None)
-    check(
-        "time_shift second month = first month count",
-        result.data[1]["orders.prev"] == result.data[0][COUNT_KEY],
-    )
+    check(name="time_shift first month is null", condition=result.data[0]["orders.prev"] is None)
+    check(name="time_shift second month = first month count", condition=result.data[1]["orders.prev"] == result.data[0][COUNT_KEY])
 
     # Change
     result = engine.execute_sync(
@@ -202,9 +196,9 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("change first month is null", result.data[0]["orders.chg"] is None)
+    check(name="change first month is null", condition=result.data[0]["orders.chg"] is None)
     expected_change = result.data[1][COUNT_KEY] - result.data[0][COUNT_KEY]
-    check(f"change second month = {expected_change}", result.data[1]["orders.chg"] == expected_change)
+    check(name=f"change second month = {expected_change}", condition=result.data[1]["orders.chg"] == expected_change)
 
     # Rank
     result = engine.execute_sync(
@@ -215,8 +209,8 @@ def main():
             order=[{"column": "count", "direction": "desc"}],
         )
     )
-    check("rank column exists", "orders.rnk" in result.columns)
-    check("rank #1 is first row", result.data[0]["orders.rnk"] == 1)
+    check(name="rank column exists", condition="orders.rnk" in result.columns)
+    check(name="rank #1 is first row", condition=result.data[0]["orders.rnk"] == 1)
 
     # --- Combined measures ---
     print("\nMeasures (combined):")
@@ -232,9 +226,9 @@ def main():
             ],
         )
     )
-    check("combined measures produce results", result.row_count > 0)
-    check("expression column exists", "orders.avg_qty" in result.columns)
-    check("count column exists", COUNT_KEY in result.columns)
+    check(name="combined measures produce results", condition=result.row_count > 0)
+    check(name="expression column exists", condition="orders.avg_qty" in result.columns)
+    check(name="count column exists", condition=COUNT_KEY in result.columns)
 
     # cumsum + change in one query
     result = engine.execute_sync(
@@ -249,10 +243,10 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("cumsum + change produces 12 months", result.row_count == 12)
-    check("running column exists", "orders.running" in result.columns)
-    check("chg column exists", "orders.chg" in result.columns)
-    check(f"cumsum final = {TOTAL_ORDERS}", result.data[-1]["orders.running"] == TOTAL_ORDERS)
+    check(name="cumsum + change produces 12 months", condition=result.row_count == 12)
+    check(name="running column exists", condition="orders.running" in result.columns)
+    check(name="chg column exists", condition="orders.chg" in result.columns)
+    check(name=f"cumsum final = {TOTAL_ORDERS}", condition=result.data[-1]["orders.running"] == TOTAL_ORDERS)
 
     # last() — broadcast latest value
     result = engine.execute_sync(
@@ -263,10 +257,10 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("last column exists", "orders.latest" in result.columns)
+    check(name="last column exists", condition="orders.latest" in result.columns)
     latest_vals = [r["orders.latest"] for r in result.data]
-    check("last() is constant across rows", len(set(latest_vals)) == 1)
-    check("last() equals last month count", latest_vals[0] == result.data[-1][COUNT_KEY])
+    check(name="last() is constant across rows", condition=len(set(latest_vals)) == 1)
+    check(name="last() equals last month count", condition=latest_vals[0] == result.data[-1][COUNT_KEY])
 
     # --- Nested transforms ---
     print("\nNested transforms:")
@@ -284,13 +278,13 @@ def main():
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
-    check("nested cumsum(change()) works", CUMSUM_CHANGE_KEY in result.columns)
-    check("cumsum_change has 12 rows", result.row_count == 12)
+    check(name="nested cumsum(change()) works", condition=CUMSUM_CHANGE_KEY in result.columns)
+    check(name="cumsum_change has 12 rows", condition=result.row_count == 12)
     # The first row's change is NULL, so cumsum_change[0] is NULL too.
-    check("cumsum_change first row is null", result.data[0][CUMSUM_CHANGE_KEY] is None)
+    check(name="cumsum_change first row is null", condition=result.data[0][CUMSUM_CHANGE_KEY] is None)
     # Subsequent rows accumulate the per-period changes.
     non_null = [r[CUMSUM_CHANGE_KEY] for r in result.data[1:] if r[CUMSUM_CHANGE_KEY] is not None]
-    check("cumsum_change has 11 non-null values from row 2", len(non_null) == 11)
+    check(name="cumsum_change has 11 non-null values from row 2", condition=len(non_null) == 11)
 
     # --- Summary ---
     print(f"\n{'=' * 40}")
