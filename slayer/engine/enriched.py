@@ -104,6 +104,13 @@ class EnrichedTransform(BaseModel):
     granularity: Optional[str] = Field(default=None, description="For time_shift: year, month, quarter, etc.")
     time_alias: Optional[str] = Field(default=None, description="Alias of the time dimension column for ORDER BY")
     partition_aliases: List[str] = Field(default_factory=list, description="Dimension aliases to PARTITION BY")
+    predicate_is_boolean: bool = Field(
+        default=False,
+        description="True when the transform's measure_alias points at a boolean expression "
+        "(e.g. consecutive_periods(revenue:sum > 0)). Drives portable CASE WHEN emission: "
+        "Postgres rejects 'boolean <> integer' so the numeric `IS NOT NULL AND <> 0` "
+        "predicate cannot be used.",
+    )
     label: Optional[str] = None
 
 

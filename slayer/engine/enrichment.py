@@ -389,7 +389,14 @@ async def enrich_query(
             resolved = re.sub(rf'(?<![."])\b{re.escape(name)}\b', f'"{alias}"', resolved)
         return resolved
 
-    def _add_transform(name: str, transform: str, measure_alias: str, offset: int = 1, granularity: str = None):
+    def _add_transform(
+        name: str,
+        transform: str,
+        measure_alias: str,
+        offset: int = 1,
+        granularity: str = None,
+        predicate_is_boolean: bool = False,
+    ):
         needs_time = transform in TIME_TRANSFORMS
         if needs_time and resolved_time_alias is None:
             raise ValueError(
@@ -408,6 +415,7 @@ async def enrich_query(
                 granularity=granularity,
                 time_alias=resolved_time_alias if needs_time else None,
                 partition_aliases=[d.alias for d in dimensions],
+                predicate_is_boolean=predicate_is_boolean,
             )
         )
         known_aliases[name] = alias
@@ -601,12 +609,22 @@ async def enrich_query(
             if len(spec.args) >= 2:
                 granularity = str(spec.args[1])
 
+            # consecutive_periods (and any other transform that wraps a
+            # predicate) needs to know whether the inner expression renders
+            # as boolean — Postgres rejects `boolean <> integer` so the
+            # numeric form `<expr> IS NOT NULL AND <expr> <> 0` cannot be
+            # used for boolean inputs.
+            inner_is_predicate = (
+                isinstance(spec.inner, (ArithmeticField, MixedArithmeticField))
+                and spec.inner.is_predicate
+            )
             _add_transform(
                 name=field_name,
                 transform=spec.transform,
                 measure_alias=inner_alias,
                 offset=offset,
                 granularity=granularity,
+                predicate_is_boolean=inner_is_predicate,
             )
             return f"{model_name_str}.{field_name}"
 

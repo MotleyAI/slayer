@@ -65,6 +65,12 @@ class ArithmeticField(BaseModel):
     sql: str = Field(description="Preprocessed formula with placeholders for aggregated refs")
     measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
     agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
+    is_predicate: bool = Field(
+        default=False,
+        description="True when the top-level AST node is a comparison or boolean op "
+        "(so the field renders as a boolean expression). Drives boolean-aware SQL "
+        "generation for transforms like consecutive_periods.",
+    )
 
 
 class TransformField(BaseModel):
@@ -84,6 +90,12 @@ class MixedArithmeticField(BaseModel):
     measure_names: List[str] = Field(description="Placeholder IDs or bare measure names")
     sub_transforms: List[tuple] = Field(description="List of (placeholder_name, TransformField)")
     agg_refs: Dict[str, AggregatedMeasureRef] = Field(default_factory=dict)
+    is_predicate: bool = Field(
+        default=False,
+        description="True when the top-level AST node is a comparison or boolean op "
+        "(so the field renders as a boolean expression). Drives boolean-aware SQL "
+        "generation for transforms like consecutive_periods.",
+    )
 
 
 # The parsed result of a single field
@@ -542,6 +554,7 @@ def _parse_node(
             sql=ast.unparse(node),
             measure_names=measure_names,
             agg_refs=field_agg_refs,
+            is_predicate=isinstance(node, (ast.Compare, ast.BoolOp)),
         )
 
     # Constant (bare number)
@@ -638,12 +651,14 @@ def _parse_mixed_arithmetic(
     modified_sql = ast.unparse(modified)
 
     field_agg_refs = {n: agg_refs[n] for n in measure_names if n in agg_refs}
+    is_predicate = isinstance(node, (ast.Compare, ast.BoolOp))
 
     return MixedArithmeticField(
         sql=modified_sql,
         measure_names=measure_names,
         sub_transforms=sub_transforms,
         agg_refs=field_agg_refs,
+        is_predicate=is_predicate,
     )
 
 

@@ -1228,7 +1228,14 @@ class SQLGenerator:
         # expressions don't rely on dialect-specific truthiness coercion in
         # CASE WHEN. Postgres rejects non-boolean WHEN outright; SQLite/MySQL
         # coerce non-zero to true; ClickHouse has its own rules.
-        predicate = f"({measure}) IS NOT NULL AND ({measure}) <> 0"
+        # When the inner expression is already boolean (e.g.
+        # `consecutive_periods(revenue:sum > 0)`), the numeric `<> 0` form
+        # is itself rejected by Postgres ("operator does not exist:
+        # boolean <> integer"), so we use the column directly inside CASE WHEN.
+        if getattr(transform, "predicate_is_boolean", False):
+            predicate = f"COALESCE({measure}, FALSE)"
+        else:
+            predicate = f"({measure}) IS NOT NULL AND ({measure}) <> 0"
         source_cols = ", ".join(f'"{a}"' for a in sorted(available_aliases))
         reset_sql = (
             f"SELECT {source_cols}, "
