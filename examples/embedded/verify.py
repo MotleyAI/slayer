@@ -26,6 +26,8 @@ COUNT_MEASURE = "*:count"
 COUNT_KEY = "orders._count"
 CUMSUM_CHANGE_KEY = "orders.cumsum_change"
 CHG_KEY = "orders.chg"
+AVG_QTY_KEY = "orders.avg_qty"
+CUMULATIVE_KEY = "orders.cumulative"
 
 # Derive expected counts from seed data
 TOTAL_ORDERS = len(ORDERS)
@@ -82,7 +84,9 @@ def main():
     check(name="orders joins to products", condition="products" in join_targets)
 
     regions_model = run_sync(storage.get_model("regions"))
-    check(name="regions has no rollup (sql_table set)", condition=regions_model.sql_table is not None)
+    check(name="regions model exists", condition=regions_model is not None)
+    if regions_model is not None:
+        check(name="regions has no rollup (sql_table set)", condition=regions_model.sql_table is not None)
 
     # --- Basic query checks ---
     print("\nBasic queries:")
@@ -155,8 +159,8 @@ def main():
         )
     )
     check(name="arithmetic measure produces results", condition=result.row_count == 12)
-    check(name="avg_qty column exists", condition="orders.avg_qty" in result.columns)
-    all_positive = all(row["orders.avg_qty"] > 0 for row in result.data)
+    check(name="avg_qty column exists", condition=AVG_QTY_KEY in result.columns)
+    all_positive = all(row[AVG_QTY_KEY] > 0 for row in result.data)
     check(name="avg_qty all positive", condition=all_positive)
 
     print("\nMeasures (transforms):")
@@ -171,9 +175,9 @@ def main():
         )
     )
     check(name="cumsum produces results", condition=result.row_count == 12)
-    check(name="cumsum column exists", condition="orders.cumulative" in result.columns)
-    check(name=f"cumsum final = {TOTAL_ORDERS}", condition=result.data[-1]["orders.cumulative"] == TOTAL_ORDERS)
-    cumvals = [r["orders.cumulative"] for r in result.data]
+    check(name="cumsum column exists", condition=CUMULATIVE_KEY in result.columns)
+    check(name=f"cumsum final = {TOTAL_ORDERS}", condition=result.data[-1][CUMULATIVE_KEY] == TOTAL_ORDERS)
+    cumvals = [r[CUMULATIVE_KEY] for r in result.data]
     check(name="cumsum non-decreasing", condition=all(a <= b for a, b in zip(cumvals, cumvals[1:])))
 
     # time_shift (row-based, previous period)
@@ -228,7 +232,7 @@ def main():
         )
     )
     check(name="combined measures produce results", condition=result.row_count > 0)
-    check(name="expression column exists", condition="orders.avg_qty" in result.columns)
+    check(name="expression column exists", condition=AVG_QTY_KEY in result.columns)
     check(name="count column exists", condition=COUNT_KEY in result.columns)
 
     # cumsum + change in one query
