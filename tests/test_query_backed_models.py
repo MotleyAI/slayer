@@ -517,6 +517,100 @@ class TestBackingQuerySQLCacheHygiene:
         finally:
             tmp.cleanup()
 
+    async def test_outer_query_variables_do_not_leak_into_persisted_sql(
+        self,
+    ) -> None:
+        """Variables coming from an enclosing ``SlayerQuery.variables`` (not from
+        the runtime kwarg) must also be excluded from ``backing_query_sql``.
+        """
+        engine, tmp = await _engine_with_orders()
+        try:
+            await engine.save_model(SlayerModel(
+                name="rev_filtered",
+                data_source="ds",
+                source_queries=[SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["region"],
+                    filters=["region = '{r}'"],
+                    dry_run=True,
+                )],
+                query_variables={"r": "DEFAULT_R"},
+            ))
+            initial_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
+            assert initial_sql and "'DEFAULT_R'" in initial_sql
+
+            # Outer query supplies r via SlayerQuery.variables (NOT runtime kwarg).
+            outer = SlayerQuery(
+                source_model="rev_filtered",
+                dimensions=["region"],
+                measures=[{"formula": "amount_sum:max"}],
+                variables={"r": "OUTER_VAL"},
+                dry_run=True,
+            )
+            await engine.execute(outer)
+            after_sql = (await engine.storage.get_model("rev_filtered")).backing_query_sql
+            assert "'OUTER_VAL'" not in (after_sql or ""), (
+                f"outer query variables must not be persisted, got:\n{after_sql}"
+            )
+            assert after_sql == initial_sql
+        finally:
+            tmp.cleanup()
+
+    async def test_data_source_refreshed_when_backing_query_changes(self) -> None:
+        """Editing a query-backed model so its final stage now resolves through
+        a different datasource must update the persisted ``data_source`` even
+        when the caller still passes the old one — otherwise
+        ``get_column_types()`` opens the wrong client.
+        """
+        from slayer.core.enums import DataType
+        from slayer.core.models import Column, DatasourceConfig
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            storage = YAMLStorage(base_dir=tmp.name)
+            await storage.save_datasource(DatasourceConfig(name="ds_a", type="sqlite", database=":memory:"))
+            await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=":memory:"))
+            await storage.save_model(SlayerModel(
+                name="t_a", sql_table="t_a", data_source="ds_a",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+            await storage.save_model(SlayerModel(
+                name="t_b", sql_table="t_b", data_source="ds_b",
+                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            ))
+            engine = SlayerQueryEngine(storage=storage)
+
+            await engine.save_model(SlayerModel(
+                name="qb",
+                data_source="ds_a",
+                source_queries=[SlayerQuery(
+                    source_model="t_a",
+                    measures=[{"formula": "amount:sum"}],
+                    dry_run=True,
+                )],
+            ))
+            assert (await storage.get_model("qb")).data_source == "ds_a"
+
+            # Edit: backing query now resolves through ds_b, but the caller
+            # still passes the stale data_source="ds_a". The engine must
+            # overwrite from the virtual model.
+            await engine.save_model(SlayerModel(
+                name="qb",
+                data_source="ds_a",  # stale!
+                source_queries=[SlayerQuery(
+                    source_model="t_b",
+                    measures=[{"formula": "amount:sum"}],
+                    dry_run=True,
+                )],
+            ))
+            assert (await storage.get_model("qb")).data_source == "ds_b", (
+                "data_source must be refreshed from the virtual model, not "
+                "preserved from the stale caller-supplied value"
+            )
+        finally:
+            tmp.cleanup()
+
 
 class TestInlineQueryBackedSourceModel:
     """``source_model`` may be an inline ``SlayerModel(source_queries=[...])`` —
@@ -626,6 +720,46 @@ class TestJoinTargetIsQueryBacked:
             assert "999" in resp.sql, (
                 f"join target should use runtime threshold=999, got SQL:\n{resp.sql}"
             )
+        finally:
+            tmp.cleanup()
+
+    async def test_join_target_resolving_set_is_per_context(self) -> None:
+        """The recursion guard set must be isolated per asyncio task / request,
+        not shared on the engine instance. Two tasks each push a unique name
+        into the set and assert they only see their own.
+        """
+        import asyncio
+
+        engine, tmp = await _engine_with_orders()
+        try:
+            both_started = asyncio.Event()
+            checked = asyncio.Event()
+
+            async def task(my_name: str, started: asyncio.Event) -> set:
+                s = engine._get_join_target_resolving()
+                s.add(my_name)
+                started.set()
+                # Wait until both tasks have populated their own sets, then
+                # observe — if the set were instance-shared, each task would
+                # see both names.
+                await both_started.wait()
+                snapshot = set(engine._get_join_target_resolving())
+                checked.set()
+                return snapshot
+
+            e1 = asyncio.Event()
+            e2 = asyncio.Event()
+
+            async def gate():
+                await asyncio.gather(e1.wait(), e2.wait())
+                both_started.set()
+
+            t1 = asyncio.create_task(task("alpha", e1))
+            t2 = asyncio.create_task(task("beta", e2))
+            await gate()
+            s1, s2 = await asyncio.gather(t1, t2)
+            assert s1 == {"alpha"}, f"task 1 leaked sibling state: {s1}"
+            assert s2 == {"beta"}, f"task 2 leaked sibling state: {s2}"
         finally:
             tmp.cleanup()
 
