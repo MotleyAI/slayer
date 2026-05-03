@@ -630,23 +630,35 @@ class TestInspectModelSectionGating:
         # Valid section still rendered
         assert "## Columns (3)" in result
 
-    async def test_all_unknown_falls_back_to_default(self, mcp_server, storage: YAMLStorage) -> None:
-        """When every supplied section is unknown, fall back to the full default list."""
+    async def test_all_unknown_resolves_to_no_sections(self, mcp_server, storage: YAMLStorage) -> None:
+        """When every supplied section is unknown, no sections are selected
+        (the explicit ``None``/``[]`` form is reserved for "all six"). The
+        agent gets the always-on header + every gated section in either
+        names-only or fully-omitted form, plus the warning. They can correct
+        and re-call with valid names."""
         await self._save_rich_model(storage)
         result = await _call(
             mcp_server, name="inspect_model",
             arguments={"model_name": "rich", "sections": ["fish", "bird"]},
         )
         assert "Warning: ignored unknown sections: 'fish', 'bird'." in result
-        # All sections rendered (full, not names-only)
-        assert "## Columns (3)" in result
-        assert "## Measures (2)" in result
-        assert "## Joins (2)" in result
-        # Footer's "Sections shown" line is suppressed because nothing was trimmed
-        # (only the warning line should appear).
-        assert "Sections shown:" not in result
-        assert "Names-only:" not in result
-        assert "Omitted:" not in result
+        # Always-on header still renders
+        assert "# Model: `rich`" in result
+        # Names-only collapse for the four gateable sections — no full tables
+        assert "## Columns (3 — names only)" in result
+        assert "## Measures (2 — names only)" in result
+        assert "## Joins (2 — names only)" in result
+        # The full-table heading must NOT appear
+        assert "## Columns (3)\n\n|" not in result
+        # reachable_fields and samples are fully omitted (no heading at all)
+        assert "## Reachable" not in result
+        assert "## Sample" not in result
+        # Footer summarises what was dropped — caller can re-call with a
+        # corrected sections= list.
+        assert "Sections shown: (none)" in result
+        assert "Names-only: columns, measures, aggregations, joins" in result
+        assert "Omitted: reachable_fields, samples" in result
+        assert "Re-call inspect_model with `sections=[...]`" in result
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
         """Sections render in canonical order regardless of caller order."""
@@ -743,6 +755,18 @@ class TestInspectModelDescriptionsMaxChars:
         assert "[truncated]" in result
         assert "A" * 5 not in result
 
+    async def test_negative_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        """Negative values would silently produce ``str[:-N] + marker`` (i.e.
+        "all but the last N chars" instead of "first N chars"). Rejected at
+        the tool boundary."""
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._save_with_long_descriptions(storage)
+        with pytest.raises(ToolError, match="descriptions_max_chars must be >= 0"):
+            await _call(
+                mcp_server, name="inspect_model",
+                arguments={"model_name": "m", "descriptions_max_chars": -1},
+            )
+
 
 class TestInspectModelReachableFieldsDepth:
     """``reachable_fields_depth`` parameter."""
@@ -796,6 +820,29 @@ class TestInspectModelReachableFieldsDepth:
             arguments={"model_name": "a", "reachable_fields_depth": 0},
         )
         assert "## Reachable" not in result
+
+    async def test_negative_depth_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        """Negative depth would still no-op (the BFS just terminates immediately)
+        but accepting it muddies the contract; reject at the boundary."""
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._save_chain(storage)
+        with pytest.raises(ToolError, match="reachable_fields_depth must be between 0 and 20"):
+            await _call(
+                mcp_server, name="inspect_model",
+                arguments={"model_name": "a", "reachable_fields_depth": -1},
+            )
+
+    async def test_depth_above_max_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        """An unbounded depth defeats the section-budgeting goal — a depth of
+        thousands could enumerate vast join paths and issue many storage
+        lookups on dense graphs. Cap at 20."""
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._save_chain(storage)
+        with pytest.raises(ToolError, match="reachable_fields_depth must be between 0 and 20"):
+            await _call(
+                mcp_server, name="inspect_model",
+                arguments={"model_name": "a", "reachable_fields_depth": 1000},
+            )
 
 
 class TestInspectModelAggregationsShowSql:
@@ -1016,12 +1063,33 @@ class TestInspectModelHelpers:
         assert resolved == ["columns", "samples"]
         assert unknown == ["fish"]
 
-    def test_resolve_inspect_sections_all_unknown_falls_back(self) -> None:
+    def test_resolve_inspect_sections_all_unknown_returns_empty(self) -> None:
+        """A non-empty list of only-unknown names resolves to no sections.
+        Reserves "all six" for the explicit ``None`` / ``[]`` forms so a typo
+        like ``sections=["sample"]`` can't silently trigger the full expensive
+        payload. The footer's warning + names-only listing tells the caller
+        what they have to work with.
+        """
         from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(["fish", "bird"])
-        # Falls back to all-six default
-        assert len(resolved) == 6
+        assert resolved == []
         assert unknown == ["fish", "bird"]
+
+    def test_render_inspect_footer_sanitizes_unknown_section_names(self) -> None:
+        """Caller-supplied unknown names containing newlines / quote-prefix
+        characters must not forge additional footer lines. ``repr()`` escapes
+        control chars so the warning stays a single line.
+        """
+        from slayer.mcp.server import _render_inspect_footer
+        result = _render_inspect_footer(
+            included=["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"],
+            names_only=[], omitted=[], unknown=["foo\n> evil-injected"],
+        )
+        assert result is not None
+        # Newline never reaches the rendered output
+        assert "\n> evil" not in result
+        # The escaped form does
+        assert "\\n" in result and "evil-injected" in result
 
     def test_render_inspect_footer_none_when_no_trim(self) -> None:
         from slayer.mcp.server import _render_inspect_footer

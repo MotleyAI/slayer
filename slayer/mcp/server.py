@@ -36,6 +36,7 @@ _INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
 _INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
+_MAX_REACHABLE_FIELDS_DEPTH = 20
 
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
@@ -184,17 +185,21 @@ def _resolve_inspect_sections(
     Returns ``(resolved, unknown)`` where ``resolved`` is the list of valid
     section names to render (preserving the canonical order, not the caller's
     order) and ``unknown`` is the unrecognised entries (in caller order) for
-    the warning line. ``sections=None`` and an empty list both resolve to all
-    six. If every entry is unrecognised but the list was non-empty, fall back
-    to all six so the agent gets a useful response plus the warning rather
-    than an empty one.
+    the warning line.
+
+    ``sections=None`` and ``sections=[]`` both resolve to all six valid
+    sections — that's the documented "I want everything" path.
+
+    A non-empty list of *only* unknown names resolves to ``[]`` (not all six):
+    "all sections" is reserved for the explicit None/[] forms so a typo like
+    ``sections=["sample"]`` can't silently trigger the full expensive payload.
+    The footer warns about the unknown names and lists what was dropped, so
+    the caller can correct and re-call.
     """
     if not sections:
         return list(_VALID_INSPECT_SECTIONS), []
     valid_set = {s for s in sections if s in _VALID_INSPECT_SECTIONS}
     unknown = [s for s in sections if s not in _VALID_INSPECT_SECTIONS]
-    if not valid_set:
-        return list(_VALID_INSPECT_SECTIONS), unknown
     # Canonical order so output is stable regardless of caller's order
     resolved = [s for s in _VALID_INSPECT_SECTIONS if s in valid_set]
     return resolved, unknown
@@ -216,7 +221,9 @@ def _render_inspect_footer(
         return None
     lines: List[str] = []
     if unknown:
-        quoted = ", ".join(f"'{u}'" for u in unknown)
+        # repr() escapes newlines / quote chars so a caller-supplied value
+        # like "foo\n> evil" can't forge additional footer lines.
+        quoted = ", ".join(repr(u) for u in unknown)
         lines.append(
             f"> Warning: ignored unknown sections: {quoted}. "
             f"Valid: {', '.join(_VALID_INSPECT_SECTIONS)}."
@@ -1086,19 +1093,32 @@ def create_mcp_server(storage: StorageBackend):
             sections: Subset of ``["columns", "measures", "aggregations",
                 "joins", "reachable_fields", "samples"]``. Default (``None``
                 or empty list) renders all six. Unknown names are ignored
-                with a warning line at the end of the response.
+                with a warning line at the end of the response. A non-empty
+                list of *only* unknown names resolves to no sections (not
+                all six) — "all sections" is reserved for ``None``/``[]`` so
+                a typo can't silently trigger the full expensive payload.
             descriptions_max_chars: When set, every description field (model,
                 column, measure, aggregation) longer than this is truncated
-                with a ``... [truncated]`` suffix. ``None`` (default) means
-                no truncation.
+                with a ``... [truncated]`` suffix. Must be ``>= 0``. ``None``
+                (default) means no truncation.
             reachable_fields_depth: Max BFS depth (in path segments) for the
-                reachable-fields walk. Default 5. Ignored when
-                ``reachable_fields`` is not in ``sections``.
+                reachable-fields walk. Default 5; allowed range
+                ``[0, 20]``. Ignored when ``reachable_fields`` is not in
+                ``sections``.
         """
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
             raise ValueError(
                 f"Invalid format '{format}' for inspect_model. Must be 'markdown' or 'json'."
+            )
+        if descriptions_max_chars is not None and descriptions_max_chars < 0:
+            raise ValueError(
+                f"descriptions_max_chars must be >= 0, got {descriptions_max_chars}."
+            )
+        if reachable_fields_depth < 0 or reachable_fields_depth > _MAX_REACHABLE_FIELDS_DEPTH:
+            raise ValueError(
+                f"reachable_fields_depth must be between 0 and {_MAX_REACHABLE_FIELDS_DEPTH}, "
+                f"got {reachable_fields_depth}."
             )
 
         model = await storage.get_model(model_name)
