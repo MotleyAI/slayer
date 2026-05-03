@@ -1,6 +1,7 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import json
 import os
 import sys
 
@@ -399,8 +400,6 @@ def _parse_cli_variables(args) -> dict:
     """Combine ``--variables KEY=VALUE`` (repeatable) and ``--variables-json``
     into a single dict. Errors out if both forms are mixed.
     """
-    import json as _json
-
     has_kv = bool(args.variables)
     has_json = args.variables_json is not None
     if has_kv and has_json:
@@ -409,8 +408,8 @@ def _parse_cli_variables(args) -> dict:
         )
     if has_json:
         try:
-            parsed = _json.loads(args.variables_json)
-        except _json.JSONDecodeError as exc:
+            parsed = json.loads(args.variables_json)
+        except json.JSONDecodeError as exc:
             raise SystemExit(f"--variables-json contains invalid JSON: {exc}") from None
         if not isinstance(parsed, dict):
             raise SystemExit("--variables-json must decode to a JSON object.")
@@ -427,8 +426,6 @@ def _parse_cli_variables(args) -> dict:
 
 
 def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
-    import json
-
     from slayer.core.query import SlayerQuery
     from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -482,7 +479,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         # via the engine's run-by-name path, which also enforces the
         # "model must be query-backed" check uniformly.
         result = engine.execute_sync(
-            query_input,
+            query=query_input,
             variables=runtime_kwarg,
             dry_run=bool(args.dry_run),
             explain=bool(args.explain),
