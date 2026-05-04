@@ -26,16 +26,23 @@ def rewrite_sqlite_json_extract(node: exp.Expression) -> exp.Expression:
     ``Column.sql`` whose entire expression is ``json_extract(col, path)``),
     in which case ``Expression.replace`` is a no-op (no parent to rewire)
     and a fresh root must be returned. Non-root rewrites happen in place.
+
+    Loops to a fixed point so nested forms like
+    ``json_extract(json_extract(j, '$.outer'), '$.inner')`` get rewritten at
+    every level, not just the outermost.
     """
-    if isinstance(node, exp.JSONExtract):
-        return _to_anonymous(node)
-    for je in list(node.find_all(exp.JSONExtract)):
+    while True:
+        if isinstance(node, exp.JSONExtract):
+            node = _to_anonymous(node)
+            continue
+        je = node.find(exp.JSONExtract)
+        if je is None:
+            return node
         je.replace(_to_anonymous(je))
-    return node
 
 
 def _to_anonymous(je: exp.JSONExtract) -> exp.Anonymous:
     return exp.Anonymous(
         this="JSON_EXTRACT",
-        expressions=[je.this.copy(), je.expression.copy()],
+        expressions=[je.this, je.expression],
     )

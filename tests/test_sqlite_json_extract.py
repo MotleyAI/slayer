@@ -116,3 +116,23 @@ def test_rewrite_handles_no_json_extract() -> None:
     assert tree.sql(dialect="sqlite").upper().startswith("SELECT 1 + 1")
     # Must not have introduced any JSONExtract nodes
     assert tree.find(exp.JSONExtract) is None
+
+
+def test_rewrite_nested_json_extract() -> None:
+    """``json_extract(json_extract(j, '$.outer'), '$.inner')`` must rewrite at
+    every level, not just the outermost — otherwise the inner ``->`` survives
+    and re-introduces the JSON-quoted-form bug.
+    """
+    out = _parse_rewrite_emit(
+        "SELECT json_extract(json_extract(j, '$.outer'), '$.inner') FROM t"
+    )
+    assert " -> " not in out, out
+    assert out.count("JSON_EXTRACT(") == 2, out
+
+
+def test_rewrite_triple_nested_json_extract() -> None:
+    out = _parse_rewrite_emit(
+        "SELECT json_extract(json_extract(json_extract(j,'$.a'),'$.b'),'$.c') FROM t"
+    )
+    assert " -> " not in out, out
+    assert out.count("JSON_EXTRACT(") == 3, out
