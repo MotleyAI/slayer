@@ -18,6 +18,7 @@ from slayer.sql.sqlite_udfs import (
     _MedianAgg,
     _PercentileContAgg,
     _PercentileDiscAgg,
+    _pow,
     _StddevPopAgg,
     _StddevSampAgg,
     _VarPopAgg,
@@ -365,8 +366,6 @@ def test_pow_huge_exponent_overflows_cleanly():
     message, hiding the distinction between the bug and the fix at the
     SQL boundary. The Python-level invariant is the load-bearing one.
     """
-    from slayer.sql.sqlite_udfs import _pow
-
     with pytest.raises(OverflowError):
         _pow(2, 10000)
     # `pow(2, 1000)` is large but does NOT overflow IEEE-754 (≈ 1.07e301).
