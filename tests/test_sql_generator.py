@@ -1777,7 +1777,7 @@ class TestSqliteJsonExtractInGenerator:
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="*:count")],
         )
-        sql = await _generate(gen, query, model_with_json_dim)
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
         assert "JSON_EXTRACT(" in sql, f"missing JSON_EXTRACT in:\n{sql}"
         # The lossy ``payload -> '$.tier'`` form must not appear.
         assert "payload -> '$.tier'" not in sql, sql
@@ -1790,7 +1790,7 @@ class TestSqliteJsonExtractInGenerator:
             source_model="users",
             measures=[ModelMeasure(formula="is_gold:sum")],
         )
-        sql = await _generate(gen, query, model_with_json_dim)
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
         assert "JSON_EXTRACT(" in sql, sql
         assert "payload -> '$.tier'" not in sql, sql
 
@@ -1813,7 +1813,7 @@ class TestSqliteJsonExtractInGenerator:
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="*:count")],
         )
-        sql = await _generate(gen, query, model)
+        sql = await _generate(generator=gen, query=query, model=model)
         assert "JSON_EXTRACT(" in sql, sql
         assert "payload -> '$.tier'" not in sql, sql
 
@@ -1833,7 +1833,7 @@ class TestSqliteJsonExtractInGenerator:
             dimensions=[ColumnRef(name="tier")],
             measures=[ModelMeasure(formula="*:count")],
         )
-        sql = await _generate(gen, query, model_with_json_dim)
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
         assert "JSON_EXTRACT" in sql.upper(), sql
 
 
