@@ -40,23 +40,39 @@ class SlayerClient:
 
             self._engine = SlayerQueryEngine(storage=storage)
 
-    async def _request(self, method: str, path: str, json: Optional[Dict] = None) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        json: Optional[Dict] = None,
+        params: Optional[Dict] = None,
+    ) -> Any:
         try:
             import httpx
         except ImportError:
             raise ImportError("Client requires httpx: pip install motley-slayer[client]")
         async with httpx.AsyncClient() as client:
-            resp = await client.request(method=method, url=f"{self.url}{path}", json=json)
+            resp = await client.request(
+                method=method, url=f"{self.url}{path}", json=json, params=params
+            )
             resp.raise_for_status()
             return resp.json()
 
-    def _request_sync(self, method: str, path: str, json: Optional[Dict] = None) -> Any:
+    def _request_sync(
+        self,
+        method: str,
+        path: str,
+        json: Optional[Dict] = None,
+        params: Optional[Dict] = None,
+    ) -> Any:
         try:
             import httpx
         except ImportError:
             raise ImportError("Client requires httpx: pip install motley-slayer[client]")
         with httpx.Client() as client:
-            resp = client.request(method=method, url=f"{self.url}{path}", json=json)
+            resp = client.request(
+                method=method, url=f"{self.url}{path}", json=json, params=params
+            )
             resp.raise_for_status()
             return resp.json()
 
@@ -118,11 +134,22 @@ class SlayerClient:
         """Run EXPLAIN ANALYZE on a query."""
         return await self.query(query=query, explain=True)
 
-    async def list_models(self) -> List[str]:
-        return await self._request(method="GET", path="/models")
+    async def list_models(self, data_source: Optional[str] = None) -> List[str]:
+        if self._storage is not None:
+            names = await self._storage.list_models(data_source=data_source)
+            return list(names)
+        params = {"data_source": data_source} if data_source else None
+        return await self._request(method="GET", path="/models", params=params)
 
-    async def get_model(self, name: str) -> Dict[str, Any]:
-        return await self._request(method="GET", path=f"/models/{name}")
+    async def get_model(
+        self,
+        name: str,
+        data_source: Optional[str] = None,
+    ) -> Optional[Any]:
+        if self._storage is not None:
+            return await self._storage.get_model(name, data_source=data_source)
+        params = {"data_source": data_source} if data_source else None
+        return await self._request(method="GET", path=f"/models/{name}", params=params)
 
     async def create_model(self, model: Dict[str, Any]) -> Dict[str, str]:
         return await self._request(method="POST", path="/models", json=model)
@@ -132,6 +159,22 @@ class SlayerClient:
 
     async def create_datasource(self, datasource: Dict[str, Any]) -> Dict[str, str]:
         return await self._request(method="POST", path="/datasources", json=datasource)
+
+    async def get_datasource_priority(self) -> List[str]:
+        if self._storage is not None:
+            return await self._storage.get_datasource_priority()
+        body = await self._request(method="GET", path="/datasources/priority")
+        return list(body.get("priority", []))
+
+    async def set_datasource_priority(self, priority: List[str]) -> None:
+        if self._storage is not None:
+            await self._storage.set_datasource_priority(list(priority))
+            return
+        await self._request(
+            method="PUT",
+            path="/datasources/priority",
+            json={"priority": list(priority)},
+        )
 
     # ----- Sync API (for notebooks, scripts, CLI) -----
 

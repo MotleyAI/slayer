@@ -30,14 +30,14 @@ def test_migrate_passes_non_dict_through() -> None:
 
 def test_migrate_v1_noop_stamps_version() -> None:
     """A SlayerModel dict with no version starts at 1 and walks to the current."""
-    out = mig.migrate("SlayerModel", {"name": "foo"})
+    out = mig.migrate("SlayerModel", {"name": "foo", "data_source": "ds"})
     assert out["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
     assert out["name"] == "foo"
 
 
 def test_migrate_does_not_mutate_input_dict() -> None:
     """migrate() must never mutate the caller's payload."""
-    payload = {"name": "foo"}  # no "version" key
+    payload = {"name": "foo", "data_source": "ds"}  # no "version" key
     out = mig.migrate("SlayerModel", payload)
     assert "version" not in payload
     assert out["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
@@ -46,7 +46,7 @@ def test_migrate_does_not_mutate_input_dict() -> None:
 
 def test_migrate_forward_version_passes_through() -> None:
     """A dict from a newer SLayer should not be downgraded or rejected."""
-    out = mig.migrate("SlayerModel", {"version": 99, "name": "foo", "future": True})
+    out = mig.migrate("SlayerModel", {"version": 99, "name": "foo", "data_source": "ds", "future": True})
     assert out["version"] == 99
     assert out["future"] is True
 
@@ -57,31 +57,31 @@ def test_migrate_missing_handler_raises(monkeypatch) -> None:
     target = max(mig.CURRENT_VERSIONS.values()) + 5
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", target)
     with pytest.raises(RuntimeError, match="No migration registered"):
-        mig.migrate("SlayerModel", {"version": target - 1, "name": "foo"})
+        mig.migrate("SlayerModel", {"version": target - 1, "name": "foo", "data_source": "ds"})
 
 
 def test_migrate_chain_runs_in_order(monkeypatch) -> None:
     """Synthetic chain to verify ordering and version stamping.
 
     Registers two synthetic migrations *above* the real ones so we don't
-    collide with the real v1→v2 / v2→v3 SlayerModel converters.
+    collide with the real v1→v2 / v2→v3 / v3→v4 SlayerModel converters.
     """
-    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 5)
+    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 6)
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
-
-    @mig.register_migration("SlayerModel", 3)
-    def _v3_to_v4(data: dict) -> dict:
-        data["step1"] = True
-        return data
 
     @mig.register_migration("SlayerModel", 4)
     def _v4_to_v5(data: dict) -> dict:
+        data["step1"] = True
+        return data
+
+    @mig.register_migration("SlayerModel", 5)
+    def _v5_to_v6(data: dict) -> dict:
         assert data.get("step1") is True  # ordering guarantee
         data["step2"] = True
         return data
 
-    out = mig.migrate("SlayerModel", {"version": 3, "name": "foo"})
-    assert out["version"] == 5
+    out = mig.migrate("SlayerModel", {"version": 4, "name": "foo", "data_source": "ds"})
+    assert out["version"] == 6
     assert out["step1"] is True
     assert out["step2"] is True
 
@@ -104,13 +104,13 @@ def test_register_migration_rejects_duplicates(monkeypatch) -> None:
 
 
 def test_slayer_model_validates_v1_dict() -> None:
-    m = SlayerModel.model_validate({"name": "orders", "sql_table": "orders"})
+    m = SlayerModel.model_validate({"name": "orders", "sql_table": "orders", "data_source": "ds"})
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert m.name == "orders"
 
 
 def test_slayer_model_dump_includes_version() -> None:
-    m = SlayerModel(name="orders", sql_table="orders")
+    m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
     dumped = m.model_dump(mode="json", exclude_none=True)
     assert dumped["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
@@ -120,20 +120,20 @@ def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> Non
 
     Registers a migration *above* the real ones so we don't double-migrate.
     """
-    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 4)
+    monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", 5)
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
 
-    @mig.register_migration("SlayerModel", 3)
-    def _v3_to_v4(data: dict) -> dict:
+    @mig.register_migration("SlayerModel", 4)
+    def _v4_to_v5(data: dict) -> dict:
         # Stash a marker in meta so we can verify post-validation that the
         # converter actually ran on the inbound dict.
         data.setdefault("meta", {})["migrated"] = True
         return data
 
     m = SlayerModel.model_validate(
-        {"version": 3, "name": "orders", "sql_table": "orders"}
+        {"version": 4, "name": "orders", "sql_table": "orders", "data_source": "ds"}
     )
-    assert m.version == 4
+    assert m.version == 5
     assert m.meta == {"migrated": True}
 
 
@@ -181,13 +181,20 @@ async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
         return data
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        storage = YAMLStorage(base_dir=tmpdir)
-        legacy_path = os.path.join(storage.models_dir, "orders.yaml")
+        # Write the model file directly into the v4 namespaced layout so the
+        # storage open path runs the schema migration only — the layout
+        # migrator (which moves pre-v4 flat files) is exercised in
+        # tests/test_v4_migration.py.
+        models_dir = os.path.join(tmpdir, "models", "ds")
+        os.makedirs(models_dir, exist_ok=True)
+        legacy_path = os.path.join(models_dir, "orders.yaml")
         with open(legacy_path, "w") as f:
             yaml.dump(
-                {"version": next_version - 1, "name": "orders", "sql_table": "orders"},
+                {"version": next_version - 1, "name": "orders", "sql_table": "orders", "data_source": "ds"},
                 f,
             )
+
+        storage = YAMLStorage(base_dir=tmpdir)
 
         loaded = await storage.get_model("orders")
         assert loaded is not None
@@ -211,12 +218,14 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None
         db_path = os.path.join(tmpdir, "slayer.db")
         storage = SQLiteStorage(db_path=db_path)
         legacy_blob = json.dumps(
-            {"version": next_version - 1, "name": "orders", "sql_table": "orders"}
+            {"version": next_version - 1, "name": "orders", "sql_table": "orders", "data_source": "ds"}
         )
+        # Insert directly into the v4 composite-PK schema; we're testing the
+        # Pydantic-level migration hook, not the SQLite schema migrator.
         with sqlite3.connect(db_path) as conn:
             conn.execute(
-                "INSERT INTO models (name, data) VALUES (?, ?)",
-                ("orders", legacy_blob),
+                "INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",
+                ("ds", "orders", legacy_blob),
             )
 
         loaded = await storage.get_model("orders")
@@ -228,13 +237,14 @@ async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None
 async def test_yaml_round_trip_preserves_version() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
-        await storage.save_model(SlayerModel(name="orders", sql_table="orders"))
+        await storage.save_model(SlayerModel(name="orders", sql_table="orders", data_source="ds"))
         loaded = await storage.get_model("orders")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
 
-        # And confirm it actually hit the file at the current version.
-        with open(os.path.join(storage.models_dir, "orders.yaml")) as f:
+        # And confirm it actually hit the file at the current version, in
+        # the v4 namespaced layout.
+        with open(os.path.join(storage.models_dir, "ds", "orders.yaml")) as f:
             on_disk = yaml.safe_load(f)
         assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
@@ -245,6 +255,7 @@ async def test_yaml_round_trip_preserves_version() -> None:
 def test_model_v1_to_v2_dimensions_only() -> None:
     """A v1 model with only dimensions migrates to v2 columns; measures empty."""
     m = SlayerModel.model_validate({
+        "data_source": "ds",
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
@@ -263,6 +274,7 @@ def test_model_v1_to_v2_dimensions_only() -> None:
 def test_model_v1_to_v2_measures_only() -> None:
     """A v1 model with only measures migrates to v2 columns with NUMBER default."""
     m = SlayerModel.model_validate({
+        "data_source": "ds",
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
@@ -284,6 +296,7 @@ def test_model_v1_to_v2_measures_only() -> None:
 def test_model_v1_to_v2_dim_and_measure() -> None:
     """Both lists merge into columns; order preserved (dimensions first)."""
     m = SlayerModel.model_validate({
+        "data_source": "ds",
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
@@ -298,6 +311,7 @@ def test_model_v1_to_v2_collision_raises() -> None:
     """A v1 model with a name in both dimensions and measures raises a clear error."""
     with pytest.raises(ValueError, match="name collision"):
         SlayerModel.model_validate({
+            "data_source": "ds",
             "version": 1,
             "name": "orders",
             "dimensions": [{"name": "amount", "type": "number"}],
@@ -308,6 +322,7 @@ def test_model_v1_to_v2_collision_raises() -> None:
 def test_model_v1_to_v2_legacy_type_alias() -> None:
     """Old `type: sum` on a Measure becomes allowed_aggregations=['sum']."""
     m = SlayerModel.model_validate({
+        "data_source": "ds",
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
@@ -322,6 +337,7 @@ def test_model_v1_to_v2_legacy_type_alias() -> None:
 def test_model_v1_to_v2_legacy_type_alias_respects_explicit_whitelist() -> None:
     """If user already set allowed_aggregations, the legacy type doesn't overwrite it."""
     m = SlayerModel.model_validate({
+        "data_source": "ds",
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
@@ -340,6 +356,7 @@ def test_model_v1_detector_handles_non_list_measures() -> None:
     should fall through so Pydantic raises the regular validation error."""
     with pytest.raises(Exception) as exc_info:
         SlayerModel.model_validate({
+            "data_source": "ds",
             "version": 1,
             "name": "orders",
             "measures": {"name": "revenue"},  # dict, not list
@@ -352,6 +369,7 @@ def test_model_v1_detector_handles_non_list_measures() -> None:
 def test_model_v2_input_is_noop() -> None:
     """A v2 dict passes through migrate() unchanged at the version walker."""
     m = SlayerModel.model_validate({
+        "data_source": "ds",
         "version": 2,
         "name": "orders",
         "sql_table": "orders",
@@ -365,6 +383,7 @@ def test_model_v2_input_is_noop() -> None:
 def test_model_forward_version_passes_through() -> None:
     """A v3 dict (future) passes through; Pydantic ignores extras."""
     m = SlayerModel.model_validate({
+        "data_source": "ds",
         "version": 99,
         "name": "orders",
         "sql_table": "orders",
@@ -534,8 +553,12 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
 async def test_v1_yaml_round_trip_to_v2() -> None:
     """Hand-write a v1 YAML, load via storage, observe v2 shape on disk after save."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        storage = YAMLStorage(base_dir=tmpdir)
-        legacy_path = os.path.join(storage.models_dir, "orders.yaml")
+        # Drop the v1 file at the legacy flat layout so the v4 layout
+        # migrator picks it up at YAMLStorage init time and moves it under
+        # models/<data_source>/.
+        models_dir = os.path.join(tmpdir, "models")
+        os.makedirs(models_dir, exist_ok=True)
+        legacy_path = os.path.join(models_dir, "orders.yaml")
         with open(legacy_path, "w") as f:
             yaml.dump({
                 "version": 1,
@@ -546,15 +569,18 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
                 "measures": [{"name": "revenue", "sql": "amount"}],
             }, f)
 
+        storage = YAMLStorage(base_dir=tmpdir)
+
         loaded = await storage.get_model("orders")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
         assert [c.name for c in loaded.columns] == ["status", "revenue"]
         assert loaded.measures == []
 
-        # Re-save and confirm current version on disk.
+        # Re-save and confirm current version on disk at the v4 path.
         await storage.save_model(loaded)
-        with open(legacy_path) as f:
+        new_path = os.path.join(models_dir, "demo", "orders.yaml")
+        with open(new_path) as f:
             on_disk = yaml.safe_load(f)
         assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert "columns" in on_disk
@@ -565,7 +591,19 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
     """Same round-trip, but via SQLiteStorage."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = os.path.join(tmpdir, "slayer.db")
-        storage = SQLiteStorage(db_path=db_path)
+        # Build the v3 legacy single-PK schema by hand, drop a v1 row in,
+        # then open SQLiteStorage so the schema migrator upgrades to v4.
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "CREATE TABLE models (name TEXT PRIMARY KEY, data TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE datasources (name TEXT PRIMARY KEY, data TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO datasources (name, data) VALUES (?, ?)",
+                ("demo", json.dumps({"name": "demo", "type": "postgres", "version": 1})),
+            )
         legacy_blob = json.dumps({
             "version": 1,
             "name": "orders",
@@ -580,6 +618,9 @@ async def test_v1_sqlite_round_trip_to_v2() -> None:
                 ("orders", legacy_blob),
             )
 
+        # Open SQLiteStorage *after* the legacy data is in place so the
+        # schema migrator runs the v3 → v4 PK rebuild on real legacy rows.
+        storage = SQLiteStorage(db_path=db_path)
         loaded = await storage.get_model("orders")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
@@ -763,7 +804,9 @@ async def test_stale_v2_yaml_with_dry_run_inside_source_queries(caplog) -> None:
         # Hand-write a v2 query-backed model YAML with a stale dry_run=True
         # nested inside source_queries — bypassing storage.save_model so the
         # v3 schema/migration cannot strip it at write time.
-        models_dir = os.path.join(tmpdir, "models")
+        # Drop the stale file directly into the v4 namespaced layout so the
+        # storage layer can find it without re-running the layout migrator.
+        models_dir = os.path.join(tmpdir, "models", "ds")
         os.makedirs(models_dir, exist_ok=True)
         stale_yaml_path = os.path.join(models_dir, "stale.yaml")
         with open(stale_yaml_path, "w") as f:  # NOSONAR(S7493) — hermetic test fixture I/O; matches test_v1_yaml_round_trip_to_v2 pattern

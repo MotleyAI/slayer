@@ -7,9 +7,12 @@ inner joins pointing back to it are removed from other models.
 On first access the wrapper also performs a one-time reconciliation of all
 stored models to heal asymmetric inner joins (e.g. from hand-edited YAML
 files or older code that lacked sync).
+
+v4 (DEV-1330): join targets are resolved within the parent model's
+``data_source`` only — cross-datasource joins are never auto-mirrored.
 """
 
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
@@ -24,13 +27,13 @@ from slayer.storage.base import StorageBackend
 async def _mirror_inner_joins(model: SlayerModel, storage: StorageBackend) -> None:
     """Ensure every inner join on *model* has a matching reverse on the target.
 
-    If the reverse join already exists but has stale ``join_pairs``, it is
-    updated in-place.
+    Targets are looked up inside the parent model's data_source — joins
+    that resolve only to a different datasource are silently skipped.
     """
     for join in model.joins:
         if join.join_type != JoinType.INNER or join.target_model == model.name:
             continue
-        target = await storage.get_model(join.target_model)
+        target = await storage.get_model(join.target_model, data_source=model.data_source)
         if target is None:
             continue
         reverse_pairs = [[tgt, src] for src, tgt in join.join_pairs]
@@ -54,12 +57,17 @@ async def _mirror_inner_joins(model: SlayerModel, storage: StorageBackend) -> No
 
 async def _remove_inner_joins_to(
     source_name: str,
+    source_data_source: str,
     target_names: Set[str],
     storage: StorageBackend,
 ) -> None:
-    """Remove inner joins that point back to *source_name* from each target."""
+    """Remove inner joins that point back to *source_name* from each target.
+
+    Targets are resolved within the source model's datasource — same scoping
+    rule as ``_mirror_inner_joins``.
+    """
     for target_name in target_names:
-        target = await storage.get_model(target_name)
+        target = await storage.get_model(target_name, data_source=source_data_source)
         if target is None:
             continue
         before = len(target.joins)
@@ -77,9 +85,9 @@ async def _reconcile_all_inner_joins(storage: StorageBackend) -> None:
     Intended to run once at startup to heal asymmetries from hand-edited
     files, batch creation ordering, or older code without sync.
     """
-    names = await storage.list_models()
-    for name in names:
-        model = await storage.get_model(name)
+    identities = await storage._list_all_model_identities()
+    for ds, name in identities:
+        model = await storage.get_model(name, data_source=ds)
         if model is None:
             continue
         await _mirror_inner_joins(model, storage)
@@ -109,7 +117,7 @@ class JoinSyncStorage(StorageBackend):
 
     async def save_model(self, model: SlayerModel) -> None:
         await self._ensure_reconciled()
-        old = await self._inner.get_model(model.name)
+        old = await self._inner.get_model(model.name, data_source=model.data_source)
         await self._inner.save_model(model)
 
         # Mirror outward: ensure reverse inner joins exist / are up-to-date.
@@ -128,30 +136,47 @@ class JoinSyncStorage(StorageBackend):
             }
             removed = old_inner_targets - new_inner_targets
             if removed:
-                await _remove_inner_joins_to(model.name, removed, self._inner)
+                await _remove_inner_joins_to(
+                    model.name, model.data_source, removed, self._inner
+                )
 
-    async def delete_model(self, name: str) -> bool:
+    async def delete_model(
+        self,
+        name: str,
+        data_source: Optional[str] = None,
+    ) -> bool:
         await self._ensure_reconciled()
-        model = await self._inner.get_model(name)
-        result = await self._inner.delete_model(name)
+        if data_source is None:
+            identity = await self._inner.resolve_model_identity(name)
+            if identity is None:
+                return False
+            data_source, name = identity
+        model = await self._inner.get_model(name, data_source=data_source)
+        result = await self._inner.delete_model(name, data_source=data_source)
         if result and model:
             inner_targets = {
                 j.target_model for j in model.joins
                 if j.join_type == JoinType.INNER and j.target_model != name
             }
             if inner_targets:
-                await _remove_inner_joins_to(name, inner_targets, self._inner)
+                await _remove_inner_joins_to(
+                    name, model.data_source, inner_targets, self._inner
+                )
         return result
 
     # -- pure delegation --------------------------------------------------
 
-    async def get_model(self, name: str) -> Optional[SlayerModel]:
+    async def _list_all_model_identities(self) -> List[Tuple[str, str]]:
         await self._ensure_reconciled()
-        return await self._inner.get_model(name)
+        return await self._inner._list_all_model_identities()
 
-    async def list_models(self) -> List[str]:
+    async def get_model(
+        self,
+        name: str,
+        data_source: Optional[str] = None,
+    ) -> Optional[SlayerModel]:
         await self._ensure_reconciled()
-        return await self._inner.list_models()
+        return await self._inner.get_model(name, data_source=data_source)
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         return await self._inner.save_datasource(datasource)
@@ -164,3 +189,9 @@ class JoinSyncStorage(StorageBackend):
 
     async def delete_datasource(self, name: str) -> bool:
         return await self._inner.delete_datasource(name)
+
+    async def get_datasource_priority(self) -> List[str]:
+        return await self._inner.get_datasource_priority()
+
+    async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
+        return await self._inner._set_datasource_priority_raw(priority)

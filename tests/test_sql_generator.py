@@ -3350,10 +3350,15 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         engine = SlayerQueryEngine(storage=storage)
         original_resolve = engine._resolve_model
 
-        async def patched_resolve(model_name, named_queries=None, _resolving=None):
+        async def patched_resolve(model_name, named_queries=None, _resolving=None, **kwargs):
             if model_name == "customers":
                 return customers
-            return await original_resolve(model_name=model_name, named_queries=named_queries, _resolving=_resolving)
+            return await original_resolve(
+                model_name=model_name,
+                named_queries=named_queries,
+                _resolving=_resolving,
+                **kwargs,
+            )
 
         engine._resolve_model = patched_resolve
 

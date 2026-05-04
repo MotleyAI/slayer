@@ -31,11 +31,18 @@ Directory structure:
 ```
 slayer_data/
   models/
-    orders.yaml
-    customers.yaml
+    my_postgres/
+      orders.yaml
+      customers.yaml
+    other_db/
+      orders.yaml          # same name, different datasource — coexists
   datasources/
     my_postgres.yaml
+    other_db.yaml
+  priority.yaml            # datasource priority list (optional)
 ```
+
+**v4 layout (DEV-1330):** Models live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a pre-v4 directory migrates flat `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
 
 ### SQLiteStorage
 
@@ -76,10 +83,14 @@ from slayer.storage.base import StorageBackend
 from slayer.core.models import SlayerModel, DatasourceConfig
 
 class MyCustomStorage(StorageBackend):
+    # v4 (DEV-1330): models are keyed by (data_source, name).
     def save_model(self, model: SlayerModel) -> None: ...
-    def get_model(self, name: str) -> SlayerModel | None: ...
-    def list_models(self) -> list[str]: ...
-    def delete_model(self, name: str) -> bool: ...
+    def _list_all_model_identities(self) -> list[tuple[str, str]]: ...
+    def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None: ...
+    def delete_model(self, name: str, data_source: str | None = None) -> bool: ...
+
+    # ``StorageBackend`` provides default implementations of ``list_models``
+    # and ``resolve_model_identity`` on top of ``_list_all_model_identities``.
 
     def save_datasource(self, datasource: DatasourceConfig) -> None: ...
     def get_datasource(self, name: str) -> DatasourceConfig | None: ...

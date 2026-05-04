@@ -126,7 +126,7 @@ class TestMCPModelToolsDataSourceArg:
             mcp_server,
             name="edit_model",
             arguments={
-                "name": "users",
+                "model_name": "users",
                 "data_source": "db_a",
                 "description": "edited a",
             },
@@ -147,7 +147,7 @@ class TestMCPModelToolsDataSourceArg:
         result = await _call_mcp(
             mcp_server,
             name="edit_model",
-            arguments={"name": "users", "description": "edited"},
+            arguments={"model_name": "users", "description": "edited"},
         )
         # Error surfaces both remediations + lists the candidates.
         assert "data_source" in result

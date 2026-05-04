@@ -575,23 +575,28 @@ class TestQueryBackedColumnTypes:
             conn.commit()
             conn.close()
 
-            # Save query-backed model via raw storage (NOT engine.save_model) so
-            # its data_source is left blank — the bug fires only when the
-            # stored data_source disagrees with the resolved virtual model's.
+            # Register a second, deliberately-stale datasource and pin the
+            # query-backed model to it. Saving via raw storage skips the
+            # cache populator that would otherwise refresh data_source from
+            # the resolved virtual model, so the on-disk record disagrees
+            # with the source query's actual datasource (ds_b).
+            await storage.save_datasource(DatasourceConfig(name="ds_stale", type="sqlite", database=":memory:"))
             await storage.save_model(SlayerModel(
                 name="qb",
+                data_source="ds_stale",  # stale: real source is ds_b
                 source_queries=[SlayerQuery(
                     source_model="t_b",
                     measures=[{"formula": "amount:sum"}],
                 )],
             ))
             stored = await storage.get_model("qb")
-            assert not stored.data_source, (
-                "test setup expects blank data_source on the raw-saved model"
+            assert stored is not None and stored.data_source == "ds_stale", (
+                "test setup expects stale data_source on the raw-saved model"
             )
 
             # Should resolve datasource from the expanded model (ds_b), open
-            # the right SQLite file, and successfully probe.
+            # the right SQLite file, and successfully probe — ignoring the
+            # stale ds_stale on the stored record.
             types = await engine.get_column_types("qb")
             assert types, "expected non-empty column type map"
         finally:
