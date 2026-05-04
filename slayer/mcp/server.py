@@ -1560,8 +1560,11 @@ def create_mcp_server(storage: StorageBackend):
                 ``allowed_aggregations`` (whitelist), ``filter`` (CASE WHEN inside aggregation),
                 ``label``, ``description``, ``hidden``, ``meta``.
             measures: List of named formula definitions on the model. Each:
-                {"name": "aov", "formula": "revenue:sum / *:count", "label": "..."}.
+                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
+                 "description": "...", "meta": {...}}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
+                ``meta`` is an optional opaque dict for caller bookkeeping
+                (e.g. linking the formula back to a source identifier).
             query: A SLayer query dict (or list of stage dicts for a multi-stage backing
                 query). When provided, the query is saved as the model's ``source_queries``
                 and the model becomes query-backed. Mutually exclusive with sql_table, sql,
@@ -1707,11 +1710,15 @@ def create_mcp_server(storage: StorageBackend):
                 If a column with this name exists, only the provided fields are updated.
                 Types: string, number, time, date, boolean.
             measures: Named formula measures to create or update (upsert by name). Each dict:
-                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...", "description": "..."}.
+                {"name": "aov", "formula": "revenue:sum / *:count", "label": "...",
+                 "description": "...", "meta": {...}}.
                 Queries can reference these by bare name (e.g. ``{"formula": "aov"}``).
+                ``meta`` is an optional opaque dict for caller bookkeeping.
             aggregations: Aggregations to create or update (upsert by name). Each dict:
                 {"name": "weighted_avg", "formula": "SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
-                 "params": [{"name": "weight", "sql": "quantity"}], "description": "..."}.
+                 "params": [{"name": "weight", "sql": "quantity"}], "description": "...",
+                 "meta": {...}}.
+                ``meta`` is an optional opaque dict for caller bookkeeping.
             joins: Joins to create or update (upsert by target_model). Each dict:
                 {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}.
             add_filters: SQL filter strings to add (e.g. ["deleted_at IS NULL"]). Duplicates ignored.
