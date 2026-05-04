@@ -88,6 +88,7 @@ You **cannot** supply `columns` or `backing_query_sql` when saving a query-backe
 
 - Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
 - For complex expressions, use the model name as table prefix (e.g., `"orders.amount * orders.quantity"`)
+- **SQLite**: `json_extract(col, '$.path')` is preserved as the function-call form (not rewritten to `col -> '$.path'`, which would return the JSON-quoted form and silently break `CASE WHEN` / equality matches against bare-string literals). Use `->>` directly if you specifically want the SQLite scalar operator.
 
 ## Datasource Config
 
