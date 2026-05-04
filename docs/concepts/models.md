@@ -101,6 +101,7 @@ When `allowed_aggregations` is set, it intersects with the type-default set: eve
 | `name` | string | No | (auto-derived) | Measure name; queries reference this by bare name |
 | `label` | string | No | — | Human-readable display name |
 | `description` | string | No | — | Explanatory text |
+| `meta` | dict | No | — | Arbitrary JSON metadata for caller bookkeeping (e.g., `{"kb_id": "abc-123"}`) |
 
 Column and measure names share a namespace within a model — a model cannot have a column named `aov` and a measure named `aov` at the same time (validated at save time).
 
@@ -213,6 +214,8 @@ aggregations:
 ```
 
 Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`.
+
+Like columns and measures, aggregations also accept an optional `meta` dict for caller bookkeeping (e.g., `{"owner": "analytics"}`).
 
 ## SQL Expressions
 
