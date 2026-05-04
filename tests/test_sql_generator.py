@@ -4687,10 +4687,13 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # User name surfaces as both SELECT alias and ORDER BY column.
-        assert '"orders.num_customers"' in sql, f"user alias not surfaced: {sql}"
-        # Canonical form must not leak into the surfaced alias.
-        assert '"orders.customer_id_count_distinct"' not in sql, (
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name surfaces as the ORDER BY column.
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias not used in ORDER BY: {sql}"
+        )
+        # Canonical form must not leak into the ORDER BY clause.
+        assert '"orders.customer_id_count_distinct"' not in order_clause, (
             f"canonical alias must not leak when user supplies 'name': {sql}"
         )
         assert "COUNT(DISTINCT" in sql
@@ -4748,10 +4751,11 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # User name surfaces as both SELECT alias and ORDER BY column
-        # (DEV-1335 — user ``name`` overrides the canonical form).
-        assert '"orders.num_customers"' in sql, (
-            f"user alias must surface in computed query path:\n{sql}"
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name is the ORDER BY column (DEV-1335 — user ``name`` overrides
+        # the canonical form).
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias must surface in ORDER BY for computed query path:\n{sql}"
         )
 
 
