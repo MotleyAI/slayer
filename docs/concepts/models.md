@@ -356,8 +356,30 @@ A query result is a self-contained table — it no longer has the joins that the
 | `customer_id` | `customer_id` |
 | `*:count` (measure) | `count` |
 | `revenue:sum` (measure) | `revenue_sum` |
+| `{"formula": "revenue:sum", "name": "rev"}` | `rev` |
 
 This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
+
+An explicit `name` on a measure spec **overrides** the canonical naming above for both arithmetic/transform formulas and simple aggregations. This is what lets multi-stage `source_queries` rename inner-stage outputs cleanly:
+
+```json
+{
+  "source_queries": [
+    {
+      "name": "raw",
+      "source_model": "orders",
+      "dimensions": ["region"],
+      "measures": [{"formula": "amount:sum", "name": "rev"}]
+    },
+    {
+      "source_model": "raw",
+      "measures": [{"formula": "rev:sum"}]
+    }
+  ]
+}
+```
+
+The inner stage emits a column named `rev` (not `amount_sum`), and the outer stage references it by that chosen name.
 
 See the [multistage queries example](../examples/06_multistage_queries/multistage_queries.md) for working examples.
 

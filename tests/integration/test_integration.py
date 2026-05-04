@@ -1510,6 +1510,56 @@ async def test_formula_dimension_via_query_list(integration_env):
     assert by_tier["low"] == 1
 
 
+async def test_multistage_renamed_measure_returns_non_null(integration_env):
+    """DEV-1335 canary. A 2-stage query-backed model where the inner stage
+    renames its aggregated measure via ``name=`` must return non-NULL values
+    for the renamed column when executed end-to-end.
+
+    Before the fix: the inner-stage wrap silently emits ``amount_sum``
+    (canonical) instead of the user-supplied ``rev``, so the outer stage's
+    ``rev:sum`` either errors at SQL-gen time or surfaces NULLs in the result
+    column. After the fix: the inner stage exposes ``rev`` and the outer
+    stage's sum equals the precomputed total.
+    """
+    engine = integration_env
+
+    saved = SlayerModel(
+        name="renamed_metric",
+        data_source="test_sqlite",
+        source_queries=[
+            SlayerQuery(
+                name="raw",
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            ),
+            SlayerQuery(
+                source_model="raw",
+                measures=[ModelMeasure(formula="rev:sum")],
+            ),
+        ],
+    )
+    await engine.save_model(saved)
+
+    response = await engine.execute("renamed_metric")
+    assert response.row_count == 1, (
+        f"expected single row from outer rev:sum, got {response.row_count}: {response.data}"
+    )
+    # Outer stage emits ``raw.rev_sum`` (canonical for stage 2).
+    row = response.data[0]
+    assert "raw.rev_sum" in row, (
+        f"expected column 'raw.rev_sum' in result row, got keys: {list(row.keys())}"
+    )
+    value = row["raw.rev_sum"]
+    assert value is not None, (
+        f"renamed measure must surface a non-NULL value, got NULL in row: {row}"
+    )
+    # 100 + 200 + 50 + 75 + 300 + 25 = 750
+    assert value == pytest.approx(750.0), (
+        f"sum of inner-stage 'rev' across all status buckets must equal 750, got {value}"
+    )
+
+
 async def test_circular_query_reference_raises(integration_env):
     """Circular references between named queries should error clearly."""
     engine = integration_env

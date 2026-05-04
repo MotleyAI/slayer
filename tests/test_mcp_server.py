@@ -2062,6 +2062,177 @@ class TestEditModel:
         assert "mutually exclusive" in result or "Specify at most one" in result
 
 
+class TestEditModelMultiStageRename:
+    """DEV-1335: editing a multi-stage query-backed model so an inner stage's
+    measure is renamed (or the stage shape changes) must refresh the cached
+    SQL/columns to reflect the new names. Outer-stage references to the new
+    name must resolve cleanly.
+    """
+
+    async def _setup_orders_with_two_stage_model(
+        self, storage: YAMLStorage, *, inner_measures: list, outer_measures: list,
+    ) -> None:
+        """Save a datasource, an upstream `orders` table-model, and a saved
+        2-stage query-backed model whose inner stage is named ``raw``.
+        """
+        from slayer.core.query import SlayerQuery
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="region", sql="region", type=DataType.STRING),
+            ],
+        ))
+        # Build initial source_queries via the engine save path so the cache
+        # reflects the initial state.
+        from slayer.engine.query_engine import SlayerQueryEngine
+        engine = SlayerQueryEngine(storage=storage)
+        await engine.save_model(SlayerModel(
+            name="qb",
+            data_source="test",
+            source_queries=[
+                SlayerQuery(
+                    name="raw",
+                    source_model="orders",
+                    dimensions=["region"],
+                    measures=inner_measures,
+                ),
+                SlayerQuery(
+                    source_model="raw",
+                    measures=outer_measures,
+                ),
+            ],
+        ))
+
+    async def test_edit_model_renames_inner_stage_measure(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Initial: stage 1 names a measure ``old``. Edit replaces source_queries
+        with ``new`` everywhere. The cached SQL must reference the new name and
+        not the old one; cached columns must follow.
+        """
+        await self._setup_orders_with_two_stage_model(
+            storage,
+            inner_measures=[{"formula": "amount:sum", "name": "old"}],
+            outer_measures=[{"formula": "old:sum"}],
+        )
+        # Sanity: initial cache reflects 'old'.
+        before = await storage.get_model("qb")
+        assert before is not None
+        assert before.backing_query_sql is not None
+        assert "old" in before.backing_query_sql
+        assert "old_sum" in [c.name for c in before.columns]
+
+        # Edit: rename inner-stage measure to 'new' (and update outer to match).
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "qb",
+            "source_queries": [
+                {
+                    "name": "raw",
+                    "source_model": "orders",
+                    "dimensions": ["region"],
+                    "measures": [{"formula": "amount:sum", "name": "new"}],
+                },
+                {
+                    "source_model": "raw",
+                    "measures": [{"formula": "new:sum"}],
+                },
+            ],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True, result
+
+        after = await storage.get_model("qb")
+        assert after is not None
+        assert after.backing_query_sql is not None
+        col_names = [c.name for c in after.columns]
+        assert "new_sum" in col_names, (
+            f"cache must reflect renamed inner measure, got: {col_names}"
+        )
+        assert "old_sum" not in col_names, (
+            f"stale 'old_sum' must be evicted, got: {col_names}"
+        )
+        sql = after.backing_query_sql
+        assert "new" in sql, f"backing_query_sql must contain new name:\n{sql}"
+        # The stale name must not survive in the wrap aliases or measure refs.
+        assert " AS old " not in sql and 'AS "old"' not in sql, (
+            f"backing_query_sql must not retain stale 'old' alias:\n{sql}"
+        )
+
+    async def test_edit_model_stage_shape_change_drops_and_adds_measure(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Initial stage 1 has two measures (``rev``, ``n``). Edit drops ``n``
+        and adds ``avg_amount`` instead. Outer stage now references the new
+        name; cached SQL must reflect the swap.
+        """
+        await self._setup_orders_with_two_stage_model(
+            storage,
+            inner_measures=[
+                {"formula": "amount:sum", "name": "rev"},
+                {"formula": "*:count", "name": "n"},
+            ],
+            outer_measures=[{"formula": "rev:sum"}],
+        )
+        before = await storage.get_model("qb")
+        assert before is not None
+        before_cols = [c.name for c in before.columns]
+        assert "rev_sum" in before_cols
+        # Inner-stage `n` is not directly emitted on the outer model (the
+        # outer only takes rev:sum), but it must appear in backing_query_sql
+        # as the inner stage's wrap rename.
+        before_sql = before.backing_query_sql or ""
+        assert " AS n " in before_sql or 'AS "n"' in before_sql or before_sql.find("AS n\n") >= 0, (
+            f"initial cache should expose inner 'n' alias:\n{before_sql}"
+        )
+
+        # Edit: swap n → avg_amount in stage 1; outer now sums avg_amount.
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "qb",
+            "source_queries": [
+                {
+                    "name": "raw",
+                    "source_model": "orders",
+                    "dimensions": ["region"],
+                    "measures": [
+                        {"formula": "amount:sum", "name": "rev"},
+                        {"formula": "amount:avg", "name": "avg_amount"},
+                    ],
+                },
+                {
+                    "source_model": "raw",
+                    "measures": [
+                        {"formula": "rev:sum"},
+                        {"formula": "avg_amount:avg"},
+                    ],
+                },
+            ],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True, result
+
+        after = await storage.get_model("qb")
+        assert after is not None
+        after_sql = after.backing_query_sql or ""
+        # Stale `n` must be gone from the inner wrap.
+        assert " AS n " not in after_sql and 'AS "n"' not in after_sql, (
+            f"stale inner 'n' alias must be evicted:\n{after_sql}"
+        )
+        # New `avg_amount` must be present.
+        assert "avg_amount" in after_sql, (
+            f"new 'avg_amount' alias must appear in backing_query_sql:\n{after_sql}"
+        )
+        # Cached outer columns reflect the new outer measures.
+        after_cols = [c.name for c in after.columns]
+        assert "rev_sum" in after_cols
+        assert "avg_amount_avg" in after_cols, (
+            f"outer column for avg_amount:avg missing: {after_cols}"
+        )
+
+
 class TestEditModelColumnsRejected:
     """edit_model on a query-backed model must explicitly reject ``columns``
     (which are engine-managed cache) instead of silently dropping them.
