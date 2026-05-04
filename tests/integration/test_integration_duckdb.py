@@ -8,6 +8,7 @@ pytest.importorskip("duckdb")
 
 import duckdb
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
@@ -16,9 +17,13 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-@pytest.fixture
-async def duckdb_env(tmp_path):
-    """Set up a full SLayer environment against a temporary DuckDB database."""
+@pytest.fixture(scope="module")
+def _duckdb_env_storage(tmp_path_factory):
+    """Module-scoped: per-module DuckDB file with seeded customers/orders, plus
+    a YAMLStorage with the orders + customers models pre-saved. The per-test
+    ``duckdb_env`` fixture wraps a fresh engine around the returned storage
+    (engines bind to their event loop — see slayer/sql/client.py:144)."""
+    tmp_path = tmp_path_factory.mktemp("duckdb_env")
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))
 
@@ -56,14 +61,13 @@ async def duckdb_env(tmp_path):
     conn.close()
 
     # Set up SLayer storage
-    tmpdir = tempfile.mkdtemp()
-    storage = YAMLStorage(base_dir=tmpdir)
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
 
-    await storage.save_datasource(DatasourceConfig(
+    run_sync(storage.save_datasource(DatasourceConfig(
         name="testduckdb",
         type="duckdb",
         database=str(db_path),
-    ))
+    )))
 
     orders_model = SlayerModel(
         name="orders",
@@ -91,10 +95,18 @@ async def duckdb_env(tmp_path):
 
         ],
     )
-    await storage.save_model(orders_model)
-    await storage.save_model(customers_model)
+    run_sync(storage.save_model(orders_model))
+    run_sync(storage.save_model(customers_model))
 
-    return SlayerQueryEngine(storage=storage)
+    return storage
+
+
+@pytest.fixture
+def duckdb_env(_duckdb_env_storage):
+    """Per-test SlayerQueryEngine wrapping the module-scoped storage. The
+    engine is recreated per-test because its async SQLAlchemy engine binds to
+    the current event loop."""
+    return SlayerQueryEngine(storage=_duckdb_env_storage)
 
 
 @pytest.mark.integration
@@ -294,9 +306,15 @@ class TestDuckDBQueries:
         assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)  # Mar
 
 
-@pytest.fixture
-def duckdb_ingest_env(tmp_path):
-    """Set up tables with FK relationships and ingest via rollup."""
+@pytest.fixture(scope="module")
+def duckdb_ingest_env(tmp_path_factory):
+    """Set up tables with FK relationships and ingest via rollup.
+
+    Module-scoped: tests destructure ``(models, ds)`` and build their own
+    ephemeral storage from the returned models — they never mutate the fixture
+    state. Saves the ~0.55s/call SQLAlchemy reflection across 6 tests.
+    """
+    tmp_path = tmp_path_factory.mktemp("duckdb_ingest")
     db_path = tmp_path / "ingest.duckdb"
     conn = duckdb.connect(str(db_path))
 
