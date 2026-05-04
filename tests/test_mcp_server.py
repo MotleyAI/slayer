@@ -30,15 +30,44 @@ from slayer.mcp.server import (
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-@pytest.fixture
-def storage() -> Generator[YAMLStorage, None, None]:
+# `create_mcp_server` is expensive (~35 ms each, dominated by FastMCP tool
+# registration / pydantic schema gen). With ~160 tests in this file that
+# was ~5–6s of pure fixture overhead per run. The MCP server captures the
+# storage instance at construction time, so we share *both* across the
+# session and reset the underlying YAML files in a per-test fixture.
+@pytest.fixture(scope="session")
+def _shared_storage() -> Generator[YAMLStorage, None, None]:
     with tempfile.TemporaryDirectory() as tmpdir:
         yield YAMLStorage(base_dir=tmpdir)
 
 
+@pytest.fixture(scope="session")
+def _shared_mcp_server(_shared_storage: YAMLStorage):
+    return create_mcp_server(storage=_shared_storage)
+
+
+def _reset_yaml_storage(storage: YAMLStorage) -> None:
+    """Wipe model + datasource files between tests so the session-scoped
+    storage looks fresh to every test."""
+    for sub in ("models", "datasources"):
+        d = os.path.join(storage.base_dir, sub)
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                os.remove(os.path.join(d, f))
+
+
 @pytest.fixture
-def mcp_server(storage: YAMLStorage):
-    return create_mcp_server(storage=storage)
+def storage(_shared_storage: YAMLStorage) -> YAMLStorage:
+    _reset_yaml_storage(_shared_storage)
+    return _shared_storage
+
+
+@pytest.fixture
+def mcp_server(_shared_mcp_server, storage: YAMLStorage):
+    # Depending on `storage` ensures the per-test reset runs before any
+    # test exercises the MCP server. `mcp_server` itself is the same
+    # session-scoped instance every call.
+    return _shared_mcp_server
 
 
 async def _call(mcp_server, *, name: str, arguments: Optional[dict[str, Any]] = None) -> str:

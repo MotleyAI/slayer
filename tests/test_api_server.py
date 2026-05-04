@@ -1,5 +1,6 @@
 """Tests for the FastAPI server."""
 
+import os
 import tempfile
 
 import pytest
@@ -12,16 +13,40 @@ from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-@pytest.fixture
-def storage() -> YAMLStorage:
+# `create_app` builds an MCP server (~2 s of FastMCP/pydantic schema gen)
+# plus a FastAPI app, and the app captures the storage instance. Sharing
+# both across the session and resetting the YAML files between tests
+# avoids paying that cost on every test in this file.
+@pytest.fixture(scope="session")
+def _shared_storage():
     with tempfile.TemporaryDirectory() as tmpdir:
         yield YAMLStorage(base_dir=tmpdir)
 
 
-@pytest.fixture
-def client(storage: YAMLStorage) -> TestClient:
-    app = create_app(storage=storage)
+@pytest.fixture(scope="session")
+def _shared_client(_shared_storage: YAMLStorage) -> TestClient:
+    app = create_app(storage=_shared_storage)
     return TestClient(app)
+
+
+def _reset_yaml_storage(storage: YAMLStorage) -> None:
+    for sub in ("models", "datasources"):
+        d = os.path.join(storage.base_dir, sub)
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                os.remove(os.path.join(d, f))
+
+
+@pytest.fixture
+def storage(_shared_storage: YAMLStorage) -> YAMLStorage:
+    _reset_yaml_storage(_shared_storage)
+    return _shared_storage
+
+
+@pytest.fixture
+def client(_shared_client: TestClient, storage: YAMLStorage) -> TestClient:
+    # Depending on `storage` ensures the per-test reset runs first.
+    return _shared_client
 
 
 class TestHealth:
