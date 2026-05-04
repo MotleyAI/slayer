@@ -3,7 +3,7 @@
 import json
 import os
 import tempfile
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 import pytest
 
@@ -31,7 +31,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.fixture
-def storage() -> YAMLStorage:
+def storage() -> Generator[YAMLStorage, None, None]:
     with tempfile.TemporaryDirectory() as tmpdir:
         yield YAMLStorage(base_dir=tmpdir)
 
@@ -2216,18 +2216,26 @@ class TestEditModel:
     async def test_edit_persists_aggregation_meta_create_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
-        """Adding a brand-new aggregation with meta via edit_model — meta
-        survives storage round-trip."""
+        """Adding a brand-new aggregation with meta via edit_model — meta and
+        formula both survive storage round-trip. Uses a custom aggregation
+        name + formula so the test pins both fields, not just meta on a
+        built-in override.
+        """
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
-            "aggregations": [{"name": "sum", "meta": {"owner": "x"}}],
+            "aggregations": [{
+                "name": "my_agg",
+                "formula": "SUM({expr})",
+                "meta": {"owner": "x"},
+            }],
         })
         assert json.loads(result)["success"] is True
         model = await storage.get_model("orders")
         assert model.aggregations[0].meta == {"owner": "x"}
+        assert model.aggregations[0].formula == "SUM({expr})"
 
     async def test_edit_persists_aggregation_meta_update_path(
         self, mcp_server, storage: YAMLStorage,
