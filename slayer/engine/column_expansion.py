@@ -17,7 +17,7 @@ unresolved derived references.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, FrozenSet, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -89,7 +89,7 @@ async def expand_derived_refs(
     resolve_model: ResolveModel,
     named_queries: Optional[Dict[str, Any]] = None,
     dialect: str,
-    visited: Optional[FrozenSet[Tuple[str, str]]] = None,
+    visited: Optional[Tuple[Tuple[str, str], ...]] = None,
     is_root: bool = True,
 ) -> Optional[str]:
     """Recursively expand cross-model and local derived-column references
@@ -107,15 +107,18 @@ async def expand_derived_refs(
             that returns a ``SlayerModel`` (or None).
         named_queries: Pass-through context for ``resolve_model``.
         dialect: sqlglot dialect for parse/emit.
-        visited: Cycle-detection set of ``(model_name, column_name)``
-            tuples populated during recursion. Callers leave as None.
+        visited: Ordered cycle-detection chain of ``(model_name,
+            column_name)`` tuples populated during recursion. Ordered
+            (not a set) so the cycle path in error messages reflects the
+            actual recursion order — frozenset iteration is randomized
+            via PYTHONHASHSEED. Callers leave as None.
 
     Raises:
         ValueError: on a circular column-reference chain.
     """
     if not sql:
         return sql
-    visited = visited or frozenset()
+    visited = visited or ()
     named_queries = named_queries or {}
 
     parsed = sqlglot.parse_one(sql, dialect=dialect)
@@ -165,7 +168,9 @@ async def expand_derived_refs(
         next_is_root = is_root and (target_model is model)
         key = (target_model.name, col_name)
         if key in visited:
-            chain = " → ".join(f"{m}.{c}" for m, c in [*visited, key])
+            cycle_start = visited.index(key)
+            cycle = (*visited[cycle_start:], key)
+            chain = " → ".join(f"{m}.{c}" for m, c in cycle)
             raise ValueError(
                 f"Circular column reference detected: {chain}"
             )
@@ -176,7 +181,7 @@ async def expand_derived_refs(
             resolve_model=resolve_model,
             named_queries=named_queries,
             dialect=dialect,
-            visited=visited | frozenset({key}),
+            visited=(*visited, key),
             is_root=next_is_root,
         )
         if expanded_sql is None:

@@ -404,8 +404,14 @@ async def test_cycle_detection(tmp_path) -> None:
         ],
     )
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="c1")])
-    with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle"):
+    with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
         await _gen_sql(engine, query, model_a)
+    # The chain must follow recursion order, not a random frozenset
+    # iteration. Querying c1 first descends into c2 (since c1.sql
+    # references c2), so the cycle path is c2 → c1 → c2. Pin it.
+    assert "A.c2 → A.c1 → A.c2" in str(exc_info.value), (
+        f"Cycle chain not in recursion order: {exc_info.value}"
+    )
 
 
 # ---------------------------------------------------------------------------
