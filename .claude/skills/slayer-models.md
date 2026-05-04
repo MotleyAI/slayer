@@ -43,7 +43,7 @@ measures:
     formula: "amount:sum / *:count"
 ```
 
-Aggregation is specified at query time with **colon syntax**: `"amount:sum"`, `"amount:avg"`, `"*:count"`. A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model.
+Aggregation is specified at query time with **colon syntax**: `"amount:sum"`, `"amount:avg"`, `"*:count"`. A bare-name reference like `{"formula": "aov"}` resolves to the saved `ModelMeasure` formula on the model. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. The two-column ones (`corr`, `covar_samp`, `covar_pop`) take the second column as a named param: `price:corr(other=quantity)`.
 
 ## Data Types
 

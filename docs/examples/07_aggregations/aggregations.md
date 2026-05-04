@@ -67,6 +67,10 @@ These are always available — no definition needed:
 | `weighted_avg` | SUM(expr \* weight) / SUM(weight) |
 | `median` | PERCENTILE_CONT(0.5) — see database support below |
 | `percentile` | PERCENTILE_CONT(p) — specify `p` as an argument; see database support below |
+| `stddev_samp` / `stddev_pop` | Sample / population standard deviation |
+| `var_samp` / `var_pop` | Sample / population variance |
+| `corr` | `price:corr(other=quantity)` — Pearson correlation between two columns |
+| `covar_samp` / `covar_pop` | `price:covar_samp(other=quantity)` — sample / population covariance |
 
 ### Database support for `median` / `percentile`
 

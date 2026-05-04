@@ -42,7 +42,7 @@ Each entry in `measures` is either a bare formula string or a `{"formula": ..., 
 ]
 ```
 
-Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`.
+Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`. Two-column `corr`/`covar_samp`/`covar_pop` take the second column as a named param: `price:corr(other=quantity)`. `sum` and `avg` accept an optional trailing-window: `revenue:sum(window='30d')`.
 
 `*:count` is always available — no column definition needed. `col:count` counts non-nulls.
 

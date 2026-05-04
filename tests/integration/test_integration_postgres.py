@@ -803,3 +803,106 @@ class TestPostgresMedianPercentile:
         assert by_status["completed"] == pytest.approx(150)
         assert by_status["pending"] == pytest.approx(175)
         assert by_status["cancelled"] == pytest.approx(75)
+
+
+@pytest.mark.integration
+class TestPostgresStatAggregations:
+    """DEV-1317 cross-dialect smoke: the new statistical aggregations
+    (stddev_samp, stddev_pop, var_samp, var_pop, corr) must produce the
+    same numeric results on Postgres native functions as the SQLite UDF
+    path produces. Within rel=1e-9.
+    """
+
+    async def test_stddev_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
+        import statistics
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:stddev_samp"}],
+        )
+        result = await pg_env.execute(query=query)
+        amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
+        assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
+            statistics.stdev(amounts), rel=1e-9
+        )
+
+    async def test_stddev_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
+        import statistics
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:stddev_pop"}],
+        )
+        result = await pg_env.execute(query=query)
+        amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
+        assert float(result.data[0]["orders.total_stddev_pop"]) == pytest.approx(
+            statistics.pstdev(amounts), rel=1e-9
+        )
+
+    async def test_var_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
+        import statistics
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:var_samp"}],
+        )
+        result = await pg_env.execute(query=query)
+        amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
+        assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
+            statistics.variance(amounts), rel=1e-9
+        )
+
+    async def test_var_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
+        import statistics
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:var_pop"}],
+        )
+        result = await pg_env.execute(query=query)
+        amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
+        assert float(result.data[0]["orders.total_var_pop"]) == pytest.approx(
+            statistics.pvariance(amounts), rel=1e-9
+        )
+
+    async def test_corr_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
+        # CORR(amount, customer_id) — uses two existing columns.
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:corr(other=customer_id)"}],
+        )
+        result = await pg_env.execute(query=query)
+        # Compute expected via Python's statistics.correlation.
+        import statistics
+        xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
+        ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
+        expected = statistics.correlation(xs, ys)
+        assert float(result.data[0]["orders.total_corr_other_customer_id"]) == pytest.approx(
+            expected, rel=1e-9
+        )
+
+    async def test_covar_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:covar_samp(other=customer_id)"}],
+        )
+        result = await pg_env.execute(query=query)
+        xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
+        ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ys) / n
+        expected = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (n - 1)
+        assert float(
+            result.data[0]["orders.total_covar_samp_other_customer_id"]
+        ) == pytest.approx(expected, rel=1e-9)
+
+    async def test_covar_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "total:covar_pop(other=customer_id)"}],
+        )
+        result = await pg_env.execute(query=query)
+        xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
+        ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ys) / n
+        expected = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / n
+        assert float(
+            result.data[0]["orders.total_covar_pop_other_customer_id"]
+        ) == pytest.approx(expected, rel=1e-9)

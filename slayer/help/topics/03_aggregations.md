@@ -17,6 +17,13 @@ not baked into the measure definition.
 | `median` | `latency:median` | `PERCENTILE_CONT(0.5) …` |
 | `percentile` | `latency:percentile(p=0.95)` | `PERCENTILE_CONT(0.95) …` |
 | `weighted_avg` | `price:weighted_avg(weight=quantity)` | `SUM(price*qty)/SUM(qty)` |
+| `stddev_samp` | `latency:stddev_samp` | `STDDEV_SAMP(expr)` — NULL when N ≤ 1 |
+| `stddev_pop` | `latency:stddev_pop` | `STDDEV_POP(expr)` — 0 at N=1, NULL at N=0 |
+| `var_samp` | `latency:var_samp` | `VAR_SAMP(expr)` (or `VARIANCE` on SQLite/MySQL) |
+| `var_pop` | `latency:var_pop` | `VAR_POP(expr)` (or `VARIANCE_POP` on SQLite/MySQL) |
+| `corr` | `price:corr(other=quantity)` | `CORR(price, quantity)` — Pearson r |
+| `covar_samp` | `price:covar_samp(other=quantity)` | `COVAR_SAMP(price, quantity)` — sample covariance |
+| `covar_pop` | `price:covar_pop(other=quantity)` | `COVAR_POP(price, quantity)` — population covariance |
 | `first` / `last` | `balance:last(updated_at)` | earliest / latest record's value |
 
 ## first and last — per-group snapshots

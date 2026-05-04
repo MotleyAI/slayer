@@ -572,6 +572,50 @@ class TestFuncStyleRewrite:
         result = _rewrite_funcstyle_aggregations("sum(revenue) > 100")
         assert result == "revenue:sum > 100"
 
+    # New stat aggregations (DEV-1317)
+    def test_stddev_samp_funcstyle(self) -> None:
+        """`stddev_samp(latency)` must rewrite to colon syntax once the
+        aggregation name is registered as built-in."""
+        assert _rewrite_funcstyle_aggregations("stddev_samp(latency)") == "latency:stddev_samp"
+
+    def test_stddev_pop_funcstyle(self) -> None:
+        assert _rewrite_funcstyle_aggregations("stddev_pop(latency)") == "latency:stddev_pop"
+
+    def test_var_samp_funcstyle(self) -> None:
+        assert _rewrite_funcstyle_aggregations("var_samp(latency)") == "latency:var_samp"
+
+    def test_var_pop_funcstyle(self) -> None:
+        assert _rewrite_funcstyle_aggregations("var_pop(latency)") == "latency:var_pop"
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_two_arg_stat_funcstyle_with_other_kwarg(self, agg: str) -> None:
+        """`corr(price, other=quantity)` and `covar_*(price, other=quantity)`
+        all mirror `weighted_avg(price, weight=qty)` — first positional arg
+        becomes the LHS column, named kwarg(s) become agg_kwargs."""
+        assert (
+            _rewrite_funcstyle_aggregations(f"{agg}(price, other=quantity)")
+            == f"price:{agg}(other=quantity)"
+        )
+
+    # Scalar math functions must NOT be rewritten — they are plain SQL
+    # passthrough used inside Column.sql / formula expressions.
+    @pytest.mark.parametrize(
+        "scalar_call",
+        [
+            "ln(amount)",
+            "log10(amount)",
+            "log(10, amount)",
+            "exp(rate)",
+            "sqrt(price)",
+            "pow(2, 10)",
+            "power(2, 10)",
+        ],
+    )
+    def test_scalar_math_unchanged(self, scalar_call: str) -> None:
+        # Scalar math UDF names are not aggregations; the rewrite must
+        # leave them untouched.
+        assert _rewrite_funcstyle_aggregations(scalar_call) == scalar_call
+
 
 class TestFuncStyleEndToEnd:
     """End-to-end tests through parse_formula and parse_filter."""

@@ -33,7 +33,26 @@ _AGG_FUNCTION_MAP: dict[str, str] = {
     "median": "MEDIAN",
     # "first", "last" use special ROW_NUMBER + conditional aggregate
     # "weighted_avg" and custom aggregations use formula substitution
+    # "percentile", "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    # "corr" are dialect-dependent and routed through dedicated builders
+    # (_build_percentile / _build_stat_agg) — they are intentionally
+    # absent from this map.
 }
+
+# DEV-1317: statistical aggregations routed through _build_stat_agg.
+# stddev_samp/_pop and var_samp/_pop are 1-arg; corr / covar_samp /
+# covar_pop are 2-arg via the `other=` kwarg. SQLite gets these through
+# registered Python UDFs; Postgres/DuckDB/MySQL/ClickHouse use the
+# native function emitted via sqlglot transpilation. MySQL has no
+# native CORR / COVAR_SAMP / COVAR_POP — _build_stat_agg raises
+# NotImplementedError there, mirroring _build_median.
+_STAT_AGG_NAMES: frozenset[str] = frozenset({
+    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    "corr", "covar_samp", "covar_pop",
+})
+
+# Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
+_TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
@@ -53,6 +72,18 @@ _SAFE_AGG_PARAM_RE = re.compile(
     r'-?\d+(?:\.\d+)?'  # numeric literal
     r')$'
 )
+
+
+def _wrap_filter(sql_str: str, filter_sql: Optional[str]) -> str:
+    """Wrap ``sql_str`` in ``CASE WHEN filter_sql THEN ... END`` if a row-level
+    filter is set; otherwise pass through unchanged. Used by the dialect-aware
+    aggregate builders (``_build_percentile``, ``_build_stat_agg``,
+    ``_build_formula_agg``) so that non-matching rows contribute NULL and the
+    aggregate skips them.
+    """
+    if not filter_sql:
+        return sql_str
+    return f"(CASE WHEN {filter_sql} THEN {sql_str} END)"
 
 _WINDOW_DURATION_RE = re.compile(r"(?P<num>\d+)(?P<unit>min|[ymwdhs])")
 _WINDOW_UNIT_SQL = {
@@ -1694,6 +1725,52 @@ class SQLGenerator:
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
         return sqlglot.parse_one(sql=sql, dialect=self.dialect)
 
+    def _resolve_value_sql(self, measure: "EnrichedMeasure") -> str:
+        """Resolve ``measure.sql`` (or ``measure.name``) into a fully-qualified
+        SQL string for the value column. Mirrors what ``_build_agg`` does for
+        the standard sum/avg/min/max path so the dialect-aware builders
+        (median/percentile/stat-aggs/formula) emit the same qualified
+        identifiers.
+        """
+        return self._resolve_sql(
+            sql=measure.sql, name=measure.name, model_name=measure.model_name,
+        ).sql(dialect=self.dialect)
+
+    def _resolve_agg_param(
+        self,
+        measure: "EnrichedMeasure",
+        *,
+        name: str,
+        agg_name: str,
+    ) -> str:
+        """Pull a named aggregation parameter, with query-time SQL-injection
+        validation and model-level-default fallback. Returns the SQL string
+        with bare identifiers qualified under ``measure.model_name`` (via
+        ``_resolve_sql``); qualified names and numeric literals pass
+        through unchanged. Raises ``ValueError`` if neither source supplies
+        the parameter — reused by ``_build_percentile`` (``p=``) and
+        ``_build_stat_agg`` (``other=``); mirrors ``weighted_avg``'s
+        ``weight=`` flow.
+        """
+        raw: Optional[str] = None
+        if name in measure.agg_kwargs:
+            raw = measure.agg_kwargs[name]
+            _validate_agg_param_value(raw, name, agg_name)
+        elif measure.aggregation_def:
+            for param in measure.aggregation_def.params:
+                if param.name == name:
+                    raw = param.sql
+                    break
+        if raw is None:
+            raise ValueError(
+                f"Aggregation '{agg_name}' requires parameter '{name}'. "
+                f"Set it in the model's aggregation definition or at query time "
+                f"(e.g., 'measure:{agg_name}({name}=column)')."
+            )
+        return self._resolve_sql(
+            sql=raw, name=raw, model_name=measure.model_name,
+        ).sql(dialect=self.dialect)
+
     def _build_agg(
         self,
         measure: EnrichedMeasure,
@@ -1754,6 +1831,11 @@ class SQLGenerator:
             # going through the BUILTIN_AGGREGATION_FORMULAS path.
             if agg_name == "percentile":
                 return self._build_percentile(measure), True
+            # Statistical aggregates also dispatch to a dedicated builder so
+            # the SQLite-UDF / native-function / NotImplementedError split
+            # mirrors _build_median.
+            if agg_name in _STAT_AGG_NAMES:
+                return self._build_stat_agg(measure), True
             return self._build_formula_agg(measure, agg_name), True
 
         # --- Resolve inner expression ---
@@ -1833,22 +1915,24 @@ class SQLGenerator:
                     f"(e.g., 'measure:{agg_name}({req}=column)')."
                 )
 
-        # Resolve {value} and {param_name} in formula. When the measure is
-        # filtered we must wrap *every* row-level reference (the value AND
-        # every parameter) in a CASE WHEN so non-matching rows contribute
-        # NULL to all terms. Otherwise formulas like weighted_avg
-        # ("SUM({value}*{weight}) / SUM({weight})") filter the numerator
-        # only and leave the denominator summing all weights.
-        col_expr = measure.sql or measure.name
-        if measure.filter_sql:
-            col_expr = f"(CASE WHEN {measure.filter_sql} THEN {col_expr} END)"
-            params = {
-                name: f"(CASE WHEN {measure.filter_sql} THEN {val} END)"
-                for name, val in params.items()
-            }
+        # Resolve {value} and {param_name} via _resolve_sql so bare identifiers
+        # are qualified under measure.model_name (matching the standard
+        # sum/avg/min/max path). When the measure carries a row-level filter,
+        # wrap row-level references (the value AND any column-ref params) in
+        # CASE WHEN so non-matching rows contribute NULL to all terms — but
+        # leave literal-default params unwrapped, since `(CASE WHEN ... THEN
+        # 100 END)` for a constant `scale=100` would turn it into a row
+        # expression and break grouped SQL semantics.
+        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
         substituted = formula.replace("{value}", col_expr)
         for param_name, param_val in params.items():
-            substituted = substituted.replace(f"{{{param_name}}}", param_val)
+            param_ast = self._resolve_sql(
+                sql=param_val, name=param_val, model_name=measure.model_name,
+            )
+            param_expr = param_ast.sql(dialect=self.dialect)
+            if measure.filter_sql and not isinstance(param_ast, exp.Literal):
+                param_expr = _wrap_filter(param_expr, measure.filter_sql)
+            substituted = substituted.replace(f"{{{param_name}}}", param_expr)
 
         return sqlglot.parse_one(substituted, dialect=self.dialect)
 
@@ -1874,25 +1958,36 @@ class SQLGenerator:
     def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
 
-        ``p`` comes from ``measure.agg_kwargs['p']`` as a string literal that has
-        already passed safe-value validation. Filter handling mirrors
-        ``_build_formula_agg``: when the measure carries a row-level filter we
-        wrap the value column in ``CASE WHEN ... END`` so non-matching rows
-        contribute NULL and are ignored by the aggregate.
+        ``p`` comes from ``measure.agg_kwargs['p']`` (validated against
+        SQL injection) or from a model-level ``Aggregation`` default.
+        Filter handling mirrors ``_build_formula_agg``: when the measure
+        carries a row-level filter, the value column is wrapped in
+        ``CASE WHEN ... END`` so non-matching rows contribute NULL and
+        are ignored by the aggregate. Both the value column and ``p``
+        flow through ``_resolve_sql`` so bare identifiers are qualified
+        under ``measure.model_name`` and numeric literals pass through
+        unchanged.
         """
-        p = measure.agg_kwargs.get("p")
-        if p is None and measure.aggregation_def:
-            for param in measure.aggregation_def.params:
-                if param.name == "p":
-                    p = param.sql
-                    break
-        if p is None:
+        p = self._resolve_agg_param(measure, name="p", agg_name="percentile")
+        # `p` must be a numeric literal in [0, 1]. Without this guard a
+        # caller could pass `measure:percentile(p=quantity)` (or a model-
+        # level default like `p=pg_sleep(10)` that bypasses
+        # `_validate_agg_param_value`) and have it flow into
+        # PERCENTILE_CONT(p)'s direct-arg slot as a column ref or function
+        # call — failing at the backend with a dialect-specific error
+        # rather than at SLayer's validation boundary. Closes Codex #3 on
+        # PR #82 by catching non-numeric model-level defaults here.
+        try:
+            p_float = float(p)
+        except ValueError:
             raise ValueError(
-                "Aggregation 'percentile' requires parameter 'p'. "
-                "Set it in the model's aggregation definition or at query time "
-                "(e.g., 'measure:percentile(p=0.95)')."
+                f"Aggregation 'percentile' parameter 'p' must be a numeric literal "
+                f"in [0, 1]; got {p!r}."
+            ) from None
+        if not 0.0 <= p_float <= 1.0:
+            raise ValueError(
+                f"Aggregation 'percentile' parameter 'p' must be in [0, 1]; got {p_float}."
             )
-        _validate_agg_param_value(p, "p", "percentile")
 
         if self.dialect == "mysql":
             raise NotImplementedError(
@@ -1901,9 +1996,7 @@ class SQLGenerator:
                 "Use MariaDB or compute the value client-side."
             )
 
-        col_expr = measure.sql or measure.name
-        if measure.filter_sql:
-            col_expr = f"(CASE WHEN {measure.filter_sql} THEN {col_expr} END)"
+        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
 
         if self.dialect == "sqlite":
             # Provided by the percentile_cont(value, p) UDF registered on connect.
@@ -1913,6 +2006,61 @@ class SQLGenerator:
             sql_str = f"quantile({p})({col_expr})"
         else:
             sql_str = f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {col_expr})"
+
+        return sqlglot.parse_one(sql_str, dialect=self.dialect)
+
+    def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:
+        """Build SQL for the statistical aggregations added in DEV-1317.
+
+        Handles ``stddev_samp``, ``stddev_pop``, ``var_samp``, ``var_pop``
+        (1-arg) and ``corr`` / ``covar_samp`` / ``covar_pop`` (2-arg via
+        ``other=`` kwarg). All seven are native on Postgres / DuckDB /
+        ClickHouse; ``stddev*`` / ``var*`` are also native on MySQL but
+        ``corr`` / ``covar_*`` are not. SQLite gets them via Python UDFs
+        registered in ``slayer.sql.sqlite_udfs`` — the UDFs alias
+        sqlglot's transpiled names (e.g. ``var_samp`` → ``VARIANCE`` on
+        SQLite) so generator output resolves at runtime.
+
+        Both legs flow through ``_resolve_sql`` so bare identifiers are
+        qualified under ``measure.model_name`` (matches the standard
+        sum/avg/min/max path). Filter handling mirrors
+        ``_build_percentile`` / ``_build_formula_agg``: a row-level
+        filter wraps the value AND the ``other`` column in
+        ``CASE WHEN filter THEN col END`` so non-matching rows
+        contribute NULL — which the aggregates skip.
+        """
+        agg_name = measure.aggregation
+
+        # Resolve the `other=` kwarg before the MySQL guard so that a
+        # missing-required-param error takes priority over the
+        # MySQL-not-supported error when both conditions hold — the
+        # missing-param message points at the actual user mistake. Closes
+        # Codex #5 on PR #82.
+        other_expr: Optional[str] = None
+        if agg_name in _TWO_ARG_STAT_AGGS:
+            other_expr = _wrap_filter(
+                self._resolve_agg_param(measure, name="other", agg_name=agg_name),
+                measure.filter_sql,
+            )
+
+        if agg_name in _TWO_ARG_STAT_AGGS and self.dialect == "mysql":
+            raise NotImplementedError(
+                f"Aggregation '{agg_name}' is not supported on MySQL: MySQL has no "
+                f"native {agg_name.upper()} function and no Python UDF mechanism. "
+                f"Use MariaDB or compute the value client-side."
+            )
+
+        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+
+        if agg_name in _TWO_ARG_STAT_AGGS:
+            sql_str = f"{agg_name.upper()}({col_expr}, {other_expr})"
+        else:
+            # stddev_samp, stddev_pop, var_samp, var_pop: emit the
+            # canonical Postgres-style name and let sqlglot transpile per
+            # dialect (e.g., var_samp → VARIANCE on SQLite/DuckDB/MySQL,
+            # var_pop → VARIANCE_POP on SQLite/MySQL). Both spellings
+            # resolve via the SQLite UDF aliases.
+            sql_str = f"{agg_name.upper()}({col_expr})"
 
         return sqlglot.parse_one(sql_str, dialect=self.dialect)
 

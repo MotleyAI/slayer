@@ -82,7 +82,7 @@ A column with no explicit `allowed_aggregations` whitelist gets a default set ba
 
 | Type | Default eligible aggregations |
 |------|-------------------------------|
-| `number` | sum, avg, min, max, count, count_distinct, median, weighted_avg, percentile, first, last |
+| `number` | sum, avg, min, max, count, count_distinct, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop |
 | `string` | count, count_distinct, first, last, min, max |
 | `boolean` | count, count_distinct, sum, min, max, first, last |
 | `date` / `time` | count, count_distinct, first, last, min, max |
@@ -175,6 +175,13 @@ Aggregation is applied at query time via colon syntax: `measure_name:aggregation
 | `weighted_avg` | `price:weighted_avg(weight=quantity)` | `SUM(price * quantity) / SUM(quantity)` |
 | `median` | `revenue:median` | Median value |
 | `percentile` | `revenue:percentile(p=0.95)` | 95th percentile |
+| `stddev_samp` | `latency:stddev_samp` | Sample standard deviation (Bessel-corrected; NULL when N ≤ 1) |
+| `stddev_pop` | `latency:stddev_pop` | Population standard deviation (NULL at N=0; 0 at N=1) |
+| `var_samp` | `latency:var_samp` | Sample variance (NULL when N ≤ 1) |
+| `var_pop` | `latency:var_pop` | Population variance (NULL at N=0; 0 at N=1) |
+| `corr` | `price:corr(other=quantity)` | Pearson correlation between two columns; NULL when fewer than 2 non-null pairs OR either side has zero variance |
+| `covar_samp` | `price:covar_samp(other=quantity)` | Sample covariance between two columns (Bessel-corrected); NULL when N ≤ 1 |
+| `covar_pop` | `price:covar_pop(other=quantity)` | Population covariance between two columns; NULL at N=0, 0 at N=1 |
 
 `*:count` is always available — no measure definition needed. `*` means "all rows" and can **only** be used with `count` (i.e., `*:count` for `COUNT(*)`). Other aggregations like `*:sum` or `*:avg` are not valid.
 

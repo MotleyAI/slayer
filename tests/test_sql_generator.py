@@ -1500,6 +1500,9 @@ class TestMultiDialectGeneration:
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
 
                 Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                # Second numeric column so 2-arg stat aggregates
+                # (corr(other=...) / covar_*(other=...)) have a valid LHS+RHS pair.
+                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
             ],
         )
         return model
@@ -1640,6 +1643,99 @@ class TestMultiDialectGeneration:
             f"sql:\n{sql}"
         )
 
+    # DEV-1317: cross-dialect stat-agg generation. The exact SQL shape per
+    # Tier-1 dialect is pinned in TestStatAggsPerDialect; here we just confirm
+    # the generator produces parseable SQL on every supported dialect.
+    # Assertions check the function-call SHAPE (qualified column refs in the
+    # arg slot), not just substring fragments — substrings like "STDDEV" or
+    # "CORR" pass even when the aggregate has regressed because aliases
+    # such as `revenue_stddev_samp` always contain the family name.
+
+    @pytest.mark.parametrize("dialect", ALL_DIALECTS)
+    @pytest.mark.parametrize(
+        "formula",
+        [
+            "revenue:stddev_samp",
+            "revenue:stddev_pop",
+            "revenue:var_samp",
+            "revenue:var_pop",
+        ],
+    )
+    async def test_one_arg_stat_agg_generation(
+        self,
+        dialect: str,
+        formula: str,
+        orders_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula=formula)],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        upper = sql.upper()
+        assert "SELECT" in upper
+        # The aggregate must wrap the resolved value column (orders.amount,
+        # since the `revenue` Column has sql="amount") in its single-arg slot.
+        assert "(ORDERS.AMOUNT)" in upper, (
+            f"expected single-arg call (ORDERS.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
+        )
+
+    # corr / covar_samp / covar_pop are not supported on MySQL — the generator
+    # raises NotImplementedError there, so MySQL is filtered out of the matrix.
+    @pytest.mark.parametrize(
+        "dialect", [d for d in ALL_DIALECTS if d != "mysql"],
+    )
+    @pytest.mark.parametrize(
+        "formula",
+        [
+            "revenue:corr(other=quantity)",
+            "revenue:covar_samp(other=quantity)",
+            "revenue:covar_pop(other=quantity)",
+        ],
+    )
+    async def test_two_arg_stat_agg_generation(
+        self,
+        dialect: str,
+        formula: str,
+        orders_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula=formula)],
+        )
+        sql = await _generate(generator=gen, query=query, model=orders_model)
+        upper = sql.upper()
+        assert "SELECT" in upper
+        # Both legs (LHS column AND `other=` kwarg) must be qualified and
+        # appear in the function-call's two-arg slot in that order. This
+        # asymmetry vs the 1-arg test is what distinguishes the test bodies
+        # for Sonar python:S4144 and pins the new `_resolve_agg_param` +
+        # `_resolve_value_sql` qualification path for 2-arg stats.
+        assert "(ORDERS.AMOUNT, ORDERS.QUANTITY)" in upper, (
+            f"expected two-arg call (ORDERS.AMOUNT, ORDERS.QUANTITY) in SQL for {formula!r} "
+            f"on {dialect}:\n{sql}"
+        )
+
+    @pytest.mark.parametrize(
+        "formula", [
+            "revenue:corr(other=quantity)",
+            "revenue:covar_samp(other=quantity)",
+            "revenue:covar_pop(other=quantity)",
+        ],
+    )
+    async def test_two_arg_stat_agg_mysql_raises(
+        self, formula: str, orders_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="mysql")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula=formula)],
+        )
+        with pytest.raises(NotImplementedError, match="MySQL"):
+            await _generate(generator=gen, query=query, model=orders_model)
+
 
 class TestMedianPercentilePerDialect:
     """Per-dialect SQL emission for median and percentile aggregations.
@@ -1707,27 +1803,27 @@ class TestMedianPercentilePerDialect:
         gen = SQLGenerator(dialect="postgres")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.95"})
         sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY amount)"
+        assert sql == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY orders.amount)"
 
     def test_build_percentile_sqlite(self) -> None:
         gen = SQLGenerator(dialect="sqlite")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
         sql = gen._build_percentile(m).sql(dialect="sqlite")
-        assert sql == "PERCENTILE_CONT(amount, 0.5)"
+        assert sql == "PERCENTILE_CONT(orders.amount, 0.5)"
 
     def test_build_percentile_clickhouse_emits_quantile(self) -> None:
         gen = SQLGenerator(dialect="clickhouse")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.75"})
         sql = gen._build_percentile(m).sql(dialect="clickhouse")
         # ClickHouse parametric aggregate syntax.
-        assert sql == "quantile(0.75)(amount)"
+        assert sql == "quantile(0.75)(orders.amount)"
 
     @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
     def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
         gen = SQLGenerator(dialect="clickhouse")
         m = self._measure(agg="percentile", agg_kwargs={"p": p})
         sql = gen._build_percentile(m).sql(dialect="clickhouse")
-        assert sql == f"quantile({p})(amount)"
+        assert sql == f"quantile({p})(orders.amount)"
 
     def test_build_percentile_duckdb(self) -> None:
         gen = SQLGenerator(dialect="duckdb")
@@ -1735,6 +1831,8 @@ class TestMedianPercentilePerDialect:
         sql = gen._build_percentile(m).sql(dialect="duckdb")
         # sqlglot rewrites the WITHIN GROUP form to DuckDB's QUANTILE_CONT.
         assert "QUANTILE_CONT" in sql
+        # Qualified column.
+        assert "orders.amount" in sql
 
     def test_build_percentile_mysql_raises(self) -> None:
         gen = SQLGenerator(dialect="mysql")
@@ -1771,7 +1869,7 @@ class TestMedianPercentilePerDialect:
             aggregation_def=agg_def,
         )
         sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)"
+        assert sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)"
 
     def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
         """Query-time agg_kwargs win over the model-level default."""
@@ -1790,7 +1888,340 @@ class TestMedianPercentilePerDialect:
             aggregation_def=agg_def,
         )
         sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY amount)"
+        assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)"
+
+    # --- A2: percentile p must be a numeric literal in [0, 1] -----------
+
+    def test_build_percentile_rejects_non_literal_p(self) -> None:
+        """`measure:percentile(p=quantity)` must fail at SQL-generation time
+        with a clear validation error, not silently emit a column reference
+        in PERCENTILE_CONT(p)'s direct-arg slot. Without this guard a
+        non-literal `p` flows through `_resolve_agg_param` (which is
+        identifier-friendly for the column-ref kwargs like `other=`), gets
+        rendered as `orders.quantity`, and fails at the database with a
+        dialect-specific error.
+        """
+        gen = SQLGenerator(dialect="postgres")
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias="amount_percentile", aggregation="percentile",
+            agg_kwargs={"p": "quantity"},
+        )
+        with pytest.raises(ValueError, match="numeric literal"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_rejects_p_out_of_range(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias="amount_percentile", aggregation="percentile",
+            agg_kwargs={"p": "1.5"},
+        )
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_rejects_p_negative(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias="amount_percentile", aggregation="percentile",
+            agg_kwargs={"p": "-0.1"},
+        )
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            gen._build_percentile(m)
+
+    def test_build_percentile_rejects_non_literal_p_via_model_default(self) -> None:
+        """Model-level defaults bypass `_validate_agg_param_value` (trust
+        model: model authors are trusted). The new numeric-literal check
+        catches anything that's not a number even on that path — closes
+        the gap where a malicious model author could put `p=pg_sleep(10)`
+        as a default. Codex review #3 on PR #82.
+        """
+        gen = SQLGenerator(dialect="postgres")
+        agg_def = Aggregation(
+            name="percentile",
+            params=[AggregationParam(name="p", sql="pg_sleep(10)")],
+        )
+        m = EnrichedMeasure(
+            name="amount", sql="amount", model_name="orders",
+            alias="amount_percentile", aggregation="percentile",
+            agg_kwargs={}, aggregation_def=agg_def,
+        )
+        with pytest.raises(ValueError, match="numeric literal"):
+            gen._build_percentile(m)
+
+
+class TestStatAggsPerDialect:
+    """Per-dialect SQL emission for the new statistical aggregations
+    (DEV-1317): stddev_samp, stddev_pop, var_samp, var_pop, corr,
+    covar_samp, covar_pop.
+
+    These pin the observed SQL output for each dialect — including
+    sqlglot's transpilation quirks (e.g., var_samp → VARIANCE on SQLite,
+    var_pop → VARIANCE_POP on SQLite/MySQL) — so the SQLite UDF
+    registration knows which names to alias. The expected outputs use
+    fully model-qualified column references (``orders.amount`` etc.) —
+    pinning the post-refactor invariant that all three dialect-aware
+    builders go through ``_resolve_sql`` for the value column AND for
+    the second column on two-arg stats, matching the standard
+    sum/avg/min/max path.
+    """
+
+    def _measure(
+        self,
+        *,
+        agg: str,
+        agg_kwargs: dict[str, str] | None = None,
+    ) -> EnrichedMeasure:
+        return EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias=f"amount_{agg}",
+            aggregation=agg,
+            agg_kwargs=agg_kwargs or {},
+        )
+
+    # --- stddev_samp -------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "STDDEV_SAMP(orders.amount)"),
+            ("duckdb", "STDDEV_SAMP(orders.amount)"),
+            ("mysql", "STDDEV_SAMP(orders.amount)"),
+            ("sqlite", "STDDEV_SAMP(orders.amount)"),
+        ],
+    )
+    def test_build_stddev_samp(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="stddev_samp")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- stddev_pop --------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "STDDEV_POP(orders.amount)"),
+            ("duckdb", "STDDEV_POP(orders.amount)"),
+            ("mysql", "STDDEV_POP(orders.amount)"),
+            ("sqlite", "STDDEV_POP(orders.amount)"),
+        ],
+    )
+    def test_build_stddev_pop(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="stddev_pop")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- var_samp ----------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "VAR_SAMP(orders.amount)"),
+            # sqlglot rewrites VAR_SAMP → VARIANCE on SQLite/DuckDB/MySQL;
+            # the SQLite UDF must therefore be registered under the alias
+            # `variance` so generator output still resolves at runtime.
+            ("duckdb", "VARIANCE(orders.amount)"),
+            ("mysql", "VARIANCE(orders.amount)"),
+            ("sqlite", "VARIANCE(orders.amount)"),
+        ],
+    )
+    def test_build_var_samp(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="var_samp")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- var_pop -----------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("postgres", "VAR_POP(orders.amount)"),
+            ("duckdb", "VAR_POP(orders.amount)"),
+            # sqlglot rewrites VAR_POP → VARIANCE_POP on SQLite/MySQL.
+            ("mysql", "VARIANCE_POP(orders.amount)"),
+            ("sqlite", "VARIANCE_POP(orders.amount)"),
+        ],
+    )
+    def test_build_var_pop(self, dialect: str, expected: str) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg="var_pop")
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        assert sql == expected
+
+    # --- corr (2-arg via `other=` kwarg) ----------------------------------
+
+    # corr / covar_samp / covar_pop all share the 2-arg shape and the
+    # `other=` kwarg parameter; parametrize once instead of repeating.
+    @pytest.mark.parametrize(
+        "agg,sql_fn",
+        [
+            ("corr", "CORR"),
+            ("covar_samp", "COVAR_SAMP"),
+            ("covar_pop", "COVAR_POP"),
+        ],
+    )
+    @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite"])
+    def test_build_two_arg_stat_emits_two_arg_call(
+        self, dialect: str, agg: str, sql_fn: str,
+    ) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
+        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        # Both legs go through _resolve_sql, so a bare `quantity` kwarg
+        # qualifies under the LHS measure's model_name.
+        assert sql == f"{sql_fn}(orders.amount, orders.quantity)"
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
+        gen = SQLGenerator(dialect="clickhouse")
+        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
+        sql = gen._build_agg(measure=m)[0].sql(dialect="clickhouse")
+        # ClickHouse casing is its own thing; assert the call shape only.
+        assert sql.lower() == f"{agg.lower()}(orders.amount, orders.quantity)"
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_mysql_raises(self, agg: str) -> None:
+        # MySQL has no native CORR / COVAR_SAMP / COVAR_POP and no Python-
+        # UDF mechanism, so all three raise at SQL generation time.
+        gen = SQLGenerator(dialect="mysql")
+        m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
+        with pytest.raises(NotImplementedError, match="MySQL"):
+            gen._build_agg(measure=m)
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_mysql_missing_other_prioritises_param_error(
+        self, agg: str,
+    ) -> None:
+        """When BOTH conditions hold (MySQL dialect AND missing `other=`
+        kwarg), the missing-required-param error is more useful to the user
+        than "MySQL not supported" — it points at the actual mistake. Codex
+        review #5 on PR #82: the MySQL guard ran before `other=` resolution.
+        """
+        gen = SQLGenerator(dialect="mysql")
+        m = self._measure(agg=agg, agg_kwargs={})
+        with pytest.raises(ValueError, match=r"requires parameter 'other'"):
+            gen._build_agg(measure=m)
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_missing_other_raises(self, agg: str) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(agg=agg, agg_kwargs={})
+        with pytest.raises(ValueError, match=r"requires parameter 'other'|other="):
+            gen._build_agg(measure=m)
+
+    @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
+    def test_build_two_arg_stat_unsafe_other_rejected(self, agg: str) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = self._measure(
+            agg=agg,
+            agg_kwargs={"other": "quantity); DROP TABLE x; --"},
+        )
+        with pytest.raises(ValueError, match="Unsafe value"):
+            gen._build_agg(measure=m)
+
+    # --- filter wrapping ---------------------------------------------------
+
+    def test_build_stddev_samp_with_filter_wraps_value(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_stddev_samp",
+            aggregation="stddev_samp",
+            agg_kwargs={},
+            filter_sql="status = 'completed'",
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="postgres")
+        # Filter wraps the qualified column reference.
+        assert "CASE WHEN status = 'completed' THEN orders.amount END" in sql
+        assert "STDDEV_SAMP" in sql
+
+    def test_build_corr_with_filter_wraps_both_columns(self) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        m = EnrichedMeasure(
+            name="amount",
+            sql="amount",
+            model_name="orders",
+            alias="amount_corr",
+            aggregation="corr",
+            agg_kwargs={"other": "quantity"},
+            filter_sql="status = 'completed'",
+        )
+        sql = gen._build_agg(measure=m)[0].sql(dialect="postgres")
+        # Both legs of corr() must be wrapped in CASE WHEN so non-matching
+        # rows contribute NULL pairs (which the aggregate skips entirely).
+        assert sql.count("CASE WHEN status = 'completed'") == 2
+        assert "CORR(" in sql
+        # Both legs are also qualified.
+        assert "orders.amount" in sql
+        assert "orders.quantity" in sql
+
+
+class TestStatAggsViaQueryEnrichment:
+    """End-to-end aggregator-level checks (parser → enricher → generator).
+    Confirms the new aggregations are reachable from query syntax, not
+    just the internal _build_agg builder."""
+
+    @pytest.fixture
+    def sales_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="sales",
+            sql_table="public.sales",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="price", sql="price", type=DataType.NUMBER),
+                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+                Column(name="latency", sql="latency", type=DataType.NUMBER),
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "formula,expected_fragment",
+        [
+            ("latency:stddev_samp", "STDDEV_SAMP"),
+            ("latency:stddev_pop", "STDDEV_POP"),
+            ("latency:var_samp", "VAR_SAMP"),
+            ("latency:var_pop", "VAR_POP"),
+        ],
+    )
+    async def test_stat_agg_via_colon_syntax(
+        self,
+        formula: str,
+        expected_fragment: str,
+        sales_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="sales",
+            measures=[ModelMeasure(formula=formula)],
+        )
+        sql = await _generate(generator=gen, query=query, model=sales_model)
+        # Pin the function-call shape: the family name immediately followed
+        # by the qualified column ref in its single-arg slot. `sales.latency`
+        # being inside the call is what proves enrichment+generation reached
+        # the value column, not just that the alias contains the fragment.
+        assert f"{expected_fragment}(sales.latency)" in sql
+
+    async def test_corr_via_colon_syntax_with_other_kwarg(
+        self, sales_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="sales",
+            measures=[ModelMeasure(formula="price:corr(other=quantity)")],
+        )
+        sql = await _generate(generator=gen, query=query, model=sales_model)
+        # Both legs flow through _resolve_sql and qualify under the LHS
+        # measure's model_name.
+        assert "CORR(sales.price, sales.quantity)" in sql
 
 
 class TestPathAliasJoinInference:
@@ -2015,6 +2446,67 @@ class TestAggParamSanitization:
         sql = await _generate(gen, query, agg_model)
         assert "CASE WHEN" in sql
         assert "SUM(" in sql
+
+    async def test_filtered_custom_agg_does_not_case_wrap_literal_param(
+        self, gen: SQLGenerator, agg_model: SlayerModel,
+    ) -> None:
+        """A1 (CodeRabbit major on PR #82): when `_build_formula_agg`
+        substitutes params into a filtered measure's template, literal
+        defaults (e.g., `scale=100`) must stay literal. Wrapping them in
+        `(CASE WHEN ... THEN 100 END)` turns a constant into a row
+        expression — invalid GROUP-BY shape and semantically wrong.
+        Row-level params (column refs) keep getting wrapped.
+        """
+        agg_model.aggregations = [
+            Aggregation(
+                name="scaled_sum",
+                formula="SUM({value}) / {scale}",
+                params=[AggregationParam(name="scale", sql="100")],
+            ),
+        ]
+        agg_model.columns.append(
+            Column(
+                name="active_revenue",
+                sql="amount",
+                filter="status = 'active'",
+                type=DataType.NUMBER,
+            )
+        )
+        query = SlayerQuery(
+            source_model="sales",
+            measures=[ModelMeasure(formula="active_revenue:scaled_sum")],
+        )
+        sql = await _generate(generator=gen, query=query, model=agg_model)
+        # The literal `100` must NOT appear inside CASE WHEN; the value
+        # column SHOULD still be CASE-wrapped.
+        assert "CASE WHEN status = 'active' THEN 100" not in sql
+        assert "/ 100" in sql
+        assert "CASE WHEN status = 'active' THEN" in sql
+
+    async def test_filtered_weighted_avg_still_wraps_column_weight(
+        self, gen: SQLGenerator, agg_model: SlayerModel,
+    ) -> None:
+        """Counter-test for A1: weighted_avg's `weight=quantity` IS a row-
+        level reference, so the CASE-WHEN wrap still applies to it. The
+        literal-vs-row-ref distinction is what matters.
+        """
+        agg_model.columns.append(
+            Column(
+                name="active_price",
+                sql="price",
+                filter="status = 'active'",
+                type=DataType.NUMBER,
+            )
+        )
+        query = SlayerQuery(
+            source_model="sales",
+            measures=[
+                ModelMeasure(formula="active_price:weighted_avg(weight=quantity)")
+            ],
+        )
+        sql = await _generate(generator=gen, query=query, model=agg_model)
+        # Both legs are row-level references → both wrapped.
+        assert sql.count("CASE WHEN status = 'active'") >= 2
 
     def test_injection_via_direct_enriched_measure(self, gen: SQLGenerator) -> None:
         """Malicious agg_kwargs on a directly constructed EnrichedMeasure are rejected."""
