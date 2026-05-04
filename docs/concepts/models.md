@@ -131,6 +131,7 @@ When `allowed_aggregations` is set, it intersects with the type-default set: eve
 | `name` | string | No | (auto-derived) | Measure name; queries reference this by bare name |
 | `label` | string | No | — | Human-readable display name |
 | `description` | string | No | — | Explanatory text |
+| `meta` | dict | No | — | Arbitrary JSON metadata for caller bookkeeping (e.g., `{"kb_id": "abc-123"}`) |
 
 Column and measure names share a namespace within a model — a model cannot have a column named `aov` and a measure named `aov` at the same time (validated at save time).
 
@@ -244,6 +245,8 @@ aggregations:
 
 Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`.
 
+Like columns and measures, aggregations also accept an optional `meta` dict for caller bookkeeping (e.g., `{"owner": "analytics"}`).
+
 ## SQL Expressions
 
 ### In Dimensions and Measures
@@ -251,6 +254,22 @@ Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(
 Use **bare column names** (e.g., `"amount"`) — SLayer automatically qualifies them with the model's table reference at query time.
 
 For complex expressions, use the model name as a table prefix: `"orders.amount * orders.quantity"`.
+
+### SQLite JSON extraction
+
+`json_extract(col, '$.path')` in a `Column.sql` is preserved as the function-call form on SQLite — SLayer does **not** rewrite it to `col -> '$.path'`. The `->` operator in SQLite returns the JSON-quoted form (e.g. `'"Owned"'` with literal quotes), so equality and `CASE WHEN` matches against bare-string literals would silently fail. The function form returns the unquoted scalar.
+
+```yaml
+columns:
+  - name: tier
+    type: string
+    sql: "json_extract(payload, '$.tier')"           # works on SQLite (preserved)
+  - name: is_gold
+    type: number
+    sql: "CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END"
+```
+
+If you specifically want the SQLite JSON-scalar operator, write `->>` (`exp.JSONExtractScalar`) directly — SLayer leaves it untouched.
 
 ## Joins
 

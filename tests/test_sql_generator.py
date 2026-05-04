@@ -1737,6 +1737,106 @@ class TestMultiDialectGeneration:
             await _generate(generator=gen, query=query, model=orders_model)
 
 
+class TestSqliteJsonExtractInGenerator:
+    """DEV-1331: ``json_extract(col, '$.path')`` in ``Column.sql`` must not be
+    rewritten to ``col -> '$.path'`` on SQLite — the operator returns the
+    JSON-quoted form, silently breaking equality / CASE WHEN matches.
+    """
+
+    @pytest.fixture
+    def model_with_json_dim(self) -> SlayerModel:
+        return SlayerModel(
+            name="users",
+            sql_table="users",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="payload", sql="payload", type=DataType.STRING),
+                Column(
+                    name="tier",
+                    sql="json_extract(payload, '$.tier')",
+                    type=DataType.STRING,
+                ),
+                Column(
+                    name="is_gold",
+                    sql=(
+                        "CASE LOWER(json_extract(payload, '$.tier')) "
+                        "WHEN 'gold' THEN 1 ELSE 0 END"
+                    ),
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+
+    async def test_sqlite_column_sql_with_json_extract_dimension(
+        self, model_with_json_dim: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="users",
+            dimensions=[ColumnRef(name="tier")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
+        assert "JSON_EXTRACT(" in sql, f"missing JSON_EXTRACT in:\n{sql}"
+        # The lossy ``payload -> '$.tier'`` form must not appear.
+        assert "payload -> '$.tier'" not in sql, sql
+
+    async def test_sqlite_column_sql_with_json_extract_in_case_when(
+        self, model_with_json_dim: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="users",
+            measures=[ModelMeasure(formula="is_gold:sum")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
+        assert "JSON_EXTRACT(" in sql, sql
+        assert "payload -> '$.tier'" not in sql, sql
+
+    async def test_sqlite_inline_sql_subquery_with_json_extract(self) -> None:
+        model = SlayerModel(
+            name="users",
+            sql=(
+                "SELECT id, json_extract(payload, '$.tier') AS tier "
+                "FROM raw_users"
+            ),
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="tier", sql="tier", type=DataType.STRING),
+            ],
+        )
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="users",
+            dimensions=[ColumnRef(name="tier")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model)
+        assert "JSON_EXTRACT(" in sql, sql
+        assert "payload -> '$.tier'" not in sql, sql
+
+    async def test_postgres_column_sql_with_json_extract_unchanged(
+        self, model_with_json_dim: SlayerModel,
+    ) -> None:
+        """Regression guard: rewrite is SQLite-only; Postgres path is untouched.
+
+        Postgres has no scalar-vs-JSON quoting bug for ``json_extract``;
+        sqlglot transpiles it to ``JSON_EXTRACT_PATH(j, 'k')``. We just
+        assert the generator produces *some* form of JSON extraction and
+        does not crash.
+        """
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="users",
+            dimensions=[ColumnRef(name="tier")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
+        assert "JSON_EXTRACT" in sql.upper(), sql
+
+
 class TestMedianPercentilePerDialect:
     """Per-dialect SQL emission for median and percentile aggregations.
 

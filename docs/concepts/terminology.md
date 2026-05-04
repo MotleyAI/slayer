@@ -6,7 +6,7 @@ Key terms used throughout SLayer documentation and code.
 
 **Model** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable columns. Defined as YAML files or auto-generated via ingestion.
 
-**Column** — The unified row-level building block of a model (`SlayerModel.columns`). Each column has a `name`, `sql` expression, and `type` (`string`/`number`/`boolean`/`time`/`date`). At query time a column can be used as a group-by key (a dimension), as the input to an aggregation (a measure), or both. Columns can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (CASE-WHEN at aggregation time), `format`, `label`, and `meta`.
+**Column** — The unified row-level building block of a model (`SlayerModel.columns`). Each column has a `name`, `sql` expression, and `type` (`string`/`number`/`boolean`/`time`/`date`). At query time a column can be used as a group-by key (a dimension), as the input to an aggregation (a measure), or both. Columns can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (CASE-WHEN at aggregation time), `format`, `label`, and `meta`. `ModelMeasure` (named formula) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
 
 **Dimension** — How a column is *used* in a query when it's a GROUP BY key. The column itself isn't a dimension or measure intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the columns to group/filter by.
 
