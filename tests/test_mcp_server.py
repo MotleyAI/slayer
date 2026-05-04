@@ -1470,6 +1470,27 @@ class TestCreateModel:
         model = await storage.get_model("orders")
         assert model.columns[0].allowed_aggregations == ["sum", "avg"]
 
+    async def test_create_with_measure_meta_dict(self, mcp_server, storage: YAMLStorage) -> None:
+        # Pins create_model.measures' parameter type at List[Dict[str, Any]] —
+        # FastMCP introspects the annotation to build its tool schema, so a
+        # narrower Dict[str, str] would reject this dict-typed `meta` value at
+        # call time before the function body ever runs.
+        result = await _call(mcp_server, name="create_model", arguments={
+            "name": "orders",
+            "sql_table": "public.orders",
+            "data_source": "test_ds",
+            "columns": [
+                {"name": "revenue", "sql": "amount", "type": "number"},
+            ],
+            "measures": [
+                {"name": "aov", "formula": "revenue:sum / *:count",
+                 "meta": {"kb_id": "abc-123", "tags": ["finance", "kpi"]}},
+            ],
+        })
+        assert "created" in result
+        model = await storage.get_model("orders")
+        assert model.measures[0].meta == {"kb_id": "abc-123", "tags": ["finance", "kpi"]}
+
     async def test_create_reports_replaced(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="create_model", arguments={"name": "orders", "sql_table": "t2", "data_source": "test"})

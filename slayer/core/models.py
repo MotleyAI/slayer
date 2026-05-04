@@ -147,6 +147,7 @@ class ModelMeasure(BaseModel):
     name: Optional[str] = None
     label: Optional[str] = None
     description: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None
 
     @field_validator("name")
     @classmethod
@@ -193,6 +194,7 @@ class Aggregation(BaseModel):
     formula: Optional[str] = None  # SQL template; None = use built-in formula
     params: List[AggregationParam] = Field(default_factory=list)
     description: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="after")
     def _require_formula_for_custom(self) -> "Aggregation":
