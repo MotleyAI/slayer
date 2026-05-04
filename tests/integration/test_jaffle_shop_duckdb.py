@@ -1,5 +1,8 @@
 """Integration test for the Jaffle Shop DuckDB loader."""
 
+import shutil
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("duckdb")
@@ -15,18 +18,32 @@ from slayer.demo.jaffle_shop import (
     verify,
 )
 
+# Cached 3-year demo DB maintained by tests/integration/test_notebooks.py's
+# session-scoped _ensure_jaffle_db fixture. Reusing it avoids ~10s of
+# `jafgen` subprocess time per pytest invocation.
+_CACHED_JAFFLE_DB = (
+    Path(__file__).resolve().parent.parent.parent
+    / "docs" / "examples" / "jaffle_data" / "demo" / "jaffle_shop.duckdb"
+)
+
 
 @pytest.fixture(scope="module")
 def jaffle_db(tmp_path_factory):
-    """Generate 1 year of data and load into DuckDB. Shared across all tests in this module."""
+    """Module-scoped DuckDB connection with Jaffle Shop data. Reuses the
+    project-wide cached DB at docs/examples/jaffle_data/demo/jaffle_shop.duckdb
+    when present; falls back to ``jafgen`` for fresh checkouts where
+    _ensure_jaffle_db has never run."""
     tmpdir = tmp_path_factory.mktemp("jaffle")
-    data_dir = generate_data(output_dir=str(tmpdir), years=1)
-
     db_path = tmpdir / "test_jaffle.duckdb"
-    conn = duckdb.connect(str(db_path))
 
-    create_schema(conn=conn)
-    load_data(conn=conn, data_dir=data_dir)
+    if _CACHED_JAFFLE_DB.exists():
+        shutil.copy(_CACHED_JAFFLE_DB, db_path)
+        conn = duckdb.connect(str(db_path))
+    else:
+        data_dir = generate_data(output_dir=str(tmpdir), years=1)
+        conn = duckdb.connect(str(db_path))
+        create_schema(conn=conn)
+        load_data(conn=conn, data_dir=data_dir)
 
     yield conn
     conn.close()
