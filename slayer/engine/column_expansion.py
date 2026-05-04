@@ -43,10 +43,20 @@ async def _walk_path_to_target(
     table_alias: str,
     resolve_model: ResolveModel,
     named_queries: Dict[str, Any],
+    is_root: bool,
 ) -> Tuple[Optional[SlayerModel], Optional[str]]:
     """Resolve a ``table_alias`` (e.g. ``B`` or ``B__C``) seen inside a
     Column.sql to the terminal joined model and the canonical alias to use
     in emitted SQL.
+
+    The ``is_root`` flag captures whether ``source_model`` is the FROM root
+    of the outer query. When True, walked paths are emitted bare
+    (``"__".join(parts)``); when False, they are prefixed with
+    ``source_alias`` so a derived column on a joined model referencing a
+    further-joined model resolves to the right ``__``-delimited path
+    (e.g., walking ``C`` off source ``B`` reached from root via ``B`` →
+    canonical ``B__C``, not ``C``). Closes the alias-prefix bug raised on
+    PR #89.
 
     Returns ``(None, None)`` if the alias does not resolve as a join path —
     in that case the caller should leave the reference untouched (it is
@@ -66,7 +76,9 @@ async def _walk_path_to_target(
         if nxt is None:
             return None, None
         current = nxt
-    return current, "__".join(parts)
+    walked = "__".join(parts)
+    canonical = walked if is_root else f"{source_alias}__{walked}"
+    return current, canonical
 
 
 async def expand_derived_refs(
@@ -78,6 +90,7 @@ async def expand_derived_refs(
     named_queries: Optional[Dict[str, Any]] = None,
     dialect: str,
     visited: Optional[FrozenSet[Tuple[str, str]]] = None,
+    is_root: bool = True,
 ) -> Optional[str]:
     """Recursively expand cross-model and local derived-column references
     inside ``sql``.
@@ -132,6 +145,7 @@ async def expand_derived_refs(
             table_alias=table_alias,
             resolve_model=resolve_model,
             named_queries=named_queries,
+            is_root=is_root,
         )
         if target_model is None or canonical_alias is None:
             # Unknown alias — leave untouched.
@@ -144,7 +158,11 @@ async def expand_derived_refs(
             col.set("table", exp.to_identifier(canonical_alias))
             continue
 
-        # Derived → recurse.
+        # Derived → recurse. Recursion stays "root" only when the target
+        # column lives on the same model (no alias change); a remote
+        # target descended via a path is by definition non-root, so its
+        # own walks must prefix the canonical alias.
+        next_is_root = is_root and (target_model is model)
         key = (target_model.name, col_name)
         if key in visited:
             chain = " → ".join(f"{m}.{c}" for m, c in [*visited, key])
@@ -159,6 +177,7 @@ async def expand_derived_refs(
             named_queries=named_queries,
             dialect=dialect,
             visited=visited | frozenset({key}),
+            is_root=next_is_root,
         )
         if expanded_sql is None:
             continue

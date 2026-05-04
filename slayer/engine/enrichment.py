@@ -827,11 +827,16 @@ async def _maybe_expand(
     resolve_model,
     named_queries: dict,
     dialect: str,
+    is_root: bool = True,
 ) -> Optional[str]:
     """Run the column-SQL expander when we have what we need; otherwise
     return ``sql`` unchanged. Lets tests that don't supply ``resolve_model``
     keep getting the legacy unexpanded behavior — production always supplies
     it via the engine.
+
+    ``is_root=False`` for cross-model dims/measures: the source has been
+    reached via a join path, so any further walks inside its derived
+    Column.sql must prefix the alias path (closes PR #89 alias-prefix bug).
     """
     if not sql or resolve_model is None:
         return sql
@@ -842,6 +847,7 @@ async def _maybe_expand(
         resolve_model=resolve_model,
         named_queries=named_queries,
         dialect=dialect,
+        is_root=is_root,
     )
 
 
@@ -857,7 +863,8 @@ async def _resolve_dimensions(
     dimensions = []
     for dim_ref in query.dimensions or []:
         terminal_model: Optional[SlayerModel] = None
-        if dim_ref.model is None:
+        is_local = dim_ref.model is None
+        if is_local:
             dim_def = model.get_column(dim_ref.name)
             effective_model = model_name_str
             terminal_model = model
@@ -878,6 +885,7 @@ async def _resolve_dimensions(
             resolve_model=resolve_model,
             named_queries=named_queries,
             dialect=dialect,
+            is_root=is_local,
         )
         dimensions.append(
             EnrichedDimension(
@@ -905,7 +913,8 @@ async def _resolve_time_dimensions(
     time_dimensions = []
     for td in query.time_dimensions or []:
         terminal_model: Optional[SlayerModel] = None
-        if td.dimension.model is None:
+        is_local = td.dimension.model is None
+        if is_local:
             dim_def = model.get_column(td.dimension.name)
             td_model_name = model_name_str
             terminal_model = model
@@ -926,6 +935,7 @@ async def _resolve_time_dimensions(
             resolve_model=resolve_model,
             named_queries=named_queries,
             dialect=dialect,
+            is_root=is_local,
         )
         time_dimensions.append(
             EnrichedTimeDimension(
@@ -1256,7 +1266,7 @@ async def resolve_filter_columns(
     import re as _re
 
     async def _expanded_sql_expr(*, sql_expr: str, owning_model: SlayerModel,
-                                 alias_path: str) -> str:
+                                 alias_path: str, is_root: bool) -> str:
         """Expand derived references inside a filter's resolved SQL fragment."""
         if resolve_model is None:
             return sql_expr
@@ -1267,6 +1277,7 @@ async def resolve_filter_columns(
             resolve_model=resolve_model,
             named_queries=named_queries or {},
             dialect=dialect,
+            is_root=is_root,
         )
         return expanded if expanded is not None else sql_expr
 
@@ -1285,6 +1296,7 @@ async def resolve_filter_columns(
                             sql_expr=sql_expr,
                             owning_model=model,
                             alias_path=model_name,
+                            is_root=True,
                         )
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
@@ -1334,6 +1346,7 @@ async def resolve_filter_columns(
                                 sql_expr=sql_expr,
                                 owning_model=current_model,
                                 alias_path=table_alias,
+                                is_root=False,
                             )
                         resolved_sql = _re.sub(
                             rf"(?<!\w)\b{_re.escape(col_name)}\b",

@@ -39,7 +39,7 @@ def _no_bare_derived_ref(sql: str, table: str, col: str) -> bool:
     return pattern.search(sql_stripped) is None
 
 
-async def _engine_with_storage(tmp_path) -> tuple[SlayerQueryEngine, YAMLStorage]:
+def _engine_with_storage(tmp_path) -> tuple[SlayerQueryEngine, YAMLStorage]:
     storage = YAMLStorage(base_dir=str(tmp_path))
     return SlayerQueryEngine(storage=storage), storage
 
@@ -94,7 +94,7 @@ async def test_cross_model_dim_derived_column_via_query(tmp_path) -> None:
     derived column's bare identifier is qualified to the canonical join
     alias (``B``), not left ambiguous.
     """
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         source_model="A",
@@ -110,7 +110,7 @@ async def test_cross_model_dim_derived_column_via_query(tmp_path) -> None:
 
 
 async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
         Column(
             name="ratio_using_derived",
@@ -136,7 +136,7 @@ async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None
 
 async def test_cross_model_base_column_still_works(tmp_path) -> None:
     """Sanity: columns that reference a *base* joined column still work."""
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
         Column(name="ratio_using_base", sql="A.bar / B.foo_raw", type=DataType.NUMBER),
     ])
@@ -151,7 +151,7 @@ async def test_cross_model_base_column_still_works(tmp_path) -> None:
 
 
 async def test_local_columnsql_references_local_derived(tmp_path) -> None:
-    engine, _ = await _engine_with_storage(tmp_path)
+    engine, _ = _engine_with_storage(tmp_path)
     model_a = SlayerModel(
         name="A",
         data_source="test",
@@ -180,7 +180,7 @@ async def test_local_columnsql_references_local_derived(tmp_path) -> None:
 
 
 async def test_chain_of_three_derived_columns(tmp_path) -> None:
-    engine, _ = await _engine_with_storage(tmp_path)
+    engine, _ = _engine_with_storage(tmp_path)
     model_a = SlayerModel(
         name="A",
         data_source="test",
@@ -205,8 +205,57 @@ async def test_chain_of_three_derived_columns(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. (Reserved — multi-hop dunder form is covered by test 6.)
+# 5. CodeRabbit r3182627062: derived column on a JOINED model that references
+# a further-joined model. The expander must preserve the join-path alias prefix
+# when descending into the joined model's derived ``Column.sql``.
+#
+# A → B → C. B has ``b_display.sql = "C.name"``. Querying ``B.b_display`` from
+# A should emit ``B__C.name`` (the canonical alias for C reached via B from
+# the A-rooted FROM), not bare ``C.name``.
 # ---------------------------------------------------------------------------
+
+
+async def test_joined_model_derived_referencing_further_joined(tmp_path) -> None:
+    engine, storage = _engine_with_storage(tmp_path)
+    model_c = SlayerModel(
+        name="C", data_source="test", sql_table="C",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+        ],
+    )
+    await storage.save_model(model_c)
+    model_b = SlayerModel(
+        name="B", data_source="test", sql_table="B",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="c_id", sql="c_id", type=DataType.NUMBER),
+            # Derived on B referencing C (B joins C).
+            Column(name="b_display", sql="C.name", type=DataType.STRING),
+        ],
+        joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
+    )
+    await storage.save_model(model_b)
+    model_a = SlayerModel(
+        name="A", data_source="test", sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+        ],
+        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+    )
+    await storage.save_model(model_a)
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="b_display", model="B")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # Must qualify under the canonical multi-hop alias B__C, not bare C.
+    assert "B__C.name" in norm, (
+        f"Expected canonical B__C alias, got:\n{sql}"
+    )
+    # And the C join must actually be present in the FROM.
+    assert "JOIN C AS B__C" in norm or "JOIN \"C\" AS \"B__C\"" in norm or "JOIN C B__C" in norm, (
+        f"C join missing from FROM clause:\n{sql}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +264,7 @@ async def test_chain_of_three_derived_columns(tmp_path) -> None:
 
 
 async def test_multihop_derived_via_join_path(tmp_path) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_c = SlayerModel(
         name="C",
         data_source="test",
@@ -274,7 +323,7 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
 
 
 async def test_diamond_join_derived(tmp_path) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     regions = SlayerModel(
         name="regions",
         data_source="test",
@@ -343,7 +392,7 @@ async def test_diamond_join_derived(tmp_path) -> None:
 
 
 async def test_cycle_detection(tmp_path) -> None:
-    engine, _ = await _engine_with_storage(tmp_path)
+    engine, _ = _engine_with_storage(tmp_path)
     model_a = SlayerModel(
         name="A",
         data_source="test",
@@ -367,7 +416,7 @@ async def test_cycle_detection(tmp_path) -> None:
 async def test_self_reference_terminates(tmp_path) -> None:
     """A column whose sql is just its own name (the canonical base-column
     form) must not be classified as derived — no recursion, no error."""
-    engine, _ = await _engine_with_storage(tmp_path)
+    engine, _ = _engine_with_storage(tmp_path)
     model_a = SlayerModel(
         name="A",
         data_source="test",
@@ -388,7 +437,7 @@ async def test_self_reference_terminates(tmp_path) -> None:
 
 
 async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
         Column(
             name="mixed",
@@ -410,7 +459,7 @@ async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
 
 
 async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         source_model="A",
@@ -429,7 +478,7 @@ async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
 
 
 async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_path) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
         Column(
             name="ratio_using_derived",
@@ -455,7 +504,7 @@ async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_p
 
 
 async def test_filter_referencing_derived_column(tmp_path) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         source_model="A",
@@ -480,7 +529,7 @@ async def test_columnsql_references_unrelated_table_alias_left_alone(tmp_path) -
     not a join target on the model, the expander must leave it untouched
     (it could be a CTE or sub-query alias the user wired up via
     sql_table=".."/sql=".." — none of our business)."""
-    engine, _ = await _engine_with_storage(tmp_path)
+    engine, _ = _engine_with_storage(tmp_path)
     model_a = SlayerModel(
         name="A",
         data_source="test",
@@ -513,7 +562,7 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
     """When A and B both have a column named ``foo_raw`` and B has a derived
     column ``foo_normalized = foo_raw / 100.0``, expansion must qualify the
     inner ``foo_raw`` to B, not leave it ambiguous."""
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     # Override the standard fixture so A also has ``foo_raw``.
     model_b = SlayerModel(
         name="B",
@@ -564,7 +613,7 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
     ],
 )
 async def test_generated_sql_parses(tmp_path, scenario) -> None:
-    engine, storage = await _engine_with_storage(tmp_path)
+    engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
         Column(name="ratio_using_base", sql="A.bar / B.foo_raw", type=DataType.NUMBER),
         Column(name="ratio_using_derived", sql="A.bar / B.foo_normalized", type=DataType.NUMBER),
