@@ -177,6 +177,17 @@ def _truncate_description(text: Optional[str], max_chars: Optional[int]) -> Opti
     return text[:max_chars] + _TRUNCATION_MARKER
 
 
+def _format_meta(meta: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Compact JSON for the ``inspect_model`` meta cell.
+
+    Returns ``None`` when ``meta`` is ``None`` so ``_markdown_table``'s
+    all-empty-column pruner hides the meta column when no row has meta set.
+    """
+    if meta is None:
+        return None
+    return json.dumps(meta, sort_keys=True, default=str)
+
+
 def _resolve_inspect_sections(
     sections: Optional[List[str]],
 ) -> Tuple[List[str], List[str]]:
@@ -1162,6 +1173,8 @@ def create_mcp_server(storage: StorageBackend):
             )
         if model.hidden:
             meta.append("- **hidden:** true")
+        if model.meta is not None:
+            meta.append(f"- **meta:** {json.dumps(model.meta, sort_keys=True, default=str)}")
         row_count = await _get_row_count(model=model, engine=engine)
         if row_count is not None:
             meta.append(f"- **row_count:** {row_count:,}")
@@ -1224,6 +1237,7 @@ def create_mcp_server(storage: StorageBackend):
                     "filter": c.filter,
                     "label": c.label,
                     "description": _truncate_description(c.description, descriptions_max_chars),
+                    "meta": _format_meta(c.meta),
                     "sampled": (
                         profile_by_name.get(c.name)
                         or measure_profile.get(c.name)
@@ -1231,7 +1245,7 @@ def create_mcp_server(storage: StorageBackend):
                 })
             col_columns = [
                 "name", "type", "primary_key", "sql", "allowed_aggregations",
-                "filter", "label", "description", "sampled",
+                "filter", "label", "description", "meta", "sampled",
             ]
             if not show_sql:
                 col_columns = [c for c in col_columns if c not in ("sql", "filter")]
@@ -1256,12 +1270,13 @@ def create_mcp_server(storage: StorageBackend):
                     "formula": mm.formula,
                     "label": mm.label,
                     "description": _truncate_description(mm.description, descriptions_max_chars),
+                    "meta": _format_meta(mm.meta),
                 })
             out_sections.append(
                 f"## Measures ({len(measure_rows)})\n\n"
                 + _markdown_table(
                     rows=measure_rows,
-                    columns=["name", "formula", "label", "description"],
+                    columns=["name", "formula", "label", "description", "meta"],
                 )
             )
         elif model.measures:
@@ -1291,8 +1306,9 @@ def create_mcp_server(storage: StorageBackend):
                         "description": _truncate_description(
                             a.description, descriptions_max_chars,
                         ),
+                        "meta": _format_meta(a.meta),
                     })
-                agg_columns = ["name", "formula", "params", "description"]
+                agg_columns = ["name", "formula", "params", "description", "meta"]
                 if not show_sql:
                     agg_columns = [c for c in agg_columns if c != "formula"]
                 out_sections.append(
@@ -1420,6 +1436,7 @@ def create_mcp_server(storage: StorageBackend):
                     payload["backing_query_sql"] = model.backing_query_sql
             payload["default_time_dimension"] = model.default_time_dimension
             payload["hidden"] = model.hidden
+            payload["meta"] = model.meta
             payload["row_count"] = row_count
             if show_sql:
                 payload["filters"] = model.filters
@@ -1438,6 +1455,7 @@ def create_mcp_server(storage: StorageBackend):
                         "description": _truncate_description(
                             c.description, descriptions_max_chars,
                         ),
+                        "meta": c.meta,
                         "sampled": (
                             profile_by_name.get(c.name)
                             or measure_profile.get(c.name)
@@ -1458,6 +1476,7 @@ def create_mcp_server(storage: StorageBackend):
                         "description": _truncate_description(
                             mm.description, descriptions_max_chars,
                         ),
+                        "meta": mm.meta,
                     }
                     for mm in model.measures
                 ]
@@ -1477,6 +1496,7 @@ def create_mcp_server(storage: StorageBackend):
                         "description": _truncate_description(
                             a.description, descriptions_max_chars,
                         ),
+                        "meta": a.meta,
                     }
                     for a in model.aggregations
                 ]
