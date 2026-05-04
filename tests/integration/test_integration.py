@@ -2315,3 +2315,119 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
         SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:var_pop")])
     )
     assert r_var_pop.data[0]["one.x_var_pop"] == 0
+
+
+# ---------------------------------------------------------------------------
+# DEV-1333: cross-model and local derived ``Column.sql`` chaining (SQLite)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def derived_chain_env(tmp_path):
+    """Two-table A→B fixture: B has a derived column referenced by A's
+    derived columns. Used to verify recursive expansion at execution time.
+    """
+    db_path = tmp_path / "derived_chain.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE B (id INTEGER PRIMARY KEY, foo_raw REAL)")
+    cur.execute(
+        "CREATE TABLE A (id INTEGER PRIMARY KEY, bar REAL, b_id INTEGER, raw_a REAL)"
+    )
+    cur.executemany(
+        "INSERT INTO B VALUES (?, ?)",
+        [(1, 200.0), (2, 50.0)],
+    )
+    cur.executemany(
+        "INSERT INTO A VALUES (?, ?, ?, ?)",
+        [(10, 4.0, 1, 100.0), (11, 1.0, 2, 5.0)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="B",
+            data_source="ds",
+            sql_table="B",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
+                Column(
+                    name="foo_normalized",
+                    sql="foo_raw / 100.0",
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="A",
+            data_source="ds",
+            sql_table="A",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.NUMBER),
+                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+                Column(name="raw_a", sql="raw_a", type=DataType.NUMBER),
+                Column(
+                    name="ratio_using_base",
+                    sql="A.bar / B.foo_raw",
+                    type=DataType.NUMBER,
+                ),
+                Column(
+                    name="ratio_using_derived",
+                    sql="A.bar / B.foo_normalized",
+                    type=DataType.NUMBER,
+                ),
+                # Local derived chain: c1 derived; c2 references c1.
+                Column(name="c1", sql="raw_a + 1", type=DataType.NUMBER),
+                Column(name="c2", sql="A.c1 * 2", type=DataType.NUMBER),
+            ],
+            joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+        )
+    )
+    engine = SlayerQueryEngine(storage=storage)
+    yield engine
+    _sync_engines.clear()
+
+
+async def test_integration_cross_model_derived_columnsql(derived_chain_env):
+    """The original DEV-1333 repro must execute and produce the expected ratios."""
+    engine = derived_chain_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="A",
+            dimensions=[
+                ColumnRef(name="id"),
+                ColumnRef(name="ratio_using_derived"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        )
+    )
+    assert response.row_count == 2
+    # Row 1: bar=4.0, B.foo_normalized=2.0 → 4.0/2.0 = 2.0
+    # Row 2: bar=1.0, B.foo_normalized=0.5 → 1.0/0.5 = 2.0
+    assert response.data[0]["A.ratio_using_derived"] == pytest.approx(2.0)
+    assert response.data[1]["A.ratio_using_derived"] == pytest.approx(2.0)
+
+
+async def test_integration_local_derived_chain(derived_chain_env):
+    engine = derived_chain_env
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="A",
+            dimensions=[ColumnRef(name="id"), ColumnRef(name="c2")],
+            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        )
+    )
+    # c2 = (raw_a + 1) * 2 → for raw_a=100 → 202; raw_a=5 → 12
+    assert response.data[0]["A.c2"] == pytest.approx(202.0)
+    assert response.data[1]["A.c2"] == pytest.approx(12.0)

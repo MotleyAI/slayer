@@ -66,6 +66,36 @@ Each column carries the metadata needed to use it either as a GROUP BY key (a "d
 | `filter` | string | No | — | SQL condition applied inside CASE-WHEN at aggregation time. See [Filtered Columns](#filtered-columns) below |
 | `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"source": "CRM", "team": "analytics"}`) |
 
+### Derived Columns Referencing Other Derived Columns
+
+A `Column.sql` may reference any other column on the same model or on a joined model — including columns that are themselves *derived* (have their own `sql` expression rather than being a bare base-table column). The engine recursively inlines those references at query time, so chains stay DRY.
+
+```yaml
+# Model: stations
+columns:
+  - name: foo_raw                 # base column
+    sql: "foo_raw"
+    type: number
+
+  - name: foo_normalized          # derived on stations
+    sql: "foo_raw / 100.0"
+    type: number
+
+# Model: telescopes — joined to stations
+columns:
+  - name: aoi_ratio               # derived on telescopes, references the
+                                  # *derived* stations.foo_normalized
+    sql: "telescopes.aperture / stations.foo_normalized"
+    type: number
+joins:
+  - target_model: stations
+    join_pairs: [["station_id", "id"]]
+```
+
+At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the `__`-delimited form, e.g., `B__C.x_derived`, when crossing more than one join).
+
+Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are detected at enrichment time and raise a clear `ValueError`. The same expansion is applied to filters and to colon-aggregated measures, so `"B.foo_normalized:sum"` produces `SUM(B.foo_raw / 100.0)`.
+
 ### Column Data Types
 
 | Type | Description | SQL Examples |

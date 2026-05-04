@@ -906,3 +906,87 @@ class TestPostgresStatAggregations:
         assert float(
             result.data[0]["orders.total_covar_pop_other_customer_id"]
         ) == pytest.approx(expected, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1333: cross-model derived ``Column.sql`` chaining (Postgres)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pg_derived_chain_env(postgresql):
+    """Postgres A→B fixture with a derived column on B referenced by A."""
+    cur = postgresql.cursor()
+    cur.execute("CREATE TABLE b_tbl (id INTEGER PRIMARY KEY, foo_raw NUMERIC)")
+    cur.execute(
+        "CREATE TABLE a_tbl (id INTEGER PRIMARY KEY, bar NUMERIC, b_id INTEGER, raw_a NUMERIC)"
+    )
+    cur.executemany("INSERT INTO b_tbl VALUES (%s, %s)", [(1, 200), (2, 50)])
+    cur.executemany(
+        "INSERT INTO a_tbl VALUES (%s, %s, %s, %s)",
+        [(10, 4, 1, 100), (11, 1, 2, 5)],
+    )
+    postgresql.commit()
+
+    tmpdir = tempfile.mkdtemp()
+    storage = YAMLStorage(base_dir=tmpdir)
+    info = postgresql.info
+    await storage.save_datasource(
+        DatasourceConfig(
+            name="testpg", type="postgres",
+            host=info.host, port=info.port, database=info.dbname,
+            username=info.user, password="",
+        )
+    )
+    from slayer.core.models import ModelJoin
+    await storage.save_model(
+        SlayerModel(
+            name="b_tbl",
+            data_source="testpg",
+            sql_table="b_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
+                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="a_tbl",
+            data_source="testpg",
+            sql_table="a_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.NUMBER),
+                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+                Column(name="raw_a", sql="raw_a", type=DataType.NUMBER),
+                Column(
+                    name="ratio_using_derived",
+                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            joins=[ModelJoin(target_model="b_tbl", join_pairs=[["b_id", "id"]])],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+async def test_integration_postgres_cross_model_derived_columnsql(
+    pg_derived_chain_env: SlayerQueryEngine,
+) -> None:
+    response = await pg_derived_chain_env.execute(
+        SlayerQuery(
+            source_model="a_tbl",
+            dimensions=[
+                ColumnRef(name="id"),
+                ColumnRef(name="ratio_using_derived"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        )
+    )
+    assert response.row_count == 2
+    assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+    assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
