@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import random
 import sqlite3
 import statistics
+import sys
 
 import numpy as np
 import pytest
@@ -246,18 +248,20 @@ def test_log10_zero_raises(sqlite_conn):
 
 def test_log_base_x_known_value_via_udf(sqlite_conn):
     # NOSONAR(S125) — mathematical equation in prose ("log base 10 of 1000
-    # equals 3"), not commented-out Python. (Sonar python:S7632 rejects the
-    # `python:S125` form: rule keys inside NOSONAR(...) must be alphanumeric.)
+    # equals 3"), not commented-out Python. Sonar's python:S7632 rule
+    # requires alphanumeric-only rule keys inside the suppression
+    # parentheses, so the prefixed `python:S125` form is invalid; the
+    # bare `S125` short name is the compliant one.
     # Post-C3 (PR #82): the UDF registers unconditionally, overriding any
     # built-in `log(B, X)` on SQLite >=3.35 with our strict-error semantics.
     assert _scalar(sqlite_conn, "log(10, 1000)") == pytest.approx(3.0)
 
 
-def test_log_base_x_works_either_via_udf_or_builtin(sqlite_conn):
-    """The contract `log(B, X) == log_B(X)` must hold regardless of whether
-    SQLite ships its own `log` or our UDF fills in. The UDF is registered
-    only when the built-in is absent, so this is a pure end-user-contract
-    test that doesn't care which path runs.
+def test_log_base_x_contract_holds(sqlite_conn):
+    """Contract-level check: `log(B, X) == log_B(X)`. The UDF registers
+    unconditionally now (post-C3 in commit `cce6d2e`), so this test
+    no longer needs to disambiguate UDF-vs-builtin paths — it just
+    pins the user-facing contract.
     """
     assert _scalar(sqlite_conn, "log(2, 8)") == pytest.approx(3.0)
     assert _scalar(sqlite_conn, "log(10, 1000)") == pytest.approx(3.0)
@@ -334,6 +338,41 @@ def test_power_alias_known_value(sqlite_conn):
 
 def test_power_alias_null_propagation(sqlite_conn):
     assert _scalar(sqlite_conn, "power(NULL, 2)") is None
+
+
+def test_pow_negative_base_fractional_exponent_raises(sqlite_conn):
+    """`pow(-2, 0.5)` is undefined in the reals. With Python's ``**`` it
+    silently returns a complex number, which sqlite3 then errors on at
+    marshalling time (clobbering the function's role boundary). With
+    ``math.pow`` it raises ValueError up-front, surfacing as
+    OperationalError — same shape as ln(0)/sqrt(-1) and the rest of the
+    math-domain-error policy. CodeRabbit major on PR #82 round 3.
+    """
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite_conn.execute("SELECT pow(-2, 0.5)").fetchone()
+    # `power` alias goes through the same wrapper.
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite_conn.execute("SELECT power(-2, 0.5)").fetchone()
+
+
+def test_pow_huge_exponent_overflows_cleanly():
+    """`pow(2, 10000)` with Python's ``**`` builds a 3010-digit Python
+    int — unbounded memory pressure on the SQLite-Python boundary.
+    With ``math.pow`` it overflows IEEE-754 cleanly and raises
+    ``OverflowError``. We test the wrapper directly here because the
+    sqlite3 driver swallows the underlying exception and surfaces
+    everything as ``DataError`` with a generic "string or blob too big"
+    message, hiding the distinction between the bug and the fix at the
+    SQL boundary. The Python-level invariant is the load-bearing one.
+    """
+    from slayer.sql.sqlite_udfs import _pow
+
+    with pytest.raises(OverflowError):
+        _pow(2, 10000)
+    # `pow(2, 1000)` is large but does NOT overflow IEEE-754 (≈ 1.07e301).
+    # math.pow returns a bounded float; ** would still build a 302-digit
+    # int. Pin the float type to lock in the bounded-output guarantee.
+    assert isinstance(_pow(2, 1000), float)
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +636,73 @@ def test_covar_pop_n_one_returns_zero():
 def test_covar_pop_constant_columns_returns_zero():
     pairs = [(5.0, y) for y in [1.0, 2.0, 3.0, 4.0]]
     assert _run_covar(_CovarPopAgg, pairs) == pytest.approx(0.0, abs=1e-12)
+
+
+def _agg_internal_size(agg) -> int:
+    """Approximate the in-memory size of an aggregator's *retained per-row*
+    state — i.e. anything in __dict__ that scales with the number of rows
+    fed through ``step``. With list-buffering this grows linearly in N;
+    with Welford accumulators it stays constant. Walks one level into
+    list/tuple values via ``sys.getsizeof`` to capture buffered rows.
+    """
+    total = sys.getsizeof(agg)
+    for v in agg.__dict__.values():
+        total += sys.getsizeof(v)
+    return total
+
+
+def _feed_random_floats(agg, n: int, *, seed: int = 0) -> None:
+    """Stream `n` random floats through an aggregator's ``step``."""
+    rng = random.Random(seed)
+    for _ in range(n):
+        agg.step(rng.random())
+
+
+def _feed_random_pairs(agg, n: int, *, seed: int = 0) -> None:
+    rng = random.Random(seed)
+    for _ in range(n):
+        agg.step(rng.random(), rng.random())
+
+
+@pytest.mark.parametrize(
+    "agg_cls",
+    [_StddevSampAgg, _StddevPopAgg, _VarSampAgg, _VarPopAgg],
+)
+def test_one_arg_stat_agg_uses_constant_memory(agg_cls):
+    """Each 1-arg stat aggregator must hold O(1) state — a count, a mean,
+    and an M2 (sum of squared deviations) is enough for both stddev and
+    variance variants. List-buffering would make memory grow with N and
+    blow up SQLite analytics workloads on large groups (CodeRabbit major
+    on PR #82 round 3). 100k rows shouldn't bloat the aggregator past a
+    few hundred bytes.
+    """
+    agg = agg_cls()
+    _feed_random_floats(agg, 100_000)
+    size = _agg_internal_size(agg)
+    assert size < 1024, (
+        f"{agg_cls.__name__} retained {size} bytes after 100k rows — "
+        f"expected constant-memory Welford state, not a buffered list. "
+        f"State: {agg.__dict__!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "agg_cls",
+    [_CorrAgg, _CovarSampAgg, _CovarPopAgg],
+)
+def test_two_arg_stat_agg_uses_constant_memory(agg_cls):
+    """Same constant-memory invariant for the paired aggregates. Welford
+    keeps `(n, mean_x, mean_y, M2x, M2y, C)` — six scalars regardless of
+    N. List-of-pairs buffering would explode at SQLite analytics scale.
+    """
+    agg = agg_cls()
+    _feed_random_pairs(agg, 100_000)
+    size = _agg_internal_size(agg)
+    assert size < 1024, (
+        f"{agg_cls.__name__} retained {size} bytes after 100k pairs — "
+        f"expected constant-memory paired-Welford state. "
+        f"State: {agg.__dict__!r}"
+    )
 
 
 def test_covar_skips_pair_with_either_null_pop():

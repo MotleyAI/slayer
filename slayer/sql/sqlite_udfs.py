@@ -150,108 +150,128 @@ class _PercentileDiscAgg:
 
 
 # ---------------------------------------------------------------------------
-# Statistical aggregates (DEV-1317): two-pass list shape, mirrors _MedianAgg.
+# Statistical aggregates (DEV-1317).
+#
+# These use **Welford's online algorithm** — O(1) memory regardless of
+# group size. The earlier list-buffering implementation grew memory
+# linearly in N, which is fine for ~1k-row groups but blows up SQLite
+# analytics workloads. Welford is also numerically more stable than the
+# naive `sum((x - mean)**2)` two-pass formula, especially for series
+# with large means and small variances.
+#
+# References:
+#   - Welford 1962, "Note on a method for calculating corrected sums of
+#     squares and products". Communications of the ACM 5(8):417-419.
+#   - 2-variable paired update is the natural extension; see Pébay 2008,
+#     "Formulas for Robust, One-Pass Parallel Computation of
+#     Covariances".
 # ---------------------------------------------------------------------------
 
 
-def _mean(vals: list[float]) -> float:
-    return sum(vals) / len(vals)
+class _OneVarWelford:
+    """Shared online-stats state for the four 1-arg stat aggregates.
 
+    Maintains ``(n, mean, M2)`` where ``M2 = sum((x_i - mean)^2)``.
+    Subclasses pick how to turn it into stddev_samp / stddev_pop /
+    var_samp / var_pop in ``finalize()``.
 
-def _ssd(vals: list[float]) -> float:
-    """Sum of squared deviations from the mean."""
-    m = _mean(vals)
-    return sum((v - m) ** 2 for v in vals)
-
-
-class _StddevSampAgg:
-    """Sample standard deviation. NULL when N <= 1."""
-
-    def __init__(self) -> None:
-        self._vals: list[float] = []
-
-    def step(self, value) -> None:
-        if value is not None:
-            self._vals.append(value)
-
-    def finalize(self) -> Optional[float]:
-        n = len(self._vals)
-        if n <= 1:
-            return None
-        return math.sqrt(_ssd(self._vals) / (n - 1))
-
-
-class _StddevPopAgg:
-    """Population standard deviation. NULL at N=0; 0 at N=1."""
-
-    def __init__(self) -> None:
-        self._vals: list[float] = []
-
-    def step(self, value) -> None:
-        if value is not None:
-            self._vals.append(value)
-
-    def finalize(self) -> Optional[float]:
-        n = len(self._vals)
-        if n == 0:
-            return None
-        if n == 1:
-            return 0
-        return math.sqrt(_ssd(self._vals) / n)
-
-
-class _VarSampAgg:
-    """Sample variance. NULL when N <= 1."""
-
-    def __init__(self) -> None:
-        self._vals: list[float] = []
-
-    def step(self, value) -> None:
-        if value is not None:
-            self._vals.append(value)
-
-    def finalize(self) -> Optional[float]:
-        n = len(self._vals)
-        if n <= 1:
-            return None
-        return _ssd(self._vals) / (n - 1)
-
-
-class _VarPopAgg:
-    """Population variance. NULL at N=0; 0 at N=1."""
-
-    def __init__(self) -> None:
-        self._vals: list[float] = []
-
-    def step(self, value) -> None:
-        if value is not None:
-            self._vals.append(value)
-
-    def finalize(self) -> Optional[float]:
-        n = len(self._vals)
-        if n == 0:
-            return None
-        if n == 1:
-            return 0
-        return _ssd(self._vals) / n
-
-
-class _PairAgg:
-    """Shared base for 2-arg paired aggregates (corr, covar_samp, covar_pop).
-
-    Skips a pair entirely if either x or y is NULL — matching Postgres
-    semantics for all three.
+    NULL inputs are skipped (don't contribute to ``n``), matching
+    Postgres semantics for the whole stat-aggregate family.
     """
 
     def __init__(self) -> None:
-        self._xs: list[float] = []
-        self._ys: list[float] = []
+        self._n: int = 0
+        self._mean: float = 0.0
+        self._m2: float = 0.0
+
+    def step(self, value) -> None:
+        if value is None:
+            return
+        self._n += 1
+        delta = value - self._mean
+        self._mean += delta / self._n
+        # Use the *new* mean for the second factor — that's the Welford
+        # update, not the naive `delta * delta` which only works in the
+        # batch formula.
+        self._m2 += delta * (value - self._mean)
+
+
+class _StddevSampAgg(_OneVarWelford):
+    """Sample standard deviation. NULL when N <= 1."""
+
+    def finalize(self) -> Optional[float]:
+        if self._n <= 1:
+            return None
+        return math.sqrt(self._m2 / (self._n - 1))
+
+
+class _StddevPopAgg(_OneVarWelford):
+    """Population standard deviation. NULL at N=0; 0 at N=1."""
+
+    def finalize(self) -> Optional[float]:
+        if self._n == 0:
+            return None
+        if self._n == 1:
+            return 0
+        return math.sqrt(self._m2 / self._n)
+
+
+class _VarSampAgg(_OneVarWelford):
+    """Sample variance. NULL when N <= 1."""
+
+    def finalize(self) -> Optional[float]:
+        if self._n <= 1:
+            return None
+        return self._m2 / (self._n - 1)
+
+
+class _VarPopAgg(_OneVarWelford):
+    """Population variance. NULL at N=0; 0 at N=1."""
+
+    def finalize(self) -> Optional[float]:
+        if self._n == 0:
+            return None
+        if self._n == 1:
+            return 0
+        return self._m2 / self._n
+
+
+class _PairAgg:
+    """Shared 2-variable Welford state for corr / covar_samp / covar_pop.
+
+    Maintains ``(n, mean_x, mean_y, M2x, M2y, C)`` where
+    ``M2x = sum((x_i - mean_x)^2)``, similarly for ``M2y``, and
+    ``C = sum((x_i - mean_x)(y_i - mean_y))``. All updated incrementally
+    in ``step``.
+
+    A pair is dropped entirely if either x or y is NULL — matching
+    Postgres semantics for all three subclasses.
+    """
+
+    def __init__(self) -> None:
+        self._n: int = 0
+        self._mean_x: float = 0.0
+        self._mean_y: float = 0.0
+        self._m2_x: float = 0.0
+        self._m2_y: float = 0.0
+        self._c: float = 0.0
 
     def step(self, x, y) -> None:
         if x is None or y is None:
             return
-        self._xs.append(x)
-        self._ys.append(y)
+        self._n += 1
+        dx = x - self._mean_x
+        self._mean_x += dx / self._n
+        dy = y - self._mean_y
+        self._mean_y += dy / self._n
+        # Update M2 using the *new* mean (post-increment) for the second
+        # factor — same Welford trick as the 1-var case.
+        self._m2_x += dx * (x - self._mean_x)
+        self._m2_y += dy * (y - self._mean_y)
+        # Co-moment uses the original `dx` and the post-update y-residual.
+        # This is the standard paired-Welford formula and matches batch
+        # `sum((x - mean_x)*(y - mean_y))` to floating-point precision.
+        self._c += dx * (y - self._mean_y)
 
 
 class _CorrAgg(_PairAgg):
@@ -262,29 +282,20 @@ class _CorrAgg(_PairAgg):
     """
 
     def finalize(self) -> Optional[float]:
-        n = len(self._xs)
-        if n < 2:
+        if self._n < 2:
             return None
-        mx = _mean(self._xs)
-        my = _mean(self._ys)
-        sxx = sum((x - mx) ** 2 for x in self._xs)
-        syy = sum((y - my) ** 2 for y in self._ys)
-        if sxx == 0 or syy == 0:
+        if self._m2_x == 0 or self._m2_y == 0:
             return None
-        sxy = sum((x - mx) * (y - my) for x, y in zip(self._xs, self._ys))
-        return sxy / math.sqrt(sxx * syy)
+        return self._c / math.sqrt(self._m2_x * self._m2_y)
 
 
 class _CovarSampAgg(_PairAgg):
     """Sample covariance between two columns. NULL when N <= 1."""
 
     def finalize(self) -> Optional[float]:
-        n = len(self._xs)
-        if n <= 1:
+        if self._n <= 1:
             return None
-        mx = _mean(self._xs)
-        my = _mean(self._ys)
-        return sum((x - mx) * (y - my) for x, y in zip(self._xs, self._ys)) / (n - 1)
+        return self._c / (self._n - 1)
 
 
 class _CovarPopAgg(_PairAgg):
@@ -295,14 +306,11 @@ class _CovarPopAgg(_PairAgg):
     """
 
     def finalize(self) -> Optional[float]:
-        n = len(self._xs)
-        if n == 0:
+        if self._n == 0:
             return None
-        if n == 1:
+        if self._n == 1:
             return 0
-        mx = _mean(self._xs)
-        my = _mean(self._ys)
-        return sum((x - mx) * (y - my) for x, y in zip(self._xs, self._ys)) / n
+        return self._c / self._n
 
 
 # ---------------------------------------------------------------------------
@@ -342,9 +350,22 @@ def _sqrt(x):
 
 
 def _pow(x, n):
+    """``pow(x, n)`` / ``power(x, n)`` — uses ``math.pow`` rather than
+    Python's ``**`` operator so:
+
+    * Negative base + non-integer exponent raises ``ValueError`` (clean
+      OperationalError at the SQLite boundary). ``**`` would silently
+      return a complex number which sqlite3 cannot marshal back as a
+      column value.
+    * Large exponents overflow into IEEE-754 ``inf`` (or raise
+      ``OverflowError`` — also OperationalError-friendly). ``**`` would
+      build an unbounded big-int (e.g., ``2 ** 10000`` is 3010 digits)
+      that sqlite3 then rejects at marshalling time with the less-clear
+      ``DataError: string or blob too big``.
+    """
     if x is None or n is None:
         return None
-    return x ** n
+    return math.pow(x, n)
 
 
 # ---------------------------------------------------------------------------
