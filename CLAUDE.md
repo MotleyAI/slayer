@@ -121,6 +121,8 @@ Dialect mapping lives in `query_engine.py:_dialect_for_type()`. Dialect-specific
 
 **In-memory SQLite caveat:** `sqlite:///:memory:` (and equivalent URI variants — `sqlite://`, `sqlite:///file::memory:?…`, `mode=memory`) works across `await` calls on a single `SlayerSQLClient` because the client owns a per-instance `StaticPool` engine with `check_same_thread=False`. Two separate `SlayerSQLClient` instances on `:memory:` are isolated from each other. Use a file path or `mode=memory&cache=shared` URI form to share state across clients. File-backed SQLite is unaffected — it routes through the module-level engine cache as before.
 
+**SQLite JSON extraction:** `json_extract(col, '$.path')` in `Column.sql` (or any expression `SQLGenerator` parses on SQLite) is preserved as the function-call form, not rewritten to `col -> '$.path'`. The `->` operator in SQLite returns the JSON-quoted form (e.g. `'"Owned"'` with literal quotes), which silently breaks equality / CASE WHEN matches against bare-string literals; the function form returns the unquoted scalar. Implemented via `slayer/sql/sqlite_dialect.py::rewrite_sqlite_json_extract`, applied uniformly through `SQLGenerator._parse`. Use `->>` (`exp.JSONExtractScalar`) directly if you specifically want the dialect operator — SLayer leaves it untouched.
+
 ## Testing
 
 **Important**: Always use `poetry run` to run tests — this ensures the correct Poetry-managed virtualenv is used (not the system or conda Python).

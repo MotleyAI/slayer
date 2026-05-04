@@ -2365,3 +2365,65 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
         SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:var_pop")])
     )
     assert r_var_pop.data[0]["one.x_var_pop"] == 0
+
+
+async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
+    """DEV-1331 reproduction.
+
+    A derived ``Column.sql`` that uses ``json_extract`` inside a CASE WHEN
+    must return the expected aggregate. Pre-fix the SQLite emitter rewrites
+    ``json_extract(...)`` to ``col -> '$.path'``, which returns the
+    JSON-quoted form (``'"Owned"'``); CASE WHEN against the bare-string
+    ``'owned'`` therefore never matches and the sum is 0.
+    """
+    db_path = tmp_path / "households.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE households (id INTEGER PRIMARY KEY, socioeconomic TEXT NOT NULL)"
+    )
+    cur.executemany(
+        "INSERT INTO households VALUES (?, ?)",
+        [
+            (1, '{"Tenure_Type": "Owned"}'),
+            (2, '{"Tenure_Type": "Rented"}'),
+            (3, '{"Tenure_Type": "Owned"}'),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="hh_sqlite", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="households",
+            sql_table="households",
+            data_source="hh_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="socioeconomic", sql="socioeconomic", type=DataType.STRING),
+                Column(
+                    name="is_owner",
+                    sql=(
+                        "CASE LOWER(TRIM(json_extract(socioeconomic, '$.Tenure_Type'))) "
+                        "WHEN 'owned' THEN 1 ELSE 0 END"
+                    ),
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+    )
+    engine = SlayerQueryEngine(storage=storage)
+
+    response = await engine.execute(
+        SlayerQuery(
+            source_model="households",
+            measures=[ModelMeasure(formula="is_owner:sum")],
+        )
+    )
+    assert response.data[0]["households.is_owner_sum"] == 2

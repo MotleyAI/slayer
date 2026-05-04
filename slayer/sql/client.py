@@ -470,6 +470,38 @@ _TRANSIENT_RETRY_LOG_FORMAT = (
     "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s"
 )
 
+# Substrings (lower-cased match) on the underlying DBAPI message that indicate
+# a transient failure with some chance of succeeding on retry. Schema-level
+# errors (no such table, syntax error, permission denied, constraint violation)
+# are deterministic — sleeping changes nothing — so we re-raise them
+# immediately rather than burning 1s + 2s of backoff before the eventual fail.
+_TRANSIENT_DB_ERROR_SIGNALS = (
+    "database is locked",     # SQLite under contention
+    "deadlock",               # Postgres / MySQL deadlock_detected
+    "lost connection",        # MySQL "Lost connection to MySQL server"
+    "broken pipe",            # connection mid-query
+    "could not connect",      # libpq / psycopg
+    "server closed",          # Postgres "server closed the connection unexpectedly"
+    "connection refused",
+    "connection reset",
+    "connection was killed",  # MySQL admin kill
+)
+
+
+def _is_transient_db_error(exc: BaseException) -> bool:
+    """Return True only for DB errors that have a real chance of succeeding on retry.
+
+    `OperationalError` is too broad to retry blindly — it spans both schema
+    errors (no such table, syntax error) and genuinely transient conditions
+    (locking, deadlock, dropped connection). `DisconnectionError` is always
+    transient by definition. For everything else we look at the underlying
+    DBAPI message via ``exc.orig`` for known transient signals.
+    """
+    if isinstance(exc, sqlalchemy.exc.DisconnectionError):
+        return True
+    msg = str(getattr(exc, "orig", exc)).lower()
+    return any(sig in msg for sig in _TRANSIENT_DB_ERROR_SIGNALS)
+
 
 async def _retry_with_backoff(
     *,
@@ -493,7 +525,7 @@ async def _retry_with_backoff(
         try:
             return await do_call()
         except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
-            if attempt == max_attempts - 1:
+            if attempt == max_attempts - 1 or not _is_transient_db_error(exc):
                 raise
             sql_lines = (sql or "").strip().splitlines()
             sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
@@ -602,7 +634,7 @@ def _execute_with_retry_sync(
                 engine=engine,
             )
         except (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError) as exc:
-            if attempt == max_attempts - 1:
+            if attempt == max_attempts - 1 or not _is_transient_db_error(exc):
                 raise
             sql_lines = (sql or "").strip().splitlines()
             sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER

@@ -222,6 +222,22 @@ Use **bare column names** (e.g., `"amount"`) — SLayer automatically qualifies 
 
 For complex expressions, use the model name as a table prefix: `"orders.amount * orders.quantity"`.
 
+### SQLite JSON extraction
+
+`json_extract(col, '$.path')` in a `Column.sql` is preserved as the function-call form on SQLite — SLayer does **not** rewrite it to `col -> '$.path'`. The `->` operator in SQLite returns the JSON-quoted form (e.g. `'"Owned"'` with literal quotes), so equality and `CASE WHEN` matches against bare-string literals would silently fail. The function form returns the unquoted scalar.
+
+```yaml
+columns:
+  - name: tier
+    type: string
+    sql: "json_extract(payload, '$.tier')"           # works on SQLite (preserved)
+  - name: is_gold
+    type: number
+    sql: "CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END"
+```
+
+If you specifically want the SQLite JSON-scalar operator, write `->>` (`exp.JSONExtractScalar`) directly — SLayer leaves it untouched.
+
 ## Joins
 
 Models can declare explicit LEFT JOIN relationships to other models:
