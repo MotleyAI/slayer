@@ -10,6 +10,7 @@ from slayer.sql.client import (
     _execute_with_retry_async,
     _execute_with_retry_sync,
     _execute_with_retry_threaded,
+    _is_transient_db_error,
     _map_type_code,
 )
 
@@ -97,11 +98,148 @@ class TestMapTypeCode:
         assert _map_type_code(0, db_type="mysql") == "number"
 
 
-def _make_op_error() -> sqlalchemy.exc.OperationalError:
-    """A minimal OperationalError that mimics a transient driver failure."""
+def _make_op_error(orig_message: str = "database is locked") -> sqlalchemy.exc.OperationalError:
+    """An OperationalError carrying a chosen DBAPI message in ``exc.orig``."""
     return sqlalchemy.exc.OperationalError(
-        "SELECT 1", {}, Exception("database is locked"),
+        "SELECT 1", {}, Exception(orig_message),
     )
+
+
+class TestIsTransientDbError:
+    """``_is_transient_db_error`` separates retry-worthy from deterministic errors.
+
+    Schema-level OperationalErrors (no such table, syntax error) used to
+    burn 1s + 2s of retry sleep for nothing — a real UX hit on inspect_model
+    and (massively) on the unit suite, where ~75 tests intentionally query
+    a non-existent in-memory table.
+    """
+
+    @pytest.mark.parametrize("orig_message", [
+        "database is locked",
+        "deadlock detected",
+        "lost connection to MySQL server during query",
+        "BrokenPipeError: Broken pipe",
+        "could not connect to server: Connection refused",
+        "server closed the connection unexpectedly",
+        "Connection refused",
+        "Connection reset by peer",
+        "Connection was killed",
+        # Case-insensitive: upper-cased input still matches.
+        "DATABASE IS LOCKED",
+    ])
+    def test_transient_messages_are_retried(self, orig_message: str) -> None:
+        assert _is_transient_db_error(_make_op_error(orig_message)) is True
+
+    @pytest.mark.parametrize("orig_message", [
+        "no such table: orders",
+        "no such column: revenue",
+        "syntax error at or near \"FROM\"",
+        "permission denied for table orders",
+        "duplicate key value violates unique constraint",
+        "relation \"orders\" does not exist",
+    ])
+    def test_deterministic_messages_are_not_retried(self, orig_message: str) -> None:
+        assert _is_transient_db_error(_make_op_error(orig_message)) is False
+
+    def test_disconnection_error_always_transient(self) -> None:
+        """``DisconnectionError`` is by definition a connection drop — retry."""
+        exc = sqlalchemy.exc.DisconnectionError("connection went away")
+        assert _is_transient_db_error(exc) is True
+
+
+class TestRetryFiltersDeterministicErrors:
+    """Retry helpers must re-raise deterministic errors immediately.
+
+    Before this filter was added, all three retry paths slept 1s+2s before
+    finally raising — turning ~75 unit tests that intentionally hit a
+    non-existent ``:memory:`` table into 3-15 s timeouts each.
+    """
+
+    async def test_async_no_such_table_raises_immediately(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = {"n": 0}
+
+        async def fake_execute(**kwargs: object) -> list:
+            calls["n"] += 1
+            raise _make_op_error("no such table: orders")
+
+        monkeypatch.setattr(sql_client, "_execute_sql_async", fake_execute)
+
+        with pytest.raises(sqlalchemy.exc.OperationalError, match="no such table"):
+            await _execute_with_retry_async(
+                sql="SELECT 1", engine=None, db_type="postgres",
+                # Non-zero delays prove we don't sleep — if the filter regressed,
+                # the test would still pass but get noticeably slower.
+                initial_delay=10.0, max_delay=10.0,
+            )
+
+        assert calls["n"] == 1, "deterministic error must not retry"
+
+    async def test_threaded_no_such_table_raises_immediately(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = {"n": 0}
+
+        def fake_execute(*args: object, **kwargs: object) -> list:
+            calls["n"] += 1
+            raise _make_op_error("no such table: orders")
+
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
+
+        with pytest.raises(sqlalchemy.exc.OperationalError, match="no such table"):
+            await _execute_with_retry_threaded(
+                sql="SELECT 1",
+                connection_string="sqlite:///:memory:",
+                db_type="sqlite",
+                initial_delay=10.0, max_delay=10.0,
+            )
+
+        assert calls["n"] == 1
+
+    def test_sync_no_such_table_raises_immediately(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls = {"n": 0}
+
+        def fake_execute(*args: object, **kwargs: object) -> list:
+            calls["n"] += 1
+            raise _make_op_error("no such table: orders")
+
+        monkeypatch.setattr(sql_client, "_execute_sql_sync", fake_execute)
+
+        with pytest.raises(sqlalchemy.exc.OperationalError, match="no such table"):
+            _execute_with_retry_sync(
+                sql="SELECT 1",
+                connection_string="sqlite:///:memory:",
+                db_type="sqlite",
+                initial_delay=10.0, max_delay=10.0,
+            )
+
+        assert calls["n"] == 1
+
+    async def test_async_transient_still_retries(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Locking errors should still go through the retry path so the
+        production behaviour for genuine flakes is unchanged."""
+        calls = {"n": 0}
+
+        async def fake_execute(**kwargs: object) -> list:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _make_op_error("database is locked")
+            return [{"ok": 1}]
+
+        monkeypatch.setattr(sql_client, "_execute_sql_async", fake_execute)
+
+        result = await _execute_with_retry_async(
+            sql="SELECT 1", engine=None, db_type="postgres",
+            initial_delay=0.0, max_delay=0.0,
+        )
+
+        assert result == [{"ok": 1}]
+        assert calls["n"] == 2
 
 
 class TestRetryEmptySqlExcerpt:
