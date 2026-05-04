@@ -2315,3 +2315,87 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
         SlayerQuery(source_model="one", measures=[ModelMeasure(formula="x:var_pop")])
     )
     assert r_var_pop.data[0]["one.x_var_pop"] == 0
+
+
+# ---------------------------------------------------------------------------
+# DEV-1336 — window functions in filters (single-stage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def planets_env(tmp_path):
+    """Planets fixture: a Column.sql with `row_number() over (...)` for top-N."""
+    db_path = tmp_path / "planets.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE planets (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            mass REAL NOT NULL
+        )
+        """
+    )
+    cur.executemany(
+        "INSERT INTO planets VALUES (?, ?, ?)",
+        [
+            (1, "Mercury", 0.33),
+            (2, "Venus", 4.87),
+            (3, "Earth", 5.97),
+            (4, "Mars", 0.642),
+            (5, "Jupiter", 1898.0),
+            (6, "Saturn", 568.0),
+            (7, "Uranus", 86.8),
+            (8, "Neptune", 102.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+
+    await storage.save_datasource(
+        DatasourceConfig(name="planets_db", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="planets",
+            sql_table="planets",
+            data_source="planets_db",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(
+                    name="rn",
+                    sql="row_number() over (order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+async def test_filter_on_windowed_column_sqlite_top_n(planets_env):
+    """End-to-end: filter on a `Column.sql` containing `row_number() over (...)`
+    must execute and return exactly the top-3 rows by mass.
+
+    Pre-fix this generated `WHERE ROW_NUMBER() OVER (ORDER BY mass DESC) <= 3`
+    which SQLite rejects with `near "OVER": syntax error`.
+    """
+    engine = planets_env
+    query = SlayerQuery(
+        source_model="planets",
+        dimensions=["name"],
+        filters=["rn <= 3"],
+        order=[OrderItem(column=ColumnRef(name="rn"), direction="asc")],
+    )
+    response = await engine.execute(query)
+    names = [row["planets.name"] for row in response.data]
+    assert names == ["Jupiter", "Saturn", "Neptune"], (
+        f"Expected top-3 by mass desc, got {names}"
+    )

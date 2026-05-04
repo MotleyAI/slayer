@@ -277,22 +277,27 @@ class SQLGenerator:
         has_cross_model = bool(enriched.cross_model_measures)
         has_measure_ctes = has_isolated or has_cross_model or has_windowed
         has_computed = bool(enriched.expressions or enriched.transforms)
+        # DEV-1336: a post-filter on a windowed `Column.sql` (or any other
+        # post-classified filter) requires the outer `_filtered` wrap from
+        # `_generate_with_computed`, even when there are no expressions or
+        # transforms to layer.
+        has_post_filters = any(getattr(f, "is_post_filter", False) for f in enriched.filters)
 
         base_sql = self._generate_base(enriched=enriched, skip_isolated=has_measure_ctes)
 
-        if not has_measure_ctes and not has_computed:
+        if not has_measure_ctes and not has_computed and not has_post_filters:
             return base_sql
 
         if has_measure_ctes:
             # Get structured CTE definitions (no WITH wrapper)
             measure_ctes = self._build_combined(enriched=enriched, base_sql=base_sql)
-            if has_computed:
+            if has_computed or has_post_filters:
                 # Pass CTE list to computed layer — it merges into a flat WITH
                 return self._generate_with_computed(enriched=enriched, prefix_ctes=measure_ctes)
             # No expressions: assemble CTEs + outer SELECT + pagination
             return self._assemble_combined_sql(enriched=enriched, measure_ctes=measure_ctes)
 
-        # No measure CTEs, just computed columns
+        # No measure CTEs, just computed columns or post-filters
         return self._generate_with_computed(enriched=enriched, base_sql=base_sql)
 
     def _build_combined(self, enriched: EnrichedQuery,
@@ -1032,6 +1037,17 @@ class SQLGenerator:
             if is_agg:
                 has_aggregation = True
 
+        # DEV-1336: window-function `Column.sql` referenced in a filter is
+        # materialized as a SELECT-only column on the base CTE. Window functions
+        # are evaluated post-aggregation by SQL semantics, so this is safe even
+        # when the query has GROUP BY (the window expression operates over the
+        # aggregated rows). They are NOT added to GROUP BY.
+        for wcol in enriched.windowed_filter_columns:
+            if wcol.sql is None:
+                continue
+            wcol_expr = sqlglot.parse_one(wcol.sql, dialect=self.dialect)
+            select_columns.append(wcol_expr.as_(wcol.alias))
+
         # When all measures are isolated/cross-model and there are no dimensions,
         # the base SELECT would be empty. Add a placeholder to produce valid SQL.
         if not select_columns and skip_isolated:
@@ -1128,6 +1144,11 @@ class SQLGenerator:
             base_aliases.append(m.alias)
         for cm in enriched.cross_model_measures:
             base_aliases.append(cm.alias)
+        # DEV-1336: windowed `Column.sql` filter columns are emitted as SELECT-
+        # only columns inside the base CTE, so they're available to the outer
+        # SELECT and post-filter wrap.
+        for wcol in enriched.windowed_filter_columns:
+            base_aliases.append(wcol.alias)
 
         # Build stacked CTEs. Each layer can reference aliases from previous layers.
         if prefix_ctes is not None:

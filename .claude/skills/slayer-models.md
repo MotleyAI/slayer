@@ -65,6 +65,10 @@ Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`cus
 
 Models can have always-applied WHERE filters: `filters: ["deleted_at IS NULL"]`. Only WHERE conditions on underlying table columns.
 
+## Window functions in `Column.sql`
+
+A column's `sql` may contain a window function (e.g. `row_number() over (order by mass desc)`). The column behaves like any other column when SELECTed; when used in a query `filters` entry, SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`. Use the `Column.sql`-with-window pattern for non-standard window expressions; for top-N filtering prefer the inline `rank(<measure>) <= N` transform — dialect-portable and simpler. Raw `OVER (...)` SQL inside a `ModelMeasure.formula` is rejected at construction time with an actionable error.
+
 ## Source modes
 
 A SlayerModel has exactly one source mode (mutually exclusive):

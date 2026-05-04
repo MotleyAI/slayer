@@ -176,6 +176,19 @@ class ModelMeasure(BaseModel):
             )
         return v
 
+    @field_validator("formula")
+    @classmethod
+    def _reject_raw_window_function(cls, v: str) -> str:
+        """DEV-1336: a measure formula containing raw ``OVER (...)`` SQL cannot
+        be parsed by SLayer's formula grammar (Python AST rejects ``OVER`` as a
+        keyword) and produces invalid SQL on every dialect if used as a filter.
+        Reject at construction time with an actionable error.
+        """
+        from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
+        if has_window_function(v):
+            raise ValueError(f"ModelMeasure formula '{v}' {WINDOW_IN_FILTER_ERROR}")
+        return v
+
 
 class AggregationParam(BaseModel):
     """A named parameter for an aggregation formula."""

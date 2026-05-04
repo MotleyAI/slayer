@@ -5731,3 +5731,166 @@ class TestGetColumnTypesSql:
         assert not any(f and f.startswith("opaque:") for f in formulas), (
             f"Empty allowed_aggregations must skip probe, got {formulas}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1336 — window functions in filters (single-stage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def planets_model() -> SlayerModel:
+    """Model with a Column.sql containing a window function (top-N rank pattern)."""
+    return SlayerModel(
+        name="planets",
+        sql_table="planets",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="mass", sql="mass", type=DataType.NUMBER),
+            Column(
+                name="rn",
+                sql="row_number() over (order by mass desc)",
+                type=DataType.NUMBER,
+            ),
+        ],
+    )
+
+
+class TestWindowFunctionInFilter:
+    """DEV-1336: a filter that resolves to SQL containing a window function
+    (`OVER (...)`) must not be inlined into the inner WHERE — SQLite and most
+    dialects reject window functions there.
+
+    For a model `Column.sql` containing a window expression, the generator
+    must (a) materialize the column in the inner SELECT under its alias, and
+    (b) move the predicate to the outer post-filter WHERE.
+
+    For raw `OVER (...)` text in query filters or measure formulas, the
+    parser must raise a clear actionable error pointing at SLayer's transforms.
+    """
+
+    async def test_filter_on_windowed_column_sql_uses_post_filter_wrap(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["rn <= 3"],
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        norm = _norm(sql)
+
+        # Window expression must be materialized in the inner SELECT under its alias…
+        assert 'AS "planets.rn"' in sql, (
+            f"Expected windowed column to be aliased in inner SELECT.\nsql:\n{sql}"
+        )
+        # …and the outer post-filter wrap must reference the alias, not inline the SQL.
+        assert "AS _filtered" in sql, (
+            f"Expected outer `_filtered` post-filter wrap.\nsql:\n{sql}"
+        )
+        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm, (
+            f"Expected outer WHERE to reference the alias.\nsql:\n{sql}"
+        )
+        # Critically: no top-level `WHERE ROW_NUMBER ... OVER` in the inner SELECT.
+        # The pre-fix SQL was: `WHERE ROW_NUMBER() OVER (ORDER BY mass DESC) <= 3`
+        # We allow ROW_NUMBER inside the inner SELECT list (after AS), but not in
+        # any WHERE clause.
+        upper = norm.upper()
+        # Find every "WHERE" position and confirm none is followed by ROW_NUMBER...OVER
+        # before the next clause boundary.
+        import re as _re
+        for match in _re.finditer(r"\bWHERE\b", upper):
+            tail = upper[match.end(): match.end() + 200]
+            assert "ROW_NUMBER" not in tail.split(") AS ")[0], (
+                f"WHERE clause must not contain a window function.\nsql:\n{sql}"
+            )
+
+    async def test_filter_on_windowed_column_combined_with_base_filter(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """A non-window filter should stay in inner WHERE; the window filter
+        moves to the outer post-filter wrap."""
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["rn <= 3", "name <> 'Pluto'"],
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        norm = _norm(sql)
+
+        # Outer wrap is present (window predicate promoted).
+        assert "AS _filtered" in sql
+
+        # The base filter (`name <> 'Pluto'`) stays in the inner WHERE.
+        assert "Pluto" in norm
+        # The window predicate is in the outer WHERE on the alias.
+        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm
+
+    async def test_select_only_on_windowed_column_unchanged(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """Control test: selecting a windowed-Column without filtering on it
+        should not introduce the post-filter wrap (no behavior change)."""
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name", "rn"],
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        assert "AS _filtered" not in sql, (
+            f"No post-filter wrap should be introduced when there is no window "
+            f"filter.\nsql:\n{sql}"
+        )
+
+    async def test_inline_window_function_in_query_filter_raises(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """Raw `OVER (...)` text in a query filter must raise an actionable
+        error pointing the user at SLayer transforms or `Column.sql`."""
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["row_number() over (order by mass desc) <= 3"],
+        )
+        with pytest.raises(ValueError) as excinfo:
+            await _generate(generator=generator, query=query, model=planets_model)
+        msg = str(excinfo.value)
+        assert "window function" in msg.lower(), (
+            f"Error message should mention 'window function'.\nmsg: {msg}"
+        )
+        # Must point at at least one of the recommended escape hatches.
+        assert any(
+            keyword in msg
+            for keyword in ("rank(", "first(", "last(", "lag(", "lead(", "Column.sql", "multi-stage")
+        ), f"Error must suggest a SLayer transform or Column.sql or multi-stage.\nmsg: {msg}"
+        # And must NOT be the misleading Python-AST fallback message.
+        assert "Perhaps you forgot a comma" not in msg
+
+    async def test_window_function_in_named_measure_used_as_filter_raises(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """A `ModelMeasure` formula containing raw `OVER` must be rejected at
+        construction time with an actionable error."""
+        with pytest.raises(ValueError) as excinfo:
+            SlayerModel(
+                name="planets",
+                sql_table="planets",
+                data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                    Column(name="name", sql="name", type=DataType.STRING),
+                    Column(name="mass", sql="mass", type=DataType.NUMBER),
+                ],
+                measures=[
+                    ModelMeasure(
+                        name="top_3_largest",
+                        formula="row_number() over (order by mass desc) <= 3",
+                    )
+                ],
+            )
+        msg = str(excinfo.value)
+        assert "window function" in msg.lower(), (
+            f"Error message should mention 'window function'.\nmsg: {msg}"
+        )
+        assert "Perhaps you forgot a comma" not in msg

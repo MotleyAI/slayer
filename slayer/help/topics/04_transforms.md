@@ -94,6 +94,13 @@ Self-join transforms cannot wrap other self-join or change transforms.
 no auto-partition by dimension. Use `filters: ["rank(revenue:sum) <= 10"]` for
 top-N.
 
+Raw `OVER (...)` SQL inside a `ModelMeasure.formula` or filter string is
+rejected with an actionable error pointing at the `rank()` / `first()` /
+`last()` / `lag()` / `lead()` transforms. For non-standard window expressions,
+define a `Column` whose `sql` is the window expression and filter on the
+column — SLayer auto-promotes the predicate to a post-aggregation outer
+`WHERE`.
+
 ## first() and last() — broadcast transforms
 
 `first(x)` projects the **earliest** bucket's aggregated value onto every row.
