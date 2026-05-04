@@ -1,6 +1,7 @@
 """Tests for SQL client helpers (type code mapping, retry-warning formatting)."""
 
 import logging
+import sqlite3
 
 import pytest
 import sqlalchemy.exc
@@ -99,9 +100,15 @@ class TestMapTypeCode:
 
 
 def _make_op_error(orig_message: str = "database is locked") -> sqlalchemy.exc.OperationalError:
-    """An OperationalError carrying a chosen DBAPI message in ``exc.orig``."""
+    """An OperationalError carrying a chosen DBAPI message in ``exc.orig``.
+
+    Uses ``sqlite3.OperationalError`` as the wrapped DBAPI exception — that's
+    the actual class SQLAlchemy puts in ``.orig`` when the SQLite driver
+    raises an OperationalError, so the fake mirrors production semantics
+    while satisfying Sonar's ``python:S112`` (no bare ``Exception``).
+    """
     return sqlalchemy.exc.OperationalError(
-        "SELECT 1", {}, Exception(orig_message),
+        "SELECT 1", {}, sqlite3.OperationalError(orig_message),
     )
 
 
@@ -160,7 +167,7 @@ class TestRetryFiltersDeterministicErrors:
     ) -> None:
         calls = {"n": 0}
 
-        async def fake_execute(**kwargs: object) -> list:
+        async def fake_execute(**_kwargs: object) -> list:  # NOSONAR(python:S7503) — must be async to replace _execute_sql_async (called via `await do_call()`)
             calls["n"] += 1
             raise _make_op_error("no such table: orders")
 
@@ -181,7 +188,7 @@ class TestRetryFiltersDeterministicErrors:
     ) -> None:
         calls = {"n": 0}
 
-        def fake_execute(*args: object, **kwargs: object) -> list:
+        def fake_execute(*_args: object, **_kwargs: object) -> list:
             calls["n"] += 1
             raise _make_op_error("no such table: orders")
 
@@ -202,7 +209,7 @@ class TestRetryFiltersDeterministicErrors:
     ) -> None:
         calls = {"n": 0}
 
-        def fake_execute(*args: object, **kwargs: object) -> list:
+        def fake_execute(*_args: object, **_kwargs: object) -> list:
             calls["n"] += 1
             raise _make_op_error("no such table: orders")
 
@@ -225,7 +232,7 @@ class TestRetryFiltersDeterministicErrors:
         production behaviour for genuine flakes is unchanged."""
         calls = {"n": 0}
 
-        async def fake_execute(**kwargs: object) -> list:
+        async def fake_execute(**_kwargs: object) -> list:  # NOSONAR(python:S7503) — must be async to replace _execute_sql_async (called via `await do_call()`)
             calls["n"] += 1
             if calls["n"] == 1:
                 raise _make_op_error("database is locked")
@@ -258,7 +265,7 @@ class TestRetryEmptySqlExcerpt:
     ) -> None:
         calls = {"n": 0}
 
-        async def fake_execute(**kwargs: object) -> list:
+        async def fake_execute(**_kwargs: object) -> list:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise _make_op_error()
@@ -291,7 +298,7 @@ class TestRetryEmptySqlExcerpt:
     ) -> None:
         calls = {"n": 0}
 
-        def fake_execute(*args: object, **kwargs: object) -> list:
+        def fake_execute(*_args: object, **_kwargs: object) -> list:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise _make_op_error()
@@ -324,7 +331,7 @@ class TestRetryEmptySqlExcerpt:
     ) -> None:
         calls = {"n": 0}
 
-        def fake_execute(*args: object, **kwargs: object) -> list:
+        def fake_execute(*_args: object, **_kwargs: object) -> list:
             calls["n"] += 1
             if calls["n"] == 1:
                 raise _make_op_error()
