@@ -120,6 +120,8 @@ The bare name resolves only when it appears as a standalone identifier — a nam
 
 Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
+Inside any formula or `Column.sql`, dotted references to columns on joined models can target *derived* columns (columns whose own `sql` is itself an expression). The engine recursively inlines those references at query time, so `"B.foo_normalized:sum"` — where `B.foo_normalized.sql = "foo_raw / 100.0"` — emits `SUM(B.foo_raw / 100.0)`. See [Models → Derived Columns Referencing Other Derived Columns](models.md#derived-columns-referencing-other-derived-columns) for the full chaining behaviour and cycle-detection semantics.
+
 ### Transform Functions
 
 Functions apply window operations to measures:

@@ -580,3 +580,79 @@ class TestDuckDBStatAggregations:
         assert float(
             result.data[0]["orders.total_covar_pop_other_customer_id"]
         ) == pytest.approx(expected, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1333: cross-model derived ``Column.sql`` chaining (DuckDB)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def duckdb_derived_chain_env(tmp_path):
+    db_path = tmp_path / "derived_chain.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE b_tbl (id INTEGER PRIMARY KEY, foo_raw DOUBLE)")
+    conn.execute(
+        "CREATE TABLE a_tbl (id INTEGER PRIMARY KEY, bar DOUBLE, b_id INTEGER, raw_a DOUBLE)"
+    )
+    conn.execute("INSERT INTO b_tbl VALUES (1, 200.0), (2, 50.0)")
+    conn.execute("INSERT INTO a_tbl VALUES (10, 4.0, 1, 100.0), (11, 1.0, 2, 5.0)")
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
+    )
+    from slayer.core.models import ModelJoin
+    await storage.save_model(
+        SlayerModel(
+            name="b_tbl",
+            data_source="ds",
+            sql_table="b_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
+                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="a_tbl",
+            data_source="ds",
+            sql_table="a_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.NUMBER),
+                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+                Column(
+                    name="ratio_using_derived",
+                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            joins=[ModelJoin(target_model="b_tbl", join_pairs=[["b_id", "id"]])],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+async def test_integration_duckdb_cross_model_derived_columnsql(
+    duckdb_derived_chain_env: SlayerQueryEngine,
+) -> None:
+    response = await duckdb_derived_chain_env.execute(
+        SlayerQuery(
+            source_model="a_tbl",
+            dimensions=[
+                ColumnRef(name="id"),
+                ColumnRef(name="ratio_using_derived"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        )
+    )
+    assert response.row_count == 2
+    assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+    assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)

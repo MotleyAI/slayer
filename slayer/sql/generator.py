@@ -1808,7 +1808,10 @@ class SQLGenerator:
 
         # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
         if agg_name in ("first", "last"):
-            col = measure.sql or measure.name
+            col_expr = self._resolve_sql(
+                sql=measure.sql, name=measure.name, model_name=measure.model_name,
+            )
+            col = col_expr.sql(dialect=self.dialect)
             suffix = ""
             if rn_suffix_map and default_time_col:
                 effective_tc = measure.time_column or default_time_col
@@ -1834,10 +1837,13 @@ class SQLGenerator:
                 filter_clause = f"{match_col} = 1" if match_col else measure.filter_sql
                 case_sql = (
                     f"MAX(CASE WHEN {filtered_rn} = 1 AND {filter_clause} "
-                    f"THEN {measure.model_name}.{col} END)"
+                    f"THEN {col} END)"
                 )
             else:
-                case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {measure.model_name}.{col} END)"
+                # ``col`` is already a fully-qualified SQL expression resolved
+                # via ``_resolve_sql`` earlier in this branch, so we don't need
+                # to re-prefix ``measure.model_name``. (DEV-1333.)
+                case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {col} END)"
             return self._parse(case_sql), True
 
         # --- Custom or parameterized aggregation (formula-based) ---

@@ -5745,8 +5745,10 @@ class TestGetColumnTypesSql:
         assert "orders.COALESCE" not in sql, f"Expression measure corrupted:\n{sql}"
         # Bare measure should be qualified
         assert "orders.amount" in sql
-        # Expression should appear as-is
-        assert "COALESCE(amount, 0)" in sql
+        # Bare ``amount`` inside the expression now qualifies to the model's
+        # alias (``orders.amount``) — derived-ref expansion (DEV-1333) makes
+        # every base-column reference unambiguous.
+        assert "COALESCE(orders.amount, 0)" in sql
 
     async def test_cross_model_measures_probed_via_engine(self) -> None:
         """Cross-model measures should be probed via the engine's enrich+generate pipeline."""
