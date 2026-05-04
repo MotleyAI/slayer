@@ -1533,7 +1533,7 @@ def create_mcp_server(storage: StorageBackend):
         data_source: Optional[str] = None,
         description: Optional[str] = None,
         columns: Optional[List[Dict[str, Any]]] = None,
-        measures: Optional[List[Dict[str, str]]] = None,
+        measures: Optional[List[Dict[str, Any]]] = None,
         query: Optional[Any] = None,
         variables: Optional[Dict[str, Any]] = None,
     ) -> str:
