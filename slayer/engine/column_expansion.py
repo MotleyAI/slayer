@@ -81,6 +81,93 @@ async def _walk_path_to_target(
     return current, canonical
 
 
+async def _process_column_node(
+    *,
+    col: exp.Column,
+    model: SlayerModel,
+    alias_path: str,
+    resolve_model: ResolveModel,
+    named_queries: Dict[str, Any],
+    dialect: str,
+    visited: Tuple[Tuple[str, str], ...],
+    is_root: bool,
+) -> None:
+    """Resolve one ``exp.Column`` node in the parsed AST, mutating it in
+    place. Encapsulates the multi-branch decision that drives expansion:
+
+    - multi-part qualifier (``catalog.db.table.col``) → leave alone
+    - bare identifier → qualify to ``alias_path``
+    - ``<table>.<col>`` where the alias doesn't resolve as a join path
+      → leave alone (CTE / sub-query alias)
+    - ``<table>.<col>`` where the target column is base → rewrite table
+      to the canonical alias
+    - ``<table>.<col>`` where the target column is derived → recurse and
+      splice the expanded AST in (parenthesized for precedence safety)
+
+    Cycle detection raises ``ValueError`` with the recursion chain.
+    """
+    # exp.Column may carry a multi-part qualifier (catalog.db.table.col).
+    # We treat anything beyond the immediate table identifier as outside
+    # SLayer's contract (the Column.sql convention is `<alias>.<col>`).
+    if col.args.get("db") or col.args.get("catalog"):
+        return
+
+    table_id = col.args.get("table")
+    col_name = col.name
+
+    if table_id is None:
+        # Bare identifier → qualify to alias_path.
+        col.set("table", exp.to_identifier(alias_path))
+        return
+
+    table_alias = table_id.name
+    target_model, canonical_alias = await _walk_path_to_target(
+        source_model=model,
+        source_alias=alias_path,
+        table_alias=table_alias,
+        resolve_model=resolve_model,
+        named_queries=named_queries,
+        is_root=is_root,
+    )
+    if target_model is None or canonical_alias is None:
+        return  # unknown alias — leave untouched
+
+    target_col = target_model.get_column(col_name)
+    if target_col is None or _is_trivial_base(column=target_col):
+        # Base column or unknown identifier on a known target model:
+        # rewrite the table to the canonical alias and stop.
+        col.set("table", exp.to_identifier(canonical_alias))
+        return
+
+    # Derived → recurse. Recursion stays "root" only when the target
+    # column lives on the same model (no alias change); a remote target
+    # descended via a path is by definition non-root, so its own walks
+    # must prefix the canonical alias.
+    next_is_root = is_root and (target_model is model)
+    key = (target_model.name, col_name)
+    if key in visited:
+        cycle_start = visited.index(key)
+        cycle = (*visited[cycle_start:], key)
+        chain = " → ".join(f"{m}.{c}" for m, c in cycle)
+        raise ValueError(f"Circular column reference detected: {chain}")
+    expanded_sql = await expand_derived_refs(
+        sql=target_col.sql,
+        model=target_model,
+        alias_path=canonical_alias,
+        resolve_model=resolve_model,
+        named_queries=named_queries,
+        dialect=dialect,
+        visited=(*visited, key),
+        is_root=next_is_root,
+    )
+    if expanded_sql is None:
+        return
+    # Splice in, parenthesized so the surrounding expression's precedence
+    # is preserved.
+    expanded_ast = sqlglot.parse_one(expanded_sql, dialect=dialect)
+    col.replace(exp.Paren(this=expanded_ast))
+
+
 async def expand_derived_refs(
     *,
     sql: Optional[str],
@@ -126,69 +213,15 @@ async def expand_derived_refs(
     column_nodes = list(parsed.find_all(exp.Column))
 
     for col in column_nodes:
-        # exp.Column may carry a multi-part qualifier (catalog.db.table.col).
-        # We treat anything beyond the immediate table identifier as outside
-        # SLayer's contract (the Column.sql convention is `<alias>.<col>`).
-        table_id = col.args.get("table")
-        if col.args.get("db") or col.args.get("catalog"):
-            # Multi-part — leave alone, not a SLayer alias.
-            continue
-
-        col_name = col.name
-
-        if table_id is None:
-            # Bare identifier → qualify to alias_path.
-            col.set("table", exp.to_identifier(alias_path))
-            continue
-
-        table_alias = table_id.name
-        target_model, canonical_alias = await _walk_path_to_target(
-            source_model=model,
-            source_alias=alias_path,
-            table_alias=table_alias,
-            resolve_model=resolve_model,
-            named_queries=named_queries,
-            is_root=is_root,
-        )
-        if target_model is None or canonical_alias is None:
-            # Unknown alias — leave untouched.
-            continue
-
-        target_col = target_model.get_column(col_name)
-        if target_col is None or _is_trivial_base(column=target_col):
-            # Base column or unknown identifier on a known target model:
-            # rewrite the table to the canonical alias and stop.
-            col.set("table", exp.to_identifier(canonical_alias))
-            continue
-
-        # Derived → recurse. Recursion stays "root" only when the target
-        # column lives on the same model (no alias change); a remote
-        # target descended via a path is by definition non-root, so its
-        # own walks must prefix the canonical alias.
-        next_is_root = is_root and (target_model is model)
-        key = (target_model.name, col_name)
-        if key in visited:
-            cycle_start = visited.index(key)
-            cycle = (*visited[cycle_start:], key)
-            chain = " → ".join(f"{m}.{c}" for m, c in cycle)
-            raise ValueError(
-                f"Circular column reference detected: {chain}"
-            )
-        expanded_sql = await expand_derived_refs(
-            sql=target_col.sql,
-            model=target_model,
-            alias_path=canonical_alias,
+        await _process_column_node(
+            col=col,
+            model=model,
+            alias_path=alias_path,
             resolve_model=resolve_model,
             named_queries=named_queries,
             dialect=dialect,
-            visited=(*visited, key),
-            is_root=next_is_root,
+            visited=visited,
+            is_root=is_root,
         )
-        if expanded_sql is None:
-            continue
-        # Splice in, parenthesized so the surrounding expression's precedence
-        # is preserved.
-        expanded_ast = sqlglot.parse_one(expanded_sql, dialect=dialect)
-        col.replace(exp.Paren(this=expanded_ast))
 
     return parsed.sql(dialect=dialect)
