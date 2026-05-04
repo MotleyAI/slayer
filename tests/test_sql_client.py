@@ -167,7 +167,7 @@ class TestRetryFiltersDeterministicErrors:
     ) -> None:
         calls = {"n": 0}
 
-        async def fake_execute(**_kwargs: object) -> list:  # NOSONAR(python:S7503) — must be async to replace _execute_sql_async (called via `await do_call()`)
+        async def fake_execute(**_kwargs: object) -> list:  # NOSONAR(S7503) — must be async to replace _execute_sql_async (called via `await do_call()`)
             calls["n"] += 1
             raise _make_op_error("no such table: orders")
 
@@ -232,7 +232,7 @@ class TestRetryFiltersDeterministicErrors:
         production behaviour for genuine flakes is unchanged."""
         calls = {"n": 0}
 
-        async def fake_execute(**_kwargs: object) -> list:  # NOSONAR(python:S7503) — must be async to replace _execute_sql_async (called via `await do_call()`)
+        async def fake_execute(**_kwargs: object) -> list:  # NOSONAR(S7503) — must be async to replace _execute_sql_async (called via `await do_call()`)
             calls["n"] += 1
             if calls["n"] == 1:
                 raise _make_op_error("database is locked")
@@ -265,7 +265,7 @@ class TestRetryEmptySqlExcerpt:
     ) -> None:
         calls = {"n": 0}
 
-        async def fake_execute(**_kwargs: object) -> list:
+        async def fake_execute(**_kwargs: object) -> list:  # NOSONAR(S7503) — must be async to replace _execute_sql_async (called via `await do_call()`)
             calls["n"] += 1
             if calls["n"] == 1:
                 raise _make_op_error()
