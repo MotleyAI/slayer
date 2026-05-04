@@ -11,6 +11,7 @@ The manifest is used to discover *regular* dbt models (``resource_type ==
 """
 
 import json
+import importlib.util
 import logging
 import os
 from typing import Any, Dict, List, Optional, Set
@@ -20,13 +21,13 @@ from slayer.dbt.models import DbtColumnMeta, DbtRegularModel
 logger = logging.getLogger(__name__)
 
 
-try:  # pragma: no cover - availability depends on the install-time extras
-    from dbt.cli.main import dbtRunner  # type: ignore[import-not-found]
-
-    DBT_AVAILABLE = True
-except Exception:  # ImportError or any dbt-core initialization error
-    dbtRunner = None  # type: ignore[assignment]
-    DBT_AVAILABLE = False
+# Cheap availability probe: ``find_spec`` checks the import system without
+# executing dbt's package init. Importing ``dbt.cli.main`` eagerly costs ~4s
+# (jsonschema, deepmerge, the whole rfc3987 stack) which previously hit every
+# `import slayer.dbt.parser` — including pytest collection of dbt tests. The
+# real ``dbtRunner`` import is deferred to ``_run_dbt_parse``.
+DBT_AVAILABLE: bool = importlib.util.find_spec("dbt") is not None
+dbtRunner: Any = None  # populated lazily on first use; tests may patch directly
 
 
 def _manifest_path(project_path: str) -> str:
@@ -44,8 +45,16 @@ def _load_manifest_file(path: str) -> Optional[dict]:
 
 def _run_dbt_parse(project_path: str) -> bool:
     """Invoke ``dbt parse`` programmatically. Returns True on success."""
-    if not DBT_AVAILABLE or dbtRunner is None:
+    global dbtRunner
+    if not DBT_AVAILABLE:
         return False
+    if dbtRunner is None:
+        try:
+            from dbt.cli.main import dbtRunner as _dbtRunner  # type: ignore[import-not-found]
+            dbtRunner = _dbtRunner
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("dbt-core import failed: %s", exc)
+            return False
     try:
         result = dbtRunner().invoke(["parse", "--project-dir", project_path])
     except Exception as exc:  # pragma: no cover - defensive
