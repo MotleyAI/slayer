@@ -372,6 +372,31 @@ You can also join named queries to models:
 
 The main query uses a `ModelExtension` to add a join to the named sub-query. Queries can also be saved as permanent models — see [Creating Models from Queries](models.md#creating-models-from-queries).
 
+Sibling stages can also reference each other — any non-final stage may use a *prior* named stage as `source_model` or as `joins.target_model`, so a query list forms a DAG, not just a chain. For example, two parallel rollups feeding a single final stage:
+
+```json
+[
+  {
+    "name": "customer_scores",
+    "source_model": "customers",
+    "dimensions": ["id"],
+    "measures": ["score:avg"]
+  },
+  {
+    "name": "tagged_orders",
+    "source_model": {"source_name": "orders", "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}]},
+    "dimensions": ["customer_scores.score_avg"],
+    "measures": ["*:count"]
+  },
+  {
+    "source_model": "tagged_orders",
+    "measures": ["_count:max"]
+  }
+]
+```
+
+Forward references and self references are rejected with a clear error — a stage may only resolve to stages defined earlier in the list.
+
 ### ModelExtension
 
 Extend a model inline with extra columns, measures, or joins — without modifying the stored model:

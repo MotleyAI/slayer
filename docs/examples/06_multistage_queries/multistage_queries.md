@@ -70,6 +70,35 @@ As we want to use a result of a child query as a dimension, we use a [dynamic jo
 
 The inner query computes total orders per customer. The outer query joins this result to `orders` via `ModelExtension`, defines a CASE-based bucket dimension, and groups orders by that bucket.
 
+## Stages can reference each other — DAGs, not just chains
+
+Stages in a query list are not restricted to a linear pipeline. Any stage may use any *prior* named sibling stage as its `source_model` or as a `joins.target_model`, so several rollups can run in parallel and feed a single final stage. For example, "max per-customer order total" computed by joining a per-customer rollup back to `customers`:
+
+```json
+[
+  {
+    "name": "kpis",
+    "source_model": "orders",
+    "dimensions": ["customer_id"],
+    "measures": ["order_total:sum"]
+  },
+  {
+    "name": "tagged",
+    "source_model": {
+      "source_name": "customers",
+      "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}]
+    },
+    "dimensions": ["name", "kpis.order_total_sum"]
+  },
+  {
+    "source_model": "tagged",
+    "measures": ["kpis__order_total_sum:max"]
+  }
+]
+```
+
+Stage 1 aggregates orders per customer; stage 2 — itself a non-final stage — joins that result back to `customers` to attach the per-customer total to each row; stage 3 takes the max. Forward references (`a → b` where `b` is later in the list) and self references are rejected with a clear error.
+
 ---
 
-See the [companion notebook](multistage_queries_nb.ipynb) for runnable code demonstrating both examples.
+See the [companion notebook](multistage_queries_nb.ipynb) for runnable code demonstrating these examples.
