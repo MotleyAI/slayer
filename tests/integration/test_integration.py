@@ -2493,3 +2493,81 @@ async def test_integration_local_derived_chain(derived_chain_env):
     # c2 = (raw_a + 1) * 2 → for raw_a=100 → 202; raw_a=5 → 12
     assert response.data[0]["A.c2"] == pytest.approx(202.0)
     assert response.data[1]["A.c2"] == pytest.approx(12.0)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1334: filter-only references to derived columns whose sql crosses a
+# join must auto-add the join (no need to also list the column in
+# ``dimensions``).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def orders_customers_env(tmp_path):
+    """orders → customers with a derived ``is_eu`` column on orders whose
+    SQL references the joined customers table. Used to pin filter-only
+    auto-join behavior end-to-end.
+    """
+    db_path = tmp_path / "orders_customers.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT)")
+    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER)")
+    cur.executemany(
+        "INSERT INTO customers VALUES (?, ?)",
+        [(1, "EU"), (2, "US"), (3, "EU"), (4, "APAC")],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?)",
+        [(10, 1), (11, 2), (12, 1), (13, 3), (14, 4)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage_oc"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(SlayerModel(
+        name="customers", data_source="ds", sql_table="customers",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="region", sql="region", type=DataType.STRING),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders", data_source="ds", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(
+                name="is_eu",
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+    yield engine
+    _sync_engines.clear()
+
+
+async def test_filter_on_derived_column_with_cross_table_ref_executes(
+    orders_customers_env,
+):
+    """Filter-only reference to a bare-named derived column whose SQL
+    crosses a join must execute end-to-end (no ``no such column`` error)
+    and return the right count.
+    """
+    engine = orders_customers_env
+    response = await engine.execute(SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        filters=["is_eu = 1"],
+    ))
+    # Orders 10, 12, 13 hit EU customers → 3 rows.
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 3

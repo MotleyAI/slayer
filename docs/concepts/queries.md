@@ -157,6 +157,16 @@ Post-filters can be combined with regular filters — base filters (on dimension
 }
 ```
 
+### Filters and Auto-Joins
+
+Filters can reference columns from joined models, and the planner adds the implied joins automatically — no need to also list the column in `dimensions`. This works for three reference shapes:
+
+- Dotted refs: `"customers.region = 'EU'"` — direct join target.
+- Multi-hop dotted refs: `"customers.regions.name = 'US'"` — every prefix on the path is added.
+- Bare-named local derived columns whose own SQL crosses a join: e.g. a query column with `Column(name="is_eu", sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END")` referenced as `"filters": ["is_eu = 1"]`. The planner walks the column's `sql` (recursively, through any local derived-column chain) to find the cross-table aliases and adds the corresponding joins.
+
+The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
+
 ### Filter Variables
 
 Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.
@@ -404,7 +414,7 @@ Dimensions from joined models can be referenced with dotted paths. SLayer auto-r
 
 This walks `orders → customers → regions` via the join graph and resolves `name` from the `regions` model. Works with both ingested rollup models and explicit joins.
 
-A dotted reference may target a *derived* column on the joined model — i.e., a column whose own `sql` is an expression rather than a base table column. The engine recursively inlines the derivation at query time, and the same chaining works whether the reference appears in a query's `dimensions` / `measures` / `filters` or inside another model's `Column.sql`. See [Models → Derived Columns Referencing Other Derived Columns](models.md#derived-columns-referencing-other-derived-columns).
+A dotted reference may target a *derived* column on the joined model — i.e., a column whose own `sql` is an expression rather than a base table column. The engine recursively inlines the derivation at query time, and the same chaining works whether the reference appears in a query's `dimensions` / `measures` / `filters` or inside another model's `Column.sql`. The planner also walks the chain to discover the joins each derived column's SQL implies, so a filter that names only a bare local derived column (no dimension entry) still triggers the right LEFT JOINs. See [Models → Derived Columns Referencing Other Derived Columns](models.md#derived-columns-referencing-other-derived-columns) and [Filters and Auto-Joins](#filters-and-auto-joins).
 
 SQL dimensions can be mixed with regular dimensions. The expression goes directly into SELECT and GROUP BY.
 

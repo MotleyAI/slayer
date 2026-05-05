@@ -628,3 +628,366 @@ async def test_generated_sql_parses(tmp_path, scenario) -> None:
     sql = await _gen_sql(engine, query, model_a)
     parsed = sqlglot.parse(sql, dialect="sqlite")
     assert parsed and len(parsed) == 1
+
+
+# ---------------------------------------------------------------------------
+# DEV-1334: Filter-time join resolution for derived columns.
+#
+# When a filter (query-level, model-level, or column-level ``filter=``)
+# references a *bare-named* derived column on the source model whose own
+# ``sql`` body crosses a join, the planner must walk that chain and add
+# the implied joins — without requiring the column to also be listed in
+# ``dimensions``.
+# ---------------------------------------------------------------------------
+
+
+def _join_aliases(enriched) -> set[str]:
+    return {alias for _, alias, *_ in enriched.resolved_joins}
+
+
+async def _orders_customers_storage(tmp_path) -> YAMLStorage:
+    """Save a customers model under the given tmp_path's storage.
+
+    Caller adds the orders model with whatever derived columns / joins
+    each test needs. Returns the populated storage.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="customers", data_source="test", sql_table="customers",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="region", sql="region", type=DataType.STRING),
+            Column(name="tier", sql="tier", type=DataType.STRING),
+        ],
+    ))
+    return storage
+
+
+async def test_dev1334_query_filter_on_bare_derived_col_with_cross_table_sql_adds_join(
+    tmp_path,
+) -> None:
+    """Variant A: filter references a bare-named local derived column whose
+    own ``sql`` crosses a join. The planner must add the join even though
+    the column is not in ``dimensions``.
+    """
+    storage = await _orders_customers_storage(tmp_path)
+    engine = SlayerQueryEngine(storage=storage)
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(
+                name="is_eu",
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    await storage.save_model(orders)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        filters=["is_eu = 1"],
+    )
+    enriched = await engine._enrich(query=query, model=orders)
+    assert "customers" in _join_aliases(enriched), (
+        f"customers join missing — resolved_joins: {enriched.resolved_joins}"
+    )
+    sql = SQLGenerator(dialect="sqlite").generate(enriched=enriched)
+    assert "LEFT JOIN customers" in sql, (
+        f"LEFT JOIN customers missing from generated SQL:\n{sql}"
+    )
+
+
+async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
+    tmp_path,
+) -> None:
+    """Filter on a local derived column whose chain reaches the cross-table
+    SQL through another local derived column. The walker must follow the
+    chain — not stop at the first hop.
+    """
+    storage = await _orders_customers_storage(tmp_path)
+    engine = SlayerQueryEngine(storage=storage)
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="tier", sql="tier", type=DataType.STRING),
+            Column(
+                name="is_eu",
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+            # Chains through is_eu.
+            Column(
+                name="is_premium_eu",
+                sql="CASE WHEN is_eu = 1 AND tier = 'gold' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    await storage.save_model(orders)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        filters=["is_premium_eu = 1"],
+    )
+    enriched = await engine._enrich(query=query, model=orders)
+    assert "customers" in _join_aliases(enriched), (
+        f"Chain-derived customers join not discovered — resolved_joins: "
+        f"{enriched.resolved_joins}"
+    )
+
+
+async def test_dev1334_query_filter_on_multi_hop_derived_col_adds_all_prefixes(
+    tmp_path,
+) -> None:
+    """Derived column's sql uses a ``__``-delimited multi-hop alias
+    (``customers__regions``). Both the prefix (``customers``) and the
+    full alias (``customers__regions``) must appear in resolved_joins.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="regions", data_source="test", sql_table="regions",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="customers", data_source="test", sql_table="customers",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    ))
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(
+                name="region_label",
+                sql="customers__regions.name",
+                type=DataType.STRING,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    await storage.save_model(orders)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        filters=["region_label = 'US'"],
+    )
+    enriched = await engine._enrich(query=query, model=orders)
+    aliases = _join_aliases(enriched)
+    assert "customers" in aliases, f"intermediate customers join missing: {aliases}"
+    assert "customers__regions" in aliases, f"multi-hop alias missing: {aliases}"
+
+
+async def test_dev1334_model_level_filter_on_bare_derived_col_with_cross_table_sql_adds_join(
+    tmp_path,
+) -> None:
+    """Same trigger as Variant A but the filter is on the model itself
+    (``model.filters``) — always-applied WHERE. The same scanning must
+    apply to model filters.
+    """
+    storage = await _orders_customers_storage(tmp_path)
+    engine = SlayerQueryEngine(storage=storage)
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(
+                name="is_eu",
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        filters=["is_eu = 1"],
+    )
+    await storage.save_model(orders)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+    )
+    enriched = await engine._enrich(query=query, model=orders)
+    assert "customers" in _join_aliases(enriched), (
+        f"customers join not discovered from model.filters — "
+        f"resolved_joins: {enriched.resolved_joins}"
+    )
+
+
+async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_join(
+    tmp_path,
+) -> None:
+    """A column-level ``filter=`` attribute that references a bare-named
+    local derived column whose sql crosses a join — must trigger join
+    discovery via the ``m.filter_columns`` path.
+    """
+    storage = await _orders_customers_storage(tmp_path)
+    engine = SlayerQueryEngine(storage=storage)
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(
+                name="is_eu",
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+            # Column-level filter referencing a bare-named derived col.
+            Column(
+                name="eu_amount",
+                sql="amount",
+                filter="is_eu = 1",
+                type=DataType.NUMBER,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    await storage.save_model(orders)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="eu_amount:sum", name="eu_total")],
+    )
+    enriched = await engine._enrich(query=query, model=orders)
+    assert "customers" in _join_aliases(enriched), (
+        f"customers join not discovered from column-level filter= — "
+        f"resolved_joins: {enriched.resolved_joins}"
+    )
+
+
+async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) -> None:
+    """A combined filter with a dotted reference to one join target AND a
+    bare-name reference to a derived column whose sql crosses a *different*
+    join target. Both discovery paths must add their respective joins —
+    dotted resolution alone is insufficient because it never sees the
+    bare-name's chain.
+    """
+    storage = await _orders_customers_storage(tmp_path)
+    # Add a second, independent join target.
+    await storage.save_model(SlayerModel(
+        name="warehouses", data_source="test", sql_table="warehouses",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+        ],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="warehouse_id", sql="warehouse_id", type=DataType.NUMBER),
+            # Bare-name path → must add customers join.
+            Column(
+                name="is_eu",
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+        ],
+        joins=[
+            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
+        ],
+    )
+    await storage.save_model(orders)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        # Dotted ref → warehouses; bare-name ref → customers (via is_eu's chain).
+        filters=["is_eu = 1 and warehouses.name = 'WH-1'"],
+    )
+    enriched = await engine._enrich(query=query, model=orders)
+    aliases = _join_aliases(enriched)
+    assert "warehouses" in aliases, f"dotted-ref join missing: {aliases}"
+    assert "customers" in aliases, f"bare-name-ref join missing: {aliases}"
+
+
+@pytest.mark.parametrize(
+    "filter_expr",
+    [
+        "is_eu = 1",
+        "is_eu > 0",
+        "is_eu >= 1",
+        "is_eu <> 0",
+        "is_eu in (0, 1)",
+        "is_eu is not None",
+        "not (is_eu = 0)",
+    ],
+)
+async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(
+    tmp_path, filter_expr,
+) -> None:
+    """The filter parser handles many comparison shapes — every one must
+    feed into the bare-name derived-column lookup. Pin a representative
+    spread.
+    """
+    storage = await _orders_customers_storage(tmp_path)
+    engine = SlayerQueryEngine(storage=storage)
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(
+                name="is_eu",
+                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+    )
+    await storage.save_model(orders)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        filters=[filter_expr],
+    )
+    enriched = await engine._enrich(query=query, model=orders)
+    assert "customers" in _join_aliases(enriched), (
+        f"join not discovered for filter {filter_expr!r} — "
+        f"resolved_joins: {enriched.resolved_joins}"
+    )
+
+
+async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_error(
+    tmp_path,
+) -> None:
+    """A filter on a column whose derived chain has a cycle must raise
+    the same chain-formatted ValueError that ``expand_derived_refs``
+    raises (DEV-1333). This pins reuse of cycle-detection ordering.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="a", sql="orders.b + 1", type=DataType.NUMBER),
+            Column(name="b", sql="orders.a - 1", type=DataType.NUMBER),
+        ],
+    )
+    await storage.save_model(orders)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        filters=["a = 0"],
+    )
+    with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle"):
+        await engine._enrich(query=query, model=orders)
