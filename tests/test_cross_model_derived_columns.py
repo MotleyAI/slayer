@@ -614,15 +614,21 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
 # ---------------------------------------------------------------------------
 
 
-async def _save_a_b_c(storage: YAMLStorage) -> SlayerModel:
-    """A → B → C with C having a derived column referencing a base C col."""
+_DEFAULT_C_COLUMNS: list[Column] = [
+    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+    Column(name="raw_c", sql="raw_c", type=DataType.NUMBER),
+    Column(name="x_derived", sql="raw_c * 2", type=DataType.NUMBER),
+]
+
+
+async def _save_a_b_c(
+    storage: YAMLStorage, *, c_columns: list[Column] | None = None,
+) -> SlayerModel:
+    """A → B → C. ``c_columns`` overrides C's column list (default: a derived
+    ``x_derived = "raw_c * 2"`` over a base ``raw_c``)."""
     model_c = SlayerModel(
         name="C", data_source="test", sql_table="C",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="raw_c", sql="raw_c", type=DataType.NUMBER),
-            Column(name="x_derived", sql="raw_c * 2", type=DataType.NUMBER),
-        ],
+        columns=c_columns if c_columns is not None else _DEFAULT_C_COLUMNS,
     )
     await storage.save_model(model_c)
     model_b = SlayerModel(
@@ -684,6 +690,10 @@ async def test_multihop_cross_model_measure_over_derived_target(tmp_path) -> Non
         measures=[ModelMeasure(formula="B.C.x_derived:sum")],
     )
     sql = await _gen_sql(engine, query, model_a)
+    # Parse-sanity first so a malformed query short-circuits before the
+    # substring assertions that could otherwise mask broken structure.
+    parsed = sqlglot.parse(sql, dialect="sqlite")
+    assert parsed and len(parsed) == 1, f"Generated SQL doesn't parse:\n{sql}"
     norm = _norm(sql)
     # x_derived must be inlined regardless of which CTE shape was used.
     assert _no_bare_derived_ref(norm, "B__C", "x_derived")
@@ -730,38 +740,12 @@ async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     from slayer.core.enums import TimeGranularity
     from slayer.core.query import TimeDimension
     engine, storage = _engine_with_storage(tmp_path)
-    # Augment the standard A→B→C fixture with a derived time col on C.
-    model_c = SlayerModel(
-        name="C", data_source="test", sql_table="C",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="raw_ts", sql="raw_ts", type=DataType.TIMESTAMP),
-            # Derived passthrough — we just want it derived-shaped (sql != name).
-            Column(name="shifted_ts",
-                   sql="raw_ts + 0",
-                   type=DataType.TIMESTAMP),
-        ],
-    )
-    await storage.save_model(model_c)
-    model_b = SlayerModel(
-        name="B", data_source="test", sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="c_id", sql="c_id", type=DataType.NUMBER),
-        ],
-        joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
-    )
-    await storage.save_model(model_b)
-    model_a = SlayerModel(
-        name="A", data_source="test", sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
-            Column(name="bar", sql="bar", type=DataType.NUMBER),
-        ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
-    )
-    await storage.save_model(model_a)
+    model_a = await _save_a_b_c(storage, c_columns=[
+        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+        Column(name="raw_ts", sql="raw_ts", type=DataType.TIMESTAMP),
+        # Derived passthrough — we just want it derived-shaped (sql != name).
+        Column(name="shifted_ts", sql="raw_ts + 0", type=DataType.TIMESTAMP),
+    ])
     query = SlayerQuery(
         source_model="A",
         time_dimensions=[
