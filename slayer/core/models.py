@@ -9,6 +9,7 @@ from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_v
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
 from slayer.core.format import NumberFormat
+from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -184,7 +185,6 @@ class ModelMeasure(BaseModel):
         keyword) and produces invalid SQL on every dialect if used as a filter.
         Reject at construction time with an actionable error.
         """
-        from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
         if has_window_function(v):
             raise ValueError(f"ModelMeasure formula '{v}' {WINDOW_IN_FILTER_ERROR}")
         return v

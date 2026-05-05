@@ -41,6 +41,7 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
@@ -726,9 +727,8 @@ async def enrich_query(
     # contains a window function. Such columns must be materialized in the base
     # SELECT (not inlined into WHERE) and the predicate applied as a post-filter
     # on the alias.
-    from slayer.sql.window_detect import has_window_function as _has_window
     windowed_column_names: Set[str] = {
-        c.name for c in model.columns if c.sql and _has_window(c.sql)
+        c.name for c in model.columns if c.sql and has_window_function(c.sql)
     }
 
     # --- Resolve JOINs ---
@@ -1117,7 +1117,6 @@ def extract_filter_transforms(
     # Without this, the AST parser fails on `over` and falls through to a
     # confusing "Invalid filter syntax" error from parse_filter; here we surface
     # a helpful error that points at SLayer's transforms / Column.sql.
-    from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
     if has_window_function(filter_str):
         raise ValueError(f"Filter '{filter_str}' {WINDOW_IN_FILTER_ERROR}")
     preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)

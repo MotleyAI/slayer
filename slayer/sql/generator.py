@@ -1081,7 +1081,16 @@ class SQLGenerator:
 
         # When no computed columns and no measure CTEs, apply order/limit/offset
         # to the base query. Otherwise, they'll be applied to the outer query.
-        if not enriched.expressions and not enriched.transforms and not skip_isolated:
+        # DEV-1336: a post-filter requires the outer `_filtered` wrap from
+        # `_generate_with_computed`; pagination must apply to the filtered
+        # result, not to the unfiltered base.
+        has_post_filters = any(getattr(f, "is_post_filter", False) for f in enriched.filters)
+        if (
+            not enriched.expressions
+            and not enriched.transforms
+            and not skip_isolated
+            and not has_post_filters
+        ):
             select = self._apply_order_limit(select=select, enriched=enriched)
 
         # Append LEFT JOINs from resolved joins via sqlglot AST (works for both
@@ -1100,6 +1109,22 @@ class SQLGenerator:
                             parts = col.split(".")
                             for i in range(1, len(parts)):
                                 dim_only_aliases.add("__".join(parts[:i]))
+            # DEV-1336: also include joins referenced by windowed-filter
+            # columns. Their `sql` may reference joined tables via `__`
+            # aliases (e.g. `customers__regions.population`) or direct join
+            # aliases (e.g. `systems.galaxy_id`); pruning those joins would
+            # render the `_base` CTE with missing tables.
+            for wcol in enriched.windowed_filter_columns:
+                if wcol.sql is None:
+                    continue
+                wcol_ast = sqlglot.parse_one(wcol.sql, dialect=self.dialect)
+                for col_node in wcol_ast.find_all(exp.Column):
+                    table = col_node.table
+                    if not table or table == enriched.model_name:
+                        continue
+                    parts = table.split("__")
+                    for i in range(1, len(parts) + 1):
+                        dim_only_aliases.add("__".join(parts[:i]))
         resolved_joins = enriched.resolved_joins
         if dim_only_aliases is not None:
             resolved_joins = [(t, a, c, j) for t, a, c, j in resolved_joins if a in dim_only_aliases]
@@ -1287,10 +1312,8 @@ class SQLGenerator:
 
         sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
 
-        # Apply order/limit/offset
-        sql = self._apply_pagination_to_sql(enriched=enriched, sql=sql)
-
-        # Apply post-filters (filters referencing computed columns)
+        # Apply post-filters (filters referencing computed columns) BEFORE
+        # pagination, so LIMIT/OFFSET operate on the filtered result.
         post_filters = [f for f in enriched.filters if f.is_post_filter]
         if post_filters:
             import re
@@ -1312,7 +1335,8 @@ class SQLGenerator:
             where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
 
-        return sql
+        # Apply order/limit/offset as the outermost wrapper.
+        return self._apply_pagination_to_sql(enriched=enriched, sql=sql)
 
     @staticmethod
     def _deps_available(sql: str, available: set[str]) -> bool:

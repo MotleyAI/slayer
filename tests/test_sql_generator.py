@@ -5867,9 +5867,7 @@ class TestWindowFunctionInFilter:
         # And must NOT be the misleading Python-AST fallback message.
         assert "Perhaps you forgot a comma" not in msg
 
-    async def test_window_function_in_named_measure_used_as_filter_raises(
-        self, generator: SQLGenerator,
-    ) -> None:
+    def test_window_function_in_named_measure_used_as_filter_raises(self) -> None:
         """A `ModelMeasure` formula containing raw `OVER` must be rejected at
         construction time with an actionable error."""
         with pytest.raises(ValueError) as excinfo:
@@ -5894,3 +5892,187 @@ class TestWindowFunctionInFilter:
             f"Error message should mention 'window function'.\nmsg: {msg}"
         )
         assert "Perhaps you forgot a comma" not in msg
+
+    async def test_post_filter_pagination_applied_after_filter(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """CR Thread 1: when the only reason for the post-filter wrap is a
+        windowed `Column.sql` filter (no expressions, transforms, or measure
+        CTEs), pagination must be applied AFTER the `_filtered` wrap, not
+        inside the base SELECT. Otherwise the engine paginates the unfiltered
+        base and then filters the wrong page (and applies LIMIT twice).
+        """
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["rn <= 3"],
+            order=[OrderItem(column=ColumnRef(name="name"), direction="asc")],
+            limit=2,
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        # Post-filter wrap must be present.
+        assert "AS _filtered" in sql, (
+            f"Expected `_filtered` post-filter wrap.\nsql:\n{sql}"
+        )
+        # Pagination must not be applied twice.
+        assert sql.upper().count("LIMIT ") == 1, (
+            f"LIMIT must appear exactly once — currently the base SELECT and "
+            f"the outer wrap both apply it.\nsql:\n{sql}"
+        )
+        assert sql.upper().count("\nORDER BY ") == 1, (
+            f"ORDER BY must appear exactly once — currently the base SELECT and "
+            f"the outer wrap both apply it.\nsql:\n{sql}"
+        )
+        # The single LIMIT must come AFTER the `_filtered` wrap so pagination
+        # operates on the post-filtered result.
+        filtered_pos = sql.find("AS _filtered")
+        limit_pos = sql.upper().rfind("LIMIT ")
+        assert limit_pos > filtered_pos, (
+            f"LIMIT must follow the `_filtered` wrap so we paginate the "
+            f"filtered result, not the unfiltered base.\n"
+            f"filtered_pos={filtered_pos}, limit_pos={limit_pos}\nsql:\n{sql}"
+        )
+
+    async def test_windowed_filter_column_with_last_measure(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """CR Thread 2 (has_first_or_last branch): when the base SELECT switches
+        to a ranked subquery for a `last`/`first` measure, the windowed-filter
+        column projection must still render and the post-filter wrap must
+        reference its alias. The current code adds the projection but parses
+        `wcol.sql` against an unaware scope.
+        """
+        from slayer.engine.enrichment import enrich_query
+
+        planets_with_time = SlayerModel(
+            name="planets",
+            sql_table="planets",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="observed_at", sql="observed_at", type=DataType.TIMESTAMP),
+                Column(
+                    name="rn",
+                    sql="row_number() over (order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            default_time_dimension="observed_at",
+        )
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            measures=[ModelMeasure(formula="mass:last")],
+            filters=["rn <= 3"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=planets_with_time,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        sql = generator.generate(enriched=enriched)
+        norm = _norm(sql)
+
+        # Windowed column projection survives in the base SELECT.
+        assert 'AS "planets.rn"' in sql, (
+            f"Windowed-filter column must be projected with its alias even "
+            f"when the base FROM is the ranked subquery.\nsql:\n{sql}"
+        )
+        # Post-filter wrap is present and references the alias.
+        assert "AS _filtered" in sql
+        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm, (
+            f"Post-filter must reference the windowed column alias.\nsql:\n{sql}"
+        )
+
+    async def test_windowed_filter_column_referencing_join_with_cross_model_measure(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """CR Thread 2 (skip_isolated branch): when measure CTEs trigger
+        `skip_isolated=True`, joins are pruned to those needed by dimensions
+        and base filters. A windowed `Column.sql` that references a
+        `__`-aliased joined table must keep that join in scope, otherwise
+        the `_base` CTE renders with a missing table.
+        """
+        from slayer.engine.enrichment import enrich_query
+
+        systems = SlayerModel(
+            name="systems",
+            sql_table="public.systems",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="galaxy_id", sql="galaxy_id", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+            ],
+        )
+        planets = SlayerModel(
+            name="planets",
+            sql_table="public.planets",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="system_id", sql="system_id", type=DataType.NUMBER),
+                # Window expression partitions on a JOINED column via the
+                # direct join alias.
+                Column(
+                    name="rn_in_system",
+                    sql="row_number() over (partition by systems.galaxy_id order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+                # A measure with a cross-model filter forces skip_isolated=True.
+                Column(
+                    name="active_mass",
+                    sql="mass",
+                    filter="systems.status = 'active'",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            joins=[ModelJoin(target_model="systems", join_pairs=[["system_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):
+            if target_model_name == "systems":
+                return ("public.systems", systems)
+            return None
+
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            measures=[ModelMeasure(formula="active_mass:sum")],
+            filters=["rn_in_system <= 3"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=planets,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+
+        # The base CTE must keep the systems join because the windowed column
+        # references planets__systems.galaxy_id.
+        base_marker = "_base AS ("
+        base_start = sql.find(base_marker)
+        assert base_start != -1, f"Expected `_base` CTE.\nsql:\n{sql}"
+        # Find the matching close paren for _base.
+        depth = 1
+        pos = base_start + len(base_marker)
+        while pos < len(sql) and depth > 0:
+            if sql[pos] == "(":
+                depth += 1
+            elif sql[pos] == ")":
+                depth -= 1
+            pos += 1
+        base_chunk = sql[base_start:pos]
+        assert "public.systems" in base_chunk, (
+            f"Expected the systems LEFT JOIN inside the `_base` CTE because the "
+            f"windowed column references planets__systems.galaxy_id.\n"
+            f"_base CTE:\n{base_chunk}\n\nfull sql:\n{sql}"
+        )
