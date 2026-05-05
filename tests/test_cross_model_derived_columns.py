@@ -663,6 +663,43 @@ async def _orders_customers_storage(tmp_path) -> YAMLStorage:
     return storage
 
 
+async def _save_orders_with_is_eu(
+    storage: YAMLStorage,
+    *,
+    extra_columns: list[Column] | None = None,
+    extra_joins: list[ModelJoin] | None = None,
+    filters: list[str] | None = None,
+    include_amount: bool = True,
+) -> SlayerModel:
+    """Save the canonical DEV-1334 orders model: ``id``, ``customer_id``,
+    optionally ``amount``, the derived ``is_eu`` column whose SQL crosses
+    to ``customers.region``, plus the customers join. Callers append
+    test-specific columns / joins / filters via the keyword args.
+    """
+    base_cols: list[Column] = [
+        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+        Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+    ]
+    if include_amount:
+        base_cols.append(Column(name="amount", sql="amount", type=DataType.NUMBER))
+    base_cols.append(Column(
+        name="is_eu",
+        sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
+        type=DataType.NUMBER,
+    ))
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=base_cols + list(extra_columns or []),
+        joins=[
+            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            *(extra_joins or []),
+        ],
+        filters=list(filters or []),
+    )
+    await storage.save_model(orders)
+    return orders
+
+
 async def test_dev1334_query_filter_on_bare_derived_col_with_cross_table_sql_adds_join(
     tmp_path,
 ) -> None:
@@ -671,22 +708,8 @@ async def test_dev1334_query_filter_on_bare_derived_col_with_cross_table_sql_add
     the column is not in ``dimensions``.
     """
     storage = await _orders_customers_storage(tmp_path)
+    orders = await _save_orders_with_is_eu(storage)
     engine = SlayerQueryEngine(storage=storage)
-    orders = SlayerModel(
-        name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
-            Column(
-                name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
-            ),
-        ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-    )
-    await storage.save_model(orders)
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="*:count", name="n")],
@@ -710,18 +733,11 @@ async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
     chain — not stop at the first hop.
     """
     storage = await _orders_customers_storage(tmp_path)
-    engine = SlayerQueryEngine(storage=storage)
-    orders = SlayerModel(
-        name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+    orders = await _save_orders_with_is_eu(
+        storage,
+        include_amount=False,
+        extra_columns=[
             Column(name="tier", sql="tier", type=DataType.STRING),
-            Column(
-                name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
-            ),
             # Chains through is_eu.
             Column(
                 name="is_premium_eu",
@@ -729,9 +745,8 @@ async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
                 type=DataType.NUMBER,
             ),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     )
-    await storage.save_model(orders)
+    engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="*:count", name="n")],
@@ -801,23 +816,8 @@ async def test_dev1334_model_level_filter_on_bare_derived_col_with_cross_table_s
     apply to model filters.
     """
     storage = await _orders_customers_storage(tmp_path)
+    orders = await _save_orders_with_is_eu(storage, filters=["is_eu = 1"])
     engine = SlayerQueryEngine(storage=storage)
-    orders = SlayerModel(
-        name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
-            Column(
-                name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
-            ),
-        ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-        filters=["is_eu = 1"],
-    )
-    await storage.save_model(orders)
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="*:count", name="n")],
@@ -837,18 +837,9 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
     discovery via the ``m.filter_columns`` path.
     """
     storage = await _orders_customers_storage(tmp_path)
-    engine = SlayerQueryEngine(storage=storage)
-    orders = SlayerModel(
-        name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
-            Column(
-                name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
-            ),
+    orders = await _save_orders_with_is_eu(
+        storage,
+        extra_columns=[
             # Column-level filter referencing a bare-named derived col.
             Column(
                 name="eu_amount",
@@ -857,9 +848,8 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
                 type=DataType.NUMBER,
             ),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     )
-    await storage.save_model(orders)
+    engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="eu_amount:sum", name="eu_total")],
@@ -887,26 +877,13 @@ async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) 
             Column(name="name", sql="name", type=DataType.STRING),
         ],
     ))
-    engine = SlayerQueryEngine(storage=storage)
-    orders = SlayerModel(
-        name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="warehouse_id", sql="warehouse_id", type=DataType.NUMBER),
-            # Bare-name path → must add customers join.
-            Column(
-                name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
-            ),
-        ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
-        ],
+    orders = await _save_orders_with_is_eu(
+        storage,
+        include_amount=False,
+        extra_columns=[Column(name="warehouse_id", sql="warehouse_id", type=DataType.NUMBER)],
+        extra_joins=[ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]])],
     )
-    await storage.save_model(orders)
+    engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="*:count", name="n")],
@@ -939,21 +916,8 @@ async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(
     spread.
     """
     storage = await _orders_customers_storage(tmp_path)
+    orders = await _save_orders_with_is_eu(storage, include_amount=False)
     engine = SlayerQueryEngine(storage=storage)
-    orders = SlayerModel(
-        name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(
-                name="is_eu",
-                sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
-            ),
-        ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-    )
-    await storage.save_model(orders)
     query = SlayerQuery(
         source_model="orders",
         measures=[ModelMeasure(formula="*:count", name="n")],
