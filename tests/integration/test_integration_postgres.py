@@ -972,6 +972,89 @@ class TestPostgresStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
 
+
+# ---------------------------------------------------------------------------
+# DEV-1336 — window functions in filters, Postgres parity
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def planets_pg_env(postgresql):
+    """Planets fixture (Postgres): a Column.sql with `row_number() over (...)`."""
+    cur = postgresql.cursor()
+    cur.execute(
+        """
+        CREATE TABLE planets (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            mass NUMERIC(10, 4) NOT NULL
+        )
+        """
+    )
+    cur.executemany(
+        "INSERT INTO planets VALUES (%s, %s, %s)",
+        [
+            (1, "Mercury", 0.33),
+            (2, "Venus", 4.87),
+            (3, "Earth", 5.97),
+            (4, "Mars", 0.642),
+            (5, "Jupiter", 1898.0),
+            (6, "Saturn", 568.0),
+            (7, "Uranus", 86.8),
+            (8, "Neptune", 102.0),
+        ],
+    )
+    postgresql.commit()
+
+    tmpdir = tempfile.mkdtemp()
+    storage = YAMLStorage(base_dir=tmpdir)
+
+    info = postgresql.info
+    await storage.save_datasource(DatasourceConfig(
+        name="planets_pg",
+        type="postgres",
+        host=info.host,
+        port=info.port,
+        database=info.dbname,
+        username=info.user,
+        password="",
+    ))
+    await storage.save_model(
+        SlayerModel(
+            name="planets",
+            sql_table="planets",
+            data_source="planets_pg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(
+                    name="rn",
+                    sql="row_number() over (order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+async def test_filter_on_windowed_column_postgres_top_n(planets_pg_env):
+    """Postgres parity for DEV-1336."""
+    engine = planets_pg_env
+    query = SlayerQuery(
+        source_model="planets",
+        dimensions=["name"],
+        filters=["rn <= 3"],
+        order=[OrderItem(column=ColumnRef(name="rn"), direction="asc")],
+    )
+    response = await engine.execute(query)
+    names = [row["planets.name"] for row in response.data]
+    assert names == ["Jupiter", "Saturn", "Neptune"], (
+        f"Expected top-3 by mass desc, got {names}"
+    )
+
 # ---------------------------------------------------------------------------
 # DEV-1333: cross-model derived ``Column.sql`` chaining (Postgres)
 # ---------------------------------------------------------------------------

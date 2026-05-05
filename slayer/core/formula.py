@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Mapping, Optional, Union
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
+from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 # Transforms that require a time dimension for ORDER BY
 TIME_TRANSFORMS = {
@@ -839,6 +840,12 @@ def parse_filter(
     """
     if named_measures:
         formula = _expand_named_measures(formula, named_measures)
+    # DEV-1336: reject raw window-function syntax (`OVER (...)`) before AST parsing.
+    # Python's ast.parse() rejects `over` as a keyword and surfaces a misleading
+    # "invalid syntax. Perhaps you forgot a comma?" error; the actionable error
+    # below points at SLayer's transforms / Column.sql / multi-stage models.
+    if has_window_function(formula):
+        raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
     # Rewrite function-style aggregations (e.g., sum(revenue) > 100 → revenue:sum > 100)
     processed = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
     # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing
