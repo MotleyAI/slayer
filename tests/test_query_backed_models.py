@@ -1034,3 +1034,126 @@ class TestRunByNamePlanFlags:
             assert calls, "explain=True must route through _build_explain_sql"
         finally:
             tmp.cleanup()
+
+
+class TestMultiStageMeasureRename:
+    """DEV-1335: when an inner stage names an aggregated measure via
+    ``{"formula": "col:agg", "name": "X"}``, the inner stage's emitted column
+    must surface as ``X`` — not the canonical ``col_agg``. Outer stages
+    referencing ``X`` must resolve cleanly. Stage-shape edits via the save
+    path must produce a cache that reflects the new names.
+    """
+
+    async def test_inner_stage_aggregated_measure_honors_user_name(self) -> None:
+        """Stage 1 measure ``{formula: 'amount:sum', name: 'rev'}`` must surface
+        as ``rev`` on the virtual model, not ``amount_sum``. Stage 2 must be
+        able to reference ``rev`` and the cached SQL must reflect the rename.
+        """
+        saved = SlayerModel(
+            name="renamed_metric",
+            data_source="ds",
+            source_queries=[
+                SlayerQuery(
+                    name="raw",
+                    source_model="orders",
+                    dimensions=["region"],
+                    measures=[{"formula": "amount:sum", "name": "rev"}],
+                ),
+                SlayerQuery(
+                    source_model="raw",
+                    measures=[{"formula": "rev:sum"}],
+                ),
+            ],
+        )
+        engine, tmp = await _engine_with_orders()
+        try:
+            # Save-time dry-run pipes through both stages. With the bug the
+            # inner stage wraps `amount_sum` (canonical) and stage 2's
+            # `rev:sum` raises during validation.
+            await engine.save_model(saved)
+            loaded = await engine.storage.get_model("renamed_metric")
+            assert loaded is not None
+            col_names = [c.name for c in loaded.columns]
+            # Stage 2's outer measure is `rev:sum` → cache column `rev_sum`.
+            assert "rev_sum" in col_names, (
+                f"expected 'rev_sum' in cached columns, got: {col_names}"
+            )
+            sql = loaded.backing_query_sql or ""
+            # Inner-stage wrap renames `"orders.rev" AS rev`; loose match on
+            # the alias keyword + name (newline-tolerant).
+            import re
+            assert re.search(r"\bAS\s+rev\b", sql), (
+                f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
+            )
+            # The canonical name must not leak into the wrapped subquery's
+            # exposed alias.
+            assert not re.search(r"\bAS\s+amount_sum\b", sql), (
+                f"canonical 'amount_sum' must not be the surfaced inner alias:\n{sql}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_inner_stage_aggregated_measure_default_when_name_omitted(self) -> None:
+        """Regression guard: when ``qfield.name`` is None, the canonical
+        ``col_agg`` naming is preserved. Existing call sites rely on this.
+        """
+        engine, tmp = await _engine_with_orders()
+        try:
+            stage = SlayerQuery(
+                source_model="orders",
+                dimensions=["region"],
+                measures=[{"formula": "amount:sum"}],  # no name
+            )
+            virtual = await engine._query_as_model(inner_query=stage)
+            col_names = [c.name for c in virtual.columns]
+            assert "amount_sum" in col_names, (
+                f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_inner_stage_user_name_collides_with_canonical_is_one_column(self) -> None:
+        """When the user picks a ``name`` that happens to equal the canonical
+        form, the wrap must emit exactly one column (no duplicate-alias error).
+        """
+        engine, tmp = await _engine_with_orders()
+        try:
+            stage = SlayerQuery(
+                source_model="orders",
+                dimensions=["region"],
+                measures=[{"formula": "amount:sum", "name": "amount_sum"}],
+            )
+            virtual = await engine._query_as_model(inner_query=stage)
+            col_names = [c.name for c in virtual.columns]
+            assert col_names.count("amount_sum") == 1, (
+                f"name=canonical must not duplicate the column, got: {col_names}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_query_as_model_emits_user_alias_unit(self) -> None:
+        """Direct unit test on ``_query_as_model``: the wrap subquery and the
+        virtual model's ``columns`` must use the user-supplied ``name``.
+        """
+        engine, tmp = await _engine_with_orders()
+        try:
+            stage = SlayerQuery(
+                source_model="orders",
+                dimensions=["region"],
+                measures=[{"formula": "amount:sum", "name": "rev"}],
+            )
+            virtual = await engine._query_as_model(inner_query=stage)
+            col_names = [c.name for c in virtual.columns]
+            assert "rev" in col_names, (
+                f"user-supplied 'name' must surface as a virtual column, got: {col_names}"
+            )
+            assert "amount_sum" not in col_names, (
+                f"canonical 'amount_sum' must be replaced when user supplies "
+                f"'name', got: {col_names}"
+            )
+            import re
+            assert re.search(r"\bAS\s+rev\b", virtual.sql), (
+                f"wrapped SQL must rename to user alias 'rev':\n{virtual.sql}"
+            )
+        finally:
+            tmp.cleanup()

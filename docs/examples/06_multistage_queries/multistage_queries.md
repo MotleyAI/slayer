@@ -44,6 +44,27 @@ For the first example above, all you need to do is use the (revenue by store and
 
 The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model` and requests `order_total_sum:avg` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
 
+If you'd rather not type `order_total_sum` everywhere, give the inner measure an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform formulas, and downstream stages reference it directly:
+
+```json
+[
+  {
+    "name": "monthly_store_revenue",
+    "source_model": "orders",
+    "measures": [{"formula": "order_total:sum", "name": "rev"}],
+    "dimensions": ["stores.name"],
+    "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
+  },
+  {
+    "source_model": "monthly_store_revenue",
+    "measures": [{"formula": "rev:avg"}],
+    "dimensions": ["stores.name"]
+  }
+]
+```
+
+The inner stage emits a column called `rev`; the outer stage averages `rev:avg`. Renaming an inner-stage measure (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
+
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
 As we want to use a result of a child query as a dimension, we use a [dynamic join](../../concepts/queries.md#modelextension) inside the parent query to make it available. For the bucketing, we use an inline dimension with a CASE expression; since the child query is a joined model like any other, we reference its columns using the standard `table.column` syntax in the dimension's SQL:
