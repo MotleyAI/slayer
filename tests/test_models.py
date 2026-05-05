@@ -132,6 +132,26 @@ class TestSlayerModel:
                 measures=[ModelMeasure(name="cumsum", formula="revenue:sum")],
             )
 
+    def test_model_measure_formula_with_raw_over_raises(self) -> None:
+        """DEV-1336: a ``ModelMeasure`` formula containing raw `OVER (...)` SQL
+        cannot be parsed by SLayer's formula grammar (Python AST) and would
+        produce invalid SQL on every dialect if used as a filter. Reject at
+        construction time with an actionable error pointing at SLayer's
+        ``rank()`` / ``first()`` / ``last()`` / ``lag()`` / ``lead()`` transforms
+        or a ``Column.sql``-with-window pattern.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            ModelMeasure(
+                name="top_3",
+                formula="row_number() over (order by mass desc) <= 3",
+            )
+        msg = str(excinfo.value)
+        assert "window function" in msg.lower(), msg
+        assert any(
+            keyword in msg
+            for keyword in ("rank(", "first(", "last(", "lag(", "lead(", "Column.sql", "multi-stage")
+        ), msg
+
     def test_filter_bare_column_allowed(self) -> None:
         """Bare column names in model filters are valid."""
         model = SlayerModel(

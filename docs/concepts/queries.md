@@ -167,6 +167,29 @@ Filters can reference columns from joined models, and the planner adds the impli
 
 The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
 
+### Window functions in filters
+
+Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. SLayer handles this in two ways.
+
+**Auto-promotion of windowed columns.** A model `Column` whose `sql` contains a window function (e.g., `row_number() over (order by mass desc)`) can be filtered on directly. SLayer materializes the column in the base CTE under its alias and applies the predicate as a post-aggregation outer `WHERE` — no manual subquery or multi-stage model needed:
+
+```json
+{
+  "source_model": "planets",
+  "dimensions": ["name"],
+  "filters": ["rn <= 3"]
+}
+```
+
+against a model with `Column(name="rn", sql="row_number() over (order by mass desc)", type=NUMBER)` produces SQL with `row_number() OVER (...)` aliased in the inner SELECT and `WHERE "planets.rn" <= 3` in the outer wrap.
+
+**Raw `OVER (...)` in filter strings is rejected.** Inline window-function SQL inside a filter or `ModelMeasure.formula` is not parseable by SLayer's formula grammar. Use one of:
+
+- `rank(<measure>) <= N` for top-N filtering — simpler and dialect-portable.
+- `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
+- A `Column` with the window expression in its `sql` (auto-promotion path above).
+- A multi-stage model where the window computation lives in an earlier stage.
+
 ### Filter Variables
 
 Filters support `{variable_name}` placeholders, substituted from the query's `variables` dict. This keeps filter templates reusable and avoids string concatenation in client code.

@@ -16,9 +16,9 @@ import re
 import pytest
 import sqlglot
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
@@ -604,6 +604,286 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
     assert "B.foo_raw / 100.0" in norm, (
         f"Expansion did not qualify foo_raw under B:\n{sql}"
     )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1339: query-side multi-hop entry points must qualify derived inner refs
+# with the canonical __-delimited alias, not bare last-hop names. The fixture
+# is A → B → C with a derived ``x_derived = "raw_c * 2"`` on C, so the
+# canonical multi-hop alias for C reached from A via B is ``B__C``.
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_C_COLUMNS: list[Column] = [
+    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+    Column(name="raw_c", sql="raw_c", type=DataType.NUMBER),
+    Column(name="x_derived", sql="raw_c * 2", type=DataType.NUMBER),
+]
+
+
+async def _save_a_b_c(
+    storage: YAMLStorage, *, c_columns: list[Column] | None = None,
+) -> SlayerModel:
+    """A → B → C. ``c_columns`` overrides C's column list (default: a derived
+    ``x_derived = "raw_c * 2"`` over a base ``raw_c``)."""
+    model_c = SlayerModel(
+        name="C", data_source="test", sql_table="C",
+        columns=c_columns if c_columns is not None else _DEFAULT_C_COLUMNS,
+    )
+    await storage.save_model(model_c)
+    model_b = SlayerModel(
+        name="B", data_source="test", sql_table="B",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="c_id", sql="c_id", type=DataType.NUMBER),
+        ],
+        joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
+    )
+    await storage.save_model(model_b)
+    model_a = SlayerModel(
+        name="A", data_source="test", sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+            Column(name="bar", sql="bar", type=DataType.NUMBER),
+        ],
+        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+    )
+    await storage.save_model(model_a)
+    return model_a
+
+
+async def test_multihop_query_dim_to_derived_target_column(tmp_path) -> None:
+    """Query-side multi-hop dim ref to a derived col on the last hop must
+    qualify the inner base-col refs to the canonical ``B__C`` alias."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model_a = await _save_a_b_c(storage)
+    query = SlayerQuery(
+        source_model="A",
+        dimensions=[ColumnRef(name="x_derived", model="B.C")],
+    )
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # x_derived must be expanded — no bare leak under any plausible alias.
+    assert _no_bare_derived_ref(norm, "B__C", "x_derived"), (
+        f"Multi-hop derived col leaked into SQL:\n{sql}"
+    )
+    assert _no_bare_derived_ref(norm, "C", "x_derived")
+    # Inner base ref must be qualified to the canonical multi-hop alias.
+    assert "B__C.raw_c * 2" in norm, (
+        f"Expected B__C.raw_c * 2, got:\n{sql}"
+    )
+    # And the C join must be present under the canonical alias.
+    assert "B__C" in norm and ("JOIN C" in norm or 'JOIN "C"' in norm), (
+        f"C join missing under B__C alias:\n{sql}"
+    )
+
+
+async def test_multihop_cross_model_measure_over_derived_target(tmp_path) -> None:
+    """Cross-model measure aggregation through a multi-hop path over a derived
+    target column. The inner ``raw_c`` ref in the expansion must end up
+    qualified to whatever alias the emitted CTE uses for C — never bare."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model_a = await _save_a_b_c(storage)
+    query = SlayerQuery(
+        source_model="A",
+        measures=[ModelMeasure(formula="B.C.x_derived:sum")],
+    )
+    sql = await _gen_sql(engine, query, model_a)
+    # Parse-sanity first so a malformed query short-circuits before the
+    # substring assertions that could otherwise mask broken structure.
+    parsed = sqlglot.parse(sql, dialect="sqlite")
+    assert parsed and len(parsed) == 1, f"Generated SQL doesn't parse:\n{sql}"
+    norm = _norm(sql)
+    # x_derived must be inlined regardless of which CTE shape was used.
+    assert _no_bare_derived_ref(norm, "B__C", "x_derived")
+    assert _no_bare_derived_ref(norm, "C", "x_derived")
+    # The expansion must reach raw_c. Accept either the canonical __ alias
+    # form (B__C.raw_c) or the rerooted-CTE local form (C.raw_c) — both are
+    # valid as long as raw_c is *qualified* somewhere it can resolve.
+    assert "raw_c * 2" in norm, f"Expansion did not inline raw_c * 2:\n{sql}"
+    # The arithmetic must be wrapped in a SUM(..)
+    assert "SUM(" in norm.upper()
+    # Unqualified bare ``raw_c`` (with no table prefix anywhere it appears
+    # inside the SUM) would be a fix-me regression.
+    assert ".raw_c" in norm, (
+        f"raw_c is unqualified — expansion did not attach a table alias:\n{sql}"
+    )
+
+
+async def test_multihop_filter_on_derived_target_column(tmp_path) -> None:
+    """Filter that references a multi-hop derived column must inline the
+    expansion qualified to the canonical ``B__C`` alias."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model_a = await _save_a_b_c(storage)
+    query = SlayerQuery(
+        source_model="A",
+        dimensions=[ColumnRef(name="bar")],
+        filters=["B.C.x_derived > 0"],
+    )
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    assert _no_bare_derived_ref(norm, "B__C", "x_derived"), (
+        f"Filter still references B__C.x_derived literally:\n{sql}"
+    )
+    assert "B__C.raw_c * 2" in norm, (
+        f"Filter expansion did not qualify under B__C:\n{sql}"
+    )
+    # The > 0 comparison must survive past expansion.
+    assert "> 0" in norm
+
+
+async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
+    """Multi-hop time-dimension on a derived target column. The time-dim
+    callsite (``enrichment.py:_resolve_time_dimensions``) takes a separate
+    path through ``_maybe_expand`` from regular dims; pin it."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model_a = await _save_a_b_c(storage, c_columns=[
+        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+        Column(name="raw_ts", sql="raw_ts", type=DataType.TIMESTAMP),
+        # Derived passthrough — we just want it derived-shaped (sql != name).
+        Column(name="shifted_ts", sql="raw_ts + 0", type=DataType.TIMESTAMP),
+    ])
+    query = SlayerQuery(
+        source_model="A",
+        time_dimensions=[
+            TimeDimension(
+                dimension=ColumnRef(name="shifted_ts", model="B.C"),
+                granularity=TimeGranularity.DAY,
+            )
+        ],
+    )
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # The derived sql ``raw_ts + 0`` should be qualified to B__C.
+    assert "B__C.raw_ts" in norm, (
+        f"Multi-hop time-dim derived col not qualified to B__C:\n{sql}"
+    )
+
+
+async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
+    """Direct DEV-1339 reproduction (adapted to actual SLayer API — the
+    issue's repro used non-existent ``alias``/``on`` fields on ``ModelJoin``;
+    the real equivalent uses ``target_model``/``join_pairs``).
+
+    A model B (``solar_panels``) has a derived column whose sql uses bare
+    base-column names (``energy_out / energy_in``). Querying that derived
+    column from a joining model A (``solar_arrays``) must qualify the bare
+    inner refs to ``solar_panels.``, never leave them dangling.
+    """
+    engine, storage = _engine_with_storage(tmp_path)
+    panels = SlayerModel(
+        name="solar_panels", data_source="test", sql_table="solar_panels",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="energy_out", sql="energy_out", type=DataType.NUMBER),
+            Column(name="energy_in", sql="energy_in", type=DataType.NUMBER),
+            # The derived column from the issue's repro.
+            Column(name="panel_efficiency",
+                   sql="energy_out / energy_in",
+                   type=DataType.NUMBER),
+        ],
+    )
+    await storage.save_model(panels)
+    arrays = SlayerModel(
+        name="solar_arrays", data_source="test", sql_table="solar_arrays",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="primary_panel_id", sql="primary_panel_id", type=DataType.NUMBER),
+            Column(name="area", sql="area", type=DataType.NUMBER),
+        ],
+        joins=[ModelJoin(target_model="solar_panels",
+                         join_pairs=[["primary_panel_id", "id"]])],
+    )
+    await storage.save_model(arrays)
+    # Dim-side: the issue's primary failure mode.
+    dim_sql = await _gen_sql(
+        engine,
+        SlayerQuery(source_model="solar_arrays",
+                    dimensions=[ColumnRef(name="panel_efficiency", model="solar_panels")]),
+        arrays,
+    )
+    norm = _norm(dim_sql)
+    assert "solar_panels.energy_out / solar_panels.energy_in" in norm, (
+        f"Bare inner refs in derived col leaked into SQL — DEV-1339 regressed:\n{dim_sql}"
+    )
+    # Measure-side: the issue specifically called out measure formulas.
+    measure_sql = await _gen_sql(
+        engine,
+        SlayerQuery(source_model="solar_arrays",
+                    measures=[ModelMeasure(formula="solar_panels.panel_efficiency:avg")]),
+        arrays,
+    )
+    norm = _norm(measure_sql)
+    assert "solar_panels.energy_out / solar_panels.energy_in" in norm, (
+        f"Cross-model measure agg over derived col left bare refs unqualified:\n{measure_sql}"
+    )
+
+
+async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) -> None:
+    """Diamond join: orders → customers → regions and orders → warehouses → regions.
+    A cross-model measure on ``customers.regions.name_upper:max`` must qualify
+    the inner ``name_raw`` to the diamond-side path alias, never to the wrong
+    sibling path."""
+    engine, storage = _engine_with_storage(tmp_path)
+    regions = SlayerModel(
+        name="regions", data_source="test", sql_table="regions",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name_raw", sql="name_raw", type=DataType.STRING),
+            Column(name="name_upper", sql="UPPER(name_raw)", type=DataType.STRING),
+        ],
+    )
+    await storage.save_model(regions)
+    customers = SlayerModel(
+        name="customers", data_source="test", sql_table="customers",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )
+    await storage.save_model(customers)
+    warehouses = SlayerModel(
+        name="warehouses", data_source="test", sql_table="warehouses",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )
+    await storage.save_model(warehouses)
+    orders = SlayerModel(
+        name="orders", data_source="test", sql_table="orders",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="warehouse_id", sql="warehouse_id", type=DataType.NUMBER),
+        ],
+        joins=[
+            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
+        ],
+    )
+    await storage.save_model(orders)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="customers.regions.name_upper:max")],
+    )
+    sql = await _gen_sql(engine, query, orders)
+    norm = _norm(sql)
+    # name_upper must be inlined — no bare leakage on either diamond side.
+    assert _no_bare_derived_ref(norm, "customers__regions", "name_upper")
+    assert _no_bare_derived_ref(norm, "warehouses__regions", "name_upper")
+    assert _no_bare_derived_ref(norm, "regions", "name_upper")
+    # The measure side is the *customers* arm of the diamond — the warehouses
+    # arm must not leak into this CTE.
+    assert "warehouses__regions.name_raw" not in norm, (
+        f"Wrong diamond arm referenced:\n{sql}"
+    )
+    # And UPPER(name_raw) must appear qualified somewhere.
+    assert "UPPER(" in norm.upper()
+    assert "name_raw" in norm
 
 
 # ---------------------------------------------------------------------------

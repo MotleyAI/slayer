@@ -296,22 +296,27 @@ class SQLGenerator:
         has_cross_model = bool(enriched.cross_model_measures)
         has_measure_ctes = has_isolated or has_cross_model or has_windowed
         has_computed = bool(enriched.expressions or enriched.transforms)
+        # DEV-1336: a post-filter on a windowed `Column.sql` (or any other
+        # post-classified filter) requires the outer `_filtered` wrap from
+        # `_generate_with_computed`, even when there are no expressions or
+        # transforms to layer.
+        has_post_filters = any(getattr(f, "is_post_filter", False) for f in enriched.filters)
 
         base_sql = self._generate_base(enriched=enriched, skip_isolated=has_measure_ctes)
 
-        if not has_measure_ctes and not has_computed:
+        if not has_measure_ctes and not has_computed and not has_post_filters:
             return base_sql
 
         if has_measure_ctes:
             # Get structured CTE definitions (no WITH wrapper)
             measure_ctes = self._build_combined(enriched=enriched, base_sql=base_sql)
-            if has_computed:
+            if has_computed or has_post_filters:
                 # Pass CTE list to computed layer — it merges into a flat WITH
                 return self._generate_with_computed(enriched=enriched, prefix_ctes=measure_ctes)
             # No expressions: assemble CTEs + outer SELECT + pagination
             return self._assemble_combined_sql(enriched=enriched, measure_ctes=measure_ctes)
 
-        # No measure CTEs, just computed columns
+        # No measure CTEs, just computed columns or post-filters
         return self._generate_with_computed(enriched=enriched, base_sql=base_sql)
 
     def _build_combined(self, enriched: EnrichedQuery,
@@ -1051,6 +1056,17 @@ class SQLGenerator:
             if is_agg:
                 has_aggregation = True
 
+        # DEV-1336: window-function `Column.sql` referenced in a filter is
+        # materialized as a SELECT-only column on the base CTE. Window functions
+        # are evaluated post-aggregation by SQL semantics, so this is safe even
+        # when the query has GROUP BY (the window expression operates over the
+        # aggregated rows). They are NOT added to GROUP BY.
+        for wcol in enriched.windowed_filter_columns:
+            if wcol.sql is None:
+                continue
+            wcol_expr = self._parse(wcol.sql)
+            select_columns.append(wcol_expr.as_(wcol.alias))
+
         # When all measures are isolated/cross-model and there are no dimensions,
         # the base SELECT would be empty. Add a placeholder to produce valid SQL.
         if not select_columns and skip_isolated:
@@ -1084,7 +1100,16 @@ class SQLGenerator:
 
         # When no computed columns and no measure CTEs, apply order/limit/offset
         # to the base query. Otherwise, they'll be applied to the outer query.
-        if not enriched.expressions and not enriched.transforms and not skip_isolated:
+        # DEV-1336: a post-filter requires the outer `_filtered` wrap from
+        # `_generate_with_computed`; pagination must apply to the filtered
+        # result, not to the unfiltered base.
+        has_post_filters = any(getattr(f, "is_post_filter", False) for f in enriched.filters)
+        if (
+            not enriched.expressions
+            and not enriched.transforms
+            and not skip_isolated
+            and not has_post_filters
+        ):
             select = self._apply_order_limit(select=select, enriched=enriched)
 
         # Append LEFT JOINs from resolved joins via sqlglot AST (works for both
@@ -1103,6 +1128,22 @@ class SQLGenerator:
                             parts = col.split(".")
                             for i in range(1, len(parts)):
                                 dim_only_aliases.add("__".join(parts[:i]))
+            # DEV-1336: also include joins referenced by windowed-filter
+            # columns. Their `sql` may reference joined tables via `__`
+            # aliases (e.g. `customers__regions.population`) or direct join
+            # aliases (e.g. `systems.galaxy_id`); pruning those joins would
+            # render the `_base` CTE with missing tables.
+            for wcol in enriched.windowed_filter_columns:
+                if wcol.sql is None:
+                    continue
+                wcol_ast = self._parse(wcol.sql)
+                for col_node in wcol_ast.find_all(exp.Column):
+                    table = col_node.table
+                    if not table or table == enriched.model_name:
+                        continue
+                    parts = table.split("__")
+                    for i in range(1, len(parts) + 1):
+                        dim_only_aliases.add("__".join(parts[:i]))
         resolved_joins = enriched.resolved_joins
         if dim_only_aliases is not None:
             resolved_joins = [(t, a, c, j) for t, a, c, j in resolved_joins if a in dim_only_aliases]
@@ -1147,6 +1188,11 @@ class SQLGenerator:
             base_aliases.append(m.alias)
         for cm in enriched.cross_model_measures:
             base_aliases.append(cm.alias)
+        # DEV-1336: windowed `Column.sql` filter columns are emitted as SELECT-
+        # only columns inside the base CTE, so they're available to the outer
+        # SELECT and post-filter wrap.
+        for wcol in enriched.windowed_filter_columns:
+            base_aliases.append(wcol.alias)
 
         # Build stacked CTEs. Each layer can reference aliases from previous layers.
         if prefix_ctes is not None:
@@ -1285,10 +1331,8 @@ class SQLGenerator:
 
         sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
 
-        # Apply order/limit/offset
-        sql = self._apply_pagination_to_sql(enriched=enriched, sql=sql)
-
-        # Apply post-filters (filters referencing computed columns)
+        # Apply post-filters (filters referencing computed columns) BEFORE
+        # pagination, so LIMIT/OFFSET operate on the filtered result.
         post_filters = [f for f in enriched.filters if f.is_post_filter]
         if post_filters:
             import re
@@ -1310,7 +1354,8 @@ class SQLGenerator:
             where_clause = _SQL_AND_JOINER.join(conditions)
             sql = f"SELECT *\nFROM (\n{sql}\n) AS _filtered\nWHERE {where_clause}"
 
-        return sql
+        # Apply order/limit/offset as the outermost wrapper.
+        return self._apply_pagination_to_sql(enriched=enriched, sql=sql)
 
     @staticmethod
     def _deps_available(sql: str, available: set[str]) -> bool:
