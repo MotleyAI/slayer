@@ -15,7 +15,10 @@ becomes an extra CTE in the generated SQL.
 | `change_pct(x)` | `(x − previous) / previous` | Desugars to `(x − ts) / ts` where `ts = time_shift(x, -1)` |
 | `lag(x, n)` / `lead(x, n)` | N rows back / ahead | `LAG` / `LEAD` window fn, partitioned by dimensions |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
-| `rank(x)` | Rank by x, descending | `RANK() OVER (ORDER BY x DESC)` |
+| `rank(x[, partition_by=...])` | Rank by x, descending; ties skip ranks | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
+| `percent_rank(x[, partition_by=...])` | Relative rank in `[0, 1]`, descending | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
+| `dense_rank(x[, partition_by=...])` | Rank by x, descending; ties don't skip ranks | `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
+| `ntile(x, n=N[, partition_by=...])` | Bucket rows into N equal groups, descending | `NTILE(N) OVER ([PARTITION BY ...] ORDER BY x DESC)` |
 | `first(x)` | Broadcast earliest bucket's value to every row | Window |
 | `last(x)` | Broadcast latest bucket's value to every row | Window |
 
@@ -46,12 +49,14 @@ All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`,
 `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit
 `time_dimensions` entry in the query. With a single entry it's used
 automatically; with 2+ entries, `main_time_dimension` disambiguates (or
-`default_time_dimension` if among query's time dims). `rank` does **not** need a
+`default_time_dimension` if among query's time dims). The rank-family
+transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do **not** need a
 time dimension.
 
-Window-function transforms partition by the query's non-time dimensions. A
-`cumsum(revenue:sum)` grouped by `status` computes one running total per
-status. `rank` remains global across the result set.
+Time-ordered window transforms partition by the query's non-time dimensions.
+A `cumsum(revenue:sum)` grouped by `status` computes one running total per
+status. The rank-family transforms default to **no `PARTITION BY`** — they
+rank across the entire result set unless `partition_by=` is passed.
 
 ## consecutive_periods
 
@@ -87,15 +92,53 @@ Self-join transforms cannot wrap other self-join or change transforms.
 }
 ```
 
-## rank does not partition
+## Rank-family transforms
 
-`rank(x)` ranks across the **entire result set**. With multiple dimensions
-(e.g. `status` + `month`), every `(status, month)` row is ranked together —
-no auto-partition by dimension. Use `filters: ["rank(revenue:sum) <= 10"]` for
-top-N.
+`rank`, `percent_rank`, `dense_rank`, and `ntile` are all timeless ranking
+transforms. They order rows by the inner measure descending and emit a per-row
+rank value. By default they do **not** partition — every row is ranked against
+every other row in the result set:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["customer_name"],
+  "measures": [
+    "revenue:sum",
+    {"formula": "rank(revenue:sum)", "name": "rnk"}
+  ],
+  "filters": ["rank(revenue:sum) <= 10"]
+}
+```
+
+Choosing the right one:
+
+- `rank` — standard SQL `RANK`; ties share a rank, skip the next (`1, 1, 3`).
+- `dense_rank` — ties share a rank, no gaps (`1, 1, 2`). Use for "top N tiers".
+- `percent_rank` — relative rank in `[0, 1]`. Use for cross-query-comparable rankings.
+- `ntile(x, n=N)` — required `n=` kwarg, must be a positive integer; bucket all rows into `N` equal-sized groups (`1` is the top bucket).
+
+To rank within partitions, pass `partition_by=` referencing one or more query
+dimensions or time dimensions. Columns must already be grouped on — partitioning
+by a non-dimension column errors at enrichment time:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["region", "customer_name"],
+  "measures": [
+    "revenue:sum",
+    {"formula": "dense_rank(revenue:sum, partition_by=region)", "name": "rnk_in_region"},
+    {"formula": "ntile(revenue:sum, n=4, partition_by=region)", "name": "quartile_in_region"}
+  ]
+}
+```
+
+Multiple partition columns: `partition_by=[region, channel]`. Cross-model
+dotted paths work too: `partition_by=customers.region`.
 
 Raw `OVER (...)` SQL inside a `ModelMeasure.formula` or filter string is
-rejected with an actionable error pointing at the `rank()` / `first()` /
+rejected with an actionable error pointing at the rank-family / `first()` /
 `last()` / `lag()` / `lead()` transforms. For non-standard window expressions,
 define a `Column` whose `sql` is the window expression and filter on the
 column — SLayer auto-promotes the predicate to a post-aggregation outer
