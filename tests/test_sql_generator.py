@@ -609,7 +609,10 @@ class TestFields:
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
-        assert "_wm_orders__revenue_sum_window_90d" in norm
+        # Windowed-sum CTE name follows the measure's surfaced name; with an
+        # explicit ``name="revenue_90d"`` the CTE is named after the user
+        # alias (DEV-1335 — user ``name`` overrides the canonical form).
+        assert "_wm_orders__revenue_90d" in norm
         assert "LEFT JOIN" in norm
         assert "_src._w_time >=" in norm
         assert "_src._w_time <" in norm
@@ -4662,7 +4665,10 @@ class TestOrderByCustomFieldName:
     """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
 
     async def test_order_by_custom_name(self, generator: SQLGenerator) -> None:
-        """Field with custom name 'num_customers' should be resolvable in ORDER BY."""
+        """Field with custom name 'num_customers' is the surfaced alias and
+        ORDER BY references it directly (DEV-1335 — user ``name`` overrides
+        the canonical ``customer_id_count_distinct`` form).
+        """
         model = SlayerModel(
             name="orders",
             sql_table="orders",
@@ -4681,8 +4687,15 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # The ORDER BY should reference the count_distinct column, not "orders.num_customers"
-        assert "orders.num_customers" not in sql, f"Custom name not resolved: {sql}"
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name surfaces as the ORDER BY column.
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias not used in ORDER BY: {sql}"
+        )
+        # Canonical form must not leak into the ORDER BY clause.
+        assert '"orders.customer_id_count_distinct"' not in order_clause, (
+            f"canonical alias must not leak when user supplies 'name': {sql}"
+        )
         assert "COUNT(DISTINCT" in sql
 
     async def test_order_by_canonical_name_still_works(self, generator: SQLGenerator) -> None:
@@ -4738,9 +4751,11 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # The ORDER BY must NOT use the raw custom name "orders.num_customers"
-        assert "orders.num_customers" not in sql, (
-            f"Custom name not resolved in computed query path:\n{sql}"
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name is the ORDER BY column (DEV-1335 — user ``name`` overrides
+        # the canonical form).
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias must surface in ORDER BY for computed query path:\n{sql}"
         )
 
 

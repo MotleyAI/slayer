@@ -663,6 +663,20 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
+            # When the user supplies an explicit ``name`` on the measure spec,
+            # surface it as the EnrichedMeasure's name/alias so downstream
+            # stages (and the wrap subquery) emit the user's chosen alias
+            # instead of the canonical ``col_agg`` form. The canonical alias
+            # remains resolvable via known_aliases for inline references.
+            if qfield.name and qfield.name != canonical_name:
+                user_alias = f"{model_name_str}.{qfield.name}"
+                for m in measures:
+                    if m.alias == f"{model_name_str}.{canonical_name}":
+                        m.name = qfield.name
+                        m.alias = user_alias
+                        break
+                known_aliases[qfield.name] = user_alias
+                known_aliases[canonical_name] = user_alias
             # Register custom field name so ORDER BY can resolve it
             if field_name != canonical_name and canonical_name in known_aliases:
                 field_name_aliases[field_name] = known_aliases[canonical_name]
@@ -675,8 +689,9 @@ async def enrich_query(
                     f"or set default_time_dimension on the model."
                 )
             if qfield.label:
+                target_name = qfield.name if (qfield.name and qfield.name != canonical_name) else canonical_name
                 for m in measures:
-                    if m.name == canonical_name:
+                    if m.name == target_name:
                         m.label = qfield.label
 
         else:
