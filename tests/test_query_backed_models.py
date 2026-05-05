@@ -1075,32 +1075,40 @@ class TestSiblingStageJoins:
         ))
         return SlayerQueryEngine(storage=storage), tmp
 
+    @staticmethod
+    def _three_stage_dag() -> list:
+        """3-stage DAG used by both the lookup-fix smoke test and the
+        idempotency test. Stage 1 ``kpis`` aggregates orders per customer;
+        stage 2 ``tagged`` (non-final) joins back to customers; stage 3
+        re-aggregates ``tagged``.
+        """
+        return [
+            SlayerQuery(
+                name="kpis",
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                dimensions=["customer_id"],
+            ),
+            SlayerQuery.model_validate({
+                "name": "tagged",
+                "source_model": {
+                    "source_name": "customers",
+                    "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+                },
+                "dimensions": ["name"],
+                "measures": [{"formula": "kpis.amount_sum:sum"}],
+            }),
+            SlayerQuery.model_validate({
+                "source_model": "tagged",
+                "dimensions": ["name"],
+            }),
+        ]
+
     async def test_non_final_named_stage_joins_prior_named_sibling(self) -> None:
         """Stage 2 (named ``tagged``) joins prior named ``kpis``; stage 3 uses ``tagged``."""
         engine, tmp = await self._engine()
         try:
-            queries = [
-                SlayerQuery(
-                    name="kpis",
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["customer_id"],
-                ),
-                SlayerQuery.model_validate({
-                    "name": "tagged",
-                    "source_model": {
-                        "source_name": "customers",
-                        "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
-                    },
-                    "dimensions": ["name"],
-                    "measures": [{"formula": "kpis.amount_sum:sum"}],
-                }),
-                SlayerQuery.model_validate({
-                    "source_model": "tagged",
-                    "dimensions": ["name"],
-                }),
-            ]
-            resp = await engine.execute(queries, dry_run=True)
+            resp = await engine.execute(self._three_stage_dag(), dry_run=True)
             assert resp.sql is not None
             sql_lower = resp.sql.lower()
             # Both inner stages must show up in the rendered SQL.
@@ -1228,27 +1236,7 @@ class TestSiblingStageJoins:
         """
         engine, tmp = await self._engine()
         try:
-            queries = [
-                SlayerQuery(
-                    name="kpis",
-                    source_model="orders",
-                    measures=[{"formula": "amount:sum"}],
-                    dimensions=["customer_id"],
-                ),
-                SlayerQuery.model_validate({
-                    "name": "tagged",
-                    "source_model": {
-                        "source_name": "customers",
-                        "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
-                    },
-                    "dimensions": ["name"],
-                    "measures": [{"formula": "kpis.amount_sum:sum"}],
-                }),
-                SlayerQuery.model_validate({
-                    "source_model": "tagged",
-                    "dimensions": ["name"],
-                }),
-            ]
+            queries = self._three_stage_dag()
             r1 = await engine.execute(queries, dry_run=True)
             r2 = await engine.execute(queries, dry_run=True)
             assert r1.sql is not None
