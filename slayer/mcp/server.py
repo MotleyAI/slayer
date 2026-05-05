@@ -1999,12 +1999,18 @@ def create_mcp_server(storage: StorageBackend):
                 "backing_query_sql": None,
             })
             try:
-                await engine.save_model(validated)
+                # ``engine.save_model`` may RECOMPUTE ``data_source`` for
+                # query-backed models from the resolved virtual model, so
+                # we cannot trust ``validated.data_source`` after this
+                # call — use the returned model's identity for the
+                # post-save cleanup decision below.
+                saved_model = await engine.save_model(validated)
             except Exception as exc:
                 return f"Validation error: {exc}"
         else:
             try:
                 await storage.save_model(validated)
+                saved_model = validated
             except Exception as exc:
                 # Source row is still intact because we deferred the
                 # delete. Surface the failure as an error string instead
@@ -2012,16 +2018,15 @@ def create_mcp_server(storage: StorageBackend):
                 return f"Storage error: {exc}"
 
         # v4 atomic move: only after the new save has succeeded do we
-        # remove the source row. If anything above raised we'd have
-        # returned an error and the source key is still intact. We
-        # already verified up-front that nothing lives at the new key,
-        # so this delete won't take a sibling with it.
-        if (
-            new_data_source is not None
-            and new_data_source != original_data_source
-        ):
+        # remove the source row, and only if the saved model actually
+        # landed at a different ``data_source`` than where it started.
+        # For query-backed models the engine-side cache populator can
+        # override ``new_data_source`` (it derives ``data_source`` from
+        # the backing query); without this guard a "move that didn't
+        # move" silently deleted the just-saved row at the original key.
+        if saved_model.data_source != original_data_source:
             await storage.delete_model(
-                validated.name, data_source=original_data_source
+                saved_model.name, data_source=original_data_source
             )
         return json.dumps({
             "success": True,

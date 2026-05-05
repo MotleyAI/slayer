@@ -2390,6 +2390,66 @@ class TestEditModelDatasourceMoveSafety:
         assert src is not None and src.description == "source"
         assert tgt is not None and tgt.description == "target"
 
+    async def test_move_query_backed_when_engine_recomputes_data_source_back(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """For query-backed models, ``engine.save_model`` recomputes
+        ``data_source`` from the backing query. If the user requests a move
+        but the query still resolves back to the *original* datasource, the
+        post-save delete must NOT remove the row we just saved at the
+        original key. See PR #92 thread (post-merge, critical).
+        """
+        from slayer.core.models import DatasourceConfig
+        from slayer.core.query import SlayerQuery
+        from slayer.engine.query_engine import SlayerQueryEngine
+
+        for n in ("db_a", "db_b"):
+            await storage.save_datasource(DatasourceConfig(
+                name=n, type="sqlite", database=":memory:"
+            ))
+        # Upstream lives in db_a. The query-backed model's backing query
+        # references this upstream, so its resolved data_source is db_a.
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="db_a",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+            ],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        await engine.save_model(SlayerModel(
+            name="qb",
+            data_source="db_a",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+            )],
+        ))
+        # Sanity: the model is at (db_a, qb).
+        assert await storage.get_model("qb", data_source="db_a") is not None
+        assert await storage.get_model("qb", data_source="db_b") is None
+
+        # Ask for a move qb: db_a -> db_b. The backing query still
+        # resolves to db_a, so the engine cache populator will overwrite
+        # ``new_data_source`` and the model should land back at db_a.
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "qb",
+            "data_source": "db_a",
+            "new_data_source": "db_b",
+        })
+        # Edit either succeeds (engine silently rerouted) or returns a
+        # clear error explaining the override; either way, the model
+        # must NOT be deleted from storage entirely.
+        del result
+        # If we silently deleted (db_a, qb) thinking the model moved to
+        # (db_b, qb), then both lookups would now miss.
+        landed_a = await storage.get_model("qb", data_source="db_a")
+        landed_b = await storage.get_model("qb", data_source="db_b")
+        assert landed_a is not None or landed_b is not None, (
+            "edit_model deleted the model entirely after a no-op move "
+            "of a query-backed entity"
+        )
+
     async def test_move_save_failure_preserves_source(
         self, mcp_server, storage: YAMLStorage, monkeypatch
     ) -> None:
