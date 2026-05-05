@@ -371,7 +371,7 @@ This:
 - runs save-time validation (any unresolved `{var}` placeholder defaults to `'0'` so SQL generation succeeds),
 - caches the resulting `columns` and the rendered `backing_query_sql` on the model for fast inspection.
 
-`create_model_from_query` accepts a single `SlayerQuery` or a list of stages; for multi-stage queries, every non-final stage must have a `name` so it can be referenced.
+`create_model_from_query` accepts a single `SlayerQuery` or a list of stages; for multi-stage queries, every non-final stage must have a `name` so it can be referenced. Stages form a DAG: any stage may use a *prior* named sibling as `source_model` or as `joins.target_model`. Forward and self references are rejected with a clear error.
 
 ### Two ways to use a saved query
 

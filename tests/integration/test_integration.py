@@ -1434,6 +1434,54 @@ async def test_query_list_with_joins(cross_model_env):
     assert response.data[2]["orders.customer_scores.avg_score_avg_avg"] == global_avg
 
 
+async def test_sibling_stage_joins_dag(cross_model_env):
+    """3-stage DAG: a non-final named stage joins a prior named stage.
+
+    Regression for DEV-1340. ``kpis`` aggregates per customer; ``tagged``
+    is a non-final named stage whose source is ``customers`` extended with
+    a join back to ``kpis`` and pulls the kpis sum in as a join-traversed
+    dimension; the final stage re-aggregates ``tagged`` across the
+    population.
+
+    Pre-fix this raises ``ValueError: Model 'kpis' not found`` at
+    enrichment time because ``_query_as_model`` dropped the named_queries
+    dict when enriching a non-final stage.
+    """
+    from slayer.core.query import ModelExtension
+
+    engine = cross_model_env
+    queries = [
+        SlayerQuery(
+            name="kpis",
+            source_model="orders",
+            dimensions=[ColumnRef(name="customer_id")],
+            measures=[ModelMeasure(formula="total_amount:sum")],
+        ),
+        SlayerQuery(
+            name="tagged",
+            source_model=ModelExtension(
+                source_name="customers",
+                joins=[{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+            ),
+            # ``kpis.total_amount_sum`` is a join-traversed dimension, so
+            # each customer row carries their own kpis sum.
+            dimensions=[ColumnRef(name="name"), ColumnRef(name="kpis.total_amount_sum")],
+        ),
+        SlayerQuery(
+            source_model="tagged",
+            measures=[ModelMeasure(formula="kpis__total_amount_sum:max")],
+        ),
+    ]
+    response = await engine.execute(query=queries)
+
+    # Per-customer totals: Alice (1) = 100+200+25 = 325; Bob (2) = 50+75 = 125;
+    # Charlie (3) = 300. Final stage takes the max of the per-customer totals.
+    assert response.row_count == 1
+    [row] = response.data
+    [val] = [v for k, v in row.items() if "max" in k.lower()]
+    assert val == pytest.approx(325.0), row
+
+
 # ---------------------------------------------------------------------------
 # Expanded dimensions (SQL expressions)
 # ---------------------------------------------------------------------------
@@ -1561,13 +1609,18 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
 
 
 async def test_circular_query_reference_raises(integration_env):
-    """Circular references between named queries should error clearly."""
+    """Mutually-referential named queries should error clearly. The
+    sibling-stage scoping (DEV-1340) rejects ``a → b`` as a forward
+    reference at the first hop, before the cycle could form, so the
+    error names the offending stage and explains the rule rather than
+    surfacing a generic "Circular reference" trace.
+    """
     engine = integration_env
 
     q1 = SlayerQuery(name="a", source_model="b", measures=[ModelMeasure(formula="*:count")])
     q2 = SlayerQuery(name="b", source_model="a", measures=[ModelMeasure(formula="*:count")])
     main = SlayerQuery(source_model="a", measures=[ModelMeasure(formula="*:count")])
-    with pytest.raises(ValueError, match="Circular reference"):
+    with pytest.raises(ValueError, match=r"forward references are not allowed|Circular reference"):
         await engine.execute(query=[q1, q2, main])
 
 
@@ -2707,6 +2760,91 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
     # key is ``orders.n`` (not ``orders._count``).
     assert response.row_count == 1
     assert response.data[0]["orders.n"] == 3
+
+
+# ---------------------------------------------------------------------------
+# DEV-1337: log10 / log2 round-trip preservation (SQLite)
+# ---------------------------------------------------------------------------
+
+
+async def test_log10_round_trip_sqlite(tmp_path):
+    """DEV-1337: a user-written `log10(x)` formula must (a) execute correctly
+    end-to-end on SQLite (via the registered `log10` UDF) and (b) appear
+    verbatim as `log10(...)` in the emitted SQL — not the canonicalised
+    `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
+    `log2` UDF added in this change)."""
+    import math as _math
+
+    db_path = tmp_path / "log_round_trip.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, raw_score REAL NOT NULL)")
+    cur.executemany(
+        "INSERT INTO players VALUES (?, ?)",
+        [(1, 100.0), (2, 1000.0), (3, 10000.0), (4, 8.0)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="log_sqlite", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="players",
+            sql_table="players",
+            data_source="log_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="raw_score", sql="raw_score", type=DataType.NUMBER),
+                Column(name="log_score", sql="log10(raw_score)", type=DataType.NUMBER),
+                Column(name="log2_score", sql="log2(raw_score)", type=DataType.NUMBER),
+            ],
+        )
+    )
+    engine = SlayerQueryEngine(storage=storage)
+
+    # Numeric correctness — log10
+    r10 = await engine.execute(
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log_score:max")])
+    )
+    assert r10.data[0]["players.log_score_max"] == pytest.approx(4.0)
+
+    # Numeric correctness — log2 (8.0 → 3.0; pin against the new UDF)
+    r2 = await engine.execute(
+        SlayerQuery(
+            source_model="players",
+            measures=[ModelMeasure(formula="log2_score:max")],
+            filters=["raw_score == 8.0"],
+        )
+    )
+    assert r2.data[0]["players.log2_score_max"] == pytest.approx(_math.log2(8.0))
+
+    # SQL-shape: dry-run must contain the literal log10(...) / log2(...) form.
+    dry10 = await engine.execute(
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log_score:max")]),
+        dry_run=True,
+    )
+    assert dry10.sql is not None
+    sql10 = dry10.sql.lower()
+    assert "log10(" in sql10, (
+        f"Expected literal log10(...) in emitted SQL, got:\n{dry10.sql}"
+    )
+    assert "log(10," not in sql10.replace(" ", ""), (
+        f"Emitted SQL must not canonicalise log10(...) to LOG(10, ...):\n{dry10.sql}"
+    )
+
+    dry2 = await engine.execute(
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log2_score:max")]),
+        dry_run=True,
+    )
+    assert dry2.sql is not None
+    assert "log2(" in dry2.sql.lower(), (
+        f"Expected literal log2(...) in emitted SQL, got:\n{dry2.sql}"
+    )
 
 
 async def test_dev1341_count_over_nullif_max_executes(integration_env):
