@@ -3,7 +3,7 @@
 import json
 import os
 import tempfile
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 import pytest
 
@@ -30,15 +30,44 @@ from slayer.mcp.server import (
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-@pytest.fixture
-def storage() -> YAMLStorage:
+# `create_mcp_server` is expensive (~35 ms each, dominated by FastMCP tool
+# registration / pydantic schema gen). With ~160 tests in this file that
+# was ~5–6s of pure fixture overhead per run. The MCP server captures the
+# storage instance at construction time, so we share *both* across the
+# session and reset the underlying YAML files in a per-test fixture.
+@pytest.fixture(scope="session")
+def _shared_storage() -> Generator[YAMLStorage, None, None]:
     with tempfile.TemporaryDirectory() as tmpdir:
         yield YAMLStorage(base_dir=tmpdir)
 
 
+@pytest.fixture(scope="session")
+def _shared_mcp_server(_shared_storage: YAMLStorage):
+    return create_mcp_server(storage=_shared_storage)
+
+
+def _reset_yaml_storage(storage: YAMLStorage) -> None:
+    """Wipe model + datasource files between tests so the session-scoped
+    storage looks fresh to every test."""
+    for sub in ("models", "datasources"):
+        d = os.path.join(storage.base_dir, sub)
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                os.remove(os.path.join(d, f))
+
+
 @pytest.fixture
-def mcp_server(storage: YAMLStorage):
-    return create_mcp_server(storage=storage)
+def storage(_shared_storage: YAMLStorage) -> YAMLStorage:
+    _reset_yaml_storage(_shared_storage)
+    return _shared_storage
+
+
+@pytest.fixture
+def mcp_server(_shared_mcp_server, storage: YAMLStorage):
+    # Depending on `storage` ensures the per-test reset runs before any
+    # test exercises the MCP server. `mcp_server` itself is the same
+    # session-scoped instance every call.
+    return _shared_mcp_server
 
 
 async def _call(mcp_server, *, name: str, arguments: Optional[dict[str, Any]] = None) -> str:
@@ -211,6 +240,113 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         assert "| orders |" in result
         assert "| products |" in result
         assert "kind" not in result
+
+    # --- meta rendering (DEV-1332) ---
+
+    async def test_inspect_renders_meta_on_columns(self, mcp_server, storage: YAMLStorage) -> None:
+        """Column.meta surfaces in both markdown and JSON inspect_model output.
+
+        Pins the user-visible bug from DEV-1332: the storage layer round-trips
+        meta correctly, but inspect_model never rendered it, so agents couldn't
+        verify their bookkeeping was persisted.
+        """
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="test",
+            columns=[Column(name="amount", type=DataType.NUMBER, meta={"kb_id": 7})],
+        ))
+        # Markdown
+        md = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "sections": ["columns"],
+        })
+        assert "kb_id" in md
+        assert "7" in md
+        # JSON
+        js = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "sections": ["columns"], "format": "json",
+        })
+        payload = json.loads(js)
+        assert payload["columns"][0]["meta"] == {"kb_id": 7}
+
+    async def test_inspect_renders_meta_on_measures(self, mcp_server, storage: YAMLStorage) -> None:
+        """ModelMeasure.meta surfaces in both markdown and JSON inspect_model output."""
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", type=DataType.NUMBER)],
+            measures=[ModelMeasure(
+                name="aov", formula="revenue:sum / *:count",
+                meta={"kb_id": "abc-123"},
+            )],
+        ))
+        md = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "sections": ["measures"],
+        })
+        assert "kb_id" in md
+        assert "abc-123" in md
+        js = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "sections": ["measures"], "format": "json",
+        })
+        payload = json.loads(js)
+        assert payload["measures"][0]["meta"] == {"kb_id": "abc-123"}
+
+    async def test_inspect_renders_meta_on_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
+        """Aggregation.meta surfaces in both markdown and JSON inspect_model output."""
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="test",
+            aggregations=[Aggregation(
+                name="trimmed_mean",
+                formula="AVG(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)",
+                meta={"owner": "analytics"},
+            )],
+        ))
+        md = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "sections": ["aggregations"], "show_sql": True,
+        })
+        assert "owner" in md
+        assert "analytics" in md
+        js = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "sections": ["aggregations"], "format": "json",
+        })
+        payload = json.loads(js)
+        assert payload["aggregations"][0]["meta"] == {"owner": "analytics"}
+
+    async def test_inspect_renders_meta_on_model_header(self, mcp_server, storage: YAMLStorage) -> None:
+        """SlayerModel.meta surfaces in the markdown header bullets and at the
+        top level of the JSON payload."""
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="test",
+            meta={"source": "CRM"},
+        ))
+        md = await _call(mcp_server, name="inspect_model", arguments={"model_name": "m"})
+        assert "**meta:**" in md
+        assert "source" in md
+        assert "CRM" in md
+        js = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "format": "json",
+        })
+        payload = json.loads(js)
+        assert payload["meta"] == {"source": "CRM"}
+
+    async def test_inspect_omits_meta_column_when_no_entity_has_meta(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """When no column/measure/aggregation has meta set, the meta column is
+        pruned from the markdown table — keeps existing output unchanged for
+        users who don't use meta. Relies on _markdown_table's all-empty-column
+        pruning.
+        """
+        await storage.save_model(SlayerModel(
+            name="m", sql_table="t", data_source="test",
+            columns=[Column(name="amount", type=DataType.NUMBER)],
+            measures=[ModelMeasure(name="aov", formula="amount:sum")],
+            aggregations=[Aggregation(name="my_agg", formula="SUM({expr})")],
+        ))
+        md = await _call(mcp_server, name="inspect_model", arguments={
+            "model_name": "m", "sections": ["columns", "measures", "aggregations"],
+            "show_sql": True,
+        })
+        # No meta column header should be emitted in any of the three tables.
+        assert "| meta |" not in md
+        assert "**meta:**" not in md  # also no model-header meta bullet
 
 
 class TestMdCodeSpan:
@@ -2060,6 +2196,310 @@ class TestEditModel:
             "sql": "SELECT 1",
         })
         assert "mutually exclusive" in result or "Specify at most one" in result
+
+    # --- meta round-trip pins (DEV-1332) ---
+
+    async def test_edit_persists_measure_meta_create_path(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Adding a brand-new measure with meta via edit_model — meta survives
+        storage round-trip. Mirrors the existing TestCreateModel pin but for
+        the edit_model surface that DEV-1332 reported as broken.
+        """
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "measures": [{
+                "name": "aov", "formula": "revenue:sum / *:count",
+                "meta": {"kb_id": 1},
+            }],
+        })
+        assert json.loads(result)["success"] is True
+        model = await storage.get_model("orders")
+        assert model.measures[0].meta == {"kb_id": 1}
+
+    async def test_edit_persists_measure_meta_update_path(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Updating an existing measure to add meta — meta survives storage
+        round-trip. The existing measure had no meta; the edit adds it."""
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "measures": [{
+                "name": "aov", "formula": "revenue:sum / *:count",
+                "meta": {"kb_id": 1},
+            }],
+        })
+        assert json.loads(result)["success"] is True
+        model = await storage.get_model("orders")
+        assert model.measures[0].meta == {"kb_id": 1}
+
+    async def test_edit_persists_aggregation_meta_create_path(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Adding a brand-new aggregation with meta via edit_model — meta and
+        formula both survive storage round-trip. Uses a custom aggregation
+        name + formula so the test pins both fields, not just meta on a
+        built-in override.
+        """
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "aggregations": [{
+                "name": "my_agg",
+                "formula": "SUM({expr})",
+                "meta": {"owner": "x"},
+            }],
+        })
+        assert json.loads(result)["success"] is True
+        model = await storage.get_model("orders")
+        assert model.aggregations[0].meta == {"owner": "x"}
+        assert model.aggregations[0].formula == "SUM({expr})"
+
+    async def test_edit_persists_aggregation_meta_update_path(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Updating an existing aggregation to add meta — meta survives
+        storage round-trip."""
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            aggregations=[Aggregation(name="my_agg", formula="SUM({expr})")],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "aggregations": [{"name": "my_agg", "meta": {"owner": "x"}}],
+        })
+        assert json.loads(result)["success"] is True
+        model = await storage.get_model("orders")
+        assert model.aggregations[0].meta == {"owner": "x"}
+        # And the formula on the existing aggregation is preserved (partial update).
+        assert model.aggregations[0].formula == "SUM({expr})"
+
+    async def test_edit_measure_meta_replaced_not_merged(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Updating meta replaces the whole dict (no deep merge), consistent
+        with the documented top-level model.meta replacement semantics.
+        """
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            measures=[ModelMeasure(
+                name="aov", formula="revenue:sum / *:count",
+                meta={"a": 1},
+            )],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "measures": [{"name": "aov", "meta": {"b": 2}}],
+        })
+        assert json.loads(result)["success"] is True
+        model = await storage.get_model("orders")
+        assert model.measures[0].meta == {"b": 2}
+
+    async def test_edit_omitting_meta_key_preserves_existing_meta(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """When the edit spec omits the `meta` key entirely, the existing
+        meta on the entity is preserved — _upsert_entity flat-merge semantics.
+        """
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            measures=[ModelMeasure(
+                name="aov", formula="revenue:sum / *:count",
+                meta={"kb_id": 9},
+            )],
+        ))
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "measures": [{"name": "aov", "description": "Average order value"}],
+        })
+        assert json.loads(result)["success"] is True
+        model = await storage.get_model("orders")
+        assert model.measures[0].description == "Average order value"
+        assert model.measures[0].meta == {"kb_id": 9}
+
+
+class TestEditModelMultiStageRename:
+    """DEV-1335: editing a multi-stage query-backed model so an inner stage's
+    measure is renamed (or the stage shape changes) must refresh the cached
+    SQL/columns to reflect the new names. Outer-stage references to the new
+    name must resolve cleanly.
+    """
+
+    async def _setup_orders_with_two_stage_model(
+        self, storage: YAMLStorage, *, inner_measures: list, outer_measures: list,
+    ) -> None:
+        """Save a datasource, an upstream `orders` table-model, and a saved
+        2-stage query-backed model whose inner stage is named ``raw``.
+        """
+        from slayer.core.query import SlayerQuery
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="t", data_source="test",
+            columns=[
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="region", sql="region", type=DataType.STRING),
+            ],
+        ))
+        # Build initial source_queries via the engine save path so the cache
+        # reflects the initial state.
+        from slayer.engine.query_engine import SlayerQueryEngine
+        engine = SlayerQueryEngine(storage=storage)
+        await engine.save_model(SlayerModel(
+            name="qb",
+            data_source="test",
+            source_queries=[
+                SlayerQuery(
+                    name="raw",
+                    source_model="orders",
+                    dimensions=["region"],
+                    measures=inner_measures,
+                ),
+                SlayerQuery(
+                    source_model="raw",
+                    measures=outer_measures,
+                ),
+            ],
+        ))
+
+    async def test_edit_model_renames_inner_stage_measure(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Initial: stage 1 names a measure ``old``. Edit replaces source_queries
+        with ``new`` everywhere. The cached SQL must reference the new name and
+        not the old one; cached columns must follow.
+        """
+        await self._setup_orders_with_two_stage_model(
+            storage,
+            inner_measures=[{"formula": "amount:sum", "name": "old"}],
+            outer_measures=[{"formula": "old:sum"}],
+        )
+        # Sanity: initial cache reflects 'old'.
+        before = await storage.get_model("qb")
+        assert before is not None
+        assert before.backing_query_sql is not None
+        assert "old" in before.backing_query_sql
+        assert "old_sum" in [c.name for c in before.columns]
+
+        # Edit: rename inner-stage measure to 'new' (and update outer to match).
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "qb",
+            "source_queries": [
+                {
+                    "name": "raw",
+                    "source_model": "orders",
+                    "dimensions": ["region"],
+                    "measures": [{"formula": "amount:sum", "name": "new"}],
+                },
+                {
+                    "source_model": "raw",
+                    "measures": [{"formula": "new:sum"}],
+                },
+            ],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True, result
+
+        after = await storage.get_model("qb")
+        assert after is not None
+        assert after.backing_query_sql is not None
+        col_names = [c.name for c in after.columns]
+        assert "new_sum" in col_names, (
+            f"cache must reflect renamed inner measure, got: {col_names}"
+        )
+        assert "old_sum" not in col_names, (
+            f"stale 'old_sum' must be evicted, got: {col_names}"
+        )
+        sql = after.backing_query_sql
+        assert "new" in sql, f"backing_query_sql must contain new name:\n{sql}"
+        # The stale name must not survive in the wrap aliases or measure refs.
+        assert " AS old " not in sql and 'AS "old"' not in sql, (
+            f"backing_query_sql must not retain stale 'old' alias:\n{sql}"
+        )
+
+    async def test_edit_model_stage_shape_change_drops_and_adds_measure(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """Initial stage 1 has two measures (``rev``, ``n``). Edit drops ``n``
+        and adds ``avg_amount`` instead. Outer stage now references the new
+        name; cached SQL must reflect the swap.
+        """
+        await self._setup_orders_with_two_stage_model(
+            storage,
+            inner_measures=[
+                {"formula": "amount:sum", "name": "rev"},
+                {"formula": "*:count", "name": "n"},
+            ],
+            outer_measures=[{"formula": "rev:sum"}],
+        )
+        before = await storage.get_model("qb")
+        assert before is not None
+        before_cols = [c.name for c in before.columns]
+        assert "rev_sum" in before_cols
+        # Inner-stage `n` is not directly emitted on the outer model (the
+        # outer only takes rev:sum), but it must appear in backing_query_sql
+        # as the inner stage's wrap rename.
+        before_sql = before.backing_query_sql or ""
+        assert " AS n " in before_sql or 'AS "n"' in before_sql or before_sql.find("AS n\n") >= 0, (
+            f"initial cache should expose inner 'n' alias:\n{before_sql}"
+        )
+
+        # Edit: swap n → avg_amount in stage 1; outer now sums avg_amount.
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "qb",
+            "source_queries": [
+                {
+                    "name": "raw",
+                    "source_model": "orders",
+                    "dimensions": ["region"],
+                    "measures": [
+                        {"formula": "amount:sum", "name": "rev"},
+                        {"formula": "amount:avg", "name": "avg_amount"},
+                    ],
+                },
+                {
+                    "source_model": "raw",
+                    "measures": [
+                        {"formula": "rev:sum"},
+                        {"formula": "avg_amount:avg"},
+                    ],
+                },
+            ],
+        })
+        parsed = json.loads(result)
+        assert parsed["success"] is True, result
+
+        after = await storage.get_model("qb")
+        assert after is not None
+        after_sql = after.backing_query_sql or ""
+        # Stale `n` must be gone from the inner wrap.
+        assert " AS n " not in after_sql and 'AS "n"' not in after_sql, (
+            f"stale inner 'n' alias must be evicted:\n{after_sql}"
+        )
+        # New `avg_amount` must be present.
+        assert "avg_amount" in after_sql, (
+            f"new 'avg_amount' alias must appear in backing_query_sql:\n{after_sql}"
+        )
+        # Cached outer columns reflect the new outer measures.
+        after_cols = [c.name for c in after.columns]
+        assert "rev_sum" in after_cols
+        assert "avg_amount_avg" in after_cols, (
+            f"outer column for avg_amount:avg missing: {after_cols}"
+        )
 
 
 class TestEditModelColumnsRejected:

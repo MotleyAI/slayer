@@ -609,7 +609,10 @@ class TestFields:
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
-        assert "_wm_orders__revenue_sum_window_90d" in norm
+        # Windowed-sum CTE name follows the measure's surfaced name; with an
+        # explicit ``name="revenue_90d"`` the CTE is named after the user
+        # alias (DEV-1335 — user ``name`` overrides the canonical form).
+        assert "_wm_orders__revenue_90d" in norm
         assert "LEFT JOIN" in norm
         assert "_src._w_time >=" in norm
         assert "_src._w_time <" in norm
@@ -1735,6 +1738,106 @@ class TestMultiDialectGeneration:
         )
         with pytest.raises(NotImplementedError, match="MySQL"):
             await _generate(generator=gen, query=query, model=orders_model)
+
+
+class TestSqliteJsonExtractInGenerator:
+    """DEV-1331: ``json_extract(col, '$.path')`` in ``Column.sql`` must not be
+    rewritten to ``col -> '$.path'`` on SQLite — the operator returns the
+    JSON-quoted form, silently breaking equality / CASE WHEN matches.
+    """
+
+    @pytest.fixture
+    def model_with_json_dim(self) -> SlayerModel:
+        return SlayerModel(
+            name="users",
+            sql_table="users",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="payload", sql="payload", type=DataType.STRING),
+                Column(
+                    name="tier",
+                    sql="json_extract(payload, '$.tier')",
+                    type=DataType.STRING,
+                ),
+                Column(
+                    name="is_gold",
+                    sql=(
+                        "CASE LOWER(json_extract(payload, '$.tier')) "
+                        "WHEN 'gold' THEN 1 ELSE 0 END"
+                    ),
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+
+    async def test_sqlite_column_sql_with_json_extract_dimension(
+        self, model_with_json_dim: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="users",
+            dimensions=[ColumnRef(name="tier")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
+        assert "JSON_EXTRACT(" in sql, f"missing JSON_EXTRACT in:\n{sql}"
+        # The lossy ``payload -> '$.tier'`` form must not appear.
+        assert "payload -> '$.tier'" not in sql, sql
+
+    async def test_sqlite_column_sql_with_json_extract_in_case_when(
+        self, model_with_json_dim: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="users",
+            measures=[ModelMeasure(formula="is_gold:sum")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
+        assert "JSON_EXTRACT(" in sql, sql
+        assert "payload -> '$.tier'" not in sql, sql
+
+    async def test_sqlite_inline_sql_subquery_with_json_extract(self) -> None:
+        model = SlayerModel(
+            name="users",
+            sql=(
+                "SELECT id, json_extract(payload, '$.tier') AS tier "
+                "FROM raw_users"
+            ),
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="tier", sql="tier", type=DataType.STRING),
+            ],
+        )
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="users",
+            dimensions=[ColumnRef(name="tier")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model)
+        assert "JSON_EXTRACT(" in sql, sql
+        assert "payload -> '$.tier'" not in sql, sql
+
+    async def test_postgres_column_sql_with_json_extract_unchanged(
+        self, model_with_json_dim: SlayerModel,
+    ) -> None:
+        """Regression guard: rewrite is SQLite-only; Postgres path is untouched.
+
+        Postgres has no scalar-vs-JSON quoting bug for ``json_extract``;
+        sqlglot transpiles it to ``JSON_EXTRACT_PATH(j, 'k')``. We just
+        assert the generator produces *some* form of JSON extraction and
+        does not crash.
+        """
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="users",
+            dimensions=[ColumnRef(name="tier")],
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        sql = await _generate(generator=gen, query=query, model=model_with_json_dim)
+        assert "JSON_EXTRACT" in sql.upper(), sql
 
 
 class TestMedianPercentilePerDialect:
@@ -4562,7 +4665,10 @@ class TestOrderByCustomFieldName:
     """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
 
     async def test_order_by_custom_name(self, generator: SQLGenerator) -> None:
-        """Field with custom name 'num_customers' should be resolvable in ORDER BY."""
+        """Field with custom name 'num_customers' is the surfaced alias and
+        ORDER BY references it directly (DEV-1335 — user ``name`` overrides
+        the canonical ``customer_id_count_distinct`` form).
+        """
         model = SlayerModel(
             name="orders",
             sql_table="orders",
@@ -4581,8 +4687,15 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # The ORDER BY should reference the count_distinct column, not "orders.num_customers"
-        assert "orders.num_customers" not in sql, f"Custom name not resolved: {sql}"
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name surfaces as the ORDER BY column.
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias not used in ORDER BY: {sql}"
+        )
+        # Canonical form must not leak into the ORDER BY clause.
+        assert '"orders.customer_id_count_distinct"' not in order_clause, (
+            f"canonical alias must not leak when user supplies 'name': {sql}"
+        )
         assert "COUNT(DISTINCT" in sql
 
     async def test_order_by_canonical_name_still_works(self, generator: SQLGenerator) -> None:
@@ -4638,9 +4751,11 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # The ORDER BY must NOT use the raw custom name "orders.num_customers"
-        assert "orders.num_customers" not in sql, (
-            f"Custom name not resolved in computed query path:\n{sql}"
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name is the ORDER BY column (DEV-1335 — user ``name`` overrides
+        # the canonical form).
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias must surface in ORDER BY for computed query path:\n{sql}"
         )
 
 
@@ -5645,8 +5760,10 @@ class TestGetColumnTypesSql:
         assert "orders.COALESCE" not in sql, f"Expression measure corrupted:\n{sql}"
         # Bare measure should be qualified
         assert "orders.amount" in sql
-        # Expression should appear as-is
-        assert "COALESCE(amount, 0)" in sql
+        # Bare ``amount`` inside the expression now qualifies to the model's
+        # alias (``orders.amount``) — derived-ref expansion (DEV-1333) makes
+        # every base-column reference unambiguous.
+        assert "COALESCE(orders.amount, 0)" in sql
 
     async def test_cross_model_measures_probed_via_engine(self) -> None:
         """Cross-model measures should be probed via the engine's enrich+generate pipeline."""

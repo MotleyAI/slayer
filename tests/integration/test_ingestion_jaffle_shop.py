@@ -10,6 +10,7 @@ ingested models through YAMLStorage to confirm no v1 keys leak to disk.
 
 import asyncio
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Dict
@@ -38,11 +39,27 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.integration
 
+# Cached 3-year demo DB maintained by tests/integration/test_notebooks.py's
+# session-scoped _ensure_jaffle_db fixture. Reusing it avoids ~6s of
+# `jafgen` subprocess time per pytest invocation.
+_CACHED_JAFFLE_DB = (
+    Path(__file__).resolve().parent.parent.parent
+    / "docs" / "examples" / "jaffle_data" / "demo" / "jaffle_shop.duckdb"
+)
+
 
 @pytest.fixture(scope="module")
 def jaffle_duckdb_path(tmp_path_factory):
-    """Generate a small Jaffle Shop DuckDB file once for this module."""
+    """Path to a Jaffle Shop DuckDB file. Reuses the project-wide cached DB
+    at docs/examples/jaffle_data/demo/jaffle_shop.duckdb when present; falls
+    back to ``jafgen`` for fresh checkouts."""
     tmpdir = tmp_path_factory.mktemp("jaffle_ingest")
+    db_path = tmpdir / "jaffle_ingest.duckdb"
+
+    if _CACHED_JAFFLE_DB.exists():
+        shutil.copy(_CACHED_JAFFLE_DB, db_path)
+        return str(db_path)
+
     try:
         data_dir = generate_data(output_dir=str(tmpdir), years=1)
     except DemoDependencyError as exc:
@@ -50,7 +67,6 @@ def jaffle_duckdb_path(tmp_path_factory):
     except (FileNotFoundError, RuntimeError) as exc:
         pytest.skip(f"Jaffle shop prerequisite missing: {exc}")
 
-    db_path = tmpdir / "jaffle_ingest.duckdb"
     conn = duckdb.connect(str(db_path))
     try:
         create_schema(conn=conn)

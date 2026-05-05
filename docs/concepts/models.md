@@ -66,6 +66,36 @@ Each column carries the metadata needed to use it either as a GROUP BY key (a "d
 | `filter` | string | No | — | SQL condition applied inside CASE-WHEN at aggregation time. See [Filtered Columns](#filtered-columns) below |
 | `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"source": "CRM", "team": "analytics"}`) |
 
+### Derived Columns Referencing Other Derived Columns
+
+A `Column.sql` may reference any other column on the same model or on a joined model — including columns that are themselves *derived* (have their own `sql` expression rather than being a bare base-table column). The engine recursively inlines those references at query time, so chains stay DRY.
+
+```yaml
+# Model: stations
+columns:
+  - name: foo_raw                 # base column
+    sql: "foo_raw"
+    type: number
+
+  - name: foo_normalized          # derived on stations
+    sql: "foo_raw / 100.0"
+    type: number
+
+# Model: telescopes — joined to stations
+columns:
+  - name: aoi_ratio               # derived on telescopes, references the
+                                  # *derived* stations.foo_normalized
+    sql: "telescopes.aperture / stations.foo_normalized"
+    type: number
+joins:
+  - target_model: stations
+    join_pairs: [["station_id", "id"]]
+```
+
+At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the `__`-delimited form, e.g., `B__C.x_derived`, when crossing more than one join).
+
+Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are detected at enrichment time and raise a clear `ValueError`. The same expansion is applied to filters and to colon-aggregated measures, so `"B.foo_normalized:sum"` produces `SUM(B.foo_raw / 100.0)`.
+
 ### Column Data Types
 
 | Type | Description | SQL Examples |
@@ -122,6 +152,7 @@ For dialect-portable top-N filtering, prefer the `rank()` transform inline (`"fi
 | `name` | string | No | (auto-derived) | Measure name; queries reference this by bare name |
 | `label` | string | No | — | Human-readable display name |
 | `description` | string | No | — | Explanatory text |
+| `meta` | dict | No | — | Arbitrary JSON metadata for caller bookkeeping (e.g., `{"kb_id": "abc-123"}`) |
 
 Column and measure names share a namespace within a model — a model cannot have a column named `aov` and a measure named `aov` at the same time (validated at save time).
 
@@ -235,6 +266,8 @@ aggregations:
 
 Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(low=10, high=1000)`.
 
+Like columns and measures, aggregations also accept an optional `meta` dict for caller bookkeeping (e.g., `{"owner": "analytics"}`).
+
 ## SQL Expressions
 
 ### In Dimensions and Measures
@@ -242,6 +275,22 @@ Use at query time: `price:weighted_avg(weight=quantity)`, `revenue:trimmed_mean(
 Use **bare column names** (e.g., `"amount"`) — SLayer automatically qualifies them with the model's table reference at query time.
 
 For complex expressions, use the model name as a table prefix: `"orders.amount * orders.quantity"`.
+
+### SQLite JSON extraction
+
+`json_extract(col, '$.path')` in a `Column.sql` is preserved as the function-call form on SQLite — SLayer does **not** rewrite it to `col -> '$.path'`. The `->` operator in SQLite returns the JSON-quoted form (e.g. `'"Owned"'` with literal quotes), so equality and `CASE WHEN` matches against bare-string literals would silently fail. The function form returns the unquoted scalar.
+
+```yaml
+columns:
+  - name: tier
+    type: string
+    sql: "json_extract(payload, '$.tier')"           # works on SQLite (preserved)
+  - name: is_gold
+    type: number
+    sql: "CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END"
+```
+
+If you specifically want the SQLite JSON-scalar operator, write `->>` (`exp.JSONExtractScalar`) directly — SLayer leaves it untouched.
 
 ## Joins
 
@@ -377,8 +426,30 @@ A query result is a self-contained table — it no longer has the joins that the
 | `customer_id` | `customer_id` |
 | `*:count` (measure) | `count` |
 | `revenue:sum` (measure) | `revenue_sum` |
+| `{"formula": "revenue:sum", "name": "rev"}` | `rev` |
 
 This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
+
+An explicit `name` on a measure spec **overrides** the canonical naming above for both arithmetic/transform formulas and simple aggregations. This is what lets multi-stage `source_queries` rename inner-stage outputs cleanly:
+
+```json
+{
+  "source_queries": [
+    {
+      "name": "raw",
+      "source_model": "orders",
+      "dimensions": ["region"],
+      "measures": [{"formula": "amount:sum", "name": "rev"}]
+    },
+    {
+      "source_model": "raw",
+      "measures": [{"formula": "rev:sum"}]
+    }
+  ]
+}
+```
+
+The inner stage emits a column named `rev` (not `amount_sum`), and the outer stage references it by that chosen name.
 
 See the [multistage queries example](../examples/06_multistage_queries/multistage_queries.md) for working examples.
 

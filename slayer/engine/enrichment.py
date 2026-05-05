@@ -32,6 +32,7 @@ from slayer.core.formula import (
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.engine.column_expansion import expand_derived_refs
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedDimension,
@@ -102,6 +103,8 @@ async def enrich_query(
     resolve_dimension_via_joins,
     resolve_cross_model_measure,
     resolve_join_target,
+    resolve_model=None,
+    dialect: str = "postgres",
 ) -> EnrichedQuery:
     """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -109,10 +112,21 @@ async def enrich_query(
         query: The user-facing query.
         model: The resolved model definition.
         named_queries: Named sub-queries (for query lists).
-        resolve_dimension_via_joins: Callback(model, parts, named_queries) -> Dimension|None
-        resolve_cross_model_measure: Callback(spec_name, field_name, model, query,
-            dimensions, time_dimensions, label, named_queries) -> CrossModelMeasure
+        resolve_dimension_via_joins: Callback(model, parts, named_queries) ->
+            (Column, SlayerModel) | None — returns the resolved column AND
+            the terminal model so the SQL expander can recurse into derived
+            references in ``Column.sql``. (Legacy single-value callbacks
+            that return just a Column are also accepted; in that case the
+            engine falls back to ``model`` as the terminal, which is fine
+            for tests that pass ``_noop_async``.)
+        resolve_cross_model_measure: Callback for cross-model measure refs.
         resolve_join_target: Callback(target_model_name, named_queries) -> (table_sql, model)|None
+        resolve_model: Async callback ``(model_name, named_queries)`` ->
+            ``SlayerModel | None``, used by the column-SQL expander to
+            recursively walk join paths inside derived ``Column.sql``
+            expressions. May be None in tests that don't exercise the
+            expansion path.
+        dialect: sqlglot dialect for parsing/emitting expanded SQL.
     """
     named_queries = named_queries or {}
     model_name_str = query.source_model if isinstance(query.source_model, str) else model.name
@@ -145,6 +159,8 @@ async def enrich_query(
         model_name_str=model_name_str,
         named_queries=named_queries,
         resolve_dimension_via_joins=resolve_dimension_via_joins,
+        resolve_model=resolve_model,
+        dialect=dialect,
     )
 
     # --- Measures (populated from fields below) ---
@@ -157,6 +173,8 @@ async def enrich_query(
         model_name_str=model_name_str,
         named_queries=named_queries,
         resolve_dimension_via_joins=resolve_dimension_via_joins,
+        resolve_model=resolve_model,
+        dialect=dialect,
     )
 
     # --- Time resolution for transforms ---
@@ -280,6 +298,17 @@ async def enrich_query(
                             f"'{model.name}'. Default aggregations: {sorted(allowed)}"
                         )
             sql = measure_def.sql or measure_name
+            if measure_def.sql and resolve_model is not None:
+                expanded_sql = await expand_derived_refs(
+                    sql=measure_def.sql,
+                    model=model,
+                    alias_path=model_name_str,
+                    resolve_model=resolve_model,
+                    named_queries=named_queries,
+                    dialect=dialect,
+                )
+                if expanded_sql is not None:
+                    sql = expanded_sql
 
         # Validate aggregation exists
         aggregation_def = model.get_aggregation(aggregation_name)
@@ -311,6 +340,8 @@ async def enrich_query(
                 model_name=model_name_str,
                 resolve_join_target=resolve_join_target,
                 named_queries=named_queries,
+                resolve_model=resolve_model,
+                dialect=dialect,
             )
             filter_sql = resolved[0].sql
             filter_columns = list(resolved[0].columns)
@@ -630,6 +661,20 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
+            # When the user supplies an explicit ``name`` on the measure spec,
+            # surface it as the EnrichedMeasure's name/alias so downstream
+            # stages (and the wrap subquery) emit the user's chosen alias
+            # instead of the canonical ``col_agg`` form. The canonical alias
+            # remains resolvable via known_aliases for inline references.
+            if qfield.name and qfield.name != canonical_name:
+                user_alias = f"{model_name_str}.{qfield.name}"
+                for m in measures:
+                    if m.alias == f"{model_name_str}.{canonical_name}":
+                        m.name = qfield.name
+                        m.alias = user_alias
+                        break
+                known_aliases[qfield.name] = user_alias
+                known_aliases[canonical_name] = user_alias
             # Register custom field name so ORDER BY can resolve it
             if field_name != canonical_name and canonical_name in known_aliases:
                 field_name_aliases[field_name] = known_aliases[canonical_name]
@@ -642,8 +687,9 @@ async def enrich_query(
                     f"or set default_time_dimension on the model."
                 )
             if qfield.label:
+                target_name = qfield.name if (qfield.name and qfield.name != canonical_name) else canonical_name
                 for m in measures:
-                    if m.name == canonical_name:
+                    if m.name == target_name:
                         m.label = qfield.label
 
         else:
@@ -752,6 +798,8 @@ async def enrich_query(
         resolve_join_target=resolve_join_target,
         named_queries=named_queries,
         windowed_column_names=windowed_column_names,
+        resolve_model=resolve_model,
+        dialect=dialect,
     )
 
     # Materialize each windowed Column referenced by any filter. Each becomes a
@@ -811,30 +859,91 @@ async def enrich_query(
 # ---------------------------------------------------------------------------
 
 
+def _unpack_dim_resolution(result):
+    """Accept either ``Column`` or ``(Column, SlayerModel)`` from
+    ``resolve_dimension_via_joins`` so legacy test callbacks (which return a
+    plain Column or None) keep working alongside the engine's tuple form.
+    """
+    if result is None:
+        return None, None
+    if isinstance(result, tuple):
+        return result[0], result[1]
+    return result, None
+
+
+async def _maybe_expand(
+    *,
+    sql: Optional[str],
+    terminal_model: Optional[SlayerModel],
+    fallback_model: SlayerModel,
+    alias_path: str,
+    resolve_model,
+    named_queries: dict,
+    dialect: str,
+    is_root: bool = True,
+) -> Optional[str]:
+    """Run the column-SQL expander when we have what we need; otherwise
+    return ``sql`` unchanged. Lets tests that don't supply ``resolve_model``
+    keep getting the legacy unexpanded behavior — production always supplies
+    it via the engine.
+
+    ``is_root=False`` for cross-model dims/measures: the source has been
+    reached via a join path, so any further walks inside its derived
+    Column.sql must prefix the alias path (closes PR #89 alias-prefix bug).
+    """
+    if not sql or resolve_model is None:
+        return sql
+    return await expand_derived_refs(
+        sql=sql,
+        model=terminal_model or fallback_model,
+        alias_path=alias_path,
+        resolve_model=resolve_model,
+        named_queries=named_queries,
+        dialect=dialect,
+        is_root=is_root,
+    )
+
+
 async def _resolve_dimensions(
     query: SlayerQuery,
     model: SlayerModel,
     model_name_str: str,
     named_queries: dict,
     resolve_dimension_via_joins,
+    resolve_model=None,
+    dialect: str = "postgres",
 ) -> List[EnrichedDimension]:
     dimensions = []
     for dim_ref in query.dimensions or []:
-        if dim_ref.model is None:
+        terminal_model: Optional[SlayerModel] = None
+        is_local = dim_ref.model is None
+        if is_local:
             dim_def = model.get_column(dim_ref.name)
             effective_model = model_name_str
+            terminal_model = model
         else:
             parts = dim_ref.model.split(".") + [dim_ref.name]
-            dim_def = await resolve_dimension_via_joins(
+            raw = await resolve_dimension_via_joins(
                 model=model,
                 parts=parts,
                 named_queries=named_queries,
             )
+            dim_def, terminal_model = _unpack_dim_resolution(raw)
             effective_model = "__".join(dim_ref.model.split("."))
+        expanded_sql = await _maybe_expand(
+            sql=dim_def.sql if dim_def else None,
+            terminal_model=terminal_model,
+            fallback_model=model,
+            alias_path=effective_model,
+            resolve_model=resolve_model,
+            named_queries=named_queries,
+            dialect=dialect,
+            is_root=is_local,
+        )
         dimensions.append(
             EnrichedDimension(
                 name=dim_ref.name,
-                sql=dim_def.sql if dim_def else None,
+                sql=expanded_sql,
                 type=dim_def.type if dim_def else DataType.STRING,
                 alias=f"{model_name_str}.{dim_ref.full_name}",
                 model_name=effective_model,
@@ -851,24 +960,40 @@ async def _resolve_time_dimensions(
     model_name_str: str,
     named_queries: dict,
     resolve_dimension_via_joins,
+    resolve_model=None,
+    dialect: str = "postgres",
 ) -> List[EnrichedTimeDimension]:
     time_dimensions = []
     for td in query.time_dimensions or []:
-        if td.dimension.model is None:
+        terminal_model: Optional[SlayerModel] = None
+        is_local = td.dimension.model is None
+        if is_local:
             dim_def = model.get_column(td.dimension.name)
             td_model_name = model_name_str
+            terminal_model = model
         else:
             parts = td.dimension.model.split(".") + [td.dimension.name]
-            dim_def = await resolve_dimension_via_joins(
+            raw = await resolve_dimension_via_joins(
                 model=model,
                 parts=parts,
                 named_queries=named_queries,
             )
+            dim_def, terminal_model = _unpack_dim_resolution(raw)
             td_model_name = "__".join(td.dimension.model.split("."))
+        expanded_sql = await _maybe_expand(
+            sql=dim_def.sql if dim_def else None,
+            terminal_model=terminal_model,
+            fallback_model=model,
+            alias_path=td_model_name,
+            resolve_model=resolve_model,
+            named_queries=named_queries,
+            dialect=dialect,
+            is_root=is_local,
+        )
         time_dimensions.append(
             EnrichedTimeDimension(
                 name=td.dimension.name,
-                sql=dim_def.sql if dim_def else None,
+                sql=expanded_sql,
                 granularity=td.granularity,
                 date_range=td.date_range,
                 alias=f"{model_name_str}.{td.dimension.full_name}",
@@ -909,12 +1034,22 @@ def _resolve_last_agg_time(
         if "." not in mtd:
             mtd = f"{model.name}.{mtd}"
         return mtd
+
+    def _qualified(model_name: str, sql: Optional[str], name: str) -> str:
+        # Once derived-ref expansion has run, `sql` may already be qualified
+        # (e.g. ``orders.created_at`` instead of bare ``created_at``); don't
+        # double-prefix in that case.
+        expr = sql or name
+        if "." in expr:
+            return expr
+        return f"{model_name}.{expr}"
+
     for d in dimensions:
         if d.type in (DataType.TIMESTAMP, DataType.DATE):
-            return f"{d.model_name}.{d.sql or d.name}"
+            return _qualified(d.model_name, d.sql, d.name)
     if time_dimensions:
         td = time_dimensions[0]
-        return f"{td.model_name}.{td.sql or td.name}"
+        return _qualified(td.model_name, td.sql, td.name)
     if query.filters:
         time_dim_names = {c.name for c in model.columns if c.type in (DataType.TIMESTAMP, DataType.DATE)}
         for f_str in query.filters or []:
@@ -1179,6 +1314,8 @@ async def resolve_filter_columns(
     resolve_join_target=None,
     named_queries: dict = None,
     windowed_column_names: Optional[Set[str]] = None,
+    resolve_model=None,
+    dialect: str = "postgres",
 ) -> list:
     """Resolve filter column references through model dimensions/measures.
 
@@ -1186,10 +1323,30 @@ async def resolve_filter_columns(
     (``windowed_column_names``), do NOT inline the SQL. Instead emit the
     canonical ``{model}.{name}`` alias so the filter can be applied as a
     post-filter on the materialized base-CTE alias (DEV-1336).
+
+    When ``resolve_model`` is supplied, derived ``Column.sql`` expressions
+    are recursively expanded so chained derivations (cross-model or local)
+    yield fully-qualified physical-table SQL inside WHERE clauses.
     """
     import re as _re
 
     windowed_column_names = windowed_column_names or set()
+
+    async def _expanded_sql_expr(*, sql_expr: str, owning_model: SlayerModel,
+                                 alias_path: str, is_root: bool) -> str:
+        """Expand derived references inside a filter's resolved SQL fragment."""
+        if resolve_model is None:
+            return sql_expr
+        expanded = await expand_derived_refs(
+            sql=sql_expr,
+            model=owning_model,
+            alias_path=alias_path,
+            resolve_model=resolve_model,
+            named_queries=named_queries or {},
+            dialect=dialect,
+            is_root=is_root,
+        )
+        return expanded if expanded is not None else sql_expr
 
     for f in parsed_filters:
         resolved_sql = f.sql
@@ -1208,7 +1365,15 @@ async def resolve_filter_columns(
                 dim = model.get_column(col_name)
                 if dim:
                     sql_expr = dim.sql or col_name
-                    qualified = f"{model_name}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
+                    if sql_expr.isidentifier():
+                        qualified = f"{model_name}.{sql_expr}"
+                    else:
+                        qualified = await _expanded_sql_expr(
+                            sql_expr=sql_expr,
+                            owning_model=model,
+                            alias_path=model_name,
+                            is_root=True,
+                        )
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
                         qualified,
@@ -1250,7 +1415,15 @@ async def resolve_filter_columns(
                     if dim:
                         sql_expr = dim.sql or dim_name
                         table_alias = "__".join(path_parts)
-                        qualified = f"{table_alias}.{sql_expr}" if sql_expr.isidentifier() else sql_expr
+                        if sql_expr.isidentifier():
+                            qualified = f"{table_alias}.{sql_expr}"
+                        else:
+                            qualified = await _expanded_sql_expr(
+                                sql_expr=sql_expr,
+                                owning_model=current_model,
+                                alias_path=table_alias,
+                                is_root=False,
+                            )
                         resolved_sql = _re.sub(
                             rf"(?<!\w)\b{_re.escape(col_name)}\b",
                             qualified,

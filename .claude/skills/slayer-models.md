@@ -61,6 +61,8 @@ joins:
 
 Enables cross-model measures (`customers.score:avg`), multi-hop dimensions (`customers.regions.name`), and transforms on joined measures (`cumsum(customers.score:avg)`). Auto-ingestion creates one direct join per FK on the source table. Multi-hop paths (e.g. `orders → customers → regions`) are resolved at query time by walking each intermediate model's own joins. Diamond joins (same table via different paths) are supported — each path gets a unique `__`-delimited alias (e.g., `customers__regions` vs `warehouses__regions`).
 
+**Derived-on-derived chaining.** A `Column.sql` may reference another *derived* column — local same-model or via the join graph (single-dot `B.col` or `__`-delimited `B__C.col` path). The engine recursively inlines those references at query time, so you can write `A.ratio = "A.bar / B.foo_normalized"` even when `B.foo_normalized.sql = "foo_raw / 100.0"`. No need to inline derivations at every consumer site. Cycles raise a clear `ValueError` at enrichment time.
+
 ## Model Filters
 
 Models can have always-applied WHERE filters: `filters: ["deleted_at IS NULL"]`. Only WHERE conditions on underlying table columns.
@@ -92,6 +94,7 @@ You **cannot** supply `columns` or `backing_query_sql` when saving a query-backe
 
 - Use **bare column names** (e.g., `"amount"`) in dimension/measure SQL — SLayer qualifies them automatically
 - For complex expressions, use the model name as table prefix (e.g., `"orders.amount * orders.quantity"`)
+- **SQLite**: `json_extract(col, '$.path')` is preserved as the function-call form (not rewritten to `col -> '$.path'`, which would return the JSON-quoted form and silently break `CASE WHEN` / equality matches against bare-string literals). Use `->>` directly if you specifically want the SQLite scalar operator.
 
 ## Datasource Config
 

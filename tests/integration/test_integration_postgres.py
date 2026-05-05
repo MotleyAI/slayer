@@ -1,11 +1,13 @@
 """Integration tests using a real PostgreSQL database via pytest-postgresql."""
 
 import tempfile
+import uuid
 
 import pytest
 
 pytest.importorskip("pytest_postgresql")
 
+import psycopg
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType, TimeGranularity
@@ -18,91 +20,143 @@ from slayer.async_utils import run_sync
 
 # Spawn a temporary Postgres process (random port)
 postgresql_proc = factories.postgresql_proc(port=None)
+# Function-scoped per-test connection — used by pg_cross_model_env, which has a
+# test that mutates storage (create_model_from_query) and so cannot share a
+# module-scoped DB safely.
 postgresql = factories.postgresql("postgresql_proc")
 
 
+def _create_module_db(postgresql_proc):
+    """Create a fresh database on the session-scoped Postgres for one
+    module-scoped fixture. Returns (open_connection, db_name). Caller is
+    responsible for closing the connection and calling _drop_module_db on
+    teardown."""
+    info = postgresql_proc
+    db_name = f"test_{uuid.uuid4().hex[:12]}"
+    admin = psycopg.connect(
+        host=info.host, port=info.port, user=info.user, dbname="postgres",
+    )
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f'CREATE DATABASE "{db_name}"')
+    admin.close()
+    conn = psycopg.connect(
+        host=info.host, port=info.port, user=info.user, dbname=db_name,
+    )
+    return conn, db_name
+
+
+def _drop_module_db(postgresql_proc, db_name):
+    info = postgresql_proc
+    admin = psycopg.connect(
+        host=info.host, port=info.port, user=info.user, dbname="postgres",
+    )
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        # FORCE: terminate any lingering async-engine connection pools that
+        # haven't yet been GC'd. Requires Postgres 13+; pytest-postgresql ships
+        # with whatever the system pg_ctl is, so this is fine in practice.
+        cur.execute(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+    admin.close()
+
+
+@pytest.fixture(scope="module")
+def _pg_env_storage(postgresql_proc, tmp_path_factory):
+    """Module-scoped: per-module Postgres DB with seeded customers/orders, plus
+    a YAMLStorage with the orders + customers models pre-saved. Returns the
+    storage instance — the per-test ``pg_env`` fixture wraps a fresh engine
+    around it (engines bind to their event loop, see slayer/sql/client.py:144).
+    """
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                region TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL,
+                amount NUMERIC(10,2) NOT NULL,
+                customer_id INTEGER REFERENCES customers(id),
+                created_at TIMESTAMP NOT NULL
+            )
+        """)
+        cur.executemany(
+            "INSERT INTO customers VALUES (%s, %s, %s)",
+            [(1, "Acme Corp", "US"), (2, "Globex", "EU"), (3, "Initech", "US")],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (%s, %s, %s, %s, %s)",
+            [
+                (1, "completed", 100, 1, "2024-01-15 10:00:00"),
+                (2, "completed", 200, 1, "2024-01-20 11:00:00"),
+                (3, "pending", 50, 2, "2024-02-10 09:00:00"),
+                (4, "completed", 150, 2, "2024-02-15 14:00:00"),
+                (5, "cancelled", 75, 3, "2024-03-01 08:00:00"),
+                (6, "pending", 300, 3, "2024-03-10 16:00:00"),
+            ],
+        )
+        conn.commit()
+
+        tmpdir = str(tmp_path_factory.mktemp("pg_env"))
+        storage = YAMLStorage(base_dir=tmpdir)
+
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="testpg",
+            type="postgres",
+            host=info.host,
+            port=info.port,
+            database=db_name,
+            username=info.user,
+            password="",
+        )))
+
+        orders_model = SlayerModel(
+            name="orders",
+            sql_table="orders",
+            data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+
+                Column(name="total", sql="amount", type=DataType.NUMBER),
+                Column(name="avg_amount", sql="amount", type=DataType.NUMBER),
+            ],
+        )
+        customers_model = SlayerModel(
+            name="customers",
+            sql_table="customers",
+            data_source="testpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="region", sql="region", type=DataType.STRING),
+
+            ],
+        )
+        run_sync(storage.save_model(orders_model))
+        run_sync(storage.save_model(customers_model))
+
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
 @pytest.fixture
-async def pg_env(postgresql):
-    """Set up a full SLayer environment against the temporary Postgres."""
-    # Create test tables
-    cur = postgresql.cursor()
-    cur.execute("""
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            region TEXT NOT NULL
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL,
-            amount NUMERIC(10,2) NOT NULL,
-            customer_id INTEGER REFERENCES customers(id),
-            created_at TIMESTAMP NOT NULL
-        )
-    """)
-    cur.executemany(
-        "INSERT INTO customers VALUES (%s, %s, %s)",
-        [(1, "Acme Corp", "US"), (2, "Globex", "EU"), (3, "Initech", "US")],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (%s, %s, %s, %s, %s)",
-        [
-            (1, "completed", 100, 1, "2024-01-15 10:00:00"),
-            (2, "completed", 200, 1, "2024-01-20 11:00:00"),
-            (3, "pending", 50, 2, "2024-02-10 09:00:00"),
-            (4, "completed", 150, 2, "2024-02-15 14:00:00"),
-            (5, "cancelled", 75, 3, "2024-03-01 08:00:00"),
-            (6, "pending", 300, 3, "2024-03-10 16:00:00"),
-        ],
-    )
-    postgresql.commit()
-
-    # Set up SLayer storage
-    tmpdir = tempfile.mkdtemp()
-    storage = YAMLStorage(base_dir=tmpdir)
-
-    info = postgresql.info
-    await storage.save_datasource(DatasourceConfig(
-        name="testpg",
-        type="postgres",
-        host=info.host,
-        port=info.port,
-        database=info.dbname,
-        username=info.user,
-        password="",
-    ))
-
-    orders_model = SlayerModel(
-        name="orders",
-        sql_table="orders",
-        data_source="testpg",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-
-            Column(name="total", sql="amount", type=DataType.NUMBER),
-            Column(name="avg_amount", sql="amount", type=DataType.NUMBER),
-        ],
-    )
-    customers_model = SlayerModel(
-        name="customers",
-        sql_table="customers",
-        data_source="testpg",
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
-            Column(name="region", sql="region", type=DataType.STRING),
-
-        ],
-    )
-    await storage.save_model(orders_model)
-    await storage.save_model(customers_model)
-
-    return SlayerQueryEngine(storage=storage)
+def pg_env(_pg_env_storage):
+    """Per-test SlayerQueryEngine wrapping the module-scoped storage. The
+    engine is recreated per-test because its async SQLAlchemy engine binds to
+    the current event loop."""
+    return SlayerQueryEngine(storage=_pg_env_storage)
 
 
 @pytest.mark.integration
@@ -468,54 +522,64 @@ class TestCrossModelAndMultistage:
         assert by_tier["low"] == 3
 
 
-@pytest.fixture
-def pg_ingest_env(postgresql):
-    """Set up tables with FK relationships and ingest via rollup."""
-    cur = postgresql.cursor()
-    cur.execute("""
-        CREATE TABLE regions (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE customers (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            region_id INTEGER REFERENCES regions(id)
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE orders (
-            id INTEGER PRIMARY KEY,
-            amount NUMERIC(10,2) NOT NULL,
-            customer_id INTEGER REFERENCES customers(id)
-        )
-    """)
-    cur.executemany("INSERT INTO regions VALUES (%s, %s)", [(1, "US"), (2, "EU")])
-    cur.executemany(
-        "INSERT INTO customers VALUES (%s, %s, %s)",
-        [(1, "Acme", 1), (2, "Globex", 2), (3, "Initech", 1)],
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (%s, %s, %s)",
-        [(1, 100, 1), (2, 200, 1), (3, 50, 2), (4, 150, 3)],
-    )
-    postgresql.commit()
+@pytest.fixture(scope="module")
+def pg_ingest_env(postgresql_proc):
+    """Set up tables with FK relationships and ingest via rollup.
 
-    info = postgresql.info
-    ds = DatasourceConfig(
-        name="testpg",
-        type="postgres",
-        host=info.host,
-        port=info.port,
-        database=info.dbname,
-        username=info.user,
-        password="",
-    )
+    Module-scoped: tests destructure ``(models, ds, _)`` and build their own
+    ephemeral storage from the returned models — they never mutate the fixture
+    state. Saves the ~0.32s/call SQLAlchemy reflection across 11 tests.
+    """
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE regions (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE customers (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                region_id INTEGER REFERENCES regions(id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                amount NUMERIC(10,2) NOT NULL,
+                customer_id INTEGER REFERENCES customers(id)
+            )
+        """)
+        cur.executemany("INSERT INTO regions VALUES (%s, %s)", [(1, "US"), (2, "EU")])
+        cur.executemany(
+            "INSERT INTO customers VALUES (%s, %s, %s)",
+            [(1, "Acme", 1), (2, "Globex", 2), (3, "Initech", 1)],
+        )
+        cur.executemany(
+            "INSERT INTO orders VALUES (%s, %s, %s)",
+            [(1, 100, 1), (2, 200, 1), (3, 50, 2), (4, 150, 3)],
+        )
+        conn.commit()
 
-    models = ingest_datasource(datasource=ds, schema="public")
-    return models, ds, postgresql
+        info = postgresql_proc
+        ds = DatasourceConfig(
+            name="testpg",
+            type="postgres",
+            host=info.host,
+            port=info.port,
+            database=db_name,
+            username=info.user,
+            password="",
+        )
+
+        models = ingest_datasource(datasource=ds, schema="public")
+        yield models, ds, conn
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
 
 
 @pytest.mark.integration
@@ -908,6 +972,7 @@ class TestPostgresStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
 
+
 # ---------------------------------------------------------------------------
 # DEV-1336 — window functions in filters, Postgres parity
 # ---------------------------------------------------------------------------
@@ -989,3 +1054,86 @@ async def test_filter_on_windowed_column_postgres_top_n(planets_pg_env):
     assert names == ["Jupiter", "Saturn", "Neptune"], (
         f"Expected top-3 by mass desc, got {names}"
     )
+
+# ---------------------------------------------------------------------------
+# DEV-1333: cross-model derived ``Column.sql`` chaining (Postgres)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pg_derived_chain_env(postgresql):
+    """Postgres A→B fixture with a derived column on B referenced by A."""
+    cur = postgresql.cursor()
+    cur.execute("CREATE TABLE b_tbl (id INTEGER PRIMARY KEY, foo_raw NUMERIC)")
+    cur.execute(
+        "CREATE TABLE a_tbl (id INTEGER PRIMARY KEY, bar NUMERIC, b_id INTEGER, raw_a NUMERIC)"
+    )
+    cur.executemany("INSERT INTO b_tbl VALUES (%s, %s)", [(1, 200), (2, 50)])
+    cur.executemany(
+        "INSERT INTO a_tbl VALUES (%s, %s, %s, %s)",
+        [(10, 4, 1, 100), (11, 1, 2, 5)],
+    )
+    postgresql.commit()
+
+    tmpdir = tempfile.mkdtemp()
+    storage = YAMLStorage(base_dir=tmpdir)
+    info = postgresql.info
+    await storage.save_datasource(
+        DatasourceConfig(
+            name="testpg", type="postgres",
+            host=info.host, port=info.port, database=info.dbname,
+            username=info.user, password="",
+        )
+    )
+    from slayer.core.models import ModelJoin
+    await storage.save_model(
+        SlayerModel(
+            name="b_tbl",
+            data_source="testpg",
+            sql_table="b_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
+                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="a_tbl",
+            data_source="testpg",
+            sql_table="a_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.NUMBER),
+                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+                Column(name="raw_a", sql="raw_a", type=DataType.NUMBER),
+                Column(
+                    name="ratio_using_derived",
+                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            joins=[ModelJoin(target_model="b_tbl", join_pairs=[["b_id", "id"]])],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+async def test_integration_postgres_cross_model_derived_columnsql(
+    pg_derived_chain_env: SlayerQueryEngine,
+) -> None:
+    response = await pg_derived_chain_env.execute(
+        SlayerQuery(
+            source_model="a_tbl",
+            dimensions=[
+                ColumnRef(name="id"),
+                ColumnRef(name="ratio_using_derived"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        )
+    )
+    assert response.row_count == 2
+    assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+    assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)

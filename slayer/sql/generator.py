@@ -19,6 +19,7 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
+from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +264,24 @@ class SQLGenerator:
     def __init__(self, dialect: str = "postgres"):
         self.dialect = dialect
 
+    def _parse(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
+        """Parse ``sql`` via sqlglot, applying SLayer-specific AST rewrites.
+
+        On SQLite, rewrites ``exp.JSONExtract`` to the function-call form so
+        ``json_extract(...)`` is preserved (DEV-1331); the default sqlglot
+        SQLite emit is ``col -> '$.path'``, which returns the JSON-quoted
+        form and silently breaks CASE WHEN / equality matches.
+
+        Use this in place of ``sqlglot.parse_one(...)`` everywhere inside
+        ``SQLGenerator`` so the rewrite fires uniformly across every parse
+        site.
+        """
+        d = dialect or self.dialect
+        tree = sqlglot.parse_one(sql, dialect=d)
+        if d == "sqlite":
+            tree = rewrite_sqlite_json_extract(tree)
+        return tree
+
     def generate(self, enriched: EnrichedQuery) -> str:
         """Generate SQL from a fully resolved EnrichedQuery.
 
@@ -364,7 +383,7 @@ class SQLGenerator:
                 # FROM source model
                 if cm.source_sql:
                     source_from = exp.Subquery(
-                        this=sqlglot.parse_one(cm.source_sql, dialect=self.dialect),
+                        this=self._parse(cm.source_sql),
                         alias=exp.to_identifier(cm.source_model_name),
                     )
                 else:
@@ -374,7 +393,7 @@ class SQLGenerator:
                 # JOIN target model
                 if cm.target_model_sql:
                     target_join = exp.Subquery(
-                        this=sqlglot.parse_one(cm.target_model_sql, dialect=self.dialect),
+                        this=self._parse(cm.target_model_sql),
                         alias=exp.to_identifier(cm.target_model_name),
                     )
                 else:
@@ -496,12 +515,12 @@ class SQLGenerator:
                     if target_alias in needed:
                         if target_table.startswith("("):
                             join_target = exp.Subquery(
-                                this=sqlglot.parse_one(target_table, dialect=self.dialect),
+                                this=self._parse(target_table),
                                 alias=exp.to_identifier(target_alias),
                             )
                         else:
                             join_target = exp.to_table(target_table, alias=target_alias)
-                        join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+                        join_on = self._parse(join_cond)
                         select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
                 # Only include WHERE conditions whose tables are in this CTE
@@ -843,7 +862,7 @@ class SQLGenerator:
             # measure.filter_sql is a raw SQL string (originates upstream); parse
             # it once via sqlglot so the CASE WHEN ... THEN ... END is a true
             # AST node rather than text glued in.
-            filter_ast = sqlglot.parse_one(measure.filter_sql, dialect=self.dialect)
+            filter_ast = self._parse(measure.filter_sql)
             value_expr = exp.Case(ifs=[exp.If(this=filter_ast, true=value_expr)])
         source_cols.append(value_expr.as_("_w_value"))
 
@@ -901,12 +920,12 @@ class SQLGenerator:
                 continue
             if target_table.startswith("("):
                 join_target = exp.Subquery(
-                    this=sqlglot.parse_one(target_table, dialect=self.dialect),
+                    this=self._parse(target_table),
                     alias=exp.to_identifier(target_alias),
                 )
             else:
                 join_target = exp.to_table(target_table, alias=target_alias)
-            join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+            join_on = self._parse(join_cond)
             select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
         scoped = copy.copy(enriched)
@@ -1132,13 +1151,13 @@ class SQLGenerator:
             for target_table, target_alias, join_cond, jtype in resolved_joins:
                 if target_table.startswith("("):
                     # Inline-SQL target: parse as subquery
-                    parsed_target = sqlglot.parse_one(target_table, dialect=self.dialect)
+                    parsed_target = self._parse(target_table)
                     join_target = exp.Subquery(
                         this=parsed_target, alias=exp.to_identifier(target_alias),
                     )
                 else:
                     join_target = exp.to_table(target_table, alias=target_alias)
-                join_on = sqlglot.parse_one(join_cond, dialect=self.dialect)
+                join_on = self._parse(join_cond)
                 select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
         sql = select.sql(dialect=self.dialect, pretty=True)
@@ -1459,14 +1478,11 @@ class SQLGenerator:
             }
             # Week: SQLite weekday 0=Sunday, use date() with weekday modifier
             if gran_str == "week":
-                return sqlglot.parse_one(
-                    f"DATE({col_expr.sql(dialect='sqlite')}, 'weekday 0', '-6 days')",
-                    dialect="sqlite",
-                )
+                return self._parse(f"DATE({col_expr.sql(dialect='sqlite')}, 'weekday 0', '-6 days')", dialect="sqlite")
             if gran_str == "quarter":
                 # Quarter start: derive from month
                 col_sql = col_expr.sql(dialect="sqlite")
-                return sqlglot.parse_one(
+                return self._parse(
                     f"STRFTIME('%Y-', {col_sql}) || CASE "
                     f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 3 THEN '01-01' "
                     f"WHEN CAST(STRFTIME('%m', {col_sql}) AS INTEGER) <= 6 THEN '04-01' "
@@ -1609,7 +1625,7 @@ class SQLGenerator:
         if enriched.sql_table:
             return exp.to_table(enriched.sql_table, alias=enriched.model_name)
         elif enriched.sql:
-            parsed = sqlglot.parse_one(sql=enriched.sql, dialect=self.dialect)
+            parsed = self._parse(enriched.sql)
             return exp.Subquery(this=parsed, alias=exp.to_identifier(enriched.model_name))
         else:
             raise ValueError(f"Model '{enriched.model_name}' has neither sql_table nor sql defined")
@@ -1748,7 +1764,7 @@ class SQLGenerator:
         if where_clause is not None:
             ranked_sql += f" WHERE {where_clause.sql(dialect=self.dialect)}"
 
-        parsed = sqlglot.parse_one(ranked_sql, dialect=self.dialect)
+        parsed = self._parse(ranked_sql)
         return (
             exp.Subquery(this=parsed, alias=exp.to_identifier(model)),
             rn_suffix_map,
@@ -1768,7 +1784,7 @@ class SQLGenerator:
         # Use isidentifier() to distinguish column names from literals (e.g. "1")
         if sql.isidentifier():
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
-        return sqlglot.parse_one(sql=sql, dialect=self.dialect)
+        return self._parse(sql)
 
     def _resolve_value_sql(self, measure: "EnrichedMeasure") -> str:
         """Resolve ``measure.sql`` (or ``measure.name``) into a fully-qualified
@@ -1837,7 +1853,10 @@ class SQLGenerator:
 
         # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
         if agg_name in ("first", "last"):
-            col = measure.sql or measure.name
+            col_expr = self._resolve_sql(
+                sql=measure.sql, name=measure.name, model_name=measure.model_name,
+            )
+            col = col_expr.sql(dialect=self.dialect)
             suffix = ""
             if rn_suffix_map and default_time_col:
                 effective_tc = measure.time_column or default_time_col
@@ -1863,11 +1882,14 @@ class SQLGenerator:
                 filter_clause = f"{match_col} = 1" if match_col else measure.filter_sql
                 case_sql = (
                     f"MAX(CASE WHEN {filtered_rn} = 1 AND {filter_clause} "
-                    f"THEN {measure.model_name}.{col} END)"
+                    f"THEN {col} END)"
                 )
             else:
-                case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {measure.model_name}.{col} END)"
-            return sqlglot.parse_one(case_sql, dialect=self.dialect), True
+                # ``col`` is already a fully-qualified SQL expression resolved
+                # via ``_resolve_sql`` earlier in this branch, so we don't need
+                # to re-prefix ``measure.model_name``. (DEV-1333.)
+                case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {col} END)"
+            return self._parse(case_sql), True
 
         # --- Custom or parameterized aggregation (formula-based) ---
         if agg_name not in _AGG_FUNCTION_MAP:
@@ -1888,7 +1910,7 @@ class SQLGenerator:
             # COUNT(*) — if filtered, use COUNT(CASE WHEN filter THEN 1 END)
             if measure.filter_sql:
                 case_sql = f"CASE WHEN {measure.filter_sql} THEN 1 END"
-                inner = sqlglot.parse_one(case_sql, dialect=self.dialect)
+                inner = self._parse(case_sql)
             else:
                 inner = exp.Star()
         elif measure.sql:
@@ -1903,7 +1925,7 @@ class SQLGenerator:
         if measure.filter_sql and not (agg_name == "count" and measure.sql is None):
             inner_sql = inner.sql(dialect=self.dialect)
             case_sql = f"CASE WHEN {measure.filter_sql} THEN {inner_sql} END"
-            inner = sqlglot.parse_one(case_sql, dialect=self.dialect)
+            inner = self._parse(case_sql)
 
         # --- count_distinct ---
         if agg_name == "count_distinct":
@@ -1979,7 +2001,7 @@ class SQLGenerator:
                 param_expr = _wrap_filter(param_expr, measure.filter_sql)
             substituted = substituted.replace(f"{{{param_name}}}", param_expr)
 
-        return sqlglot.parse_one(substituted, dialect=self.dialect)
+        return self._parse(substituted)
 
     def _build_median(self, inner: exp.Expression) -> exp.Expression:
         """Build a median aggregation expression (dialect-dependent)."""
@@ -1993,12 +2015,9 @@ class SQLGenerator:
         if self.dialect in ("sqlite", "clickhouse"):
             # SQLite: provided by the median() UDF registered on connect.
             # ClickHouse: native median() aggregate.
-            return sqlglot.parse_one(f"median({inner_sql})", dialect=self.dialect)
+            return self._parse(f"median({inner_sql})")
         # Postgres, DuckDB, and most others: PERCENTILE_CONT
-        return sqlglot.parse_one(
-            f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})",
-            dialect=self.dialect,
-        )
+        return self._parse(f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})")
 
     def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
@@ -2052,7 +2071,7 @@ class SQLGenerator:
         else:
             sql_str = f"PERCENTILE_CONT({p}) WITHIN GROUP (ORDER BY {col_expr})"
 
-        return sqlglot.parse_one(sql_str, dialect=self.dialect)
+        return self._parse(sql_str)
 
     def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:
         """Build SQL for the statistical aggregations added in DEV-1317.
@@ -2107,7 +2126,7 @@ class SQLGenerator:
             # resolve via the SQLite UDF aliases.
             sql_str = f"{agg_name.upper()}({col_expr})"
 
-        return sqlglot.parse_one(sql_str, dialect=self.dialect)
+        return self._parse(sql_str)
 
     # ------------------------------------------------------------------
     # WHERE / HAVING (filters still use ColumnRef for member resolution)
@@ -2187,11 +2206,11 @@ class SQLGenerator:
         where_clause = None
         if where_parts:
             where_sql = _SQL_AND_JOINER.join(where_parts)
-            where_clause = sqlglot.parse_one(where_sql, dialect=self.dialect)
+            where_clause = self._parse(where_sql)
 
         having_clause = None
         if having_parts:
             having_sql = _SQL_AND_JOINER.join(having_parts)
-            having_clause = sqlglot.parse_one(having_sql, dialect=self.dialect)
+            having_clause = self._parse(having_sql)
 
         return where_clause, having_clause

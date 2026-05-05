@@ -48,7 +48,7 @@ Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `f
 
 Saved named formulas (`SlayerModel.measures`) can be referenced by bare name in any formula context: `{"formula": "aov"}`.
 
-Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders._count` (the leading `_` distinguishes it from any user-defined column literally named `count`).
+Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders._count` (the leading `_` distinguishes it from any user-defined column literally named `count`). An explicit `name` on the measure spec overrides the canonical form: `{"formula": "amount:sum", "name": "rev"}` → `orders.rev`. Multi-stage `source_queries` rely on this — downstream stages reference inner-stage outputs by the chosen name.
 
 ## Filters
 
@@ -109,6 +109,8 @@ Reference measures from joined models with dotted syntax + colon aggregation:
   "customers.regions.population:sum"
 ]
 ```
+
+A dotted reference may target a *derived* column on the joined model (a column whose own `sql` is itself an expression). The engine recursively inlines the chain at query time — `"B.foo_normalized:sum"` where `B.foo_normalized.sql = "foo_raw / 100.0"` emits `SUM(B.foo_raw / 100.0)`. The same chaining works inside `Column.sql`, `filters`, and `dimensions`.
 
 ## ModelExtension
 
