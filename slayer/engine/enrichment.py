@@ -11,6 +11,9 @@ transformation step in the query pipeline.
 import re
 from typing import Dict, List, Mapping, Optional, Set, Tuple
 
+import sqlglot
+from sqlglot import exp
+
 from slayer.core.enums import (
     BUILTIN_AGGREGATIONS,
     DEFAULT_AGGREGATIONS_BY_TYPE,
@@ -32,7 +35,7 @@ from slayer.core.formula import (
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.column_expansion import expand_derived_refs
+from slayer.engine.column_expansion import _is_trivial_base, expand_derived_refs
 from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedDimension,
@@ -789,6 +792,7 @@ async def enrich_query(
         named_queries=named_queries,
         resolve_join_target=resolve_join_target,
         extra_agg_names=custom_agg_names,
+        dialect=dialect,
     )
 
     parsed_filters = await resolve_filter_columns(
@@ -1066,6 +1070,120 @@ def _resolve_last_agg_time(
 # ---------------------------------------------------------------------------
 
 
+def _add_with_prefixes(segments: List[str], paths: Set[Tuple[str, ...]]) -> None:
+    """Add ``segments[:1], segments[:2], …, segments`` to ``paths``."""
+    for i in range(1, len(segments) + 1):
+        paths.add(tuple(segments[:i]))
+
+
+def _raise_column_cycle(
+    visited: Tuple[Tuple[str, str], ...], key: Tuple[str, str],
+) -> None:
+    """Raise a deterministic ``Circular column reference`` error matching
+    the chain format used by ``expand_derived_refs``.
+    """
+    cycle_start = visited.index(key)
+    cycle = (*visited[cycle_start:], key)
+    chain = " → ".join(f"{m}.{c}" for m, c in cycle)
+    raise ValueError(f"Circular column reference detected: {chain}")
+
+
+def _scan_sql_table_refs(*, sql: str, model_name: str, paths: Set[Tuple[str, ...]]) -> None:
+    """Regex-fallback scan: pick out ``<table>.<col>`` shapes and add the
+    table prefix paths (skipping references to ``model_name`` itself).
+    """
+    for match in _TABLE_COL_RE.finditer(sql):
+        segments = match.group(1).split("__")
+        if segments and segments[0] != model_name:
+            _add_with_prefixes(segments, paths)
+
+
+def _process_node_for_paths(
+    *,
+    node: exp.Column,
+    model: SlayerModel,
+    paths: Set[Tuple[str, ...]],
+    visited: Tuple[Tuple[str, str], ...],
+    dialect: Optional[str] = None,
+) -> None:
+    """Resolve one ``exp.Column`` node into either a recursion into a
+    local derived column or a join-path-prefix add.
+
+    Branches:
+    - multi-part qualifier (catalog/db) → ignore (outside SLayer's contract)
+    - bare identifier → recurse into a possibly-derived local column
+    - ``<source_model>.<col>`` → self-qualified local ref, recurse
+    - ``<table>.<col>`` (table not the source model) → add the prefix path
+    """
+    if node.args.get("db") or node.args.get("catalog"):
+        return
+    table_id = node.args.get("table")
+    if table_id is None:
+        _collect_paths_from_local_column_chain(
+            model=model, col_name=node.name, paths=paths,
+            visited=visited, dialect=dialect,
+        )
+        return
+    segments = table_id.name.split("__")
+    if not segments:
+        return
+    if segments[0] == model.name:
+        _collect_paths_from_local_column_chain(
+            model=model, col_name=node.name, paths=paths,
+            visited=visited, dialect=dialect,
+        )
+        return
+    _add_with_prefixes(segments, paths)
+
+
+def _collect_paths_from_local_column_chain(
+    *,
+    model: SlayerModel,
+    col_name: str,
+    paths: Set[Tuple[str, ...]],
+    visited: Tuple[Tuple[str, str], ...] = (),
+    dialect: Optional[str] = None,
+) -> None:
+    """Walk the SQL of a *local* derived column on ``model`` to discover
+    the join paths its expression implies — recursing through references
+    to other derived columns on the same model.
+
+    Closes DEV-1334. ``_collect_needed_paths`` previously only saw cross-
+    table aliases that already appeared verbatim in the *parsed-out filter
+    columns* (dotted refs like ``customers.region``). When a filter
+    referenced a *bare-named* derived column (e.g. ``is_eu = 1`` where
+    ``is_eu.sql`` references ``customers.region``), the chain was never
+    walked and the join was silently dropped. This helper closes that
+    gap by inspecting the column's SQL body.
+
+    ``dialect`` is the active sqlglot dialect — passed to ``parse_one`` so
+    dialect-specific syntax in derived ``Column.sql`` parses correctly
+    (PR #96 review).
+    """
+    col = model.get_column(col_name)
+    if col is None or _is_trivial_base(column=col):
+        return
+    sql = col.sql or ""
+    if not sql:
+        return
+    key = (model.name, col_name)
+    if key in visited:
+        _raise_column_cycle(visited, key)
+    next_visited = (*visited, key)
+
+    try:
+        parsed = sqlglot.parse_one(sql, dialect=dialect)
+    except Exception:
+        _scan_sql_table_refs(sql=sql, model_name=model.name, paths=paths)
+        return
+
+    for node in parsed.find_all(exp.Column):
+        _process_node_for_paths(
+            node=node, model=model, paths=paths,
+            visited=next_visited, dialect=dialect,
+        )
+
+
 def _collect_needed_paths(
     model: SlayerModel,
     dimensions: List[EnrichedDimension],
@@ -1074,13 +1192,9 @@ def _collect_needed_paths(
     cross_model_measures: list,
     processed_filters: List[str],
     extra_agg_names: Optional[frozenset] = None,
+    dialect: Optional[str] = None,
 ) -> Set[Tuple[str, ...]]:
     """Extract ordered join-path tuples the query needs (including all prefixes)."""
-
-    def _add_with_prefixes(segments: List[str], paths: Set[Tuple[str, ...]]) -> None:
-        for i in range(1, len(segments) + 1):
-            paths.add(tuple(segments[:i]))
-
     paths: Set[Tuple[str, ...]] = set()
 
     for d in dimensions:
@@ -1099,31 +1213,79 @@ def _collect_needed_paths(
             for match in _TABLE_COL_RE.finditer(sql_expr):
                 _add_with_prefixes(match.group(1).split("__"), paths)
 
-    # Scan filters for dotted column references (e.g. customers.regions.name)
+    # Scan filters for column references — dotted refs add their join
+    # path directly; bare-name refs to derived local columns trigger a
+    # walk of the column's SQL chain (DEV-1334).
     for f_str in processed_filters:
         parsed_f = parse_filter(f_str, extra_agg_names=extra_agg_names)
         for col in parsed_f.columns:
-            if "." in col:
-                parts = col.split(".")
-                # Expand any __ within segments (model filters convert dots to __)
-                expanded = []
-                for part in parts[:-1]:
-                    expanded.extend(part.split("__"))
-                if expanded:
-                    _add_with_prefixes(expanded, paths)
+            _scan_filter_column_ref(model=model, col=col, paths=paths, dialect=dialect)
 
-    # Scan measure filter columns
+    # Scan measure filter columns. For column-level ``filter=`` attributes
+    # ``resolve_filter_columns`` may store the fully-expanded SQL fragment
+    # rather than the original column name (when the filter references a
+    # bare-named derived column whose own sql is non-trivial — DEV-1334).
+    # ``_scan_filter_column_ref`` distinguishes the three shapes (bare name,
+    # dotted ref, expanded SQL) and routes each accordingly.
     for m in measures:
         for col in m.filter_columns:
-            if "." in col:
-                parts = col.split(".")
-                expanded = []
-                for part in parts[:-1]:
-                    expanded.extend(part.split("__"))
-                if expanded:
-                    _add_with_prefixes(expanded, paths)
+            _scan_filter_column_ref(model=model, col=col, paths=paths, dialect=dialect)
 
     return paths
+
+
+def _scan_filter_column_ref(
+    *,
+    model: SlayerModel,
+    col: str,
+    paths: Set[Tuple[str, ...]],
+    dialect: Optional[str] = None,
+) -> None:
+    """Route one entry from a parsed filter's column list to the right
+    path-discovery branch.
+
+    Three shapes occur:
+    - **bare name** (``"is_eu"``): a reference to a local column. Walk
+      the column's SQL chain to find any cross-table refs it implies.
+    - **identifier dotted ref** (``"customers.region"``,
+      ``"customers.regions.name"``): a join-path-qualified reference —
+      add the prefix path directly.
+    - **expanded SQL fragment** (``"CASE WHEN customers.region = 'EU' …"``):
+      arises when ``resolve_filter_columns`` stores the inlined SQL of a
+      bare-name reference to a derived column. Scan via the same
+      ``_TABLE_COL_RE`` regex that handles ``EnrichedMeasure.sql``.
+    """
+    if "." not in col:
+        _collect_paths_from_local_column_chain(
+            model=model, col_name=col, paths=paths, dialect=dialect,
+        )
+        return
+    if _looks_like_dotted_identifier_ref(col):
+        parts = col.split(".")
+        expanded: List[str] = []
+        for part in parts[:-1]:
+            # Model filters convert dots to __; expand both forms.
+            expanded.extend(part.split("__"))
+        if expanded:
+            _add_with_prefixes(expanded, paths)
+        return
+    # Expanded SQL fragment.
+    for match in _TABLE_COL_RE.finditer(col):
+        table_alias = match.group(1)
+        segments = table_alias.split("__")
+        if segments and segments[0] != model.name:
+            _add_with_prefixes(segments, paths)
+
+
+_DOTTED_IDENT_REF_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
+
+
+def _looks_like_dotted_identifier_ref(value: str) -> bool:
+    """True iff ``value`` is a chain of ``.``-joined identifiers — e.g.
+    ``customers.region``, ``customers.regions.name``. False for SQL
+    fragments containing parens, spaces, operators, or quotes.
+    """
+    return bool(_DOTTED_IDENT_REF_RE.match(value))
 
 
 async def _resolve_joins(
@@ -1137,11 +1299,15 @@ async def _resolve_joins(
     named_queries: dict,
     resolve_join_target,
     extra_agg_names: Optional[frozenset] = None,
+    dialect: Optional[str] = None,
 ) -> List[tuple]:
     """Resolve only the JOINs the query actually needs by walking the join graph.
 
     Instead of relying on baked-in multi-hop joins, this walks each intermediate
     model's own direct joins hop-by-hop to build the complete chain.
+
+    ``dialect`` is the active sqlglot dialect; it propagates into the
+    derived-column SQL parser used to discover join paths (PR #96 review).
     """
     needed_paths = _collect_needed_paths(
         model=model,
@@ -1151,6 +1317,7 @@ async def _resolve_joins(
         cross_model_measures=cross_model_measures,
         processed_filters=processed_filters,
         extra_agg_names=extra_agg_names,
+        dialect=dialect,
     )
     if not needed_paths:
         return []
