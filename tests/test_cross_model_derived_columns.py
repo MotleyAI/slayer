@@ -1235,3 +1235,40 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
     )
     with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle"):
         await engine._enrich(query=query, model=orders)
+
+
+async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
+    """The active SQL dialect must be passed through ``_resolve_joins`` →
+    ``_collect_needed_paths`` → ``_collect_paths_from_local_column_chain``
+    so dialect-specific syntax in derived ``Column.sql`` parses correctly.
+
+    Pin: a derived column using TSQL square-bracket identifier quoting
+    (``[customers].[region]``) only parses cleanly when ``dialect="tsql"``.
+    Default sqlglot rejects the brackets; the regex fallback also misses
+    the cross-table ref because brackets don't match ``_TABLE_COL_RE``.
+    With dialect threading, the customers join is discovered.
+    """
+    storage = await _orders_customers_storage(tmp_path)
+    orders = await _save_orders_with_is_eu(
+        storage,
+        include_amount=False,
+        extra_columns=[
+            Column(
+                name="bracket_eu",
+                sql="CASE WHEN [customers].[region] = 'EU' THEN 1 ELSE 0 END",
+                type=DataType.NUMBER,
+            ),
+        ],
+    )
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count", name="n")],
+        filters=["bracket_eu = 1"],
+    )
+    enriched = await engine._enrich(query=query, model=orders, dialect="tsql")
+    assert "customers" in _join_aliases(enriched), (
+        f"customers join not discovered with dialect='tsql' — the dialect "
+        f"is not being threaded into _collect_paths_from_local_column_chain. "
+        f"resolved_joins: {enriched.resolved_joins}"
+    )
