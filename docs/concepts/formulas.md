@@ -275,6 +275,6 @@ Both field and filter formulas are parsed by `slayer/core/formula.py` using Pyth
 - **AggregatedMeasureRef** — measure with colon aggregation (`"revenue:sum"`, `"*:count"`)
 - **ArithmeticField** — arithmetic on aggregated measures (`"revenue:sum / *:count"`)
 - **TransformField** — function call, possibly nested (`"cumsum(revenue:sum)"`)
-- **MixedArithmeticField** — arithmetic containing function calls (`"cumsum(revenue:sum) / *:count"`)
+- **MixedArithmeticField** — arithmetic containing function calls. Covers both transform calls (`"cumsum(revenue:sum) / *:count"`) and non-transform SQL function calls wrapping aggregated refs, e.g. `"*:count / nullif(revenue:max, 0)"` or `"coalesce(revenue:sum, 0) + amount:avg"`. Aggregated refs nested inside non-transform calls are resolved as their own measure aliases; the call passes through to emitted SQL unchanged.
 
 The query engine's `_enrich()` method processes field formulas into ordered enrichment steps, and the SQL generator translates them into stacked CTEs.

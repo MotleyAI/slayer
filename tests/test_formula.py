@@ -839,3 +839,79 @@ class TestCollectNeededPathsExtraAggNames:
         )
         # Should detect the "customers" join path from the dotted column reference
         assert ("customers",) in paths
+
+
+class TestPlaceholderLeakRegression:
+    """DEV-1341: aggregated refs nested inside non-transform SQL function calls
+    (``nullif``, ``coalesce``, etc.) must be registered in the resulting
+    ``MixedArithmeticField`` so the ``__aggN__`` placeholders cannot leak through
+    to emitted SQL.
+    """
+
+    def test_colon_count_over_nullif_max(self) -> None:
+        """``*:count / nullif(temperature_c:max, 0)`` registers both refs."""
+        result = parse_formula("*:count / nullif(temperature_c:max, 0)")
+        assert isinstance(result, MixedArithmeticField)
+        # Both placeholders must be tracked by the field
+        assert "__agg0__" in result.measure_names
+        assert "__agg1__" in result.measure_names
+        assert "__agg0__" in result.agg_refs
+        assert "__agg1__" in result.agg_refs
+        # Verify the refs themselves are correct (order is preprocessing order)
+        ref0 = result.agg_refs["__agg0__"]
+        ref1 = result.agg_refs["__agg1__"]
+        assert (ref0.measure_name, ref0.aggregation_name) == ("*", "count")
+        assert (ref1.measure_name, ref1.aggregation_name) == ("temperature_c", "max")
+        # The serialized SQL still carries both placeholders for resolution
+        assert "__agg0__" in result.sql
+        assert "__agg1__" in result.sql
+
+    def test_funcstyle_count_over_nullif_max(self) -> None:
+        """Issue's verbatim function-style formula round-trips through the
+        function-style rewrite to colon syntax and registers both refs.
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = parse_formula("count(*) / nullif(max(temperature_c), 0)")
+        assert isinstance(result, MixedArithmeticField)
+        assert "__agg0__" in result.measure_names
+        assert "__agg1__" in result.measure_names
+        assert "__agg0__" in result.agg_refs
+        assert "__agg1__" in result.agg_refs
+        names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
+        assert ("*", "count") in names
+        assert ("temperature_c", "max") in names
+
+    def test_coalesce_wraps_aggregation(self) -> None:
+        """``coalesce(revenue:sum, 0) + amount:avg`` — coalesce-wrapped ref + outside ref."""
+        result = parse_formula("coalesce(revenue:sum, 0) + amount:avg")
+        assert isinstance(result, MixedArithmeticField)
+        assert "__agg0__" in result.measure_names
+        assert "__agg1__" in result.measure_names
+        assert "__agg0__" in result.agg_refs
+        assert "__agg1__" in result.agg_refs
+        names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
+        assert ("revenue", "sum") in names
+        assert ("amount", "avg") in names
+
+    def test_predicate_with_nullif_wrapper(self) -> None:
+        """``nullif(*:count, 0) > 5`` is a predicate; the wrapped ref must be tracked."""
+        result = parse_formula("nullif(*:count, 0) > 5")
+        assert isinstance(result, MixedArithmeticField)
+        assert result.is_predicate is True
+        assert "__agg0__" in result.measure_names
+        assert "__agg0__" in result.agg_refs
+        ref0 = result.agg_refs["__agg0__"]
+        assert (ref0.measure_name, ref0.aggregation_name) == ("*", "count")
+
+    def test_nested_non_transform_calls(self) -> None:
+        """``coalesce(nullif(*:count, 0), 1) / temperature_c:max`` — two nesting layers."""
+        result = parse_formula("coalesce(nullif(*:count, 0), 1) / temperature_c:max")
+        assert isinstance(result, MixedArithmeticField)
+        assert "__agg0__" in result.measure_names
+        assert "__agg1__" in result.measure_names
+        assert "__agg0__" in result.agg_refs
+        assert "__agg1__" in result.agg_refs
+        names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
+        assert ("*", "count") in names
+        assert ("temperature_c", "max") in names
