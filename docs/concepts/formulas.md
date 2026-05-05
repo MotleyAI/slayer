@@ -217,7 +217,7 @@ With multiple dimensions (e.g., `status` + `month`), each status/month combinati
 
 Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at rank 2, the next row is rank 4.
 
-> **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the `rank()` transform for top-N filtering instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `Column(name="rn", sql="row_number() over (order by mass desc)", type=NUMBER)`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+> **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the `rank()` transform for top-N filtering instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
 
 ### First and Last Functions
 

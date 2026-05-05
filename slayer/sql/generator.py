@@ -1064,7 +1064,7 @@ class SQLGenerator:
         for wcol in enriched.windowed_filter_columns:
             if wcol.sql is None:
                 continue
-            wcol_expr = sqlglot.parse_one(wcol.sql, dialect=self.dialect)
+            wcol_expr = self._parse(wcol.sql)
             select_columns.append(wcol_expr.as_(wcol.alias))
 
         # When all measures are isolated/cross-model and there are no dimensions,
@@ -1136,7 +1136,7 @@ class SQLGenerator:
             for wcol in enriched.windowed_filter_columns:
                 if wcol.sql is None:
                     continue
-                wcol_ast = sqlglot.parse_one(wcol.sql, dialect=self.dialect)
+                wcol_ast = self._parse(wcol.sql)
                 for col_node in wcol_ast.find_all(exp.Column):
                     table = col_node.table
                     if not table or table == enriched.model_name:

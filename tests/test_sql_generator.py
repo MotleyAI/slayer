@@ -5882,8 +5882,15 @@ class TestWindowFunctionInFilter:
         # Outer wrap is present (window predicate promoted).
         assert "AS _filtered" in sql
 
-        # The base filter (`name <> 'Pluto'`) stays in the inner WHERE.
-        assert "Pluto" in norm
+        # The base filter (`name <> 'Pluto'`) must stay in the INNER WHERE,
+        # not get promoted to the outer `_filtered` wrap.
+        inner_sql, outer_sql = sql.split("AS _filtered", 1)
+        assert "Pluto" in inner_sql, (
+            f"Base filter must live in inner SELECT, not outer wrap.\nsql:\n{sql}"
+        )
+        assert "Pluto" not in outer_sql, (
+            f"Base filter must not appear in outer wrap.\nsql:\n{sql}"
+        )
         # The window predicate is in the outer WHERE on the alias.
         assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm
 
