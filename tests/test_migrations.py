@@ -1,9 +1,11 @@
 """Tests for the schema migration registry and read-time converters."""
 
+import asyncio
 import json
 import os
 import sqlite3
 import tempfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -244,8 +246,8 @@ async def test_yaml_round_trip_preserves_version() -> None:
 
         # And confirm it actually hit the file at the current version, in
         # the v4 namespaced layout.
-        with open(os.path.join(storage.models_dir, "ds", "orders.yaml")) as f:
-            on_disk = yaml.safe_load(f)
+        on_disk_path = Path(storage.models_dir) / "ds" / "orders.yaml"
+        on_disk = yaml.safe_load(await asyncio.to_thread(on_disk_path.read_text))
         assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -579,9 +581,8 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
 
         # Re-save and confirm current version on disk at the v4 path.
         await storage.save_model(loaded)
-        new_path = os.path.join(models_dir, "demo", "orders.yaml")
-        with open(new_path) as f:
-            on_disk = yaml.safe_load(f)
+        new_path = Path(models_dir) / "demo" / "orders.yaml"
+        on_disk = yaml.safe_load(await asyncio.to_thread(new_path.read_text))
         assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert "columns" in on_disk
         assert "dimensions" not in on_disk

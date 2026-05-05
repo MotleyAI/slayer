@@ -139,7 +139,7 @@ class SlayerClient:
             names = await self._storage.list_models(data_source=data_source)
             return list(names)
         params = {"data_source": data_source} if data_source else None
-        return await self._request(method="GET", path="/models", params=params)
+        return await self._request(method="GET", path="/models", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def get_model(
         self,
@@ -149,10 +149,10 @@ class SlayerClient:
         if self._storage is not None:
             return await self._storage.get_model(name, data_source=data_source)
         params = {"data_source": data_source} if data_source else None
-        return await self._request(method="GET", path=f"/models/{name}", params=params)
+        return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def create_model(self, model: Dict[str, Any]) -> Dict[str, str]:
-        return await self._request(method="POST", path="/models", json=model)
+        return await self._request(method="POST", path="/models", json=model)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def list_datasources(self) -> List[str]:
         return await self._request(method="GET", path="/datasources")

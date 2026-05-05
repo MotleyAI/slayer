@@ -74,7 +74,7 @@ class YAMLStorage(StorageBackend):
                 return None
             data_source, name = identity
         path = self._model_path(data_source, name)
-        if not os.path.exists(path):
+        if not os.path.exists(path):  # NOSONAR(S6549) — name/data_source are sanitized by _validate_path_component above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
             return None
         with open(path) as f:
             data = yaml.safe_load(f)

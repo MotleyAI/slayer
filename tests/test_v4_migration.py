@@ -184,7 +184,7 @@ def test_yaml_orphan_with_no_datasources_hard_fails(tmp_path) -> None:
         YAMLStorage(base_dir=base)
 
 
-async def test_yaml_migration_refuses_to_overwrite_existing_namespaced_model(tmp_path) -> None:
+def test_yaml_migration_refuses_to_overwrite_existing_namespaced_model(tmp_path) -> None:
     """If ``models/<data_source>/<name>.yaml`` already exists when the
     flat→nested migration runs (e.g. partial/manual migration, or a rerun
     after an interrupted open), the migrator must raise rather than
