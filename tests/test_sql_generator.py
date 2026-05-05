@@ -1,17 +1,26 @@
 """Tests for the SQL generator."""
 
+import re as _re
 import tempfile
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
+from slayer.core.formula import ParsedFilter
 from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
-from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
+from slayer.engine.enriched import (
+    CrossModelMeasure,
+    EnrichedDimension,
+    EnrichedMeasure,
+    EnrichedQuery,
+)
+from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator, _validate_agg_param_value
+from slayer.sql.generator import SQLGenerator, _cte_name_from_alias, _validate_agg_param_value
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -62,7 +71,6 @@ async def _generate(
     model: SlayerModel,
 ) -> str:
     """Helper: enrich a query against a model, then generate SQL."""
-    from slayer.engine.enrichment import enrich_query
 
     enriched = await enrich_query(
         query=query,
@@ -609,7 +617,10 @@ class TestFields:
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
-        assert "_wm_orders__revenue_sum_window_90d" in norm
+        # Windowed-sum CTE name follows the measure's surfaced name; with an
+        # explicit ``name="revenue_90d"`` the CTE is named after the user
+        # alias (DEV-1335 — user ``name`` overrides the canonical form).
+        assert "_wm_orders__revenue_90d" in norm
         assert "LEFT JOIN" in norm
         assert "_src._w_time >=" in norm
         assert "_src._w_time <" in norm
@@ -1449,6 +1460,24 @@ class TestNestedFields:
         sql = await _generate(generator, query, orders_model)
         assert "SUM(" in sql  # cumsum window
         assert "avg_cumsum" in sql.lower()
+
+    async def test_emitted_sql_has_no_agg_placeholder(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1341: aggregated refs nested inside non-transform calls (``nullif``)
+        must be fully resolved — no ``__aggN__`` placeholder may leak through.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(
+                    formula="*:count / nullif(revenue:max, 0)",
+                    name="violation_rate",
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "__agg" not in sql, f"__aggN__ placeholder leaked into SQL:\n{sql}"
 
 
 class TestDialectMapping:
@@ -2329,7 +2358,6 @@ class TestPathAliasJoinInference:
 
     @pytest.fixture
     async def storage(self, tmp_path):
-        from slayer.storage.yaml_storage import YAMLStorage
         s = YAMLStorage(base_dir=str(tmp_path))
         await s.save_model(SlayerModel(
             name="regions", sql_table="regions", data_source="test",
@@ -2738,7 +2766,6 @@ class TestFilteredMeasures:
         assert "THEN 0 ELSE 1" in sql
         # Standard ROW_NUMBER should NOT be present (no unfiltered first/last).
         # Use regex word-boundary to avoid the obvious overlap with "_last_rn_f0".
-        import re as _re
         assert _re.search(r"_last_rn(?!_f)", sql) is None, (
             f"Bare _last_rn alias should not leak into SQL when only filtered "
             f"first/last is requested: {sql}"
@@ -2814,7 +2841,6 @@ class TestFilteredMeasures:
         INSIDE the ranked subquery so the filter columns resolve. Previously
         _build_last_ranked_from() built the subquery from base_from only and
         the outer string-level join injection never matched the subquery wrapper."""
-        from slayer.engine.enrichment import enrich_query
 
         customers = SlayerModel(
             name="customers",
@@ -2891,7 +2917,6 @@ class TestFilteredMeasures:
         is isolated into its own CTE with a ranked subquery. The join is placed
         inside the ranked subquery so the filter resolves, and the final SELECT
         does not reference the joined table directly."""
-        from slayer.engine.enrichment import enrich_query
 
         customers = SlayerModel(
             name="customers",
@@ -2957,7 +2982,6 @@ class TestFilteredMeasures:
         assert "_fm_" in sql, f"Expected isolated _fm_ CTE:\n{sql}"
         assert "_last_rn" in sql, f"Expected _last_rn in isolated CTE:\n{sql}"
         # The customers JOIN should be inside the _fm_ CTE's ranked subquery
-        import re as _re
         fm_match = _re.search(r"(_fm_\w+)\s+AS\s*\(", sql)
         assert fm_match, f"No _fm_ CTE found:\n{sql}"
         fm_start = fm_match.start()
@@ -2975,7 +2999,6 @@ class TestFilteredMeasures:
         join planner must NOT mistake the literal for a `customers.<col>` ref
         and pull in an unwanted LEFT JOIN. The structured filter_columns from
         ParsedFilter only lists real column references."""
-        from slayer.engine.enrichment import enrich_query
 
         # Tracker: was resolve_join_target asked about 'foo'? If so, the regex
         # path leaked. With structured filter_columns it should never be queried.
@@ -3063,7 +3086,6 @@ class TestFilteredMeasures:
         source alias (model_name_str) and not the underlying model.name when the
         query's source_model string differs from model.name (e.g., named queries
         / sub-query sources)."""
-        from slayer.engine.enrichment import enrich_query
 
         orders_model.columns.append(
             Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
@@ -3098,7 +3120,6 @@ class TestFilteredMeasures:
         The generated SQL ended up with `CASE WHEN orders_alias.status THEN
         orders_underlying.amount END` from `FROM ... AS orders_underlying` —
         invalid because the source alias isn't in the FROM."""
-        from slayer.engine.enrichment import enrich_query
 
         orders_model.columns.append(
             Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
@@ -3334,7 +3355,6 @@ class TestAutoMoveDimensions:
 
     @pytest.fixture
     def storage(self, tmp_path):
-        from slayer.storage.yaml_storage import YAMLStorage
 
         return YAMLStorage(base_dir=str(tmp_path))
 
@@ -3551,7 +3571,6 @@ class TestSelfReferencingPaths:
 
     @pytest.fixture
     def storage(self, tmp_path):
-        from slayer.storage.yaml_storage import YAMLStorage
 
         return YAMLStorage(base_dir=str(tmp_path))
 
@@ -3643,7 +3662,6 @@ Column(name="amount", sql="amount", type=DataType.NUMBER)],
 
     async def test_cross_model_filter_on_constant_dimension(self, generator: SQLGenerator) -> None:
         """Cross-model filter premium.has_premium where has_premium sql='1' must not produce premium.1."""
-        from slayer.engine.enrichment import enrich_query
 
         premium_model = SlayerModel(
             name="premium",
@@ -3708,7 +3726,6 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
 
     async def test_cross_model_filter_on_normal_dimension(self, generator: SQLGenerator) -> None:
         """Normal column-name dimensions must still be table-qualified (regression guard)."""
-        from slayer.engine.enrichment import enrich_query
 
         customers = SlayerModel(
             name="customers",
@@ -3878,7 +3895,6 @@ class TestDimensionAggregation:
 
     async def test_cross_model_dimension_count_distinct_in_formula(self, generator: SQLGenerator) -> None:
         """cross-model dimension:count_distinct in a formula (e.g., policies.id:count_distinct)."""
-        from slayer.storage.yaml_storage import YAMLStorage
 
         source = SlayerModel(
             name="amounts",
@@ -3903,7 +3919,6 @@ class TestDimensionAggregation:
         )
 
         # Use a real query engine so resolve_cross_model_measure works
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_model(source)
@@ -3928,9 +3943,6 @@ class TestCrossModelCustomAggFuncStyle:
 
     async def test_funcstyle_custom_agg_on_joined_model(self, generator: SQLGenerator) -> None:
         """rolling_avg(customers.score) should rewrite and generate SQL."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
-        from slayer.core.models import Aggregation
 
         orders = SlayerModel(
             name="orders",
@@ -3980,8 +3992,6 @@ class TestReachableAggDiscoveryUnbounded:
     """
 
     async def test_funcstyle_custom_agg_at_four_hops(self, generator: SQLGenerator) -> None:
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
@@ -4037,8 +4047,6 @@ Column(name="score", sql="score", type=DataType.NUMBER)],
 
     async def test_cycle_does_not_loop(self, generator: SQLGenerator) -> None:
         """BFS terminates on a → b → a cycle (visited guard)."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
@@ -4075,8 +4083,6 @@ class TestTransformAmbiguousTimeDimension:
     """
 
     async def test_two_time_dims_no_disambiguation_raises(self, generator: SQLGenerator) -> None:
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4103,8 +4109,6 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
 
     async def test_two_time_dims_with_main_succeeds(self, generator: SQLGenerator) -> None:
         """Disambiguation via main_time_dimension keeps the transform working."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4143,8 +4147,6 @@ class TestParameterizedAggCanonicalDistinct:
     async def test_order_by_two_last_with_different_time_cols(
         self, generator: SQLGenerator
     ) -> None:
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4184,8 +4186,6 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
     async def test_fields_two_percentiles_with_different_p(
         self, generator: SQLGenerator
     ) -> None:
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4227,8 +4227,6 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
 
     async def test_unparameterized_alias_unchanged(self, generator: SQLGenerator) -> None:
         """Backwards-compat: revenue:sum still produces orders.revenue_sum (no suffix)."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4245,8 +4243,6 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
 
     async def test_star_count_alias_unchanged(self, generator: SQLGenerator) -> None:
         """Backwards-compat: *:count still produces orders._count."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4268,8 +4264,6 @@ class TestMultiHopCrossModelMeasure:
     async def test_two_hop_measure(self, generator: SQLGenerator) -> None:
         """policy_coverage_detail.claim_coverage.claim_amount.total_claim_amount:sum
         should walk policy_coverage_detail → claim_coverage → claim_amount."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         pcd = SlayerModel(
             name="policy_coverage_detail",
@@ -4321,8 +4315,6 @@ Column(name="total_claim_amount", sql="amount", type=DataType.NUMBER)],
 
     async def test_three_hop_measure(self, generator: SQLGenerator) -> None:
         """a.b.c.measure:sum should walk three hops."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         model_a = SlayerModel(
             name="a", sql_table="a_table", data_source="test",
@@ -4367,8 +4359,6 @@ Column(name="value", sql="val", type=DataType.NUMBER)],
 
     async def test_single_hop_still_works(self, generator: SQLGenerator) -> None:
         """Existing single-hop cross-model measures must not regress."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4457,7 +4447,6 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)],
 
         The temp directory is cleaned up automatically on context exit.
         """
-        from slayer.storage.yaml_storage import YAMLStorage
 
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -4667,7 +4656,10 @@ class TestOrderByCustomFieldName:
     """ORDER BY must work when fields have custom names via {"formula": ..., "name": ...}."""
 
     async def test_order_by_custom_name(self, generator: SQLGenerator) -> None:
-        """Field with custom name 'num_customers' should be resolvable in ORDER BY."""
+        """Field with custom name 'num_customers' is the surfaced alias and
+        ORDER BY references it directly (DEV-1335 — user ``name`` overrides
+        the canonical ``customer_id_count_distinct`` form).
+        """
         model = SlayerModel(
             name="orders",
             sql_table="orders",
@@ -4686,8 +4678,15 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # The ORDER BY should reference the count_distinct column, not "orders.num_customers"
-        assert "orders.num_customers" not in sql, f"Custom name not resolved: {sql}"
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name surfaces as the ORDER BY column.
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias not used in ORDER BY: {sql}"
+        )
+        # Canonical form must not leak into the ORDER BY clause.
+        assert '"orders.customer_id_count_distinct"' not in order_clause, (
+            f"canonical alias must not leak when user supplies 'name': {sql}"
+        )
         assert "COUNT(DISTINCT" in sql
 
     async def test_order_by_canonical_name_still_works(self, generator: SQLGenerator) -> None:
@@ -4743,9 +4742,11 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         )
         sql = await _generate(generator, query, model)
         assert "ORDER BY" in sql
-        # The ORDER BY must NOT use the raw custom name "orders.num_customers"
-        assert "orders.num_customers" not in sql, (
-            f"Custom name not resolved in computed query path:\n{sql}"
+        order_clause = sql.split("ORDER BY", 1)[1]
+        # User name is the ORDER BY column (DEV-1335 — user ``name`` overrides
+        # the canonical form).
+        assert '"orders.num_customers"' in order_clause, (
+            f"user alias must surface in ORDER BY for computed query path:\n{sql}"
         )
 
 
@@ -4796,8 +4797,6 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
 
     async def test_order_by_single_hop_cross_model_colon_syntax(self, generator: SQLGenerator) -> None:
         """ORDER BY 'customers.score:sum' on a cross-model measure."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         orders = SlayerModel(
             name="orders",
@@ -4839,8 +4838,6 @@ Column(name="score", sql="score", type=DataType.NUMBER)],
 
     async def test_order_by_two_hop_dimension_with_colon_measure(self, generator: SQLGenerator) -> None:
         """ORDER BY a cross-model measure alongside a two-hop dimension."""
-        import tempfile
-        from slayer.storage.yaml_storage import YAMLStorage
 
         orders = SlayerModel(
             name="orders",
@@ -4951,7 +4948,6 @@ class TestJoinType:
 
     async def test_inner_join_generated(self, generator: SQLGenerator) -> None:
         """join_type='inner' produces INNER JOIN, not LEFT JOIN."""
-        from slayer.engine.enrichment import enrich_query
 
         customers = SlayerModel(
             name="customers",
@@ -5000,7 +4996,6 @@ class TestMeasureFilterCrossModelJoin:
 
     async def test_measure_filter_cross_model_constant_triggers_join(self, generator: SQLGenerator) -> None:
         """Measure filter 'loss_payment.has_flag = 1' where has_flag sql='1' must JOIN to loss_payment."""
-        from slayer.engine.enrichment import enrich_query
 
         loss_payment = SlayerModel(
             name="loss_payment",
@@ -5046,7 +5041,6 @@ class TestMeasureFilterCrossModelJoin:
 
     async def test_left_join_default(self, generator: SQLGenerator) -> None:
         """Default join_type produces LEFT JOIN."""
-        from slayer.engine.enrichment import enrich_query
 
         customers = SlayerModel(
             name="customers",
@@ -5140,7 +5134,6 @@ class TestIsolatedFilteredMeasureCTEs:
         }
 
     async def _enrich(self, claim_amount_model, related_models, query):
-        from slayer.engine.enrichment import enrich_query
 
         async def resolve_join_target(*, target_model_name, named_queries):
             m = related_models.get(target_model_name)
@@ -5289,7 +5282,6 @@ class TestIsolatedFilteredMeasureCTEs:
         enriched = await self._enrich(claim_amount_model, related_models, query)
         sql = generator.generate(enriched=enriched)
         # Extract the _fm CTE body (between _fm_ name and the next CTE/combined)
-        import re as _re
         fm_match = _re.search(r"_fm_\w*loss_payment_amt\w*", sql)
         assert fm_match, f"No _fm_ CTE for loss_payment_amt in:\n{sql}"
         fm_start = fm_match.start()
@@ -5302,8 +5294,6 @@ class TestIsolatedFilteredMeasureCTEs:
 
     def test_cm_cte_skips_filters_on_unavailable_tables(self, generator: SQLGenerator) -> None:
         """Cross-model CTE WHERE must not include filters referencing tables it doesn't join (Bug Q9)."""
-        from slayer.core.formula import ParsedFilter
-        from slayer.engine.enriched import CrossModelMeasure, EnrichedDimension, EnrichedMeasure, EnrichedQuery
 
         # Build an EnrichedQuery with:
         # - A cross-model measure (source=orders, target=customers)
@@ -5408,7 +5398,6 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "loss_payment_amt_sum" in sql, f"Missing loss_payment_amt_sum in:\n{sql}"
         assert "loss_payment_amt_avg" in sql, f"Missing loss_payment_amt_avg in:\n{sql}"
         # The two filtered measures must have distinct CTE names (no duplicate _fm_ CTEs)
-        import re as _re
         fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
         assert len(fm_cte_names) == len(set(fm_cte_names)), (
             f"Duplicate _fm_ CTE names: {fm_cte_names}\n{sql}"
@@ -5477,7 +5466,6 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = generator.generate(enriched=enriched)
 
         # The _fm_ CTE must exist and contain ROW_NUMBER
-        import re as _re
         fm_match = _re.search(r"(_fm_\w*latest_payment\w*)\s+AS\s*\(", sql)
         assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
         fm_start = fm_match.start()
@@ -5526,7 +5514,6 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
         # Isolated measure should get its own _fm_ CTE
-        import re as _re
         fm_match = _re.search(r"_fm_\w*latest_payment\w*", sql)
         assert fm_match, f"No _fm_ CTE for latest_payment in:\n{sql}"
 
@@ -5562,7 +5549,6 @@ class TestIsolatedFilteredMeasureCTEs:
         sql = generator.generate(enriched=enriched)
 
         # The _fm_ CTE should use first (ASC ordering)
-        import re as _re
         fm_match = _re.search(r"(_fm_\w*earliest_reserve\w*)\s+AS\s*\(", sql)
         assert fm_match, f"No _fm_ CTE for earliest_reserve in:\n{sql}"
         fm_start = fm_match.start()
@@ -5611,7 +5597,6 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
         # Two separate _fm_ CTEs
-        import re as _re
         fm_cte_names = _re.findall(r"(_fm_\w+)\s+AS\s*\(", sql)
         assert len(fm_cte_names) == 2, (
             f"Expected 2 _fm_ CTEs, got {len(fm_cte_names)}: {fm_cte_names}\n{sql}"
@@ -5629,7 +5614,6 @@ class TestIsolatedFilteredMeasureCTEs:
 
     def test_same_cm_measure_different_aggs_separate_ctes(self, generator: SQLGenerator) -> None:
         """Same cross-model measure with sum + avg must produce distinct CTEs."""
-        from slayer.engine.enriched import CrossModelMeasure, EnrichedDimension, EnrichedMeasure, EnrichedQuery
 
         dim = EnrichedDimension(
             name="order_id", sql="order_id", type=DataType.NUMBER,
@@ -5685,7 +5669,6 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "revenue_sum" in sql, f"Missing revenue_sum in:\n{sql}"
         assert "revenue_avg" in sql, f"Missing revenue_avg in:\n{sql}"
         # Two distinct CM CTE definitions
-        import re as _re
         cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(cm_cte_names) == 2, f"Expected 2 _cm_ CTEs, got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
         assert cm_cte_names[0] != cm_cte_names[1], f"CTE names collide: {cm_cte_names}\n{sql}"
@@ -5696,7 +5679,6 @@ class TestCteNameSanitization:
 
     def test_dot_vs_underscore_no_collision(self) -> None:
         """Aliases differing only in dot/underscore placement produce distinct CTE names."""
-        from slayer.sql.generator import _cte_name_from_alias
 
         name_a = _cte_name_from_alias("_fm_", "a.b_c")
         name_b = _cte_name_from_alias("_fm_", "a_b.c")
@@ -5711,9 +5693,7 @@ class TestGetColumnTypesSql:
 
     async def test_expression_measure_sql_not_corrupted(self) -> None:
         """Expression measures like COALESCE(amount, 0) must not get model.name prepended."""
-        from unittest.mock import AsyncMock, MagicMock, patch
 
-        from slayer.storage.yaml_storage import YAMLStorage
 
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         model = SlayerModel(
@@ -5757,10 +5737,7 @@ class TestGetColumnTypesSql:
 
     async def test_cross_model_measures_probed_via_engine(self) -> None:
         """Cross-model measures should be probed via the engine's enrich+generate pipeline."""
-        from unittest.mock import AsyncMock, MagicMock, patch
 
-        from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
-        from slayer.storage.yaml_storage import YAMLStorage
 
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         model = SlayerModel(
@@ -5811,7 +5788,6 @@ class TestGetColumnTypesSql:
 
     def test_explicit_empty_allowed_aggregations_skips_probe(self) -> None:
         """An explicit empty allowed_aggregations must NOT fall back to type defaults."""
-        from slayer.storage.yaml_storage import YAMLStorage
 
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         model = SlayerModel(
@@ -5837,4 +5813,353 @@ class TestGetColumnTypesSql:
         )
         assert not any(f and f.startswith("opaque:") for f in formulas), (
             f"Empty allowed_aggregations must skip probe, got {formulas}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1336 — window functions in filters (single-stage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def planets_model() -> SlayerModel:
+    """Model with a Column.sql containing a window function (top-N rank pattern)."""
+    return SlayerModel(
+        name="planets",
+        sql_table="planets",
+        data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="mass", sql="mass", type=DataType.NUMBER),
+            Column(
+                name="rn",
+                sql="row_number() over (order by mass desc)",
+                type=DataType.NUMBER,
+            ),
+        ],
+    )
+
+
+class TestWindowFunctionInFilter:
+    """DEV-1336: a filter that resolves to SQL containing a window function
+    (`OVER (...)`) must not be inlined into the inner WHERE — SQLite and most
+    dialects reject window functions there.
+
+    For a model `Column.sql` containing a window expression, the generator
+    must (a) materialize the column in the inner SELECT under its alias, and
+    (b) move the predicate to the outer post-filter WHERE.
+
+    For raw `OVER (...)` text in query filters or measure formulas, the
+    parser must raise a clear actionable error pointing at SLayer's transforms.
+    """
+
+    async def test_filter_on_windowed_column_sql_uses_post_filter_wrap(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["rn <= 3"],
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        norm = _norm(sql)
+
+        # Window expression must be materialized in the inner SELECT under its alias…
+        assert 'AS "planets.rn"' in sql, (
+            f"Expected windowed column to be aliased in inner SELECT.\nsql:\n{sql}"
+        )
+        # …and the outer post-filter wrap must reference the alias, not inline the SQL.
+        assert "AS _filtered" in sql, (
+            f"Expected outer `_filtered` post-filter wrap.\nsql:\n{sql}"
+        )
+        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm, (
+            f"Expected outer WHERE to reference the alias.\nsql:\n{sql}"
+        )
+        # Critically: no top-level `WHERE ROW_NUMBER ... OVER` in the inner SELECT.
+        # The pre-fix SQL was: `WHERE ROW_NUMBER() OVER (ORDER BY mass DESC) <= 3`
+        # We allow ROW_NUMBER inside the inner SELECT list (after AS), but not in
+        # any WHERE clause.
+        upper = norm.upper()
+        # Find every "WHERE" position and confirm none is followed by ROW_NUMBER...OVER
+        # before the next clause boundary.
+        for match in _re.finditer(r"\bWHERE\b", upper):
+            tail = upper[match.end(): match.end() + 200]
+            assert "ROW_NUMBER" not in tail.split(") AS ")[0], (
+                f"WHERE clause must not contain a window function.\nsql:\n{sql}"
+            )
+
+    async def test_filter_on_windowed_column_combined_with_base_filter(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """A non-window filter should stay in inner WHERE; the window filter
+        moves to the outer post-filter wrap."""
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["rn <= 3", "name <> 'Pluto'"],
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        norm = _norm(sql)
+
+        # Outer wrap is present (window predicate promoted).
+        assert "AS _filtered" in sql
+
+        # The base filter (`name <> 'Pluto'`) must stay in the INNER WHERE,
+        # not get promoted to the outer `_filtered` wrap.
+        inner_sql, outer_sql = sql.split("AS _filtered", 1)
+        assert "Pluto" in inner_sql, (
+            f"Base filter must live in inner SELECT, not outer wrap.\nsql:\n{sql}"
+        )
+        assert "Pluto" not in outer_sql, (
+            f"Base filter must not appear in outer wrap.\nsql:\n{sql}"
+        )
+        # The window predicate is in the outer WHERE on the alias.
+        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm
+
+    async def test_select_only_on_windowed_column_unchanged(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """Control test: selecting a windowed-Column without filtering on it
+        should not introduce the post-filter wrap (no behavior change)."""
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name", "rn"],
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        assert "AS _filtered" not in sql, (
+            f"No post-filter wrap should be introduced when there is no window "
+            f"filter.\nsql:\n{sql}"
+        )
+
+    async def test_inline_window_function_in_query_filter_raises(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """Raw `OVER (...)` text in a query filter must raise an actionable
+        error pointing the user at SLayer transforms or `Column.sql`."""
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["row_number() over (order by mass desc) <= 3"],
+        )
+        with pytest.raises(ValueError) as excinfo:
+            await _generate(generator=generator, query=query, model=planets_model)
+        msg = str(excinfo.value)
+        assert "window function" in msg.lower(), (
+            f"Error message should mention 'window function'.\nmsg: {msg}"
+        )
+        # Must point at at least one of the recommended escape hatches.
+        assert any(
+            keyword in msg
+            for keyword in ("rank(", "first(", "last(", "lag(", "lead(", "Column.sql", "multi-stage")
+        ), f"Error must suggest a SLayer transform or Column.sql or multi-stage.\nmsg: {msg}"
+        # And must NOT be the misleading Python-AST fallback message.
+        assert "Perhaps you forgot a comma" not in msg
+
+    def test_window_function_in_named_measure_used_as_filter_raises(self) -> None:
+        """A `ModelMeasure` formula containing raw `OVER` must be rejected at
+        construction time with an actionable error."""
+        with pytest.raises(ValueError) as excinfo:
+            SlayerModel(
+                name="planets",
+                sql_table="planets",
+                data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                    Column(name="name", sql="name", type=DataType.STRING),
+                    Column(name="mass", sql="mass", type=DataType.NUMBER),
+                ],
+                measures=[
+                    ModelMeasure(
+                        name="top_3_largest",
+                        formula="row_number() over (order by mass desc) <= 3",
+                    )
+                ],
+            )
+        msg = str(excinfo.value)
+        assert "window function" in msg.lower(), (
+            f"Error message should mention 'window function'.\nmsg: {msg}"
+        )
+        assert "Perhaps you forgot a comma" not in msg
+
+    async def test_post_filter_pagination_applied_after_filter(
+        self, generator: SQLGenerator, planets_model: SlayerModel,
+    ) -> None:
+        """CR Thread 1: when the only reason for the post-filter wrap is a
+        windowed `Column.sql` filter (no expressions, transforms, or measure
+        CTEs), pagination must be applied AFTER the `_filtered` wrap, not
+        inside the base SELECT. Otherwise the engine paginates the unfiltered
+        base and then filters the wrong page (and applies LIMIT twice).
+        """
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            filters=["rn <= 3"],
+            order=[OrderItem(column=ColumnRef(name="name"), direction="asc")],
+            limit=2,
+        )
+        sql = await _generate(generator=generator, query=query, model=planets_model)
+        # Post-filter wrap must be present.
+        assert "AS _filtered" in sql, (
+            f"Expected `_filtered` post-filter wrap.\nsql:\n{sql}"
+        )
+        # Pagination must not be applied twice.
+        assert sql.upper().count("LIMIT ") == 1, (
+            f"LIMIT must appear exactly once — currently the base SELECT and "
+            f"the outer wrap both apply it.\nsql:\n{sql}"
+        )
+        assert sql.upper().count("\nORDER BY ") == 1, (
+            f"ORDER BY must appear exactly once — currently the base SELECT and "
+            f"the outer wrap both apply it.\nsql:\n{sql}"
+        )
+        # The single LIMIT must come AFTER the `_filtered` wrap so pagination
+        # operates on the post-filtered result.
+        filtered_pos = sql.find("AS _filtered")
+        limit_pos = sql.upper().rfind("LIMIT ")
+        assert limit_pos > filtered_pos, (
+            f"LIMIT must follow the `_filtered` wrap so we paginate the "
+            f"filtered result, not the unfiltered base.\n"
+            f"filtered_pos={filtered_pos}, limit_pos={limit_pos}\nsql:\n{sql}"
+        )
+
+    async def test_windowed_filter_column_with_last_measure(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """CR Thread 2 (has_first_or_last branch): when the base SELECT switches
+        to a ranked subquery for a `last`/`first` measure, the windowed-filter
+        column projection must still render and the post-filter wrap must
+        reference its alias. The current code adds the projection but parses
+        `wcol.sql` against an unaware scope.
+        """
+
+        planets_with_time = SlayerModel(
+            name="planets",
+            sql_table="planets",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="observed_at", sql="observed_at", type=DataType.TIMESTAMP),
+                Column(
+                    name="rn",
+                    sql="row_number() over (order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            default_time_dimension="observed_at",
+        )
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            measures=[ModelMeasure(formula="mass:last")],
+            filters=["rn <= 3"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=planets_with_time,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        sql = generator.generate(enriched=enriched)
+        norm = _norm(sql)
+
+        # Windowed column projection survives in the base SELECT.
+        assert 'AS "planets.rn"' in sql, (
+            f"Windowed-filter column must be projected with its alias even "
+            f"when the base FROM is the ranked subquery.\nsql:\n{sql}"
+        )
+        # Post-filter wrap is present and references the alias.
+        assert "AS _filtered" in sql
+        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm, (
+            f"Post-filter must reference the windowed column alias.\nsql:\n{sql}"
+        )
+
+    async def test_windowed_filter_column_referencing_join_with_cross_model_measure(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """CR Thread 2 (skip_isolated branch): when measure CTEs trigger
+        `skip_isolated=True`, joins are pruned to those needed by dimensions
+        and base filters. A windowed `Column.sql` that references a
+        `__`-aliased joined table must keep that join in scope, otherwise
+        the `_base` CTE renders with a missing table.
+        """
+
+        systems = SlayerModel(
+            name="systems",
+            sql_table="public.systems",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="galaxy_id", sql="galaxy_id", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.STRING),
+            ],
+        )
+        planets = SlayerModel(
+            name="planets",
+            sql_table="public.planets",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="system_id", sql="system_id", type=DataType.NUMBER),
+                # Window expression partitions on a JOINED column via the
+                # direct join alias.
+                Column(
+                    name="rn_in_system",
+                    sql="row_number() over (partition by systems.galaxy_id order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+                # A measure with a cross-model filter forces skip_isolated=True.
+                Column(
+                    name="active_mass",
+                    sql="mass",
+                    filter="systems.status = 'active'",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            joins=[ModelJoin(target_model="systems", join_pairs=[["system_id", "id"]])],
+        )
+
+        async def resolve_join_target(*, target_model_name, named_queries):  # NOSONAR(S7503) — async required by enrich_query callback contract
+            if target_model_name == "systems":
+                return ("public.systems", systems)
+            return None
+
+        query = SlayerQuery(
+            source_model="planets",
+            dimensions=["name"],
+            measures=[ModelMeasure(formula="active_mass:sum")],
+            filters=["rn_in_system <= 3"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=planets,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=resolve_join_target,
+        )
+        sql = generator.generate(enriched=enriched)
+
+        # The base CTE must keep the systems join because the windowed column
+        # references planets__systems.galaxy_id.
+        base_marker = "_base AS ("
+        base_start = sql.find(base_marker)
+        assert base_start != -1, f"Expected `_base` CTE.\nsql:\n{sql}"
+        # Find the matching close paren for _base.
+        depth = 1
+        pos = base_start + len(base_marker)
+        while pos < len(sql) and depth > 0:
+            if sql[pos] == "(":
+                depth += 1
+            elif sql[pos] == ")":
+                depth -= 1
+            pos += 1
+        base_chunk = sql[base_start:pos]
+        assert "public.systems" in base_chunk, (
+            f"Expected the systems LEFT JOIN inside the `_base` CTE because the "
+            f"windowed column references planets__systems.galaxy_id.\n"
+            f"_base CTE:\n{base_chunk}\n\nfull sql:\n{sql}"
         )
