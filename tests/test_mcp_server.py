@@ -51,7 +51,11 @@ def _reset_yaml_storage(storage: YAMLStorage) -> None:
     """Wipe model + datasource files between tests so the session-scoped
     storage looks fresh to every test. v4 nests models under
     ``models/<data_source>/`` so we recurse rather than just unlinking
-    top-level entries."""
+    top-level entries. Also clears the ``priority.yaml`` written by
+    ``set_datasource_priority`` — without this, priority leaks between
+    session-scoped tests and any ambiguity-related test would be
+    order-dependent (PR #92 thread #13).
+    """
     for sub in ("models", "datasources"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
@@ -61,6 +65,9 @@ def _reset_yaml_storage(storage: YAMLStorage) -> None:
                     shutil.rmtree(path)
                 else:
                     os.remove(path)
+    priority_path = os.path.join(storage.base_dir, "priority.yaml")
+    if os.path.exists(priority_path):
+        os.remove(priority_path)
 
 
 @pytest.fixture

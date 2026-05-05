@@ -13,7 +13,7 @@ import sqlite3
 from typing import List, Optional, Tuple
 
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend, _validate_path_component
 from slayer.storage.v4_migration import migrate_sqlite_schema
 
 
@@ -147,6 +147,9 @@ class SQLiteStorage(StorageBackend):
         name: str,
         data_source: Optional[str] = None,
     ) -> Optional[SlayerModel]:
+        _validate_path_component(name, kind="model name")
+        if data_source is not None:
+            _validate_path_component(data_source, kind="data_source")
         if data_source is None:
             identity = await self.resolve_model_identity(name)
             if identity is None:
@@ -160,6 +163,9 @@ class SQLiteStorage(StorageBackend):
         name: str,
         data_source: Optional[str] = None,
     ) -> bool:
+        _validate_path_component(name, kind="model name")
+        if data_source is not None:
+            _validate_path_component(data_source, kind="data_source")
         if data_source is None:
             identity = await self.resolve_model_identity(name)
             if identity is None:

@@ -152,7 +152,7 @@ async def test_yaml_orphan_with_single_datasource_auto_assigned(tmp_path) -> Non
     assert loaded.data_source == "only_ds"
 
 
-async def test_yaml_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling test_yaml_* fixtures
+def test_yaml_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:
     """≥2 datasources ⇒ the migration can't pick one, so it raises and refuses
     to open the storage. Error message must name the orphan files so the user
     can fix them by hand."""
@@ -172,7 +172,7 @@ async def test_yaml_orphan_with_multiple_datasources_hard_fails(tmp_path) -> Non
         YAMLStorage(base_dir=base)
 
 
-async def test_yaml_orphan_with_no_datasources_hard_fails(tmp_path) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling test_yaml_* fixtures
+def test_yaml_orphan_with_no_datasources_hard_fails(tmp_path) -> None:
     """Zero datasources ⇒ no plausible default; same hard fail as ≥2."""
     base = str(tmp_path)
     legacy_models_dir = os.path.join(base, "models")
@@ -308,7 +308,7 @@ async def test_sqlite_legacy_schema_orphan_with_single_datasource_auto_assigned(
     assert loaded.data_source == "only_ds"
 
 
-async def test_sqlite_legacy_schema_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling test_sqlite_* fixtures
+def test_sqlite_legacy_schema_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:
     db_path = str(tmp_path / "slayer.db")
     _create_legacy_sqlite_models_table(db_path)
     blob_orphan = json.dumps({"version": 3, "name": "orders", "sql_table": "orders"})

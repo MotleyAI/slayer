@@ -99,7 +99,7 @@ class TestNamespacedSaveLoad:
         assert await storage.get_model("orders", data_source="db_a") is not None
         assert await storage.get_model("orders", data_source="db_b") is None
 
-    async def test_save_model_rejects_empty_data_source(self, storage) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling backend-parametrized tests
+    def test_save_model_rejects_empty_data_source(self, storage) -> None:
         # Construction itself fails — non-empty validator on SlayerModel —
         # so the model never reaches storage. ``storage`` parameter is
         # unused by design; we keep it so the test runs once per backend
@@ -279,6 +279,35 @@ class TestListModels:
 
         names = await storage.list_models(data_source="db_x")
         assert sorted(names) == ["orders", "users"]
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "../escape",
+            "..",
+            "../../etc/passwd",
+            "a/b",
+            "a\\b",
+            "",
+        ],
+    )
+    async def test_get_model_rejects_path_traversal_in_name(self, storage, bad) -> None:
+        """``get_model(name=..., data_source=...)`` must validate both
+        components — path-traversal sequences and path separators are
+        rejected at the storage boundary so a malicious caller (MCP/REST
+        passing user-controlled strings) cannot probe outside the storage
+        tree. See PR #92 (Sonar S6549).
+        """
+        await storage.save_datasource(_ds("db_a"))
+        await storage.save_model(_model("orders", data_source="db_a"))
+        with pytest.raises(ValueError, match=r"name|data_source|invalid|traversal"):
+            await storage.get_model(bad, data_source="db_a")
+        with pytest.raises(ValueError, match=r"name|data_source|invalid|traversal"):
+            await storage.get_model("orders", data_source=bad)
+        with pytest.raises(ValueError, match=r"name|data_source|invalid|traversal"):
+            await storage.delete_model(bad, data_source="db_a")
+        with pytest.raises(ValueError, match=r"name|data_source|invalid|traversal"):
+            await storage.delete_model("orders", data_source=bad)
 
     async def test_ambiguous_error_message_is_surface_neutral(self, storage) -> None:
         """``AmbiguousModelError.__str__`` must list candidates without

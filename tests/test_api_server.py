@@ -32,7 +32,9 @@ def _shared_client(_shared_storage: YAMLStorage) -> TestClient:
 
 def _reset_yaml_storage(storage: YAMLStorage) -> None:
     # v4 nests models under ``models/<data_source>/``; recurse into
-    # subdirectories instead of unlinking only top-level entries.
+    # subdirectories instead of unlinking only top-level entries. Also
+    # clears the ``priority.yaml`` written by ``set_datasource_priority``
+    # so it doesn't leak between session-scoped tests (PR #92 thread #13).
     for sub in ("models", "datasources"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
@@ -42,6 +44,9 @@ def _reset_yaml_storage(storage: YAMLStorage) -> None:
                     shutil.rmtree(path)
                 else:
                     os.remove(path)
+    priority_path = os.path.join(storage.base_dir, "priority.yaml")
+    if os.path.exists(priority_path):
+        os.remove(priority_path)
 
 
 @pytest.fixture

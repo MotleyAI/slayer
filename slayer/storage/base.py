@@ -46,6 +46,43 @@ def default_storage_path() -> str:
     return str(base / "slayer")
 
 
+_PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00")
+
+
+def _validate_path_component(value: str, *, kind: str) -> None:
+    """Reject strings that could traverse out of the storage tree.
+
+    Used at the public ``get_model``/``delete_model`` boundaries to
+    sanitize user-controlled strings *before* a backend composes them
+    into a filesystem path or SQL key. Mirrors the validators on the
+    ``SlayerModel`` Pydantic class — those guard the save path; this
+    guards the read/delete paths where Pydantic validation is bypassed
+    (since callers pass raw strings, not model instances).
+
+    Rejects: empty / whitespace-only, ``..``, any path separator
+    (``/``, ``\\``), and embedded NULs. Lives in ``StorageBackend`` so
+    every backend gets the same defense without duplication
+    (per the backend-agnostic memory rule).
+    """
+    if not isinstance(value, str) or not value or not value.strip():
+        raise ValueError(
+            f"Invalid {kind} {value!r}: must be a non-empty string."
+        )
+    if value.strip() != value:
+        raise ValueError(
+            f"Invalid {kind} {value!r}: leading/trailing whitespace is not allowed."
+        )
+    if value == ".." or value.startswith("..") or "/.." in value or "\\.." in value:
+        raise ValueError(
+            f"Invalid {kind} {value!r}: path traversal sequences are not allowed."
+        )
+    for ch in _PATH_COMPONENT_DISALLOWED:
+        if ch in value:
+            raise ValueError(
+                f"Invalid {kind} {value!r}: must not contain {ch!r}."
+            )
+
+
 class StorageBackend(ABC):
     """Abstract storage backend. All methods are async.
 

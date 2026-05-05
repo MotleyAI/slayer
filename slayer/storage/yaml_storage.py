@@ -17,7 +17,7 @@ import yaml
 from pydantic import ValidationError
 
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend, _validate_path_component
 from slayer.storage.v4_migration import migrate_yaml_layout
 
 
@@ -65,6 +65,9 @@ class YAMLStorage(StorageBackend):
         name: str,
         data_source: Optional[str] = None,
     ) -> Optional[SlayerModel]:
+        _validate_path_component(name, kind="model name")
+        if data_source is not None:
+            _validate_path_component(data_source, kind="data_source")
         if data_source is None:
             identity = await self.resolve_model_identity(name)
             if identity is None:
@@ -82,6 +85,9 @@ class YAMLStorage(StorageBackend):
         name: str,
         data_source: Optional[str] = None,
     ) -> bool:
+        _validate_path_component(name, kind="model name")
+        if data_source is not None:
+            _validate_path_component(data_source, kind="data_source")
         if data_source is None:
             identity = await self.resolve_model_identity(name)
             if identity is None:
@@ -138,7 +144,7 @@ class YAMLStorage(StorageBackend):
     async def get_datasource_priority(self) -> List[str]:
         if not os.path.exists(self._priority_path):
             return []
-        with open(self._priority_path) as f:
+        with open(self._priority_path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             data = yaml.safe_load(f) or {}
         priority = data.get("priority", [])
         if not isinstance(priority, list):
@@ -146,5 +152,5 @@ class YAMLStorage(StorageBackend):
         return [str(p) for p in priority]
 
     async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
-        with open(self._priority_path, "w") as f:
+        with open(self._priority_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump({"priority": list(priority)}, f, sort_keys=False)
