@@ -55,6 +55,24 @@ _STAT_AGG_NAMES: frozenset[str] = frozenset({
 # Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
+# DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
+# normalises both into a generic ``Log(this=Literal(base), expression=arg)``
+# AST and re-emits as ``LOG(base, x)`` for almost every dialect, which
+# diverges from the recipe formula text and (on dialects without 2-arg
+# ``LOG``) can break a previously working call. We rewrite the AST back
+# to ``Anonymous(this='log10'|'log2', ...)`` for the dialects below;
+# unsupported dialects (oracle; tsql for log2) keep the canonical 2-arg
+# form. Mirrored in tests/test_sql_generator.py — keep in sync.
+_LOG10_NATIVE_DIALECTS: frozenset[str] = frozenset({
+    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
+    "snowflake", "bigquery", "redshift",
+    "trino", "presto", "databricks", "spark", "tsql",
+})
+_LOG2_NATIVE_DIALECTS: frozenset[str] = frozenset({
+    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
+    "bigquery", "trino", "presto", "databricks", "spark",
+})
+
 # Transforms that use self-join CTEs instead of window functions.
 # This gives correct results at result-set edges (no NULLs when the DB has the data)
 # and handles gaps in time series correctly.
@@ -272,15 +290,24 @@ class SQLGenerator:
         SQLite emit is ``col -> '$.path'``, which returns the JSON-quoted
         form and silently breaks CASE WHEN / equality matches.
 
+        On every dialect, rewrites ``Log(this=Literal(10|2), expression=X)``
+        to ``Anonymous(this='log10'|'log2', ...)`` for backends with native
+        single-arg aliases (DEV-1337); sqlglot otherwise canonicalises both
+        to ``LOG(base, x)`` and the emitted SQL stops matching the recipe
+        formula text.
+
         Use this in place of ``sqlglot.parse_one(...)`` everywhere inside
-        ``SQLGenerator`` so the rewrite fires uniformly across every parse
+        ``SQLGenerator`` so the rewrites fire uniformly across every parse
         site.
         """
         d = dialect or self.dialect
         tree = sqlglot.parse_one(sql, dialect=d)
         if d == "sqlite":
             tree = rewrite_sqlite_json_extract(tree)
-        return tree
+        # Log-alias rewrite is multi-dialect; the per-base allowlist check
+        # lives inside ``_rewrite_log_aliases`` so unsupported dialects
+        # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
+        return tree.transform(self._rewrite_log_aliases)
 
     def generate(self, enriched: EnrichedQuery) -> str:
         """Generate SQL from a fully resolved EnrichedQuery.
@@ -1730,6 +1757,31 @@ class SQLGenerator:
     # ------------------------------------------------------------------
     # Column / measure resolution (from enriched SQL expressions)
     # ------------------------------------------------------------------
+
+    def _rewrite_log_aliases(self, node: exp.Expression) -> exp.Expression:
+        """DEV-1337: rewrite ``Log(this=Literal(10|2), expression=X)`` back to
+        ``Anonymous(this='log10'|'log2', expressions=[X])`` for dialects with
+        native single-arg aliases. Walked over every parsed AST so the
+        rewrite survives sqlglot's re-parse passes (which would otherwise
+        turn ``LOG10(x)`` back into a generic ``Log`` node and re-emit as
+        ``LOG(10, x)``). No-op on non-``Log`` nodes and on ``Log`` nodes
+        with a non-literal or non-{10,2} base.
+        """
+        if not isinstance(node, exp.Log):
+            return node
+        base = node.args.get("this")
+        arg = node.args.get("expression")
+        if arg is None or not isinstance(base, exp.Literal) or base.is_string:
+            return node
+        try:
+            base_val = float(base.this)
+        except (TypeError, ValueError):
+            return node
+        if base_val == 10 and self.dialect in _LOG10_NATIVE_DIALECTS:
+            return exp.Anonymous(this="log10", expressions=[arg.copy()])
+        if base_val == 2 and self.dialect in _LOG2_NATIVE_DIALECTS:
+            return exp.Anonymous(this="log2", expressions=[arg.copy()])
+        return node
 
     def _resolve_sql(self, sql: Optional[str], name: str, model_name: str) -> exp.Expression:
         """Resolve an enriched SQL expression to a sqlglot AST node."""

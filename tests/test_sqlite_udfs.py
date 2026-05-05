@@ -242,6 +242,30 @@ def test_log10_zero_raises(sqlite_conn):
         sqlite_conn.execute("SELECT log10(0)").fetchone()
 
 
+# --- log2 ------------------------------------------------------------------
+# DEV-1337: registered alongside log10 so the SQL generator can render a
+# user-written `log2(x)` formula verbatim on SQLite (the rewrite from
+# `LOG(2, x)` → `log2(x)` would otherwise hit a missing-function error).
+
+
+def test_log2_known_value(sqlite_conn):
+    assert _scalar(sqlite_conn, "log2(?)", 8) == pytest.approx(3.0)
+
+
+def test_log2_null_input_returns_null(sqlite_conn):
+    assert _scalar(sqlite_conn, "log2(NULL)") is None
+
+
+def test_log2_zero_raises(sqlite_conn):
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite_conn.execute("SELECT log2(0)").fetchone()
+
+
+def test_log2_negative_raises(sqlite_conn):
+    with pytest.raises(sqlite3.OperationalError):
+        sqlite_conn.execute("SELECT log2(-1)").fetchone()
+
+
 # --- log(B, X) -------------------------------------------------------------
 # Argument order: B first, X second. Returns log_B(X). Matches SQLite >=3.35
 # built-in `log(B,X)` and Postgres `LOG(b, x)`.
@@ -413,6 +437,9 @@ def test_log_udf_registered_unconditionally():
     )
     assert "ln" in names
     assert "log10" in names
+    # DEV-1337: log2 must register so the SQL generator can emit a
+    # user-written `log2(x)` formula verbatim on SQLite.
+    assert "log2" in names
 
 
 def test_log_zero_raises_uniformly(sqlite_conn):

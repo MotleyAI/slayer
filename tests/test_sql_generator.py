@@ -5833,3 +5833,209 @@ class TestGetColumnTypesSql:
         assert not any(f and f.startswith("opaque:") for f in formulas), (
             f"Empty allowed_aggregations must skip probe, got {formulas}"
         )
+
+
+# DEV-1337: per-alias allowlists for "natively supports single-arg log10/log2"
+# rendering. Outside these sets the current 2-arg LOG(base, x) form is kept.
+# Mirrored in slayer/sql/generator.py — keep in sync.
+_LOG10_NATIVE_DIALECTS = frozenset({
+    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
+    "snowflake", "bigquery", "redshift",
+    "trino", "presto", "databricks", "spark", "tsql",
+})
+_LOG2_NATIVE_DIALECTS = frozenset({
+    "sqlite", "postgres", "duckdb", "mysql", "clickhouse",
+    "bigquery", "trino", "presto", "databricks", "spark",
+})
+
+
+class TestLogAliasPreservation:
+    """DEV-1337 — user-written ``log10(x)`` / ``log2(x)`` must round-trip
+    verbatim in emitted SQL on dialects that natively support those single-arg
+    aliases. sqlglot's default behaviour normalises both into a generic
+    ``Log(this=Literal(base), expression=arg)`` AST node and re-emits as
+    ``LOG(base, x)`` for almost every dialect, which makes generated SQL
+    diverge from the recipe formula text and (on dialects that lack 2-arg
+    ``LOG``) can break a previously working call.
+    """
+
+    @pytest.fixture
+    def log_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                # Scalar log expressions inside Column.sql — the primary
+                # path the issue surfaced through.
+                Column(name="log_amount", sql="log10(amount)", type=DataType.NUMBER),
+                Column(name="log2_amount", sql="log2(amount)", type=DataType.NUMBER),
+                # Negative-control: a non-alias literal base. Must keep the
+                # standard 2-arg LOG(base, x) form post-fix.
+                Column(name="log3_amount", sql="log(3, amount)", type=DataType.NUMBER),
+                # ln(...) is a separate AST node (exp.Ln); the rewrite must
+                # not touch it.
+                Column(name="ln_amount", sql="ln(amount)", type=DataType.NUMBER),
+            ],
+        )
+
+    @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
+    async def test_log10_in_column_sql_is_preserved(
+        self, dialect: str, log_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="log_amount:max")],
+        )
+        sql = await _generate(gen, query, log_model)
+        upper_no_ws = "".join(sql.upper().split())
+        if dialect in _LOG10_NATIVE_DIALECTS:
+            assert "LOG10(AMOUNT)" in upper_no_ws, (
+                f"{dialect}: expected literal LOG10(amount), got:\n{sql}"
+            )
+            # Must not have canonicalised to either arg-order 2-arg form.
+            assert "LOG(10,AMOUNT)" not in upper_no_ws, (
+                f"{dialect}: should not canonicalise to LOG(10, amount):\n{sql}"
+            )
+            assert "LOG(AMOUNT,10)" not in upper_no_ws, (
+                f"{dialect}: should not canonicalise to LOG(amount, 10):\n{sql}"
+            )
+        else:
+            # Fallback: current 2-arg LOG behaviour is preserved on dialects
+            # without native single-arg log10 (oracle).
+            assert "LOG(10,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,10)" in upper_no_ws, (
+                f"{dialect}: expected fallback LOG(base,x) form, got:\n{sql}"
+            )
+
+    @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
+    async def test_log2_in_column_sql_is_preserved(
+        self, dialect: str, log_model: SlayerModel,
+    ) -> None:
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="log2_amount:max")],
+        )
+        sql = await _generate(gen, query, log_model)
+        upper_no_ws = "".join(sql.upper().split())
+        if dialect in _LOG2_NATIVE_DIALECTS:
+            assert "LOG2(AMOUNT)" in upper_no_ws, (
+                f"{dialect}: expected literal LOG2(amount), got:\n{sql}"
+            )
+            assert "LOG(2,AMOUNT)" not in upper_no_ws, (
+                f"{dialect}: should not canonicalise to LOG(2, amount):\n{sql}"
+            )
+            assert "LOG(AMOUNT,2)" not in upper_no_ws, (
+                f"{dialect}: should not canonicalise to LOG(amount, 2):\n{sql}"
+            )
+        else:
+            # Fallback for tsql / oracle / redshift / snowflake (no native LOG2).
+            assert "LOG(2,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,2)" in upper_no_ws, (
+                f"{dialect}: expected fallback LOG(base,x) form, got:\n{sql}"
+            )
+
+    @pytest.mark.parametrize("dialect", sorted(_LOG10_NATIVE_DIALECTS))
+    async def test_log10_inside_filtered_column_survives_reparse(
+        self, dialect: str,
+    ) -> None:
+        """A filtered Column (``Column.filter="..."``) wraps the resolved
+        value in ``CASE WHEN ... THEN ... END`` and re-parses through
+        sqlglot. The log-alias rewrite must survive that round-trip — a
+        re-parse of ``LOG10(amount)`` would otherwise canonicalise back to
+        a generic ``Log`` node and re-emit as ``LOG(10, amount)``.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(
+                    name="log_completed_amount",
+                    sql="log10(amount)",
+                    filter="status = 'completed'",
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="log_completed_amount:max")],
+        )
+        sql = await _generate(gen, query, model)
+        upper_no_ws = "".join(sql.upper().split())
+        assert "LOG10(AMOUNT)" in upper_no_ws, (
+            f"{dialect}: expected literal log10(amount) inside filtered "
+            f"column wrapper, got:\n{sql}"
+        )
+        assert "LOG(10,AMOUNT)" not in upper_no_ws, (
+            f"{dialect}: filtered-column re-parse must not re-canonicalise "
+            f"to LOG(10, amount):\n{sql}"
+        )
+
+    @pytest.mark.parametrize("dialect", sorted(_LOG10_NATIVE_DIALECTS))
+    async def test_log10_in_arithmetic_measure_is_preserved(
+        self, dialect: str, log_model: SlayerModel,
+    ) -> None:
+        """Arithmetic that mixes a log10 column-derived measure with COUNT(*).
+        Pins that the rewrite survives the arithmetic enrichment path.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="log_amount:max / *:count", name="ratio")],
+        )
+        sql = await _generate(gen, query, log_model)
+        upper_no_ws = "".join(sql.upper().split())
+        assert "LOG10(AMOUNT)" in upper_no_ws, (
+            f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
+        )
+        assert "COUNT(" in sql.upper(), f"COUNT(*) leg missing on {dialect}:\n{sql}"
+
+    @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
+    async def test_log_with_non_alias_base_unchanged(
+        self, dialect: str, log_model: SlayerModel,
+    ) -> None:
+        """Negative test: ``log(3, amount)`` (literal base ≠ 10/2) must keep
+        the standard 2-arg form. The rewrite is scoped to bases 10 and 2 only.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="log3_amount:max")],
+        )
+        sql = await _generate(gen, query, log_model)
+        upper_no_ws = "".join(sql.upper().split())
+        # Must NOT have invented a single-arg LOG3(...) function.
+        assert "LOG3(" not in upper_no_ws, (
+            f"{dialect}: must not invent LOG3() — only base 10 and 2 are aliased:\n{sql}"
+        )
+        # The 2-arg form must remain in some arg order.
+        assert "LOG(3,AMOUNT)" in upper_no_ws or "LOG(AMOUNT,3)" in upper_no_ws, (
+            f"{dialect}: expected 2-arg LOG(3, amount) preserved, got:\n{sql}"
+        )
+
+    @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
+    async def test_ln_unchanged(
+        self, dialect: str, log_model: SlayerModel,
+    ) -> None:
+        """``ln(x)`` lives under a separate sqlglot AST node (``exp.Ln``);
+        the rewrite must not affect it.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="ln_amount:max")],
+        )
+        sql = await _generate(gen, query, log_model)
+        # T-SQL has no LN — sqlglot transpiles to LOG(x). Every other dialect
+        # keeps LN(...). We only assert the rewrite did not invent something.
+        assert "LN10(" not in sql.upper()
+        assert "LN2(" not in sql.upper()

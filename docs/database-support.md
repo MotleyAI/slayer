@@ -65,7 +65,7 @@ connection via SQLAlchemy's `connect` event (see
 
 **Scalar UDFs:**
 
-- `ln(x)`, `log10(x)`, `exp(x)`, `sqrt(x)` — single-arg.
+- `ln(x)`, `log10(x)`, `log2(x)`, `exp(x)`, `sqrt(x)` — single-arg. `log2(x)` is registered on **every** SQLite version (overriding ≥3.35's silent-NULL built-in) for the same strict-error reason as `log(B, X)` below.
 - `log(B, X)` — base-first 2-arg logarithm. Returns log_B(X). Registered on **every** SQLite version, including ≥3.35 where it overrides the built-in (the built-in silently returns NULL on math-domain inputs; the UDF raises, matching the strict-Postgres semantics SLayer promises). Same B-first arg order as SQLite ≥3.35's built-in and Postgres's `LOG(b, x)`.
 - `pow(x, n)` and `power(x, n)` — both spellings registered (sqlglot may emit
   either).
