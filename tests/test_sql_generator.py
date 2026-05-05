@@ -5891,7 +5891,7 @@ class TestLogAliasPreservation:
             source_model="orders",
             measures=[ModelMeasure(formula="log_amount:max")],
         )
-        sql = await _generate(gen, query, log_model)
+        sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG10_NATIVE_DIALECTS:
             assert "LOG10(AMOUNT)" in upper_no_ws, (
@@ -5920,7 +5920,7 @@ class TestLogAliasPreservation:
             source_model="orders",
             measures=[ModelMeasure(formula="log2_amount:max")],
         )
-        sql = await _generate(gen, query, log_model)
+        sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG2_NATIVE_DIALECTS:
             assert "LOG2(AMOUNT)" in upper_no_ws, (
@@ -5969,7 +5969,7 @@ class TestLogAliasPreservation:
             source_model="orders",
             measures=[ModelMeasure(formula="log_completed_amount:max")],
         )
-        sql = await _generate(gen, query, model)
+        sql = await _generate(generator=gen, query=query, model=model)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected literal log10(amount) inside filtered "
@@ -5992,7 +5992,7 @@ class TestLogAliasPreservation:
             source_model="orders",
             measures=[ModelMeasure(formula="log_amount:max / *:count", name="ratio")],
         )
-        sql = await _generate(gen, query, log_model)
+        sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
@@ -6011,7 +6011,7 @@ class TestLogAliasPreservation:
             source_model="orders",
             measures=[ModelMeasure(formula="log3_amount:max")],
         )
-        sql = await _generate(gen, query, log_model)
+        sql = await _generate(generator=gen, query=query, model=log_model)
         upper_no_ws = "".join(sql.upper().split())
         # Must NOT have invented a single-arg LOG3(...) function.
         assert "LOG3(" not in upper_no_ws, (
@@ -6034,7 +6034,7 @@ class TestLogAliasPreservation:
             source_model="orders",
             measures=[ModelMeasure(formula="ln_amount:max")],
         )
-        sql = await _generate(gen, query, log_model)
+        sql = await _generate(generator=gen, query=query, model=log_model)
         # T-SQL has no LN — sqlglot transpiles to LOG(x). Every other dialect
         # keeps LN(...). We only assert the rewrite did not invent something.
         assert "LN10(" not in sql.upper()
