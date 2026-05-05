@@ -1554,7 +1554,7 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
     assert value is not None, (
         f"renamed measure must surface a non-NULL value, got NULL in row: {row}"
     )
-    # 100 + 200 + 50 + 75 + 300 + 25 = 750  # NOSONAR(python:S125) — arithmetic explanation, not commented-out code
+    # 100 + 200 + 50 + 75 + 300 + 25 = 750  # NOSONAR(S125) — arithmetic explanation, not commented-out code
     assert value == pytest.approx(750.0), (
         f"sum of inner-stage 'rev' across all status buckets must equal 750, got {value}"
     )
