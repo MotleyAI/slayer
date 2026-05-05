@@ -674,6 +674,15 @@ def _replace_calls_in_arith(
         node.values = [_replace_calls_in_arith(v, **kwargs) for v in node.values]
         return node
 
+    if isinstance(node, ast.Call):
+        # Non-transform call (e.g. nullif, coalesce) wrapping aggregated refs.
+        # Recurse into args/keywords so any __aggN__ placeholders inside get
+        # registered in measure_names; otherwise they leak to emitted SQL.
+        node.args = [_replace_calls_in_arith(a, **kwargs) for a in node.args]
+        for kw in node.keywords:
+            kw.value = _replace_calls_in_arith(kw.value, **kwargs)
+        return node
+
     return node
 
 

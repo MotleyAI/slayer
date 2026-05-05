@@ -2627,3 +2627,42 @@ async def test_integration_local_derived_chain(derived_chain_env):
     # c2 = (raw_a + 1) * 2 → for raw_a=100 → 202; raw_a=5 → 12
     assert response.data[0]["A.c2"] == pytest.approx(202.0)
     assert response.data[1]["A.c2"] == pytest.approx(12.0)
+
+
+async def test_dev1341_count_over_nullif_max_executes(integration_env):
+    """DEV-1341: a multistage final stage combining ``*:count`` with another
+    aggregation inside a ``nullif`` wrapper must emit clean SQL — no
+    ``__aggN__`` placeholder leak — and execute successfully.
+    """
+    engine = integration_env
+
+    filtered = SlayerQuery(
+        name="filtered",
+        source_model="orders",
+        dimensions=[ColumnRef(name="status"), ColumnRef(name="amount")],
+        filters=["status == 'completed'"],
+    )
+    summary = SlayerQuery(
+        source_model="filtered",
+        measures=[
+            ModelMeasure(formula="*:count"),
+            ModelMeasure(formula="amount:max"),
+            ModelMeasure(
+                formula="*:count / nullif(amount:max, 0)",
+                name="violation_rate",
+            ),
+        ],
+    )
+
+    # Dry-run first: verify no placeholder leaks into emitted SQL
+    dry = await engine.execute(query=[filtered, summary], dry_run=True)
+    assert "__agg" not in (dry.sql or ""), f"__aggN__ leaked into SQL:\n{dry.sql}"
+
+    # And the query actually executes cleanly
+    response = await engine.execute(query=[filtered, summary])
+    assert response.row_count == 1
+    row = response.data[0]
+    # 3 completed orders with amounts 100, 200, 300 → count=3, max=300, ratio=0.01
+    assert row["filtered._count"] == 3
+    assert row["filtered.amount_max"] == pytest.approx(300.0)
+    assert row["filtered.violation_rate"] == pytest.approx(3.0 / 300.0)

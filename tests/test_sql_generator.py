@@ -1461,6 +1461,24 @@ class TestNestedFields:
         assert "SUM(" in sql  # cumsum window
         assert "avg_cumsum" in sql.lower()
 
+    async def test_emitted_sql_has_no_agg_placeholder(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1341: aggregated refs nested inside non-transform calls (``nullif``)
+        must be fully resolved — no ``__aggN__`` placeholder may leak through.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(
+                    formula="*:count / nullif(revenue:max, 0)",
+                    name="violation_rate",
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "__agg" not in sql, f"__aggN__ placeholder leaked into SQL:\n{sql}"
+
 
 class TestDialectMapping:
     """Test _dialect_for_type resolves all supported datasource types."""
