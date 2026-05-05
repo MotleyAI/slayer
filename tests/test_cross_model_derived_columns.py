@@ -16,9 +16,9 @@ import re
 import pytest
 import sqlglot
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
@@ -737,8 +737,6 @@ async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     """Multi-hop time-dimension on a derived target column. The time-dim
     callsite (``enrichment.py:_resolve_time_dimensions``) takes a separate
     path through ``_maybe_expand`` from regular dims; pin it."""
-    from slayer.core.enums import TimeGranularity
-    from slayer.core.query import TimeDimension
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b_c(storage, c_columns=[
         Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
