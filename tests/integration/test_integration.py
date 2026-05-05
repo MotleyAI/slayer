@@ -2619,5 +2619,7 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
         filters=["is_eu = 1"],
     ))
     # Orders 10, 12, 13 hit EU customers → 3 rows.
+    # Explicit ``name="n"`` overrides the canonical alias, so the result
+    # key is ``orders.n`` (not ``orders._count``).
     assert response.row_count == 1
-    assert response.data[0]["orders._count"] == 3
+    assert response.data[0]["orders.n"] == 3
