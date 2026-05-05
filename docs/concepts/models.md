@@ -121,6 +121,27 @@ Primary-key columns are always restricted to `count` / `count_distinct` regardle
 
 When `allowed_aggregations` is set, it intersects with the type-default set: every entry must already be eligible under the type-default map (or be a custom aggregation defined on this model). Whitelist entries that violate the type-default or PK rule are rejected at model construction time. This means at query time, a single whitelist-membership check is sufficient — no separate type-default re-check is needed.
 
+### Window functions in `Column.sql`
+
+A column's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The column behaves like any other column when used in `dimensions` / SELECT. When used in a query `filters` entry, SLayer auto-promotes the predicate: it materializes the column under its alias in the base CTE and applies the predicate as a post-aggregation outer `WHERE`. No multi-stage model is needed for the common top-N case:
+
+```yaml
+columns:
+  - name: rn
+    sql: row_number() over (order by mass desc)
+    type: number
+```
+
+```json
+{
+  "source_model": "planets",
+  "dimensions": ["name"],
+  "filters": ["rn <= 3"]
+}
+```
+
+For dialect-portable top-N filtering, prefer the `rank()` transform inline (`"filters": ["rank(<measure>) <= 3"]`) — see [formulas.md](formulas.md#rank). The `Column.sql`-with-window pattern is the right choice when you need a window expression that doesn't fit one of SLayer's built-in transforms.
+
 ## Measures (Named Formulas)
 
 `SlayerModel.measures` is a library of named formulas. Each measure has the same shape as an inline `SlayerQuery.measures` entry: `{formula, name, label, description}`. Queries can reference them by bare name in any formula context.
@@ -405,8 +426,30 @@ A query result is a self-contained table — it no longer has the joins that the
 | `customer_id` | `customer_id` |
 | `*:count` (measure) | `count` |
 | `revenue:sum` (measure) | `revenue_sum` |
+| `{"formula": "revenue:sum", "name": "rev"}` | `rev` |
 
 This uses the same `__` convention as SQL-level join path aliases. When referencing these columns in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a join to a model that doesn't exist on the virtual table.
+
+An explicit `name` on a measure spec **overrides** the canonical naming above for both arithmetic/transform formulas and simple aggregations. This is what lets multi-stage `source_queries` rename inner-stage outputs cleanly:
+
+```json
+{
+  "source_queries": [
+    {
+      "name": "raw",
+      "source_model": "orders",
+      "dimensions": ["region"],
+      "measures": [{"formula": "amount:sum", "name": "rev"}]
+    },
+    {
+      "source_model": "raw",
+      "measures": [{"formula": "rev:sum"}]
+    }
+  ]
+}
+```
+
+The inner stage emits a column named `rev` (not `amount_sum`), and the outer stage references it by that chosen name.
 
 See the [multistage queries example](../examples/06_multistage_queries/multistage_queries.md) for working examples.
 

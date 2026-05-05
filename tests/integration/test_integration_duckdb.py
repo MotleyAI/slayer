@@ -624,6 +624,86 @@ class TestDuckDBStatAggregations:
         )
 
 
+
+
+# ---------------------------------------------------------------------------
+# DEV-1336 — window functions in filters, DuckDB parity
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def planets_duckdb_env(tmp_path):
+    """Planets fixture (DuckDB): a Column.sql with `row_number() over (...)`."""
+    db_path = tmp_path / "planets.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE planets (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR NOT NULL,
+            mass DECIMAL(10, 4) NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO planets VALUES (?, ?, ?)",
+        [
+            (1, "Mercury", 0.33),
+            (2, "Venus", 4.87),
+            (3, "Earth", 5.97),
+            (4, "Mars", 0.642),
+            (5, "Jupiter", 1898.0),
+            (6, "Saturn", 568.0),
+            (7, "Uranus", 86.8),
+            (8, "Neptune", 102.0),
+        ],
+    )
+    conn.close()
+
+    tmpdir = tempfile.mkdtemp()
+    storage = YAMLStorage(base_dir=tmpdir)
+
+    await storage.save_datasource(
+        DatasourceConfig(name="planets_duckdb", type="duckdb", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="planets",
+            sql_table="planets",
+            data_source="planets_duckdb",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(
+                    name="rn",
+                    sql="row_number() over (order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+async def test_filter_on_windowed_column_duckdb_top_n(planets_duckdb_env):
+    """DuckDB parity for DEV-1336: filtering on a `Column.sql` window expression
+    must execute and return the top-3 rows by mass."""
+    engine = planets_duckdb_env
+    query = SlayerQuery(
+        source_model="planets",
+        dimensions=["name"],
+        filters=["rn <= 3"],
+        order=[OrderItem(column=ColumnRef(name="rn"), direction="asc")],
+    )
+    response = await engine.execute(query)
+    names = [row["planets.name"] for row in response.data]
+    assert names == ["Jupiter", "Saturn", "Neptune"], (
+        f"Expected top-3 by mass desc, got {names}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # DEV-1333: cross-model derived ``Column.sql`` chaining (DuckDB)
 # ---------------------------------------------------------------------------

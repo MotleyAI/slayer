@@ -9,6 +9,7 @@ from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_v
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
 from slayer.core.format import NumberFormat
+from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -174,6 +175,18 @@ class ModelMeasure(BaseModel):
                 f"ModelMeasure name '{v}' is a reserved transform name. "
                 f"Reserved: {', '.join(sorted(ALL_TRANSFORMS))}"
             )
+        return v
+
+    @field_validator("formula")
+    @classmethod
+    def _reject_raw_window_function(cls, v: str) -> str:
+        """DEV-1336: a measure formula containing raw ``OVER (...)`` SQL cannot
+        be parsed by SLayer's formula grammar (Python AST rejects ``OVER`` as a
+        keyword) and produces invalid SQL on every dialect if used as a filter.
+        Reject at construction time with an actionable error.
+        """
+        if has_window_function(v):
+            raise ValueError(f"ModelMeasure formula '{v}' {WINDOW_IN_FILTER_ERROR}")
         return v
 
 

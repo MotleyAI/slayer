@@ -1510,6 +1510,56 @@ async def test_formula_dimension_via_query_list(integration_env):
     assert by_tier["low"] == 1
 
 
+async def test_multistage_renamed_measure_returns_non_null(integration_env):
+    """DEV-1335 canary. A 2-stage query-backed model where the inner stage
+    renames its aggregated measure via ``name=`` must return non-NULL values
+    for the renamed column when executed end-to-end.
+
+    Before the fix: the inner-stage wrap silently emits ``amount_sum``
+    (canonical) instead of the user-supplied ``rev``, so the outer stage's
+    ``rev:sum`` either errors at SQL-gen time or surfaces NULLs in the result
+    column. After the fix: the inner stage exposes ``rev`` and the outer
+    stage's sum equals the precomputed total.
+    """
+    engine = integration_env
+
+    saved = SlayerModel(
+        name="renamed_metric",
+        data_source="test_sqlite",
+        source_queries=[
+            SlayerQuery(
+                name="raw",
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                measures=[ModelMeasure(formula="amount:sum", name="rev")],
+            ),
+            SlayerQuery(
+                source_model="raw",
+                measures=[ModelMeasure(formula="rev:sum")],
+            ),
+        ],
+    )
+    await engine.save_model(saved)
+
+    response = await engine.execute("renamed_metric")
+    assert response.row_count == 1, (
+        f"expected single row from outer rev:sum, got {response.row_count}: {response.data}"
+    )
+    # Outer stage emits ``raw.rev_sum`` (canonical for stage 2).
+    row = response.data[0]
+    assert "raw.rev_sum" in row, (
+        f"expected column 'raw.rev_sum' in result row, got keys: {list(row.keys())}"
+    )
+    value = row["raw.rev_sum"]
+    assert value is not None, (
+        f"renamed measure must surface a non-NULL value, got NULL in row: {row}"
+    )
+    # 100 + 200 + 50 + 75 + 300 + 25 = 750  # NOSONAR(S125) — arithmetic explanation, not commented-out code
+    assert value == pytest.approx(750.0), (
+        f"sum of inner-stage 'rev' across all status buckets must equal 750, got {value}"
+    )
+
+
 async def test_circular_query_reference_raises(integration_env):
     """Circular references between named queries should error clearly."""
     engine = integration_env
@@ -2317,6 +2367,90 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
     assert r_var_pop.data[0]["one.x_var_pop"] == 0
 
 
+# ---------------------------------------------------------------------------
+# DEV-1336 — window functions in filters (single-stage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def planets_env(tmp_path):
+    """Planets fixture: a Column.sql with `row_number() over (...)` for top-N."""
+    db_path = tmp_path / "planets.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE planets (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            mass REAL NOT NULL
+        )
+        """
+    )
+    cur.executemany(
+        "INSERT INTO planets VALUES (?, ?, ?)",
+        [
+            (1, "Mercury", 0.33),
+            (2, "Venus", 4.87),
+            (3, "Earth", 5.97),
+            (4, "Mars", 0.642),
+            (5, "Jupiter", 1898.0),
+            (6, "Saturn", 568.0),
+            (7, "Uranus", 86.8),
+            (8, "Neptune", 102.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+
+    await storage.save_datasource(
+        DatasourceConfig(name="planets_db", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="planets",
+            sql_table="planets",
+            data_source="planets_db",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(
+                    name="rn",
+                    sql="row_number() over (order by mass desc)",
+                    type=DataType.NUMBER,
+                ),
+            ],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+async def test_filter_on_windowed_column_sqlite_top_n(planets_env):
+    """End-to-end: filter on a `Column.sql` containing `row_number() over (...)`
+    must execute and return exactly the top-3 rows by mass.
+
+    Pre-fix this generated `WHERE ROW_NUMBER() OVER (ORDER BY mass DESC) <= 3`
+    which SQLite rejects with `near "OVER": syntax error`.
+    """
+    engine = planets_env
+    query = SlayerQuery(
+        source_model="planets",
+        dimensions=["name"],
+        filters=["rn <= 3"],
+        order=[OrderItem(column=ColumnRef(name="rn"), direction="asc")],
+    )
+    response = await engine.execute(query)
+    names = [row["planets.name"] for row in response.data]
+    assert names == ["Jupiter", "Saturn", "Neptune"], (
+        f"Expected top-3 by mass desc, got {names}"
+    )
+
+
 async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
     """DEV-1331 reproduction.
 
@@ -2578,3 +2712,42 @@ async def test_log10_round_trip_sqlite(tmp_path):
     assert "log2(" in dry2.sql.lower(), (
         f"Expected literal log2(...) in emitted SQL, got:\n{dry2.sql}"
     )
+
+
+async def test_dev1341_count_over_nullif_max_executes(integration_env):
+    """DEV-1341: a multistage final stage combining ``*:count`` with another
+    aggregation inside a ``nullif`` wrapper must emit clean SQL — no
+    ``__aggN__`` placeholder leak — and execute successfully.
+    """
+    engine = integration_env
+
+    filtered = SlayerQuery(
+        name="filtered",
+        source_model="orders",
+        dimensions=[ColumnRef(name="status"), ColumnRef(name="amount")],
+        filters=["status == 'completed'"],
+    )
+    summary = SlayerQuery(
+        source_model="filtered",
+        measures=[
+            ModelMeasure(formula="*:count"),
+            ModelMeasure(formula="amount:max"),
+            ModelMeasure(
+                formula="*:count / nullif(amount:max, 0)",
+                name="violation_rate",
+            ),
+        ],
+    )
+
+    # Dry-run first: verify no placeholder leaks into emitted SQL
+    dry = await engine.execute(query=[filtered, summary], dry_run=True)
+    assert "__agg" not in (dry.sql or ""), f"__aggN__ leaked into SQL:\n{dry.sql}"
+
+    # And the query actually executes cleanly
+    response = await engine.execute(query=[filtered, summary])
+    assert response.row_count == 1
+    row = response.data[0]
+    # 3 completed orders with amounts 100, 200, 300 → count=3, max=300, ratio=0.01
+    assert row["filtered._count"] == 3
+    assert row["filtered.amount_max"] == pytest.approx(300.0)
+    assert row["filtered.violation_rate"] == pytest.approx(3.0 / 300.0)

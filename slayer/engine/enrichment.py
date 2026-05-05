@@ -42,6 +42,7 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
@@ -660,6 +661,20 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
+            # When the user supplies an explicit ``name`` on the measure spec,
+            # surface it as the EnrichedMeasure's name/alias so downstream
+            # stages (and the wrap subquery) emit the user's chosen alias
+            # instead of the canonical ``col_agg`` form. The canonical alias
+            # remains resolvable via known_aliases for inline references.
+            if qfield.name and qfield.name != canonical_name:
+                user_alias = f"{model_name_str}.{qfield.name}"
+                for m in measures:
+                    if m.alias == f"{model_name_str}.{canonical_name}":
+                        m.name = qfield.name
+                        m.alias = user_alias
+                        break
+                known_aliases[qfield.name] = user_alias
+                known_aliases[canonical_name] = user_alias
             # Register custom field name so ORDER BY can resolve it
             if field_name != canonical_name and canonical_name in known_aliases:
                 field_name_aliases[field_name] = known_aliases[canonical_name]
@@ -672,8 +687,9 @@ async def enrich_query(
                     f"or set default_time_dimension on the model."
                 )
             if qfield.label:
+                target_name = qfield.name if (qfield.name and qfield.name != canonical_name) else canonical_name
                 for m in measures:
-                    if m.name == canonical_name:
+                    if m.name == target_name:
                         m.label = qfield.label
 
         else:
@@ -753,6 +769,14 @@ async def enrich_query(
 
     has_first_or_last = any(m.aggregation in ("first", "last") for m in measures)
 
+    # --- DEV-1336: detect filters that resolve to a model column whose `sql`
+    # contains a window function. Such columns must be materialized in the base
+    # SELECT (not inlined into WHERE) and the predicate applied as a post-filter
+    # on the alias.
+    windowed_column_names: Set[str] = {
+        c.name for c in model.columns if c.sql and has_window_function(c.sql)
+    }
+
     # --- Resolve JOINs ---
     resolved_joins = await _resolve_joins(
         model=model,
@@ -767,6 +791,38 @@ async def enrich_query(
         extra_agg_names=custom_agg_names,
     )
 
+    parsed_filters = await resolve_filter_columns(
+        parsed_filters=[parse_filter(f, extra_agg_names=custom_agg_names) for f in processed_filters],
+        model=model,
+        model_name=model_name_str,
+        resolve_join_target=resolve_join_target,
+        named_queries=named_queries,
+        windowed_column_names=windowed_column_names,
+        resolve_model=resolve_model,
+        dialect=dialect,
+    )
+
+    # Materialize each windowed Column referenced by any filter. Each becomes a
+    # SELECT-only entry in the base CTE that the post-filter wrap targets.
+    referenced_windowed: Dict[str, EnrichedDimension] = {}
+    for pf in parsed_filters:
+        for col_name in pf.columns:
+            short = col_name.split(".")[-1]
+            if short in windowed_column_names and short not in referenced_windowed:
+                col_def = model.get_column(short)
+                if col_def is None or col_def.sql is None:
+                    continue
+                referenced_windowed[short] = EnrichedDimension(
+                    name=short,
+                    sql=col_def.sql,
+                    type=col_def.type,
+                    alias=f"{model_name_str}.{short}",
+                    model_name=model_name_str,
+                    label=col_def.label,
+                    format=col_def.format,
+                )
+    windowed_filter_columns = list(referenced_windowed.values())
+
     return EnrichedQuery(
         model_name=model_name_str,
         sql_table=model.sql_table,
@@ -777,20 +833,17 @@ async def enrich_query(
         time_dimensions=time_dimensions,
         expressions=enriched_expressions,
         transforms=enriched_transforms,
+        windowed_filter_columns=windowed_filter_columns,
         cross_model_measures=cross_model_measures,
         last_agg_time_column=last_agg_time_column if has_first_or_last else None,
         filters=classify_filters(
-            filters=await resolve_filter_columns(
-                parsed_filters=[parse_filter(f, extra_agg_names=custom_agg_names) for f in processed_filters],
-                model=model,
-                model_name=model_name_str,
-                resolve_join_target=resolve_join_target,
-                named_queries=named_queries,
-                resolve_model=resolve_model,
-                dialect=dialect,
-            ),
+            filters=parsed_filters,
             measure_names={m.name for m in measures},
-            computed_names={t.name for t in enriched_transforms} | {e.name for e in enriched_expressions},
+            computed_names=(
+                {t.name for t in enriched_transforms}
+                | {e.name for e in enriched_expressions}
+                | {c.name for c in windowed_filter_columns}
+            ),
             groupby_names={d.name for d in dimensions} | {td.name for td in time_dimensions},
             windowed_measure_names={m.name for m in measures if m.window},
         ),
@@ -1195,6 +1248,12 @@ def extract_filter_transforms(
 
     if named_measures:
         filter_str = _expand_named_measures(filter_str, named_measures)
+    # DEV-1336: reject raw window-function syntax (`OVER (...)`) before AST parsing.
+    # Without this, the AST parser fails on `over` and falls through to a
+    # confusing "Invalid filter syntax" error from parse_filter; here we surface
+    # a helpful error that points at SLayer's transforms / Column.sql.
+    if has_window_function(filter_str):
+        raise ValueError(f"Filter '{filter_str}' {WINDOW_IN_FILTER_ERROR}")
     preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)
     funcstyle_rewritten = preprocessed  # capture after funcstyle rewrite, before further preprocessing
     preprocessed = _preprocess_like(preprocessed)
@@ -1254,16 +1313,24 @@ async def resolve_filter_columns(
     model_name: str,
     resolve_join_target=None,
     named_queries: dict = None,
+    windowed_column_names: Optional[Set[str]] = None,
     resolve_model=None,
     dialect: str = "postgres",
 ) -> list:
     """Resolve filter column references through model dimensions/measures.
+
+    For ``Column`` entries whose ``sql`` contains a window function
+    (``windowed_column_names``), do NOT inline the SQL. Instead emit the
+    canonical ``{model}.{name}`` alias so the filter can be applied as a
+    post-filter on the materialized base-CTE alias (DEV-1336).
 
     When ``resolve_model`` is supplied, derived ``Column.sql`` expressions
     are recursively expanded so chained derivations (cross-model or local)
     yield fully-qualified physical-table SQL inside WHERE clauses.
     """
     import re as _re
+
+    windowed_column_names = windowed_column_names or set()
 
     async def _expanded_sql_expr(*, sql_expr: str, owning_model: SlayerModel,
                                  alias_path: str, is_root: bool) -> str:
@@ -1286,6 +1353,15 @@ async def resolve_filter_columns(
         resolved_columns = []
         for col_name in dict.fromkeys(f.columns):
             if "." not in col_name:
+                if col_name in windowed_column_names:
+                    qualified = f"{model_name}.{col_name}"
+                    resolved_sql = _re.sub(
+                        rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
+                        qualified,
+                        resolved_sql,
+                    )
+                    resolved_columns.append(col_name)
+                    continue
                 dim = model.get_column(col_name)
                 if dim:
                     sql_expr = dim.sql or col_name

@@ -217,6 +217,8 @@ With multiple dimensions (e.g., `status` + `month`), each status/month combinati
 
 Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at rank 2, the next row is rank 4.
 
+> **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the `rank()` transform for top-N filtering instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+
 ### First and Last Functions
 
 `first(x)` and `last(x)` are window-function transforms that take an aggregated measure and **broadcast a single time bucket's value to every row** in the result. `first()` broadcasts the **earliest** bucket's value; `last()` broadcasts the **most recent** bucket's value.
@@ -278,6 +280,6 @@ Both field and filter formulas are parsed by `slayer/core/formula.py` using Pyth
 - **AggregatedMeasureRef** — measure with colon aggregation (`"revenue:sum"`, `"*:count"`)
 - **ArithmeticField** — arithmetic on aggregated measures (`"revenue:sum / *:count"`)
 - **TransformField** — function call, possibly nested (`"cumsum(revenue:sum)"`)
-- **MixedArithmeticField** — arithmetic containing function calls (`"cumsum(revenue:sum) / *:count"`)
+- **MixedArithmeticField** — arithmetic containing function calls. Covers both transform calls (`"cumsum(revenue:sum) / *:count"`) and non-transform SQL function calls wrapping aggregated refs, e.g. `"*:count / nullif(revenue:max, 0)"` or `"coalesce(revenue:sum, 0) + amount:avg"`. Aggregated refs nested inside non-transform calls are resolved as their own measure aliases; the call passes through to emitted SQL unchanged.
 
 The query engine's `_enrich()` method processes field formulas into ordered enrichment steps, and the SQL generator translates them into stacked CTEs.

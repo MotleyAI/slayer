@@ -48,7 +48,7 @@ Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `f
 
 Saved named formulas (`SlayerModel.measures`) can be referenced by bare name in any formula context: `{"formula": "aov"}`.
 
-Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders._count` (the leading `_` distinguishes it from any user-defined column literally named `count`).
+Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes underscore). `*:count` → `orders._count` (the leading `_` distinguishes it from any user-defined column literally named `count`). An explicit `name` on the measure spec overrides the canonical form: `{"formula": "amount:sum", "name": "rev"}` → `orders.rev`. Multi-stage `source_queries` rely on this — downstream stages reference inner-stage outputs by the chosen name.
 
 ## Filters
 
@@ -65,6 +65,8 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 **Boolean logic**: `AND`, `OR`, `NOT`
 
 **Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
+
+**Top-N filtering**: use `"rank(<measure>) <= N"` (e.g. `"rank(revenue:sum) <= 10"`) — dialect-portable and auto-promoted to a post-filter on the outer query. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error — use `rank()` / `first()` / `last()` / `lag()` / `lead()`, or define a `Column` whose `sql` is the window expression and filter on the column (SLayer auto-wraps the SELECT in a post-aggregation outer `WHERE`).
 
 **Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces.
 

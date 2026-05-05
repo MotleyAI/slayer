@@ -134,6 +134,12 @@ class EnrichedQuery(BaseModel):
     expressions: List[EnrichedExpression] = Field(default_factory=list)
     transforms: List[EnrichedTransform] = Field(default_factory=list)
 
+    # DEV-1336: model `Column.sql` containing a window function (`OVER (...)`)
+    # that is referenced by a filter. The column is materialized as a SELECT-only
+    # entry in the base CTE (NOT a GROUP BY key) so the filter can be applied as
+    # a post-filter on the alias instead of inlined into the inner WHERE.
+    windowed_filter_columns: List[EnrichedDimension] = Field(default_factory=list)
+
     cross_model_measures: List["CrossModelMeasure"] = Field(default_factory=list)
 
     last_agg_time_column: Optional[str] = Field(default=None, description="Time column for first/last aggregation (ORDER BY for ROW_NUMBER)")
