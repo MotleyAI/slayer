@@ -2884,3 +2884,48 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
     assert row["filtered._count"] == 3
     assert row["filtered.amount_max"] == pytest.approx(300.0)
     assert row["filtered.violation_rate"] == pytest.approx(3.0 / 300.0)
+
+
+async def test_dense_rank_partition_by_customer_executes(integration_env):
+    """DEV-1353: dense_rank with partition_by= must execute on SQLite and produce
+    per-partition ranks.
+
+    The integration_env has 6 orders across 3 customers and 3 months. We rank
+    each customer's monthly revenue from highest to lowest within that customer.
+    """
+    engine = integration_env
+    query = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="customer_id")],
+        time_dimensions=[
+            TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)
+        ],
+        measures=[
+            ModelMeasure(formula="amount:sum"),
+            ModelMeasure(
+                formula="dense_rank(amount:sum, partition_by=customer_id)",
+                name="amt_rank",
+            ),
+        ],
+        order=[
+            OrderItem(column=ColumnRef(name="customer_id"), direction="asc"),
+            OrderItem(column=ColumnRef(name="amt_rank"), direction="asc"),
+        ],
+    )
+    response = await engine.execute(query)
+
+    by_customer: dict = {}
+    for row in response.data:
+        cid = row["orders.customer_id"]
+        by_customer.setdefault(cid, []).append(
+            (row["orders.amt_rank"], row["orders.amount_sum"])
+        )
+
+    # Each customer's ranks must start at 1 and be monotonically non-decreasing,
+    # ordered by amount DESC within the partition.
+    for cid, ranks in by_customer.items():
+        assert ranks[0][0] == 1, f"customer {cid} should have rank 1 first, got {ranks}"
+        amounts = [a for _, a in ranks]
+        assert amounts == sorted(amounts, reverse=True), (
+            f"customer {cid} amounts not in DESC order: {ranks}"
+        )

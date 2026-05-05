@@ -89,6 +89,83 @@ class TestFormulaParser:
         assert isinstance(result, TransformField)
         assert result.transform == "rank"
 
+    def test_rank_partition_by_single_column(self) -> None:
+        result = parse_formula("rank(revenue:sum, partition_by=region)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "rank"
+        assert result.kwargs == {"partition_by": ["region"]}
+
+    def test_rank_partition_by_list(self) -> None:
+        result = parse_formula("rank(revenue:sum, partition_by=[region, channel])")
+        assert isinstance(result, TransformField)
+        assert result.kwargs == {"partition_by": ["region", "channel"]}
+
+    def test_rank_partition_by_dotted_path(self) -> None:
+        result = parse_formula("rank(revenue:sum, partition_by=customers.region)")
+        assert isinstance(result, TransformField)
+        assert result.kwargs == {"partition_by": ["customers.region"]}
+
+    def test_percent_rank_default(self) -> None:
+        result = parse_formula("percent_rank(revenue:sum)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "percent_rank"
+        assert result.kwargs == {}
+
+    def test_percent_rank_with_partition(self) -> None:
+        result = parse_formula("percent_rank(revenue:sum, partition_by=region)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "percent_rank"
+        assert result.kwargs == {"partition_by": ["region"]}
+
+    def test_dense_rank_default(self) -> None:
+        result = parse_formula("dense_rank(revenue:sum)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "dense_rank"
+
+    def test_dense_rank_with_partition(self) -> None:
+        result = parse_formula("dense_rank(revenue:sum, partition_by=region)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "dense_rank"
+        assert result.kwargs == {"partition_by": ["region"]}
+
+    def test_ntile_with_required_n(self) -> None:
+        result = parse_formula("ntile(revenue:sum, n=4)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "ntile"
+        assert result.kwargs == {"n": 4}
+
+    def test_ntile_with_partition(self) -> None:
+        result = parse_formula("ntile(revenue:sum, n=4, partition_by=cohort)")
+        assert isinstance(result, TransformField)
+        assert result.transform == "ntile"
+        assert result.kwargs == {"n": 4, "partition_by": ["cohort"]}
+
+    def test_ntile_missing_n_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"ntile.*\bn\b"):
+            parse_formula("ntile(revenue:sum)")
+
+    def test_ntile_zero_n_raises(self) -> None:
+        with pytest.raises(ValueError, match="positive integer"):
+            parse_formula("ntile(revenue:sum, n=0)")
+
+    def test_ntile_negative_n_raises(self) -> None:
+        with pytest.raises(ValueError, match="positive integer"):
+            parse_formula("ntile(revenue:sum, n=-1)")
+
+    def test_unknown_transform_kwarg_raises(self) -> None:
+        with pytest.raises(ValueError, match="partition_by"):
+            parse_formula("dense_rank(revenue:sum, foo=bar)")
+
+    def test_rank_rejects_n_kwarg(self) -> None:
+        """``n`` is only valid on ``ntile``."""
+        with pytest.raises(ValueError, match="partition_by"):
+            parse_formula("rank(revenue:sum, n=4)")
+
+    def test_cumsum_rejects_partition_by(self) -> None:
+        """``partition_by`` is rank-family only — ``cumsum`` partitions by query dims."""
+        with pytest.raises(ValueError, match="partition_by"):
+            parse_formula("cumsum(revenue:sum, partition_by=region)")
+
     def test_consecutive_periods_predicate(self) -> None:
         result = parse_formula("consecutive_periods(revenue:sum > 0)")
         assert isinstance(result, TransformField)
