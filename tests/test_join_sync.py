@@ -320,3 +320,100 @@ class TestReconciliation:
         # Subsequent reads through wrapper don't re-reconcile
         b_reloaded = await synced.get_model("b")
         assert len(b_reloaded.joins) == 0  # NOT healed, as expected
+
+
+# ---------------------------------------------------------------------------
+# v4: datasource-aware reverse-join mirroring
+#
+# After v4 (DEV-1330) two models can share a name across datasources. A model
+# saved in ``db_a`` that joins ``customers`` must mirror to ``customers@db_a``
+# — reverse joins never cross a datasource boundary, because cross-datasource
+# joins aren't executable in SLayer's query engine anyway.
+# ---------------------------------------------------------------------------
+
+
+from slayer.core.models import DatasourceConfig  # noqa: E402
+
+
+def _model_in(name: str, data_source: str, *, joins: list[ModelJoin] | None = None) -> SlayerModel:
+    return SlayerModel(
+        name=name,
+        sql_table=name,
+        data_source=data_source,
+        columns=[
+            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.NUMBER),
+        ],
+        joins=joins or [],
+    )
+
+
+class TestDatasourceAwareJoinSync:
+    async def test_inner_join_mirrors_within_same_datasource_only(self, raw_storage, synced_storage) -> None:
+        """``orders@db_a`` joins ``customers``; both ``customers@db_a`` and
+        ``customers@db_b`` exist. Only the same-datasource target gets the
+        reverse join."""
+        await raw_storage.save_datasource(DatasourceConfig(name="db_a", type="postgres", host="h"))
+        await raw_storage.save_datasource(DatasourceConfig(name="db_b", type="postgres", host="h"))
+
+        cust_a = _model_in("customers", "db_a")
+        cust_b = _model_in("customers", "db_b")
+        await raw_storage.save_model(cust_a)
+        await raw_storage.save_model(cust_b)
+
+        orders_a = _model_in("orders", "db_a", joins=[_inner_join("customers")])
+        await synced_storage.save_model(orders_a)
+
+        cust_a_reloaded = await raw_storage.get_model("customers", data_source="db_a")
+        cust_b_reloaded = await raw_storage.get_model("customers", data_source="db_b")
+
+        assert cust_a_reloaded is not None
+        assert cust_b_reloaded is not None
+
+        # Reverse join landed on db_a's customers only.
+        assert any(j.target_model == "orders" for j in cust_a_reloaded.joins)
+        assert all(j.target_model != "orders" for j in cust_b_reloaded.joins)
+
+    async def test_inner_join_target_only_in_other_datasource_no_op(self, raw_storage, synced_storage) -> None:
+        """``orders@db_a`` joins ``customers``; the only ``customers`` lives
+        in ``db_b``. Cross-datasource joins are not auto-mirrored — the
+        reverse join is silently skipped (matches existing behavior for an
+        unresolvable target name)."""
+        await raw_storage.save_datasource(DatasourceConfig(name="db_a", type="postgres", host="h"))
+        await raw_storage.save_datasource(DatasourceConfig(name="db_b", type="postgres", host="h"))
+
+        cust_b = _model_in("customers", "db_b")
+        await raw_storage.save_model(cust_b)
+
+        orders_a = _model_in("orders", "db_a", joins=[_inner_join("customers")])
+        await synced_storage.save_model(orders_a)
+
+        cust_b_reloaded = await raw_storage.get_model("customers", data_source="db_b")
+        assert cust_b_reloaded is not None
+        # No reverse join was added on the other-datasource target.
+        assert all(j.target_model != "orders" for j in cust_b_reloaded.joins)
+
+    async def test_delete_clears_reverse_in_same_datasource_only(self, raw_storage, synced_storage) -> None:
+        """Deleting ``orders@db_a`` removes the reverse join on
+        ``customers@db_a`` — and nothing happens to ``customers@db_b``."""
+        await raw_storage.save_datasource(DatasourceConfig(name="db_a", type="postgres", host="h"))
+        await raw_storage.save_datasource(DatasourceConfig(name="db_b", type="postgres", host="h"))
+
+        cust_a = _model_in("customers", "db_a")
+        cust_b = _model_in("customers", "db_b", joins=[_inner_join("orders")])
+        await raw_storage.save_model(cust_a)
+        await raw_storage.save_model(cust_b)
+
+        orders_a = _model_in("orders", "db_a", joins=[_inner_join("customers")])
+        await synced_storage.save_model(orders_a)
+
+        await synced_storage.delete_model("orders", data_source="db_a")
+
+        cust_a_reloaded = await raw_storage.get_model("customers", data_source="db_a")
+        cust_b_reloaded = await raw_storage.get_model("customers", data_source="db_b")
+        assert cust_a_reloaded is not None
+        assert cust_b_reloaded is not None
+        # db_a's customers no longer references orders.
+        assert all(j.target_model != "orders" for j in cust_a_reloaded.joins)
+        # db_b's customers is untouched (the manually-added join survives).
+        assert any(j.target_model == "orders" for j in cust_b_reloaded.joins)

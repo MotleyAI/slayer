@@ -799,6 +799,7 @@ class TestCollectNeededPathsExtraAggNames:
         model = SlayerModel(
             name="orders",
             sql_table="orders",
+            data_source="ds",
             columns=[
                 Column(name="status", sql="status", type=DataType.STRING),
                 Column(name="revenue", sql="amount", type=DataType.NUMBER),
@@ -823,6 +824,7 @@ class TestCollectNeededPathsExtraAggNames:
         model = SlayerModel(
             name="orders",
             sql_table="orders",
+            data_source="ds",
             columns=[
                 Column(name="status", sql="status", type=DataType.STRING),
                 Column(name="revenue", sql="amount", type=DataType.NUMBER),

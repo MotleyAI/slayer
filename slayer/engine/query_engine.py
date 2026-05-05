@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field as PydanticField, model_validator
 
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
+from slayer.core.errors import AmbiguousModelError
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import (
@@ -263,6 +264,7 @@ class SlayerQueryEngine:
         *,
         dry_run: bool = False,
         explain: bool = False,
+        data_source: Optional[str] = None,
     ) -> SlayerResponse:
         runtime_kwarg = variables or {}
 
@@ -274,6 +276,7 @@ class SlayerQueryEngine:
                 runtime_kwarg=runtime_kwarg,
                 dry_run=dry_run,
                 explain=explain,
+                data_source=data_source,
             )
 
 
@@ -306,6 +309,7 @@ class SlayerQueryEngine:
             runtime_kwarg=runtime_kwarg,
             dry_run=dry_run,
             explain=explain,
+            prefer_data_source=data_source,
         )
 
     async def _execute_by_name(
@@ -314,9 +318,10 @@ class SlayerQueryEngine:
         runtime_kwarg: Dict[str, Any],
         dry_run: bool = False,
         explain: bool = False,
+        data_source: Optional[str] = None,
     ) -> SlayerResponse:
         """Run the backing query of a query-backed model by name."""
-        model = await self.storage.get_model(name)
+        model = await self.storage.get_model(name, data_source=data_source)
         if model is None:
             raise ValueError(f"Model '{name}' not found")
         if not model.source_queries:
@@ -355,6 +360,7 @@ class SlayerQueryEngine:
             runtime_kwarg=runtime_kwarg,
             dry_run=dry_run,
             explain=explain,
+            prefer_data_source=model.data_source or data_source,
         )
 
     async def _execute_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→enrich→generate→execute); breaking it up obscures the order of operations
@@ -365,6 +371,7 @@ class SlayerQueryEngine:
         *,
         dry_run: bool = False,
         explain: bool = False,
+        prefer_data_source: Optional[str] = None,
     ) -> SlayerResponse:
         """Shared pipeline used by both ``execute()`` and ``_execute_by_name()``.
 
@@ -392,6 +399,7 @@ class SlayerQueryEngine:
             _resolving=resolving,
             outer_vars=query.variables,
             runtime_kwarg=runtime_kwarg,
+            prefer_data_source=prefer_data_source,
         )
 
         # Auto-correct: move bare field names to dimensions if they match
@@ -494,7 +502,11 @@ class SlayerQueryEngine:
             measures.append(ModelMeasure(formula=f"{c.name}:{agg}"))
         return SlayerQuery(source_model=model.name, measures=measures)
 
-    async def get_column_types(self, model_name: str) -> Dict[str, str]:
+    async def get_column_types(
+        self,
+        model_name: str,
+        data_source: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Infer column types for a model's columns via a type-probe query.
 
         Builds a real query through the engine's enrich+generate pipeline
@@ -503,7 +515,7 @@ class SlayerQueryEngine:
         Returns {column_name: type_category} where type_category is
         "number", "string", "time", or "boolean".
         """
-        model = await self.storage.get_model(model_name)
+        model = await self.storage.get_model(model_name, data_source=data_source)
         if model is None:
             return {}
 
@@ -523,6 +535,7 @@ class SlayerQueryEngine:
                 model = await self._resolve_model(
                     model_name=model_name,
                     dry_run_placeholders=True,
+                    prefer_data_source=model.data_source or data_source,
                 )
             except Exception:
                 logger.warning(
@@ -642,6 +655,7 @@ class SlayerQueryEngine:
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
+        prefer_data_source: Optional[str] = None,
     ) -> SlayerModel:
         """Resolve query.source_model — handles str, SlayerModel, and ModelExtension."""
         from slayer.core.query import ModelExtension
@@ -656,6 +670,7 @@ class SlayerQueryEngine:
                 outer_vars=outer_vars,
                 runtime_kwarg=runtime_kwarg,
                 dry_run_placeholders=dry_run_placeholders,
+                prefer_data_source=prefer_data_source,
             )
         elif isinstance(query_model, SlayerModel):
             # Inline SlayerModel may itself be query-backed; expand its
@@ -676,6 +691,7 @@ class SlayerQueryEngine:
                 outer_vars=outer_vars,
                 runtime_kwarg=runtime_kwarg,
                 dry_run_placeholders=dry_run_placeholders,
+                prefer_data_source=prefer_data_source,
             )
             # Extend the base model with extra columns/measures/joins
             from slayer.core.models import ModelJoin
@@ -726,6 +742,7 @@ class SlayerQueryEngine:
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
+        prefer_data_source: Optional[str] = None,
     ) -> SlayerModel:
         """Resolve a model by name — checks named queries first, then storage."""
         named_queries = named_queries or {}
@@ -746,6 +763,7 @@ class SlayerQueryEngine:
                 outer_vars=outer_vars,
                 runtime_kwarg=runtime_kwarg,
                 dry_run_placeholders=dry_run_placeholders,
+                prefer_data_source=prefer_data_source,
             )
         finally:
             _resolving.discard(model_name)
@@ -758,6 +776,7 @@ class SlayerQueryEngine:
         outer_vars: Optional[Dict[str, Any]] = None,
         runtime_kwarg: Optional[Dict[str, Any]] = None,
         dry_run_placeholders: bool = False,
+        prefer_data_source: Optional[str] = None,
     ) -> SlayerModel:
         # Named query overrides stored model
         if model_name in named_queries:
@@ -770,8 +789,23 @@ class SlayerQueryEngine:
                 dry_run_placeholders=dry_run_placeholders,
             )
 
-        model = await self.storage.get_model(model_name)
+        # v4 (DEV-1330): bare-name lookups consult the priority list (via
+        # storage.get_model's None branch) and the ``prefer_data_source``
+        # hint (the parent model's datasource for join targets, or an
+        # explicit ``data_source=`` kwarg on ``engine.execute``). When a
+        # hint is present the lookup is *strict* — joins never cross
+        # datasource boundaries silently; the caller must opt in by setting
+        # the priority list or passing the right hint.
+        if prefer_data_source:
+            model = await self.storage.get_model(model_name, data_source=prefer_data_source)
+        else:
+            model = await self.storage.get_model(model_name)
         if model is None:
+            if prefer_data_source:
+                raise ValueError(
+                    f"Model '{model_name}' not found in data_source "
+                    f"'{prefer_data_source}'."
+                )
             forbidden = _forbidden_sibling_refs_var.get()
             if forbidden and model_name in forbidden:
                 offender = forbidden[model_name]
@@ -851,6 +885,21 @@ class SlayerQueryEngine:
         save-time dry-run validation before populating the cache. For non-
         query-backed models, persists as-is.
         """
+        # Capture the *previous* data_source for this name so we can clean
+        # up the old storage entry when a query-backed model's resolved
+        # data_source changes (e.g. its backing query now points at a
+        # different upstream datasource).
+        prior_data_source: Optional[str] = None
+        if model.source_queries:
+            try:
+                identity = await self.storage.resolve_model_identity(model.name)
+                if identity is not None:
+                    prior_data_source = identity[0]
+            except AmbiguousModelError:
+                # Multiple existing entries for this name — leave them be;
+                # the caller already lives in a partially-stale world and
+                # we don't want save_model to silently mass-delete.
+                prior_data_source = None
         if model.source_queries:
             if model.columns:
                 raise ValueError(
@@ -865,6 +914,15 @@ class SlayerQueryEngine:
                 )
             model = await self._validate_and_populate_cache(model)
         await self.storage.save_model(model)
+        # Clean up the stale storage entry if the cache populator moved a
+        # query-backed model to a different datasource.
+        if (
+            prior_data_source is not None
+            and prior_data_source != model.data_source
+        ):
+            await self.storage.delete_model(
+                model.name, data_source=prior_data_source
+            )
         return model
 
     async def _validate_and_populate_cache(self, model: SlayerModel) -> SlayerModel:
@@ -935,13 +993,26 @@ class SlayerQueryEngine:
                     outer_vars=query.variables,
                 )
             elif self.storage:
-                target = await self.storage.get_model(target_model_name)
+                # v4 (DEV-1330): joins must stay inside the parent model's
+                # logical database (cross-datasource joins aren't executable).
+                # When parent has a ``data_source``, do a *strict* lookup —
+                # no bare-name fallback that could silently pick the same
+                # name from another datasource. Only fall through to the
+                # priority/unique-match resolver when the parent has no
+                # datasource hint to give.
+                if model.data_source:
+                    target = await self.storage.get_model(
+                        target_model_name, data_source=model.data_source
+                    )
+                else:
+                    target = await self.storage.get_model(target_model_name)
                 if target is None:
                     # When the lookup misses, distinguish a forward / self
                     # reference (sibling stage that's not in this stage's
                     # scope) from a genuinely-missing storage model so the
                     # caller gets a clear error instead of a generic "not
-                    # found" — same logic as ``_resolve_model_inner``.
+                    # found" — same logic as ``_resolve_model_inner``
+                    # (DEV-1340).
                     forbidden = _forbidden_sibling_refs_var.get()
                     if forbidden and target_model_name in forbidden:
                         offender = forbidden[target_model_name]
@@ -975,11 +1046,17 @@ class SlayerQueryEngine:
             """Adapter for column_expansion: returns ``SlayerModel`` or None.
             Catches lookup errors so unknown alias paths don't blow up the
             whole enrichment — the expander treats them as opaque.
+
+            v4: pass the *outer* model's ``data_source`` as the hint so
+            ``B.col`` references inside ``A``'s derived columns resolve
+            within ``A.data_source``, never across the join graph into a
+            sibling datasource.
             """
             try:
                 return await self._resolve_model(
                     model_name=model_name,
                     named_queries=named_queries or {},
+                    prefer_data_source=model.data_source or None,
                 )
             except Exception:  # noqa: BLE001 — opaque alias is expected for CTE/sub-query refs
                 return None
@@ -1273,6 +1350,7 @@ class SlayerQueryEngine:
             target = await self._resolve_model(
                 model_name=hop_name,
                 named_queries=named_queries or {},
+                prefer_data_source=current_model.data_source or None,
             )
             visited.add(hop_name)
             current_model = target
@@ -1335,6 +1413,7 @@ class SlayerQueryEngine:
                             terminal_model = await self._resolve_model(
                                 model_name=terminal_model_name,
                                 named_queries=named_queries or {},
+                                prefer_data_source=model.data_source or None,
                             )
                         except ValueError:
                             terminal_model = None
@@ -1400,9 +1479,15 @@ class SlayerQueryEngine:
                 )
             if i == 0:
                 first_join = join
+            # v4 (DEV-1330): keep cross-model-measure hop resolution scoped
+            # to the same datasource as the source model — without this
+            # ``customers.revenue:sum`` against ``orders@db_a`` could
+            # silently pull ``customers@db_b`` (or raise
+            # ``AmbiguousModelError`` when both exist).
             current_model = await self._resolve_model(
                 model_name=hop_name,
                 named_queries=named_queries or {},
+                prefer_data_source=current_model.data_source or None,
             )
 
         target_model_name = hop_names[-1]
@@ -1479,6 +1564,7 @@ class SlayerQueryEngine:
                     return await self._resolve_model(
                         model_name=model_name,
                         named_queries=named_queries or {},
+                        prefer_data_source=target_model.data_source or None,
                     )
                 except Exception:  # noqa: BLE001
                     return None
@@ -1545,6 +1631,7 @@ class SlayerQueryEngine:
         target_model = await self._resolve_model(
             model_name=cm.target_model_name,
             named_queries=named_queries,
+            prefer_data_source=model.data_source or None,
         )
 
         source_model_name = model.name

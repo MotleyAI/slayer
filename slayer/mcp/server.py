@@ -6,6 +6,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import sqlalchemy as sa
 
+from slayer.core.errors import AmbiguousModelError
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -37,6 +38,19 @@ _INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
 _MAX_REACHABLE_FIELDS_DEPTH = 20
+
+
+def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
+    """Render an ``AmbiguousModelError`` for the MCP surface.
+
+    The exception itself is intentionally surface-neutral; we append an
+    MCP-specific remediation pointing at the ``data_source`` tool argument
+    and the ``set_datasource_priority`` MCP tool.
+    """
+    return (
+        f"{exc} Pass data_source=... to this tool, or use the "
+        f"set_datasource_priority tool to set a priority."
+    )
 
 
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
@@ -387,7 +401,7 @@ async def _get_row_count(
             "source_model": model.name,
             "measures": [{"formula": "*:count"}],
         })
-        r = await engine.execute(query=q)
+        r = await engine.execute(query=q, data_source=model.data_source or None)
     except Exception:
         return None
     if not r.data or not r.columns:
@@ -471,7 +485,7 @@ async def _collect_dim_profile(
                 "measures": [{"formula": "*:count"}],
                 "limit": max_values + 1,
             })
-            r = await engine.execute(query=q)
+            r = await engine.execute(query=q, data_source=model.data_source or None)
         except Exception:
             continue
         value_key = f"{model.name}.{c.name}"
@@ -503,7 +517,7 @@ async def _collect_dim_profile(
                 "source_model": {"source_name": model.name, "columns": ext_columns},
                 "measures": measures_payload,
             })
-            r = await engine.execute(query=q)
+            r = await engine.execute(query=q, data_source=model.data_source or None)
             if r.data:
                 row = r.data[0]
         except Exception:
@@ -558,7 +572,7 @@ async def _collect_measure_profile(
             "source_model": {"source_name": model.name, "columns": ext_columns},
             "measures": measures_payload,
         })
-        r = await engine.execute(query=q)
+        r = await engine.execute(query=q, data_source=model.data_source or None)
         row = r.data[0] if r.data else {}
     except Exception:
         return {}
@@ -608,7 +622,15 @@ async def _collect_reachable_fields(
         visited.add(path)
         if path.count(".") + 1 > max_depth:
             continue
-        target = await storage.get_model(target_name)
+        # v4 (DEV-1330): walk the join graph within the *root* model's
+        # data_source. Cross-datasource joins aren't auto-mirrored, so any
+        # bare-name resolution that crosses a datasource boundary would be
+        # picking up a sibling model that isn't actually reachable from
+        # ``model``.
+        try:
+            target = await storage.get_model(target_name, data_source=model.data_source or None)
+        except Exception:  # noqa: BLE001 — AmbiguousModelError or storage misses
+            target = None
         if target is None:
             continue
         for c in target.columns:
@@ -972,15 +994,15 @@ def create_mcp_server(storage: StorageBackend):
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
 
-        all_names = await storage.list_models()
+        all_names = await storage.list_models(data_source=datasource_name)
         matched: List[SlayerModel] = []
         for n in all_names:
             try:
-                m = await storage.get_model(n)
+                m = await storage.get_model(n, data_source=datasource_name)
             except Exception:
                 logger.warning("Failed to load model '%s', skipping", n, exc_info=True)
                 continue
-            if m is not None and not m.hidden and m.data_source == datasource_name:
+            if m is not None and not m.hidden:
                 matched.append(m)
         matched.sort(key=lambda m: m.name)
 
@@ -1062,6 +1084,7 @@ def create_mcp_server(storage: StorageBackend):
         sections: Optional[List[str]] = None,
         descriptions_max_chars: Optional[int] = None,
         reachable_fields_depth: int = 5,
+        data_source: Optional[str] = None,
     ) -> str:
         """Return a complete-yet-compact view of a semantic model.
 
@@ -1131,14 +1154,17 @@ def create_mcp_server(storage: StorageBackend):
                 f"got {reachable_fields_depth}."
             )
 
-        model = await storage.get_model(model_name)
+        try:
+            model = await storage.get_model(model_name, data_source=data_source)
+        except AmbiguousModelError as exc:
+            return _ambiguous_with_mcp_hint(exc)
         if model is None:
-            all_names = await storage.list_models()
+            identities = await storage._list_all_model_identities()
             available = []
-            for n in all_names:
-                m = await storage.get_model(n)
+            for ds_name, n in identities:
+                m = await storage.get_model(n, data_source=ds_name)
                 if m is not None and not m.hidden:
-                    available.append(n)
+                    available.append(f"{ds_name}.{n}")
             available.sort()
             return f"Model '{model_name}' not found. Available models: {', '.join(available)}"
 
@@ -1218,7 +1244,10 @@ def create_mcp_server(storage: StorageBackend):
         # count_distinct. Only needed when ``samples`` is in the included set.
         measure_types: Dict[str, str] = {}
         if "samples" in included_set:
-            measure_types = await engine.get_column_types(model_name=model.name)
+            measure_types = await engine.get_column_types(
+                model_name=model.name,
+                data_source=model.data_source or None,
+            )
 
         # ------------------------------------------------------------------
         # Columns section
@@ -1378,7 +1407,9 @@ def create_mcp_server(storage: StorageBackend):
             )
             try:
                 sample_query = SlayerQuery.model_validate(query_args)
-                sample_result = await engine.execute(query=sample_query)
+                sample_result = await engine.execute(
+                    query=sample_query, data_source=model.data_source or None
+                )
                 sample_sql = sample_result.sql
                 cols, data = _strip_model_prefix(
                     columns=sample_result.columns,
@@ -1639,7 +1670,10 @@ def create_mcp_server(storage: StorageBackend):
             measures=measures,
         )
         model = SlayerModel.model_validate(data)
-        existed = await storage.get_model(name) is not None
+        existed = (
+            await storage.get_model(name, data_source=model.data_source)
+            is not None
+        )
         await storage.save_model(model)
         verb = "replaced" if existed else "created"
         return f"Model '{model.name}' {verb}."
@@ -1688,6 +1722,7 @@ def create_mcp_server(storage: StorageBackend):
         model_name: str,
         description: Optional[str] = None,
         data_source: Optional[str] = None,
+        new_data_source: Optional[str] = None,
         default_time_dimension: Optional[str] = None,
         sql_table: Optional[str] = None,
         sql: Optional[str] = None,
@@ -1709,7 +1744,12 @@ def create_mcp_server(storage: StorageBackend):
         Args:
             model_name: Name of the model to edit.
             description: New model description.
-            data_source: New data source name.
+            data_source: Lookup key — the datasource the model belongs to.
+                Required when the same name exists in multiple datasources
+                (otherwise the priority list / single-match rules apply).
+            new_data_source: Move the model to a different datasource (rare;
+                renames its storage location). Pass ``None`` (default) to
+                leave the data_source unchanged.
             default_time_dimension: Default time dimension (a column of type date/time) for
                 time-dependent transforms.
             sql_table: Database table name. Setting this clears ``sql`` and ``source_queries``.
@@ -1755,19 +1795,44 @@ def create_mcp_server(storage: StorageBackend):
         Example — remove a measure:
             edit_model(model_name="orders", remove={"measures": ["old_metric"]})
         """
-        model = await storage.get_model(model_name)
+        try:
+            model = await storage.get_model(model_name, data_source=data_source)
+        except AmbiguousModelError as exc:
+            return _ambiguous_with_mcp_hint(exc)
         if model is None:
             return f"Model '{model_name}' not found."
 
+        original_data_source = model.data_source
         changes: List[str] = []
 
         # --- Phase 1: Scalar metadata ---
         if description is not None:
             model.description = description
             changes.append("updated description")
-        if data_source is not None:
-            model.data_source = data_source
-            changes.append(f"set data_source to '{data_source}'")
+        if new_data_source is not None and new_data_source != model.data_source:
+            # v4: moving a model between datasources is delete-old +
+            # save-new. To avoid losing the source row when validation/save
+            # fails, we (a) refuse if a sibling already lives at the target
+            # ``(new_data_source, model.name)`` key, and (b) defer the
+            # delete-from-old until *after* the new save succeeds (handled
+            # below in Phase 5). Here we only mutate the in-memory model.
+            try:
+                existing_target = await storage.get_model(
+                    model.name, data_source=new_data_source
+                )
+            except AmbiguousModelError:
+                existing_target = None  # Strict lookup; ambiguity is for bare names only.
+            if existing_target is not None:
+                return (
+                    f"Model '{model.name}' already exists in datasource "
+                    f"'{new_data_source}'. Pick a different name, delete "
+                    f"the existing target first, or move to a different "
+                    f"datasource."
+                )
+            model.data_source = new_data_source
+            changes.append(
+                f"moved data_source from '{original_data_source}' to '{new_data_source}'"
+            )
         if default_time_dimension is not None:
             model.default_time_dimension = default_time_dimension
             changes.append(f"set default_time_dimension to '{default_time_dimension}'")
@@ -1934,11 +1999,35 @@ def create_mcp_server(storage: StorageBackend):
                 "backing_query_sql": None,
             })
             try:
-                await engine.save_model(validated)
+                # ``engine.save_model`` may RECOMPUTE ``data_source`` for
+                # query-backed models from the resolved virtual model, so
+                # we cannot trust ``validated.data_source`` after this
+                # call — use the returned model's identity for the
+                # post-save cleanup decision below.
+                saved_model = await engine.save_model(validated)
             except Exception as exc:
                 return f"Validation error: {exc}"
         else:
-            await storage.save_model(validated)
+            try:
+                await storage.save_model(validated)
+                saved_model = validated
+            except Exception as exc:
+                # Source row is still intact because we deferred the
+                # delete. Surface the failure as an error string instead
+                # of letting MCP wrap it as a ToolError.
+                return f"Storage error: {exc}"
+
+        # v4 atomic move: only after the new save has succeeded do we
+        # remove the source row, and only if the saved model actually
+        # landed at a different ``data_source`` than where it started.
+        # For query-backed models the engine-side cache populator can
+        # override ``new_data_source`` (it derives ``data_source`` from
+        # the backing query); without this guard a "move that didn't
+        # move" silently deleted the just-saved row at the original key.
+        if saved_model.data_source != original_data_source:
+            await storage.delete_model(
+                saved_model.name, data_source=original_data_source
+            )
         return json.dumps({
             "success": True,
             "model_name": model_name,
@@ -2143,13 +2232,20 @@ def create_mcp_server(storage: StorageBackend):
     # -----------------------------------------------------------------------
 
     @mcp.tool()
-    async def delete_model(name: str) -> str:
+    async def delete_model(name: str, data_source: Optional[str] = None) -> str:
         """Delete a semantic model.
 
         Args:
             name: Model name to delete.
+            data_source: Datasource the model belongs to. Required when the
+                same name exists in multiple datasources (otherwise the
+                priority list / single-match rules apply).
         """
-        if await storage.delete_model(name):
+        try:
+            deleted = await storage.delete_model(name, data_source=data_source)
+        except AmbiguousModelError as exc:
+            return _ambiguous_with_mcp_hint(exc)
+        if deleted:
             return f"Model '{name}' deleted."
         return f"Model '{name}' not found."
 
@@ -2209,6 +2305,37 @@ def create_mcp_server(storage: StorageBackend):
         lines.append("")
         lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
         return "\n".join(lines)
+
+    @mcp.tool()
+    async def set_datasource_priority(priority: List[str]) -> str:
+        """Configure how SLayer disambiguates bare model names that exist in
+        multiple datasources.
+
+        When two datasources both define a model named ``users``, calling
+        ``edit_model("users")`` (no ``data_source=``) is ambiguous. SLayer
+        walks this priority list and picks the first datasource that has
+        the requested name. If none of the candidates appear in the list,
+        an ``AmbiguousModelError`` is raised.
+
+        Args:
+            priority: Datasource names, most-preferred first. Each entry
+                must already exist (run ``list_datasources`` first). Pass
+                an empty list to clear the priority.
+        """
+        try:
+            await storage.set_datasource_priority(list(priority))
+        except ValueError as exc:
+            return str(exc)
+        if not priority:
+            return "Datasource priority cleared."
+        return f"Datasource priority set: {list(priority)}."
+
+    @mcp.tool()
+    async def get_datasource_priority() -> str:
+        """Return the configured datasource priority list (most-preferred
+        first), or ``[]`` if none is set."""
+        priority = await storage.get_datasource_priority()
+        return f"Datasource priority: {priority}"
 
     return mcp
 

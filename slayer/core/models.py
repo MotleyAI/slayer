@@ -285,7 +285,7 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 3
+    version: int = 4
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
@@ -308,6 +308,36 @@ class SlayerModel(BaseModel):
     @classmethod
     def _validate_name(cls, v: str) -> str:
         return _validate_model_name(v, "Model")
+
+    @field_validator("data_source")
+    @classmethod
+    def _validate_data_source_format(cls, v: str) -> str:
+        # Format-only checks (run on every input). Emptiness is enforced in
+        # ``_require_data_source_unless_query_backed`` below so query-backed
+        # models can be constructed before their cache populator fills in
+        # ``data_source`` from the resolved virtual model.
+        if "/" in v or "\\" in v:
+            raise ValueError(
+                f"Model 'data_source' must not contain path separators "
+                f"('/' or '\\'); got {v!r}."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _require_data_source_unless_query_backed(self) -> "SlayerModel":
+        # Table-backed models (sql_table / sql) must have data_source up
+        # front — it's part of the v4 storage key. Query-backed models are
+        # allowed to start with an empty data_source because
+        # ``engine._validate_and_populate_cache`` fills it in from the
+        # resolved virtual model, and ``engine.save_model`` re-runs the
+        # check before persisting.
+        if not self.data_source.strip() and not self.source_queries:
+            raise ValueError(
+                f"Model '{self.name}': 'data_source' must be a non-empty "
+                f"string. Set it to the name of the DatasourceConfig the "
+                f"model belongs to."
+            )
+        return self
     joins: List[ModelJoin] = Field(default_factory=list)
     filters: List[str] = Field(default_factory=list)  # Model-level filters (always applied)
     default_time_dimension: Optional[str] = None

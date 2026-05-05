@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import tempfile
 from typing import Any, Generator, Optional
 
@@ -48,12 +49,25 @@ def _shared_mcp_server(_shared_storage: YAMLStorage):
 
 def _reset_yaml_storage(storage: YAMLStorage) -> None:
     """Wipe model + datasource files between tests so the session-scoped
-    storage looks fresh to every test."""
+    storage looks fresh to every test. v4 nests models under
+    ``models/<data_source>/`` so we recurse rather than just unlinking
+    top-level entries. Also clears the ``priority.yaml`` written by
+    ``set_datasource_priority`` — without this, priority leaks between
+    session-scoped tests and any ambiguity-related test would be
+    order-dependent (PR #92 thread #13).
+    """
     for sub in ("models", "datasources"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
-            for f in os.listdir(d):
-                os.remove(os.path.join(d, f))
+            for entry in os.listdir(d):
+                path = os.path.join(d, entry)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+    priority_path = os.path.join(storage.base_dir, "priority.yaml")
+    if os.path.exists(priority_path):
+        os.remove(priority_path)
 
 
 @pytest.fixture
@@ -2329,6 +2343,155 @@ class TestEditModel:
         model = await storage.get_model("orders")
         assert model.measures[0].description == "Average order value"
         assert model.measures[0].meta == {"kb_id": 9}
+
+
+class TestEditModelDatasourceMoveSafety:
+    """Moving a model to a different ``data_source`` must be atomic and
+    collision-safe (PR #92 thread #8). Failure modes to pin:
+    1. If a model with the same name already exists at the target
+       ``(new_data_source, name)`` key, the move must refuse and the
+       source model must remain intact.
+    2. If validation/save fails after the data_source is updated, the
+       source model must remain intact (no delete-before-save).
+    """
+
+    async def test_move_collision_with_target_refuses_and_preserves_source(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        for n in ("db_a", "db_b"):
+            await storage.save_datasource(DatasourceConfig(
+                name=n, type="sqlite", database=":memory:"
+            ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders_a", data_source="db_a",
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            description="source",
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders_b", data_source="db_b",
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            description="target",
+        ))
+
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "data_source": "db_a",
+            "new_data_source": "db_b",
+        })
+        # Refusal mentions the collision so the agent can fix it.
+        assert "exist" in result.lower() or "collid" in result.lower() or "already" in result.lower(), (
+            f"expected collision rejection, got: {result}"
+        )
+
+        # Both models still in their original places, untouched.
+        src = await storage.get_model("orders", data_source="db_a")
+        tgt = await storage.get_model("orders", data_source="db_b")
+        assert src is not None and src.description == "source"
+        assert tgt is not None and tgt.description == "target"
+
+    async def test_move_query_backed_when_engine_recomputes_data_source_back(
+        self, mcp_server, storage: YAMLStorage,
+    ) -> None:
+        """For query-backed models, ``engine.save_model`` recomputes
+        ``data_source`` from the backing query. If the user requests a move
+        but the query still resolves back to the *original* datasource, the
+        post-save delete must NOT remove the row we just saved at the
+        original key. See PR #92 thread (post-merge, critical).
+        """
+        from slayer.core.models import DatasourceConfig
+        from slayer.core.query import SlayerQuery
+        from slayer.engine.query_engine import SlayerQueryEngine
+
+        for n in ("db_a", "db_b"):
+            await storage.save_datasource(DatasourceConfig(
+                name=n, type="sqlite", database=":memory:"
+            ))
+        # Upstream lives in db_a. The query-backed model's backing query
+        # references this upstream, so its resolved data_source is db_a.
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="db_a",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+            ],
+        ))
+        engine = SlayerQueryEngine(storage=storage)
+        await engine.save_model(SlayerModel(
+            name="qb",
+            data_source="db_a",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+            )],
+        ))
+        # Sanity: the model is at (db_a, qb).
+        assert await storage.get_model("qb", data_source="db_a") is not None
+        assert await storage.get_model("qb", data_source="db_b") is None
+
+        # Ask for a move qb: db_a -> db_b. The backing query still
+        # resolves to db_a, so the engine cache populator will overwrite
+        # ``new_data_source`` and the model should land back at db_a.
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "qb",
+            "data_source": "db_a",
+            "new_data_source": "db_b",
+        })
+        # Edit either succeeds (engine silently rerouted) or returns a
+        # clear error explaining the override; either way, the model
+        # must NOT be deleted from storage entirely.
+        del result
+        # If we silently deleted (db_a, qb) thinking the model moved to
+        # (db_b, qb), then both lookups would now miss.
+        landed_a = await storage.get_model("qb", data_source="db_a")
+        landed_b = await storage.get_model("qb", data_source="db_b")
+        assert landed_a is not None or landed_b is not None, (
+            "edit_model deleted the model entirely after a no-op move "
+            "of a query-backed entity"
+        )
+
+    async def test_move_save_failure_preserves_source(
+        self, mcp_server, storage: YAMLStorage, monkeypatch
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        for n in ("db_a", "db_b"):
+            await storage.save_datasource(DatasourceConfig(
+                name=n, type="sqlite", database=":memory:"
+            ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders_a", data_source="db_a",
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            description="source",
+        ))
+
+        # Force the save under the new datasource to fail. The implementation
+        # must not have deleted the source row by then.
+        original_save = storage.save_model
+
+        async def _failing_save(model):
+            if model.data_source == "db_b":
+                raise RuntimeError("simulated storage failure on new key")
+            return await original_save(model)
+
+        monkeypatch.setattr(storage, "save_model", _failing_save)
+
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "data_source": "db_a",
+            "new_data_source": "db_b",
+        })
+        # Some kind of error surfaces (the simulated failure).
+        assert (
+            "fail" in result.lower()
+            or "error" in result.lower()
+            or "simulated" in result.lower()
+        ), f"expected save-failure to surface, got: {result}"
+
+        # The source model is still here.
+        src = await storage.get_model("orders", data_source="db_a")
+        assert src is not None
+        assert src.data_source == "db_a"
+        assert src.description == "source"
 
 
 class TestEditModelMultiStageRename:

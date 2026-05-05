@@ -1,6 +1,7 @@
 """Tests for the FastAPI server."""
 
 import os
+import shutil
 import tempfile
 
 import pytest
@@ -30,11 +31,22 @@ def _shared_client(_shared_storage: YAMLStorage) -> TestClient:
 
 
 def _reset_yaml_storage(storage: YAMLStorage) -> None:
+    # v4 nests models under ``models/<data_source>/``; recurse into
+    # subdirectories instead of unlinking only top-level entries. Also
+    # clears the ``priority.yaml`` written by ``set_datasource_priority``
+    # so it doesn't leak between session-scoped tests (PR #92 thread #13).
     for sub in ("models", "datasources"):
         d = os.path.join(storage.base_dir, sub)
         if os.path.isdir(d):
-            for f in os.listdir(d):
-                os.remove(os.path.join(d, f))
+            for entry in os.listdir(d):
+                path = os.path.join(d, entry)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+    priority_path = os.path.join(storage.base_dir, "priority.yaml")
+    if os.path.exists(priority_path):
+        os.remove(priority_path)
 
 
 @pytest.fixture
@@ -364,6 +376,22 @@ class TestOpenAPI400Documentation:
     def test_put_model_documents_400(self, client: TestClient) -> None:
         spec = client.get("/openapi.json").json()
         responses = spec["paths"]["/models/{name}"]["put"]["responses"]
+        assert "400" in responses
+
+    def test_get_model_documents_409(self, client: TestClient) -> None:
+        """``GET /models/{name}`` raises 409 on AmbiguousModelError; declare it."""
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models/{name}"]["get"]["responses"]
+        assert "409" in responses
+
+    def test_delete_model_documents_409(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models/{name}"]["delete"]["responses"]
+        assert "409" in responses
+
+    def test_put_datasource_priority_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/datasources/priority"]["put"]["responses"]
         assert "400" in responses
 
     def test_post_query_run_by_name_dry_run_returns_sql_without_executing(

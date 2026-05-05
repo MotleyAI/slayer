@@ -223,8 +223,11 @@ async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models):
         for model in jaffle_models.values():
             await storage.save_model(model)
 
-        for model_name in jaffle_models:
-            path = os.path.join(storage.models_dir, f"{model_name}.yaml")
+        for model_name, model in jaffle_models.items():
+            # v4: files are nested under models/<data_source>/<name>.yaml.
+            path = os.path.join(
+                storage.models_dir, model.data_source, f"{model_name}.yaml"
+            )
             raw = await asyncio.to_thread(Path(path).read_text)
             on_disk = yaml.safe_load(raw)
             assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"], model_name
