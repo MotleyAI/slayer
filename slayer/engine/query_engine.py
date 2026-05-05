@@ -655,6 +655,7 @@ class SlayerQueryEngine:
                 outer_vars=outer_vars,
                 runtime_kwarg=runtime_kwarg,
                 dry_run_placeholders=dry_run_placeholders,
+                prefer_data_source=prefer_data_source,
             )
             # Extend the base model with extra columns/measures/joins
             from slayer.core.models import ModelJoin
@@ -940,16 +941,18 @@ class SlayerQueryEngine:
                     outer_vars=query.variables,
                 )
             elif self.storage:
-                # v4: prefer the parent model's datasource so joins stay
-                # inside one logical database (cross-datasource joins aren't
-                # executable). Fall back to priority-list resolution if the
-                # target only exists outside the parent's datasource.
-                target = None
+                # v4 (DEV-1330): joins must stay inside the parent model's
+                # logical database (cross-datasource joins aren't executable).
+                # When parent has a ``data_source``, do a *strict* lookup —
+                # no bare-name fallback that could silently pick the same
+                # name from another datasource. Only fall through to the
+                # priority/unique-match resolver when the parent has no
+                # datasource hint to give.
                 if model.data_source:
                     target = await self.storage.get_model(
                         target_model_name, data_source=model.data_source
                     )
-                if target is None:
+                else:
                     target = await self.storage.get_model(target_model_name)
                 if target and target.source_queries:
                     target = await self._render_query_backed_join_target(
@@ -968,11 +971,17 @@ class SlayerQueryEngine:
             """Adapter for column_expansion: returns ``SlayerModel`` or None.
             Catches lookup errors so unknown alias paths don't blow up the
             whole enrichment — the expander treats them as opaque.
+
+            v4: pass the *outer* model's ``data_source`` as the hint so
+            ``B.col`` references inside ``A``'s derived columns resolve
+            within ``A.data_source``, never across the join graph into a
+            sibling datasource.
             """
             try:
                 return await self._resolve_model(
                     model_name=model_name,
                     named_queries=named_queries or {},
+                    prefer_data_source=model.data_source or None,
                 )
             except Exception:  # noqa: BLE001 — opaque alias is expected for CTE/sub-query refs
                 return None
@@ -1290,6 +1299,7 @@ class SlayerQueryEngine:
                             terminal_model = await self._resolve_model(
                                 model_name=terminal_model_name,
                                 named_queries=named_queries or {},
+                                prefer_data_source=model.data_source or None,
                             )
                         except ValueError:
                             terminal_model = None
@@ -1355,9 +1365,15 @@ class SlayerQueryEngine:
                 )
             if i == 0:
                 first_join = join
+            # v4 (DEV-1330): keep cross-model-measure hop resolution scoped
+            # to the same datasource as the source model — without this
+            # ``customers.revenue:sum`` against ``orders@db_a`` could
+            # silently pull ``customers@db_b`` (or raise
+            # ``AmbiguousModelError`` when both exist).
             current_model = await self._resolve_model(
                 model_name=hop_name,
                 named_queries=named_queries or {},
+                prefer_data_source=current_model.data_source or None,
             )
 
         target_model_name = hop_names[-1]
@@ -1434,6 +1450,7 @@ class SlayerQueryEngine:
                     return await self._resolve_model(
                         model_name=model_name,
                         named_queries=named_queries or {},
+                        prefer_data_source=target_model.data_source or None,
                     )
                 except Exception:  # noqa: BLE001
                     return None
@@ -1500,6 +1517,7 @@ class SlayerQueryEngine:
         target_model = await self._resolve_model(
             model_name=cm.target_model_name,
             named_queries=named_queries,
+            prefer_data_source=model.data_source or None,
         )
 
         source_model_name = model.name

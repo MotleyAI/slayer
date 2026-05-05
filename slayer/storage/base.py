@@ -142,8 +142,15 @@ class StorageBackend(ABC):
 
         Resolution rules:
 
-        * ``data_source`` supplied → validate against ``list_datasources()``
-          and return that subset (possibly empty).
+        * ``data_source`` supplied → return models stored under that
+          ``data_source`` (possibly empty). The name is accepted as long as
+          it appears in either a registered ``DatasourceConfig`` *or* in any
+          saved model's ``data_source`` field — that keeps ``list_models``
+          consistent with ``get_model``, which can already retrieve models
+          stored without a corresponding config (e.g. an orphan after the
+          datasource entry was deleted, or a model imported from another
+          environment). Unknown names — neither registered nor referenced by
+          any saved model — still raise ``ValueError`` so typos surface.
         * ``data_source`` is ``None`` and ≥1 model exists in exactly one
           datasource → return that datasource's model names.
         * ``data_source`` is ``None`` and storage is empty → return ``[]``.
@@ -153,10 +160,11 @@ class StorageBackend(ABC):
         identities = await self._list_all_model_identities()
         if data_source is not None:
             known = set(await self.list_datasources())
-            if data_source not in known:
+            existing_sources = {ds for ds, _ in identities}
+            if data_source not in known and data_source not in existing_sources:
                 raise ValueError(
                     f"list_models: unknown data_source {data_source!r}; "
-                    f"known datasources: {sorted(known) or '[]'}."
+                    f"known datasources: {sorted(known | existing_sources) or '[]'}."
                 )
             return sorted(name for ds, name in identities if ds == data_source)
         distinct_sources = sorted({ds for ds, _ in identities})

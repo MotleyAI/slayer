@@ -99,7 +99,7 @@ class TestNamespacedSaveLoad:
         assert await storage.get_model("orders", data_source="db_a") is not None
         assert await storage.get_model("orders", data_source="db_b") is None
 
-    async def test_save_model_rejects_empty_data_source(self, storage) -> None:
+    async def test_save_model_rejects_empty_data_source(self, storage) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling backend-parametrized tests
         # Construction itself fails — non-empty validator on SlayerModel —
         # so the model never reaches storage. ``storage`` parameter is
         # unused by design; we keep it so the test runs once per backend
@@ -261,6 +261,31 @@ class TestListModels:
 
     async def test_list_no_arg_empty_storage_returns_empty(self, storage) -> None:
         assert await storage.list_models() == []
+
+    async def test_list_with_data_source_having_models_but_no_config(self, storage) -> None:
+        """A model can carry a ``data_source`` string even when no
+        ``DatasourceConfig`` has been saved for it (e.g. an orphan after a
+        manual datasource delete, or a model imported from another env).
+        ``list_models("db_x")`` must surface those names rather than raise
+        — otherwise ``get_model("name", data_source="db_x")`` works but
+        ``list_models("db_x")`` doesn't, which is internally inconsistent.
+        See PR #92 thread #9.
+        """
+        # No DatasourceConfig saved.
+        await storage.save_model(_model("orders", data_source="db_x"))
+        await storage.save_model(_model("users", data_source="db_x"))
+
+        names = await storage.list_models(data_source="db_x")
+        assert sorted(names) == ["orders", "users"]
+
+    async def test_list_with_unknown_data_source_still_raises(self, storage) -> None:
+        """The 'unknown data_source' error stays when the name has neither
+        a config nor any saved models — otherwise typos go unnoticed.
+        """
+        await storage.save_datasource(_ds("db_a"))
+        await storage.save_model(_model("orders", data_source="db_a"))
+        with pytest.raises(ValueError, match=r"data_source|nope"):
+            await storage.list_models(data_source="nope")
 
 
 # ---------------------------------------------------------------------------

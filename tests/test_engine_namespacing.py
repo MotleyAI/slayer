@@ -43,15 +43,18 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[ModelJ
     )
 
 
-def _customers(data_source: str, *, sql_table: str = "customers_t") -> SlayerModel:
+def _customers(data_source: str, *, sql_table: str = "customers_t", with_revenue: bool = False) -> SlayerModel:
+    cols = [
+        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+        Column(name="region", sql="region", type=DataType.STRING),
+    ]
+    if with_revenue:
+        cols.append(Column(name="revenue", sql="revenue", type=DataType.NUMBER))
     return SlayerModel(
         name="customers",
         sql_table=sql_table,
         data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region", sql="region", type=DataType.STRING),
-        ],
+        columns=cols,
     )
 
 
@@ -271,5 +274,129 @@ class TestRunByName:
             resp = await engine.execute("rev", data_source="db_a", dry_run=True)
             assert resp.sql is not None
             assert "db_a.orders_t" in resp.sql
+        finally:
+            tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Cross-model measure / re-rooted resolvers must scope hops the same way
+# (CR #6 on PR #92).
+# ---------------------------------------------------------------------------
+
+
+class TestCrossModelMeasureScoping:
+    """Hop resolution inside cross-model measures must use the parent's
+    ``data_source`` as the priority hint, exactly like the dimension path.
+    Without it, ``customers.revenue:sum`` against ``orders@db_a`` either
+    silently joins ``db_b.customers_t`` or raises ``AmbiguousModelError``
+    when both ``customers@db_a`` and ``customers@db_b`` exist.
+    """
+
+    async def test_cross_model_measure_resolves_within_parent_datasource(self) -> None:
+        orders_a = _orders(
+            "db_a",
+            sql_table="db_a.orders_t",
+            joins=[ModelJoin(
+                target_model="customers",
+                join_pairs=[["customer_id", "id"]],
+                join_type=JoinType.LEFT,
+            )],
+        )
+        engine, tmp = await _engine_with(
+            orders_a,
+            _customers("db_a", sql_table="db_a.customers_t", with_revenue=True),
+            _customers("db_b", sql_table="db_b.customers_t", with_revenue=True),
+            datasources=["db_a", "db_b"],
+        )
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            resp = await engine.execute(q, data_source="db_a", dry_run=True)
+            assert resp.sql is not None
+            assert "db_a.customers_t" in resp.sql
+            assert "db_b.customers_t" not in resp.sql
+        finally:
+            tmp.cleanup()
+
+    async def test_cross_model_measure_only_in_other_datasource_raises(self) -> None:
+        """Parent's datasource doesn't contain the join target's model →
+        cross-model measure must fail rather than silently using db_b's
+        ``customers``.
+        """
+        orders_a = _orders(
+            "db_a",
+            sql_table="db_a.orders_t",
+            joins=[ModelJoin(
+                target_model="customers",
+                join_pairs=[["customer_id", "id"]],
+                join_type=JoinType.LEFT,
+            )],
+        )
+        engine, tmp = await _engine_with(
+            orders_a,
+            _customers("db_b", sql_table="db_b.customers_t", with_revenue=True),
+            datasources=["db_a", "db_b"],
+        )
+        try:
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
+                await engine.execute(q, data_source="db_a", dry_run=True)
+        finally:
+            tmp.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Join-target resolution must NOT silently fall back to a bare lookup when
+# the parent's datasource is known (CR #5 on PR #92).
+# ---------------------------------------------------------------------------
+
+
+class TestJoinTargetStrictWhenParentScoped:
+    async def test_join_target_does_not_silently_resolve_outside_parent_ds(self) -> None:
+        """Even before any dimension/measure references ``customers``, the
+        join-target resolution path must not pick ``customers@db_b`` when
+        the parent is ``orders@db_a``. Today the bare-name fallback at
+        ``_resolve_join_target`` returns ``customers@db_b`` silently — this
+        test pins the corrected behavior: no fallback when parent scoped.
+        """
+        # We exercise the join-target resolver directly: it's called during
+        # enrichment regardless of whether dimensions reference the joined
+        # table, so a wrong choice here corrupts later phases.
+        from slayer.engine.query_engine import SlayerQueryEngine  # noqa: F401 (clarity)
+
+        orders_a = _orders(
+            "db_a",
+            sql_table="db_a.orders_t",
+            joins=[ModelJoin(
+                target_model="customers",
+                join_pairs=[["customer_id", "id"]],
+                join_type=JoinType.LEFT,
+            )],
+        )
+        engine, tmp = await _engine_with(
+            orders_a,
+            _customers("db_b", sql_table="db_b.customers_t"),
+            datasources=["db_a", "db_b"],
+        )
+        try:
+            # Reach in to verify the resolver itself.
+            target = await engine.storage.get_model("customers", data_source="db_a")
+            assert target is None  # Sanity: customers@db_a doesn't exist.
+
+            # The bare-name resolution gives db_b's customers (unique match).
+            # The fix should make join_target resolution refuse to fall back
+            # to that when the parent already declared a data_source.
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                dimensions=["customers.region"],
+            )
+            with pytest.raises((AmbiguousModelError, ValueError), match=r"customers"):
+                await engine.execute(q, data_source="db_a", dry_run=True)
         finally:
             tmp.cleanup()

@@ -388,7 +388,7 @@ async def _get_row_count(
             "source_model": model.name,
             "measures": [{"formula": "*:count"}],
         })
-        r = await engine.execute(query=q)
+        r = await engine.execute(query=q, data_source=model.data_source or None)
     except Exception:
         return None
     if not r.data or not r.columns:
@@ -472,7 +472,7 @@ async def _collect_dim_profile(
                 "measures": [{"formula": "*:count"}],
                 "limit": max_values + 1,
             })
-            r = await engine.execute(query=q)
+            r = await engine.execute(query=q, data_source=model.data_source or None)
         except Exception:
             continue
         value_key = f"{model.name}.{c.name}"
@@ -504,7 +504,7 @@ async def _collect_dim_profile(
                 "source_model": {"source_name": model.name, "columns": ext_columns},
                 "measures": measures_payload,
             })
-            r = await engine.execute(query=q)
+            r = await engine.execute(query=q, data_source=model.data_source or None)
             if r.data:
                 row = r.data[0]
         except Exception:
@@ -559,7 +559,7 @@ async def _collect_measure_profile(
             "source_model": {"source_name": model.name, "columns": ext_columns},
             "measures": measures_payload,
         })
-        r = await engine.execute(query=q)
+        r = await engine.execute(query=q, data_source=model.data_source or None)
         row = r.data[0] if r.data else {}
     except Exception:
         return {}
@@ -609,7 +609,15 @@ async def _collect_reachable_fields(
         visited.add(path)
         if path.count(".") + 1 > max_depth:
             continue
-        target = await storage.get_model(target_name)
+        # v4 (DEV-1330): walk the join graph within the *root* model's
+        # data_source. Cross-datasource joins aren't auto-mirrored, so any
+        # bare-name resolution that crosses a datasource boundary would be
+        # picking up a sibling model that isn't actually reachable from
+        # ``model``.
+        try:
+            target = await storage.get_model(target_name, data_source=model.data_source or None)
+        except Exception:  # noqa: BLE001 — AmbiguousModelError or storage misses
+            target = None
         if target is None:
             continue
         for c in target.columns:
@@ -1386,7 +1394,9 @@ def create_mcp_server(storage: StorageBackend):
             )
             try:
                 sample_query = SlayerQuery.model_validate(query_args)
-                sample_result = await engine.execute(query=sample_query)
+                sample_result = await engine.execute(
+                    query=sample_query, data_source=model.data_source or None
+                )
                 sample_sql = sample_result.sql
                 cols, data = _strip_model_prefix(
                     columns=sample_result.columns,

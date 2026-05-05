@@ -169,6 +169,59 @@ class TestMCPModelToolsDataSourceArg:
         # the right one.
         assert "db_a" in result
 
+    async def test_inspect_model_helper_chain_scoped_to_data_source(
+        self, mcp_server, storage, monkeypatch
+    ) -> None:
+        """The helpers backing ``inspect_model`` (``_get_row_count``,
+        ``_collect_dim_profile``, ``_collect_measure_profile``,
+        ``_collect_reachable_fields``, the sample-data query) all run
+        ``engine.execute`` against the model. After v4 each of those calls
+        must forward ``data_source=model.data_source`` so the engine's
+        bare-name resolution doesn't pick the sibling in another datasource.
+        See PR #92 thread #7.
+        """
+        await storage.save_datasource(_ds("db_a"))
+        await storage.save_datasource(_ds("db_b"))
+        await storage.save_model(_model("users", data_source="db_a"))
+        await storage.save_model(_model("users", data_source="db_b"))
+
+        # Capture every engine.execute call made by the inspect_model helpers.
+        from slayer.engine import query_engine as qe_mod
+
+        captured: list[dict[str, Any]] = []
+        original_execute = qe_mod.SlayerQueryEngine.execute
+
+        async def _capturing_execute(self, query, **kwargs):  # type: ignore[no-untyped-def]
+            captured.append({
+                "source_model": getattr(query, "source_model", None) if not isinstance(query, str) else query,
+                "data_source_kwarg": kwargs.get("data_source"),
+            })
+            # Don't actually run — return an empty response shape so the
+            # helpers' ``except Exception: return None`` paths don't muddy
+            # the captured list.
+            return await original_execute(self, query, **kwargs)
+
+        monkeypatch.setattr(qe_mod.SlayerQueryEngine, "execute", _capturing_execute)
+
+        await _call_mcp(
+            mcp_server,
+            name="inspect_model",
+            arguments={"model_name": "users", "data_source": "db_a"},
+        )
+
+        # Helpers should have called engine.execute at least once on the
+        # ``users`` model, and *every* such call must carry data_source="db_a".
+        users_calls = [c for c in captured if c["source_model"] == "users"]
+        assert users_calls, (
+            "expected inspect_model helpers to run at least one ``users`` "
+            f"query; got: {captured!r}"
+        )
+        bad = [c for c in users_calls if c["data_source_kwarg"] != "db_a"]
+        assert not bad, (
+            "inspect_model helper(s) called engine.execute on 'users' "
+            f"without data_source='db_a': {bad!r}"
+        )
+
     async def test_delete_model_with_data_source(self, mcp_server, storage) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
