@@ -2682,6 +2682,91 @@ async def test_integration_local_derived_chain(derived_chain_env):
     assert response.data[1]["A.c2"] == pytest.approx(12.0)
 
 
+# ---------------------------------------------------------------------------
+# DEV-1337: log10 / log2 round-trip preservation (SQLite)
+# ---------------------------------------------------------------------------
+
+
+async def test_log10_round_trip_sqlite(tmp_path):
+    """DEV-1337: a user-written `log10(x)` formula must (a) execute correctly
+    end-to-end on SQLite (via the registered `log10` UDF) and (b) appear
+    verbatim as `log10(...)` in the emitted SQL — not the canonicalised
+    `LOG(10, ...)` form. Same shape for `log2(x)` (which depends on the
+    `log2` UDF added in this change)."""
+    import math as _math
+
+    db_path = tmp_path / "log_round_trip.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, raw_score REAL NOT NULL)")
+    cur.executemany(
+        "INSERT INTO players VALUES (?, ?)",
+        [(1, 100.0), (2, 1000.0), (3, 10000.0), (4, 8.0)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="log_sqlite", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="players",
+            sql_table="players",
+            data_source="log_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="raw_score", sql="raw_score", type=DataType.NUMBER),
+                Column(name="log_score", sql="log10(raw_score)", type=DataType.NUMBER),
+                Column(name="log2_score", sql="log2(raw_score)", type=DataType.NUMBER),
+            ],
+        )
+    )
+    engine = SlayerQueryEngine(storage=storage)
+
+    # Numeric correctness — log10
+    r10 = await engine.execute(
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log_score:max")])
+    )
+    assert r10.data[0]["players.log_score_max"] == pytest.approx(4.0)
+
+    # Numeric correctness — log2 (8.0 → 3.0; pin against the new UDF)
+    r2 = await engine.execute(
+        SlayerQuery(
+            source_model="players",
+            measures=[ModelMeasure(formula="log2_score:max")],
+            filters=["raw_score == 8.0"],
+        )
+    )
+    assert r2.data[0]["players.log2_score_max"] == pytest.approx(_math.log2(8.0))
+
+    # SQL-shape: dry-run must contain the literal log10(...) / log2(...) form.
+    dry10 = await engine.execute(
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log_score:max")]),
+        dry_run=True,
+    )
+    assert dry10.sql is not None
+    sql10 = dry10.sql.lower()
+    assert "log10(" in sql10, (
+        f"Expected literal log10(...) in emitted SQL, got:\n{dry10.sql}"
+    )
+    assert "log(10," not in sql10.replace(" ", ""), (
+        f"Emitted SQL must not canonicalise log10(...) to LOG(10, ...):\n{dry10.sql}"
+    )
+
+    dry2 = await engine.execute(
+        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="log2_score:max")]),
+        dry_run=True,
+    )
+    assert dry2.sql is not None
+    assert "log2(" in dry2.sql.lower(), (
+        f"Expected literal log2(...) in emitted SQL, got:\n{dry2.sql}"
+    )
+
+
 async def test_dev1341_count_over_nullif_max_executes(integration_env):
     """DEV-1341: a multistage final stage combining ``*:count`` with another
     aggregation inside a ``nullif`` wrapper must emit clean SQL — no

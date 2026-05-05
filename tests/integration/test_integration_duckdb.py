@@ -581,6 +581,48 @@ class TestDuckDBStatAggregations:
             result.data[0]["orders.total_covar_pop_other_customer_id"]
         ) == pytest.approx(expected, rel=1e-9)
 
+    async def test_log10_round_trip_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
+        """DEV-1337: a `log10(amount)` formula must execute correctly on
+        DuckDB (native single-arg LOG10) and the emitted SQL must contain
+        `log10(...)` rather than the canonicalised `LOG(10, ...)`."""
+        from slayer.core.models import SlayerModel
+
+        existing = await duckdb_env.storage.get_model("orders")
+        assert existing is not None
+        cols = list(existing.columns) + [
+            Column(name="log_amount", sql="log10(amount)", type=DataType.NUMBER),
+        ]
+        await duckdb_env.save_model(
+            SlayerModel(
+                name=existing.name,
+                sql_table=existing.sql_table,
+                data_source=existing.data_source,
+                columns=cols,
+            )
+        )
+
+        result = await duckdb_env.execute(
+            SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}])
+        )
+        import math as _math
+        # max(amount) = 300, log10(300) ≈ 2.4771
+        assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
+            _math.log10(300.0), rel=1e-9
+        )
+
+        dry = await duckdb_env.execute(
+            SlayerQuery(source_model="orders", measures=[{"formula": "log_amount:max"}]),
+            dry_run=True,
+        )
+        assert dry.sql is not None
+        sql = dry.sql.lower()
+        assert "log10(" in sql, (
+            f"Expected literal log10(...) in emitted SQL, got:\n{dry.sql}"
+        )
+        assert "log(10," not in sql.replace(" ", ""), (
+            f"Emitted SQL must not canonicalise log10 to LOG(10, ...):\n{dry.sql}"
+        )
+
 
 
 

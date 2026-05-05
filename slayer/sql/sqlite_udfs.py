@@ -330,6 +330,17 @@ def _log10(x):
     return math.log10(x)
 
 
+def _log2(x):
+    # DEV-1337: registered alongside _log10 so the SQL generator can render
+    # a user-written `log2(x)` formula verbatim. SQLite >=3.35 ships a
+    # built-in `log2(x)` that silently returns NULL on math-domain inputs;
+    # the UDF override gives the strict "errors propagate" semantics the
+    # rest of SLayer's scalar math UDFs guarantee, matching Postgres.
+    if x is None:
+        return None
+    return math.log2(x)
+
+
 def _log_base_x(b, x):
     """``log(B, X)`` returns log_B(X). Base first, value second."""
     if b is None or x is None:
@@ -384,6 +395,10 @@ def register_sqlite_udfs(dbapi_connection) -> None:
     # --- Scalar UDFs ------------------------------------------------------
     dbapi_connection.create_function("ln", 1, _ln)
     dbapi_connection.create_function("log10", 1, _log10)
+    # DEV-1337: register `log2` so the SQL generator can keep a
+    # user-written `log2(x)` formula verbatim. Overrides SQLite >=3.35's
+    # built-in to give strict "errors propagate" semantics.
+    dbapi_connection.create_function("log2", 1, _log2)
     # SQLite >= 3.35 ships a built-in ``log(B, X)`` that silently returns
     # NULL on math-domain inputs (``log(0, 10)``, ``log(-1, 10)``). DEV-1317
     # promises Postgres-style "errors propagate" semantics, so we register
