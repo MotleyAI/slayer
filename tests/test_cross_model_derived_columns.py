@@ -1000,7 +1000,10 @@ async def test_dev1334_query_filter_on_bare_derived_col_with_cross_table_sql_add
         f"customers join missing — resolved_joins: {enriched.resolved_joins}"
     )
     sql = SQLGenerator(dialect="sqlite").generate(enriched=enriched)
-    assert "LEFT JOIN customers" in sql, (
+    # Tolerant match — different dialects/generators may quote the table
+    # name or add an OUTER keyword; what matters is that a LEFT JOIN to
+    # customers shows up in the rendered SQL.
+    assert re.search(r'LEFT\s+(?:OUTER\s+)?JOIN\s+["`]?customers["`]?', sql, re.I), (
         f"LEFT JOIN customers missing from generated SQL:\n{sql}"
     )
 
@@ -1233,8 +1236,16 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
         measures=[ModelMeasure(formula="*:count", name="n")],
         filters=["a = 0"],
     )
-    with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle"):
+    with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
         await engine._enrich(query=query, model=orders)
+    # Pin the chain order. Filter on `a` enters the helper for `a`, walks
+    # `a.sql = "orders.b + 1"` → recurses into `b`, walks `b.sql =
+    # "orders.a - 1"` → recurses into `a`, hits cycle. The error chain
+    # must reflect that recursion order so future regressions in the
+    # cycle-formatting (e.g. randomised set iteration) are caught.
+    assert "orders.a → orders.b → orders.a" in str(exc_info.value), (
+        f"Cycle chain not in recursion order: {exc_info.value}"
+    )
 
 
 async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
