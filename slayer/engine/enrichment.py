@@ -1037,6 +1037,63 @@ def _add_with_prefixes(segments: List[str], paths: Set[Tuple[str, ...]]) -> None
         paths.add(tuple(segments[:i]))
 
 
+def _raise_column_cycle(
+    visited: Tuple[Tuple[str, str], ...], key: Tuple[str, str],
+) -> None:
+    """Raise a deterministic ``Circular column reference`` error matching
+    the chain format used by ``expand_derived_refs``.
+    """
+    cycle_start = visited.index(key)
+    cycle = (*visited[cycle_start:], key)
+    chain = " → ".join(f"{m}.{c}" for m, c in cycle)
+    raise ValueError(f"Circular column reference detected: {chain}")
+
+
+def _scan_sql_table_refs(*, sql: str, model_name: str, paths: Set[Tuple[str, ...]]) -> None:
+    """Regex-fallback scan: pick out ``<table>.<col>`` shapes and add the
+    table prefix paths (skipping references to ``model_name`` itself).
+    """
+    for match in _TABLE_COL_RE.finditer(sql):
+        segments = match.group(1).split("__")
+        if segments and segments[0] != model_name:
+            _add_with_prefixes(segments, paths)
+
+
+def _process_node_for_paths(
+    *,
+    node: exp.Column,
+    model: SlayerModel,
+    paths: Set[Tuple[str, ...]],
+    visited: Tuple[Tuple[str, str], ...],
+) -> None:
+    """Resolve one ``exp.Column`` node into either a recursion into a
+    local derived column or a join-path-prefix add.
+
+    Branches:
+    - multi-part qualifier (catalog/db) → ignore (outside SLayer's contract)
+    - bare identifier → recurse into a possibly-derived local column
+    - ``<source_model>.<col>`` → self-qualified local ref, recurse
+    - ``<table>.<col>`` (table not the source model) → add the prefix path
+    """
+    if node.args.get("db") or node.args.get("catalog"):
+        return
+    table_id = node.args.get("table")
+    if table_id is None:
+        _collect_paths_from_local_column_chain(
+            model=model, col_name=node.name, paths=paths, visited=visited,
+        )
+        return
+    segments = table_id.name.split("__")
+    if not segments:
+        return
+    if segments[0] == model.name:
+        _collect_paths_from_local_column_chain(
+            model=model, col_name=node.name, paths=paths, visited=visited,
+        )
+        return
+    _add_with_prefixes(segments, paths)
+
+
 def _collect_paths_from_local_column_chain(
     *,
     model: SlayerModel,
@@ -1064,54 +1121,19 @@ def _collect_paths_from_local_column_chain(
         return
     key = (model.name, col_name)
     if key in visited:
-        cycle_start = visited.index(key)
-        cycle = (*visited[cycle_start:], key)
-        chain = " → ".join(f"{m}.{c}" for m, c in cycle)
-        raise ValueError(f"Circular column reference detected: {chain}")
+        _raise_column_cycle(visited, key)
     next_visited = (*visited, key)
 
     try:
         parsed = sqlglot.parse_one(sql)
     except Exception:
-        # Fall back to the regex used elsewhere in this module — only
-        # catches qualified ``<table>.<col>`` shapes, but that is the
-        # exact shape that drives join discovery anyway.
-        for match in _TABLE_COL_RE.finditer(sql):
-            segments = match.group(1).split("__")
-            if segments and segments[0] != model.name:
-                _add_with_prefixes(segments, paths)
+        _scan_sql_table_refs(sql=sql, model_name=model.name, paths=paths)
         return
 
     for node in parsed.find_all(exp.Column):
-        if node.args.get("db") or node.args.get("catalog"):
-            continue
-        table_id = node.args.get("table")
-        if table_id is None:
-            # Bare identifier inside the column's SQL — could be a
-            # reference to another local derived column. Recurse to
-            # chase the chain.
-            _collect_paths_from_local_column_chain(
-                model=model,
-                col_name=node.name,
-                paths=paths,
-                visited=next_visited,
-            )
-            continue
-        table_alias = table_id.name
-        segments = table_alias.split("__")
-        if not segments:
-            continue
-        if segments[0] == model.name:
-            # Self-qualified local reference (e.g. ``orders.is_eu``):
-            # treat the column part as a local-name ref and recurse.
-            _collect_paths_from_local_column_chain(
-                model=model,
-                col_name=node.name,
-                paths=paths,
-                visited=next_visited,
-            )
-            continue
-        _add_with_prefixes(segments, paths)
+        _process_node_for_paths(
+            node=node, model=model, paths=paths, visited=next_visited,
+        )
 
 
 def _collect_needed_paths(
