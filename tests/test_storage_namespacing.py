@@ -137,10 +137,12 @@ class TestBareNameResolution:
             await storage.get_model("users")
 
         msg = str(exc.value)
-        # Message lists both candidates and tells the caller how to fix it.
+        # Message lists both candidates. The remediation hint is added by
+        # whichever surface (REST/MCP/CLI/Python) catches the error so it
+        # can use the right invocation idiom — the bare exception text
+        # stays surface-neutral. See PR #92 thread #4.
         assert "db_a" in msg and "db_b" in msg
-        assert "data_source" in msg
-        assert "set_datasource_priority" in msg
+        assert "data_source" in msg or "datasource" in msg.lower()
 
     async def test_priority_picks_first_match(self, storage) -> None:
         await storage.save_datasource(_ds("db_a"))
@@ -277,6 +279,28 @@ class TestListModels:
 
         names = await storage.list_models(data_source="db_x")
         assert sorted(names) == ["orders", "users"]
+
+    async def test_ambiguous_error_message_is_surface_neutral(self, storage) -> None:
+        """``AmbiguousModelError.__str__`` must list candidates without
+        leaking surface-specific Python-API names. Each surface
+        (REST 409, MCP edit_model error string, CLI, etc.) appends its
+        own remediation hint when it catches the exception.
+        See PR #92 thread #4.
+        """
+        await storage.save_datasource(_ds("db_a"))
+        await storage.save_datasource(_ds("db_b"))
+        await storage.save_model(_model("users", data_source="db_a"))
+        await storage.save_model(_model("users", data_source="db_b"))
+
+        with pytest.raises(AmbiguousModelError) as exc:
+            await storage.get_model("users")
+        msg = str(exc.value)
+
+        # No reference to the Python set_datasource_priority method name
+        # or the bracketed ``[...]`` invocation form (those are Python-
+        # specific affordances that don't apply at the REST/CLI surface).
+        assert "set_datasource_priority(" not in msg
+        assert "[...]" not in msg
 
     async def test_list_with_unknown_data_source_still_raises(self, storage) -> None:
         """The 'unknown data_source' error stays when the name has neither

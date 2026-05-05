@@ -318,6 +318,22 @@ class TestAPIDatasourcePriority:
         assert resp.status_code == 400
         assert "nope" in resp.json()["detail"]
 
+    def test_put_priority_rejects_string_for_priority(self, http_client) -> None:
+        """``{"priority": "db_a"}`` must be a request-validation error
+        (HTTP 422), not a misleading 400 from coercing the string into
+        the character list ``["d", "b", "_", "a"]``. See PR #92 thread #2.
+        """
+        resp = http_client.put(
+            "/datasources/priority", json={"priority": "db_a"}
+        )
+        assert resp.status_code == 422
+
+    def test_put_priority_rejects_non_string_items(self, http_client) -> None:
+        resp = http_client.put(
+            "/datasources/priority", json={"priority": ["db_a", 7]}
+        )
+        assert resp.status_code == 422
+
 
 # ---------------------------------------------------------------------------
 # Python client

@@ -63,6 +63,15 @@ class IngestRequest(BaseModel):
     schema_name: Optional[str] = None
 
 
+class DatasourcePriorityRequest(BaseModel):
+    """Body for ``PUT /datasources/priority``. A request model — rather
+    than a raw ``Dict[str, List[str]]`` — so OpenAPI advertises the exact
+    shape and FastAPI rejects mistyped payloads with 422 instead of
+    silently coercing them downstream.
+    """
+    priority: List[str] = []
+
+
 def create_app(storage: StorageBackend) -> FastAPI:
     app = FastAPI(title="SLayer", version="0.1.0")
     engine = SlayerQueryEngine(storage=storage)
@@ -175,7 +184,18 @@ def create_app(storage: StorageBackend) -> FastAPI:
             result.append(entry)
         return result
 
-    @app.get("/models/{name}")
+    @app.get(
+        "/models/{name}",
+        responses={
+            409: {
+                "description": (
+                    "Model name resolves to multiple datasources. Pass "
+                    "``data_source=...`` as a query parameter, or set a "
+                    "datasource priority via PUT /datasources/priority."
+                )
+            }
+        },
+    )
     async def get_model(
         name: str,
         data_source: Optional[str] = None,
@@ -183,7 +203,13 @@ def create_app(storage: StorageBackend) -> FastAPI:
         try:
             model = await storage.get_model(name, data_source=data_source)
         except AmbiguousModelError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{exc} Pass data_source=... as a query parameter, "
+                    f"or PUT /datasources/priority to disambiguate."
+                ),
+            )
         if model is None:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
         data = model.model_dump(exclude_none=True)
@@ -220,7 +246,18 @@ def create_app(storage: StorageBackend) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "updated", "name": name}
 
-    @app.delete("/models/{name}")
+    @app.delete(
+        "/models/{name}",
+        responses={
+            409: {
+                "description": (
+                    "Model name resolves to multiple datasources. Pass "
+                    "``data_source=...`` as a query parameter, or set a "
+                    "datasource priority via PUT /datasources/priority."
+                )
+            }
+        },
+    )
     async def delete_model(
         name: str,
         data_source: Optional[str] = None,
@@ -228,7 +265,13 @@ def create_app(storage: StorageBackend) -> FastAPI:
         try:
             deleted = await storage.delete_model(name, data_source=data_source)
         except AmbiguousModelError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{exc} Pass data_source=... as a query parameter, "
+                    f"or PUT /datasources/priority to disambiguate."
+                ),
+            )
         if not deleted:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
         return {"status": "deleted", "name": name}
@@ -237,14 +280,24 @@ def create_app(storage: StorageBackend) -> FastAPI:
     async def get_datasource_priority() -> Dict[str, List[str]]:
         return {"priority": await storage.get_datasource_priority()}
 
-    @app.put("/datasources/priority")
-    async def put_datasource_priority(body: Dict[str, List[str]]) -> Dict[str, Any]:
-        priority = body.get("priority", [])
+    @app.put(
+        "/datasources/priority",
+        responses={
+            400: {
+                "description": (
+                    "Priority list contains a name that is not a "
+                    "registered DatasourceConfig."
+                )
+            }
+        },
+    )
+    async def put_datasource_priority(body: DatasourcePriorityRequest) -> Dict[str, Any]:
+        priority = list(body.priority)
         try:
-            await storage.set_datasource_priority(list(priority))
+            await storage.set_datasource_priority(priority)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return {"status": "ok", "priority": list(priority)}
+        return {"status": "ok", "priority": priority}
 
     @app.get("/datasources")
     async def list_datasources() -> List[Dict[str, Any]]:

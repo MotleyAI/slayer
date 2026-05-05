@@ -40,6 +40,19 @@ _TRUNCATION_MARKER = " ... [truncated]"
 _MAX_REACHABLE_FIELDS_DEPTH = 20
 
 
+def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
+    """Render an ``AmbiguousModelError`` for the MCP surface.
+
+    The exception itself is intentionally surface-neutral; we append an
+    MCP-specific remediation pointing at the ``data_source`` tool argument
+    and the ``set_datasource_priority`` MCP tool.
+    """
+    return (
+        f"{exc} Pass data_source=... to this tool, or use the "
+        f"set_datasource_priority tool to set a priority."
+    )
+
+
 def _test_connection(ds: DatasourceConfig) -> tuple[bool, str]:
     """Test a datasource connection. Returns (success, message)."""
     try:
@@ -1144,7 +1157,7 @@ def create_mcp_server(storage: StorageBackend):
         try:
             model = await storage.get_model(model_name, data_source=data_source)
         except AmbiguousModelError as exc:
-            return f"{exc}"
+            return _ambiguous_with_mcp_hint(exc)
         if model is None:
             identities = await storage._list_all_model_identities()
             available = []
@@ -1785,7 +1798,7 @@ def create_mcp_server(storage: StorageBackend):
         try:
             model = await storage.get_model(model_name, data_source=data_source)
         except AmbiguousModelError as exc:
-            return str(exc)
+            return _ambiguous_with_mcp_hint(exc)
         if model is None:
             return f"Model '{model_name}' not found."
 
@@ -2226,7 +2239,7 @@ def create_mcp_server(storage: StorageBackend):
         try:
             deleted = await storage.delete_model(name, data_source=data_source)
         except AmbiguousModelError as exc:
-            return str(exc)
+            return _ambiguous_with_mcp_hint(exc)
         if deleted:
             return f"Model '{name}' deleted."
         return f"Model '{name}' not found."

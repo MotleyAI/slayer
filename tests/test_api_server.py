@@ -373,6 +373,22 @@ class TestOpenAPI400Documentation:
         responses = spec["paths"]["/models/{name}"]["put"]["responses"]
         assert "400" in responses
 
+    def test_get_model_documents_409(self, client: TestClient) -> None:
+        """``GET /models/{name}`` raises 409 on AmbiguousModelError; declare it."""
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models/{name}"]["get"]["responses"]
+        assert "409" in responses
+
+    def test_delete_model_documents_409(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/models/{name}"]["delete"]["responses"]
+        assert "409" in responses
+
+    def test_put_datasource_priority_documents_400(self, client: TestClient) -> None:
+        spec = client.get("/openapi.json").json()
+        responses = spec["paths"]["/datasources/priority"]["put"]["responses"]
+        assert "400" in responses
+
     def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
         self, client: TestClient, storage: YAMLStorage
     ) -> None:
