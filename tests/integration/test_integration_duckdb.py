@@ -8,6 +8,7 @@ pytest.importorskip("duckdb")
 
 import duckdb
 
+from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
@@ -16,9 +17,13 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-@pytest.fixture
-async def duckdb_env(tmp_path):
-    """Set up a full SLayer environment against a temporary DuckDB database."""
+@pytest.fixture(scope="module")
+def _duckdb_env_storage(tmp_path_factory):
+    """Module-scoped: per-module DuckDB file with seeded customers/orders, plus
+    a YAMLStorage with the orders + customers models pre-saved. The per-test
+    ``duckdb_env`` fixture wraps a fresh engine around the returned storage
+    (engines bind to their event loop — see slayer/sql/client.py:144)."""
+    tmp_path = tmp_path_factory.mktemp("duckdb_env")
     db_path = tmp_path / "test.duckdb"
     conn = duckdb.connect(str(db_path))
 
@@ -56,14 +61,13 @@ async def duckdb_env(tmp_path):
     conn.close()
 
     # Set up SLayer storage
-    tmpdir = tempfile.mkdtemp()
-    storage = YAMLStorage(base_dir=tmpdir)
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
 
-    await storage.save_datasource(DatasourceConfig(
+    run_sync(storage.save_datasource(DatasourceConfig(
         name="testduckdb",
         type="duckdb",
         database=str(db_path),
-    ))
+    )))
 
     orders_model = SlayerModel(
         name="orders",
@@ -91,10 +95,18 @@ async def duckdb_env(tmp_path):
 
         ],
     )
-    await storage.save_model(orders_model)
-    await storage.save_model(customers_model)
+    run_sync(storage.save_model(orders_model))
+    run_sync(storage.save_model(customers_model))
 
-    return SlayerQueryEngine(storage=storage)
+    return storage
+
+
+@pytest.fixture
+def duckdb_env(_duckdb_env_storage):
+    """Per-test SlayerQueryEngine wrapping the module-scoped storage. The
+    engine is recreated per-test because its async SQLAlchemy engine binds to
+    the current event loop."""
+    return SlayerQueryEngine(storage=_duckdb_env_storage)
 
 
 @pytest.mark.integration
@@ -294,9 +306,15 @@ class TestDuckDBQueries:
         assert float(result.data[0]["orders.next"]) == pytest.approx(375.0)  # Mar
 
 
-@pytest.fixture
-def duckdb_ingest_env(tmp_path):
-    """Set up tables with FK relationships and ingest via rollup."""
+@pytest.fixture(scope="module")
+def duckdb_ingest_env(tmp_path_factory):
+    """Set up tables with FK relationships and ingest via rollup.
+
+    Module-scoped: tests destructure ``(models, ds)`` and build their own
+    ephemeral storage from the returned models — they never mutate the fixture
+    state. Saves the ~0.55s/call SQLAlchemy reflection across 6 tests.
+    """
+    tmp_path = tmp_path_factory.mktemp("duckdb_ingest")
     db_path = tmp_path / "ingest.duckdb"
     conn = duckdb.connect(str(db_path))
 
@@ -562,3 +580,79 @@ class TestDuckDBStatAggregations:
         assert float(
             result.data[0]["orders.total_covar_pop_other_customer_id"]
         ) == pytest.approx(expected, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1333: cross-model derived ``Column.sql`` chaining (DuckDB)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def duckdb_derived_chain_env(tmp_path):
+    db_path = tmp_path / "derived_chain.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("CREATE TABLE b_tbl (id INTEGER PRIMARY KEY, foo_raw DOUBLE)")
+    conn.execute(
+        "CREATE TABLE a_tbl (id INTEGER PRIMARY KEY, bar DOUBLE, b_id INTEGER, raw_a DOUBLE)"
+    )
+    conn.execute("INSERT INTO b_tbl VALUES (1, 200.0), (2, 50.0)")
+    conn.execute("INSERT INTO a_tbl VALUES (10, 4.0, 1, 100.0), (11, 1.0, 2, 5.0)")
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
+    )
+    from slayer.core.models import ModelJoin
+    await storage.save_model(
+        SlayerModel(
+            name="b_tbl",
+            data_source="ds",
+            sql_table="b_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
+                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+            ],
+        )
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="a_tbl",
+            data_source="ds",
+            sql_table="a_tbl",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.NUMBER),
+                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+                Column(
+                    name="ratio_using_derived",
+                    sql="a_tbl.bar / b_tbl.foo_normalized",
+                    type=DataType.NUMBER,
+                ),
+            ],
+            joins=[ModelJoin(target_model="b_tbl", join_pairs=[["b_id", "id"]])],
+        )
+    )
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.mark.integration
+async def test_integration_duckdb_cross_model_derived_columnsql(
+    duckdb_derived_chain_env: SlayerQueryEngine,
+) -> None:
+    response = await duckdb_derived_chain_env.execute(
+        SlayerQuery(
+            source_model="a_tbl",
+            dimensions=[
+                ColumnRef(name="id"),
+                ColumnRef(name="ratio_using_derived"),
+            ],
+            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+        )
+    )
+    assert response.row_count == 2
+    assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+    assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)

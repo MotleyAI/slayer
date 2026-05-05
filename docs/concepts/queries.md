@@ -404,5 +404,7 @@ Dimensions from joined models can be referenced with dotted paths. SLayer auto-r
 
 This walks `orders → customers → regions` via the join graph and resolves `name` from the `regions` model. Works with both ingested rollup models and explicit joins.
 
+A dotted reference may target a *derived* column on the joined model — i.e., a column whose own `sql` is an expression rather than a base table column. The engine recursively inlines the derivation at query time, and the same chaining works whether the reference appears in a query's `dimensions` / `measures` / `filters` or inside another model's `Column.sql`. See [Models → Derived Columns Referencing Other Derived Columns](models.md#derived-columns-referencing-other-derived-columns).
+
 SQL dimensions can be mixed with regular dimensions. The expression goes directly into SELECT and GROUP BY.
 

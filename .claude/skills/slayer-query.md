@@ -108,6 +108,8 @@ Reference measures from joined models with dotted syntax + colon aggregation:
 ]
 ```
 
+A dotted reference may target a *derived* column on the joined model (a column whose own `sql` is itself an expression). The engine recursively inlines the chain at query time — `"B.foo_normalized:sum"` where `B.foo_normalized.sql = "foo_raw / 100.0"` emits `SUM(B.foo_raw / 100.0)`. The same chaining works inside `Column.sql`, `filters`, and `dimensions`.
+
 ## ModelExtension
 
 Extend a model inline with extra columns, named-formula measures, joins, or filters. The stored model is not modified:

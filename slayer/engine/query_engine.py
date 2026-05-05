@@ -905,12 +905,28 @@ class SlayerQueryEngine:
         query: SlayerQuery,
         model: SlayerModel,
         named_queries: dict[str, SlayerQuery] = None,
+        dialect: Optional[str] = None,
     ) -> EnrichedQuery:
         """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
         Delegates to enrich_query() in enrichment.py, passing engine callbacks
         for model resolution (joins, cross-model measures, join targets).
+
+        ``dialect`` controls how Column.sql is parsed during derived-reference
+        expansion. Falls back to the model's resolved datasource type, then to
+        ``"postgres"`` if neither is available (e.g., in unit tests with a
+        fake data_source name).
         """
+
+        if dialect is None:
+            dialect = "postgres"
+            try:
+                if model.data_source and self.storage:
+                    ds = await self.storage.get_datasource(model.data_source)
+                    if ds is not None:
+                        dialect = self._dialect_for_type(ds.type)
+            except Exception:  # noqa: BLE001 — diagnostics only; never block enrichment
+                pass
 
         async def _resolve_join_target(target_model_name, named_queries):
             nq = named_queries or {}
@@ -948,13 +964,28 @@ class SlayerQueryEngine:
                 return f"({target.sql})", target
             return None
 
+        async def _resolve_model_for_expansion(model_name, named_queries):
+            """Adapter for column_expansion: returns ``SlayerModel`` or None.
+            Catches lookup errors so unknown alias paths don't blow up the
+            whole enrichment — the expander treats them as opaque.
+            """
+            try:
+                return await self._resolve_model(
+                    model_name=model_name,
+                    named_queries=named_queries or {},
+                )
+            except Exception:  # noqa: BLE001 — opaque alias is expected for CTE/sub-query refs
+                return None
+
         enriched = await enrich_query(
             query=query,
             model=model,
             named_queries=named_queries,
-            resolve_dimension_via_joins=self._resolve_dimension_via_joins,
+            resolve_dimension_via_joins=self._resolve_dimension_with_terminal,
             resolve_cross_model_measure=self._resolve_cross_model_measure,
             resolve_join_target=_resolve_join_target,
+            resolve_model=_resolve_model_for_expansion,
+            dialect=dialect,
         )
 
         # Post-process: build re-rooted enriched queries for cross-model measures
@@ -1163,26 +1194,36 @@ class SlayerQueryEngine:
         For "customers.regions.name", walks: model → customers → regions,
         then looks up "name" on the regions model.
         """
+        result = await self._resolve_dimension_with_terminal(
+            model=model, parts=parts, named_queries=named_queries,
+        )
+        return result[0] if result is not None else None
+
+    async def _resolve_dimension_with_terminal(
+        self,
+        model: SlayerModel,
+        parts: list[str],
+        named_queries: dict = None,
+    ) -> "tuple[Column, SlayerModel] | None":
+        """Like ``_resolve_dimension_via_joins`` but also returns the
+        terminal model so callers (column-SQL expansion) can recurse into
+        the resolved column's own ``sql``.
+        """
         current_model = model
         visited = {model.name}
-        # Walk intermediate models (all parts except the last, which is the column name)
         for hop_name in parts[:-1]:
             if hop_name in visited:
                 raise ValueError(
                     f"Circular join detected while resolving '{'.'.join(parts)}': "
                     f"'{hop_name}' already visited ({' → '.join(visited)} → {hop_name})"
                 )
-            # Find join to this hop
             join = None
             for j in current_model.joins:
                 if j.target_model == hop_name:
                     join = j
                     break
             if join is None:
-                return None  # No join found for this hop
-            # Load the target model — prefer the *current* model's
-            # data_source so multi-hop join resolution stays inside one
-            # logical database when names collide across datasources.
+                return None
             target = await self._resolve_model(
                 model_name=hop_name,
                 named_queries=named_queries or {},
@@ -1191,8 +1232,10 @@ class SlayerQueryEngine:
             visited.add(hop_name)
             current_model = target
 
-        # Look up the final column on the terminal model
-        return current_model.get_column(parts[-1])
+        col = current_model.get_column(parts[-1])
+        if col is None:
+            return None
+        return col, current_model
 
     async def _auto_move_fields_to_dimensions(
         self,
@@ -1372,6 +1415,40 @@ class SlayerQueryEngine:
             aggregation=agg,
         )
 
+        # Expand derived references inside the target column's sql so that
+        # cross-model measures over chained derivations work. measure_def.sql
+        # is None for ``*:count``; nothing to expand there.
+        from slayer.engine.column_expansion import expand_derived_refs
+
+        expanded_measure_sql = measure_def.sql
+        if measure_def.sql:
+            try:
+                ds = await self.storage.get_datasource(target_model.data_source) \
+                    if self.storage and target_model.data_source else None
+            except Exception:  # noqa: BLE001
+                ds = None
+            cross_dialect = self._dialect_for_type(ds.type) if ds else "postgres"
+
+            async def _resolve_for_cross(model_name, named_queries):
+                try:
+                    return await self._resolve_model(
+                        model_name=model_name,
+                        named_queries=named_queries or {},
+                    )
+                except Exception:  # noqa: BLE001
+                    return None
+
+            expanded = await expand_derived_refs(
+                sql=measure_def.sql,
+                model=target_model,
+                alias_path=target_model_name,
+                resolve_model=_resolve_for_cross,
+                named_queries=named_queries or {},
+                dialect=cross_dialect,
+            )
+            if expanded is not None:
+                expanded_measure_sql = expanded
+
         return CrossModelMeasure(
             name=field_name,
             alias=alias,
@@ -1380,7 +1457,7 @@ class SlayerQueryEngine:
             target_model_sql=target_model.sql,
             measure=EnrichedMeasure(
                 name=canonical,
-                sql=measure_def.sql,
+                sql=expanded_measure_sql,
                 aggregation=agg,
                 alias=f"{target_model_name}.{canonical}",
                 model_name=target_model_name,
