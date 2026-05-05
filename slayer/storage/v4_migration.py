@@ -133,6 +133,18 @@ def migrate_yaml_layout(base_dir: str) -> None:
         target_dir = os.path.join(models_dir, ds)
         os.makedirs(target_dir, exist_ok=True)
         target_path = os.path.join(target_dir, filename)
+        # Refuse to silently clobber an existing v4 file at the target
+        # ``(data_source, name)`` key. Surfaces partial / interrupted
+        # migrations and manual mismatches with an actionable message,
+        # leaving the flat source file in place so the user can resolve
+        # by hand.
+        if os.path.exists(target_path):
+            raise ValueError(
+                f"Cannot migrate '{path}' to v4 layout: target "
+                f"'{target_path}' already exists. Resolve the duplicate "
+                f"manually (delete one of the files, or merge their "
+                f"contents) before reopening storage."
+            )
         # Re-dump rather than rename so the data_source field is persisted
         # for any orphans we just auto-filled.
         with open(target_path, "w") as f:

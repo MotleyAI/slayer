@@ -104,7 +104,7 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     base = str(tmp_path)
     legacy_models_dir = os.path.join(base, "models")
     os.makedirs(legacy_models_dir, exist_ok=True)
-    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:
+    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
         yaml.dump({
             "version": 3,
             "name": "orders",
@@ -132,12 +132,12 @@ async def test_yaml_orphan_with_single_datasource_auto_assigned(tmp_path) -> Non
     # Pre-create a single datasource the migration can resolve to.
     ds_dir = os.path.join(base, "datasources")
     os.makedirs(ds_dir, exist_ok=True)
-    with open(os.path.join(ds_dir, "only_ds.yaml"), "w") as f:
+    with open(os.path.join(ds_dir, "only_ds.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
         yaml.dump({"name": "only_ds", "type": "postgres"}, f)
 
     legacy_models_dir = os.path.join(base, "models")
     os.makedirs(legacy_models_dir, exist_ok=True)
-    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:
+    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
         yaml.dump({
             "version": 3,
             "name": "orders",
@@ -152,7 +152,7 @@ async def test_yaml_orphan_with_single_datasource_auto_assigned(tmp_path) -> Non
     assert loaded.data_source == "only_ds"
 
 
-async def test_yaml_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:
+async def test_yaml_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling test_yaml_* fixtures
     """≥2 datasources ⇒ the migration can't pick one, so it raises and refuses
     to open the storage. Error message must name the orphan files so the user
     can fix them by hand."""
@@ -160,28 +160,70 @@ async def test_yaml_orphan_with_multiple_datasources_hard_fails(tmp_path) -> Non
     ds_dir = os.path.join(base, "datasources")
     os.makedirs(ds_dir, exist_ok=True)
     for n in ("a", "b"):
-        with open(os.path.join(ds_dir, f"{n}.yaml"), "w") as f:
+        with open(os.path.join(ds_dir, f"{n}.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump({"name": n, "type": "postgres"}, f)
 
     legacy_models_dir = os.path.join(base, "models")
     os.makedirs(legacy_models_dir, exist_ok=True)
-    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:
+    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
         yaml.dump({"version": 3, "name": "orders", "sql_table": "orders"}, f)
 
     with pytest.raises(ValueError, match=r"orders.yaml|data_source"):
         YAMLStorage(base_dir=base)
 
 
-async def test_yaml_orphan_with_no_datasources_hard_fails(tmp_path) -> None:
+async def test_yaml_orphan_with_no_datasources_hard_fails(tmp_path) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling test_yaml_* fixtures
     """Zero datasources ⇒ no plausible default; same hard fail as ≥2."""
     base = str(tmp_path)
     legacy_models_dir = os.path.join(base, "models")
     os.makedirs(legacy_models_dir, exist_ok=True)
-    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:
+    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
         yaml.dump({"version": 3, "name": "orders", "sql_table": "orders"}, f)
 
     with pytest.raises(ValueError, match=r"orders.yaml|data_source"):
         YAMLStorage(base_dir=base)
+
+
+async def test_yaml_migration_refuses_to_overwrite_existing_namespaced_model(tmp_path) -> None:
+    """If ``models/<data_source>/<name>.yaml`` already exists when the
+    flat→nested migration runs (e.g. partial/manual migration, or a rerun
+    after an interrupted open), the migrator must raise rather than
+    silently overwriting the namespaced file. See PR #92 thread #11.
+    """
+    base = str(tmp_path)
+    legacy_models_dir = os.path.join(base, "models")
+    os.makedirs(legacy_models_dir, exist_ok=True)
+    # Existing v4 file under the namespaced layout — this is what the
+    # migrator must NOT clobber.
+    ds_dir = os.path.join(legacy_models_dir, "warehouse")
+    os.makedirs(ds_dir)
+    with open(os.path.join(ds_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+        yaml.dump({
+            "version": 4,
+            "name": "orders",
+            "sql_table": "orders_v4",
+            "data_source": "warehouse",
+            "columns": [{"name": "id", "type": "number", "primary_key": True}],
+        }, f)
+    # Conflicting flat file with the same (data_source, name) key.
+    with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+        yaml.dump({
+            "version": 3,
+            "name": "orders",
+            "sql_table": "orders_v3_flat",
+            "data_source": "warehouse",
+        }, f)
+
+    with pytest.raises(ValueError, match=r"orders|exist"):
+        YAMLStorage(base_dir=base)
+
+    # Source flat file is still present (migrator refused without
+    # destroying input) so the user can resolve manually.
+    assert os.path.exists(os.path.join(legacy_models_dir, "orders.yaml"))
+    # The pre-existing v4 file is unchanged.
+    with open(os.path.join(ds_dir, "orders.yaml")) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+        on_disk = yaml.safe_load(f)
+    assert on_disk["sql_table"] == "orders_v4"
 
 
 async def test_yaml_already_migrated_layout_is_no_op(tmp_path) -> None:
@@ -266,7 +308,7 @@ async def test_sqlite_legacy_schema_orphan_with_single_datasource_auto_assigned(
     assert loaded.data_source == "only_ds"
 
 
-async def test_sqlite_legacy_schema_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:
+async def test_sqlite_legacy_schema_orphan_with_multiple_datasources_hard_fails(tmp_path) -> None:  # NOSONAR(S7503) — async kept for consistency with sibling test_sqlite_* fixtures
     db_path = str(tmp_path / "slayer.db")
     _create_legacy_sqlite_models_table(db_path)
     blob_orphan = json.dumps({"version": 3, "name": "orders", "sql_table": "orders"})

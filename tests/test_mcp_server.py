@@ -2338,6 +2338,95 @@ class TestEditModel:
         assert model.measures[0].meta == {"kb_id": 9}
 
 
+class TestEditModelDatasourceMoveSafety:
+    """Moving a model to a different ``data_source`` must be atomic and
+    collision-safe (PR #92 thread #8). Failure modes to pin:
+    1. If a model with the same name already exists at the target
+       ``(new_data_source, name)`` key, the move must refuse and the
+       source model must remain intact.
+    2. If validation/save fails after the data_source is updated, the
+       source model must remain intact (no delete-before-save).
+    """
+
+    async def test_move_collision_with_target_refuses_and_preserves_source(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        for n in ("db_a", "db_b"):
+            await storage.save_datasource(DatasourceConfig(
+                name=n, type="sqlite", database=":memory:"
+            ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders_a", data_source="db_a",
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            description="source",
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders_b", data_source="db_b",
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            description="target",
+        ))
+
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "data_source": "db_a",
+            "new_data_source": "db_b",
+        })
+        # Refusal mentions the collision so the agent can fix it.
+        assert "exist" in result.lower() or "collid" in result.lower() or "already" in result.lower(), (
+            f"expected collision rejection, got: {result}"
+        )
+
+        # Both models still in their original places, untouched.
+        src = await storage.get_model("orders", data_source="db_a")
+        tgt = await storage.get_model("orders", data_source="db_b")
+        assert src is not None and src.description == "source"
+        assert tgt is not None and tgt.description == "target"
+
+    async def test_move_save_failure_preserves_source(
+        self, mcp_server, storage: YAMLStorage, monkeypatch
+    ) -> None:
+        from slayer.core.models import DatasourceConfig
+        for n in ("db_a", "db_b"):
+            await storage.save_datasource(DatasourceConfig(
+                name=n, type="sqlite", database=":memory:"
+            ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders_a", data_source="db_a",
+            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            description="source",
+        ))
+
+        # Force the save under the new datasource to fail. The implementation
+        # must not have deleted the source row by then.
+        original_save = storage.save_model
+
+        async def _failing_save(model):
+            if model.data_source == "db_b":
+                raise RuntimeError("simulated storage failure on new key")
+            return await original_save(model)
+
+        monkeypatch.setattr(storage, "save_model", _failing_save)
+
+        result = await _call(mcp_server, name="edit_model", arguments={
+            "model_name": "orders",
+            "data_source": "db_a",
+            "new_data_source": "db_b",
+        })
+        # Some kind of error surfaces (the simulated failure).
+        assert (
+            "fail" in result.lower()
+            or "error" in result.lower()
+            or "simulated" in result.lower()
+        ), f"expected save-failure to surface, got: {result}"
+
+        # The source model is still here.
+        src = await storage.get_model("orders", data_source="db_a")
+        assert src is not None
+        assert src.data_source == "db_a"
+        assert src.description == "source"
+
+
 class TestEditModelColumnsRejected:
     """edit_model on a query-backed model must explicitly reject ``columns``
     (which are engine-managed cache) instead of silently dropping them.

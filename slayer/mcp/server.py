@@ -1797,9 +1797,25 @@ def create_mcp_server(storage: StorageBackend):
             model.description = description
             changes.append("updated description")
         if new_data_source is not None and new_data_source != model.data_source:
-            # Move the model to a different datasource: delete the old
-            # storage row first so the rename happens cleanly.
-            await storage.delete_model(model.name, data_source=original_data_source)
+            # v4: moving a model between datasources is delete-old +
+            # save-new. To avoid losing the source row when validation/save
+            # fails, we (a) refuse if a sibling already lives at the target
+            # ``(new_data_source, model.name)`` key, and (b) defer the
+            # delete-from-old until *after* the new save succeeds (handled
+            # below in Phase 5). Here we only mutate the in-memory model.
+            try:
+                existing_target = await storage.get_model(
+                    model.name, data_source=new_data_source
+                )
+            except AmbiguousModelError:
+                existing_target = None  # Strict lookup; ambiguity is for bare names only.
+            if existing_target is not None:
+                return (
+                    f"Model '{model.name}' already exists in datasource "
+                    f"'{new_data_source}'. Pick a different name, delete "
+                    f"the existing target first, or move to a different "
+                    f"datasource."
+                )
             model.data_source = new_data_source
             changes.append(
                 f"moved data_source from '{original_data_source}' to '{new_data_source}'"
@@ -1974,7 +1990,26 @@ def create_mcp_server(storage: StorageBackend):
             except Exception as exc:
                 return f"Validation error: {exc}"
         else:
-            await storage.save_model(validated)
+            try:
+                await storage.save_model(validated)
+            except Exception as exc:
+                # Source row is still intact because we deferred the
+                # delete. Surface the failure as an error string instead
+                # of letting MCP wrap it as a ToolError.
+                return f"Storage error: {exc}"
+
+        # v4 atomic move: only after the new save has succeeded do we
+        # remove the source row. If anything above raised we'd have
+        # returned an error and the source key is still intact. We
+        # already verified up-front that nothing lives at the new key,
+        # so this delete won't take a sibling with it.
+        if (
+            new_data_source is not None
+            and new_data_source != original_data_source
+        ):
+            await storage.delete_model(
+                validated.name, data_source=original_data_source
+            )
         return json.dumps({
             "success": True,
             "model_name": model_name,
