@@ -44,6 +44,17 @@ _join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
 )
 
 
+# Per-task "forbidden sibling stage names" — names that exist in the enclosing
+# source_queries list but are NOT visible from the stage currently being
+# resolved (i.e. forward references and self references). Used by
+# _resolve_model_inner to differentiate forward/self refs from genuine
+# misspellings, so the user gets a clear error instead of "Model 'X' not found".
+# Each entry maps a forbidden target name to the stage that tried to reach it.
+_forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
+    "_forbidden_sibling_refs", default=None
+)
+
+
 _EXPLAIN_PREFIX = {
     "postgres": "EXPLAIN ANALYZE",
     "redshift": "EXPLAIN",
@@ -220,6 +231,31 @@ class SlayerQueryEngine:
             s = set()
             _join_target_resolving_var.set(s)
         return s
+
+    @staticmethod
+    def _scope_named_queries_to_prior(
+        named_queries: Dict[str, "SlayerQuery"], stage_name: Optional[str]
+    ) -> Dict[str, "SlayerQuery"]:
+        """Slice an insertion-ordered named-queries dict to entries that
+        come strictly before ``stage_name``.
+
+        When a non-final stage of a ``source_queries`` list is being
+        resolved, only its *prior* siblings are visible to it — this rule
+        keeps the DAG acyclic (forward references and self references are
+        rejected with a clear error in ``_resolve_model_inner``).
+
+        Returns ``named_queries`` unchanged when ``stage_name`` is None or
+        absent from the dict (e.g. the final stage, or an externally-named
+        stored model).
+        """
+        if not stage_name or stage_name not in named_queries:
+            return named_queries
+        out: Dict[str, "SlayerQuery"] = {}
+        for k, v in named_queries.items():
+            if k == stage_name:
+                return out
+            out[k] = v
+        return out
 
     async def execute(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
@@ -770,6 +806,22 @@ class SlayerQueryEngine:
                     f"Model '{model_name}' not found in data_source "
                     f"'{prefer_data_source}'."
                 )
+            forbidden = _forbidden_sibling_refs_var.get()
+            if forbidden and model_name in forbidden:
+                offender = forbidden[model_name]
+                if offender == model_name:
+                    raise ValueError(
+                        f"Stage '{offender}' cannot reference itself via "
+                        f"'joins.target_model' (or as 'source_model'); a "
+                        f"stage may only resolve to prior named stages in "
+                        f"the same source_queries list."
+                    )
+                raise ValueError(
+                    f"Stage '{offender}' cannot reference stage "
+                    f"'{model_name}': forward references are not allowed. "
+                    f"A stage may only resolve to prior named stages in "
+                    f"the same source_queries list."
+                )
             raise ValueError(f"Model '{model_name}' not found")
 
         # If model has source_queries, re-enrich from stored queries.
@@ -954,6 +1006,29 @@ class SlayerQueryEngine:
                     )
                 else:
                     target = await self.storage.get_model(target_model_name)
+                if target is None:
+                    # When the lookup misses, distinguish a forward / self
+                    # reference (sibling stage that's not in this stage's
+                    # scope) from a genuinely-missing storage model so the
+                    # caller gets a clear error instead of a generic "not
+                    # found" — same logic as ``_resolve_model_inner``
+                    # (DEV-1340).
+                    forbidden = _forbidden_sibling_refs_var.get()
+                    if forbidden and target_model_name in forbidden:
+                        offender = forbidden[target_model_name]
+                        if offender == target_model_name:
+                            raise ValueError(
+                                f"Stage '{offender}' cannot reference itself "
+                                f"via 'joins.target_model'; a stage may only "
+                                f"resolve to prior named stages in the same "
+                                f"source_queries list."
+                            )
+                        raise ValueError(
+                            f"Stage '{offender}' cannot reference stage "
+                            f"'{target_model_name}': forward references are "
+                            f"not allowed. A stage may only resolve to prior "
+                            f"named stages in the same source_queries list."
+                        )
                 if target and target.source_queries:
                     target = await self._render_query_backed_join_target(
                         target=target,
@@ -1088,20 +1163,59 @@ class SlayerQueryEngine:
         if effective != (inner_query.variables or {}):
             inner_query = inner_query.model_copy(update={"variables": effective})
 
-        # Resolve the inner model (handles str, SlayerModel, ModelExtension).
-        # Pass ``effective`` as the next layer's outer_vars so nested
-        # query-backed models inherit this stage's resolved context.
-        inner_model = await self._resolve_query_model(
-            query_model=inner_query.source_model,
-            named_queries=named_queries,
-            _resolving=_resolving,
-            outer_vars=effective,
-            runtime_kwarg=runtime_kwarg,
-            dry_run_placeholders=dry_run_placeholders,
+        # Scope ``named_queries`` to the prior siblings of this stage. A
+        # non-final stage may only resolve names that come BEFORE it in the
+        # source_queries list; forward references and self references fall
+        # out of scope here and surface a clear error from
+        # ``_resolve_model_inner``. (For top-level stages — final stage,
+        # un-named query-backed wrapper, or stored-model lookup — the scope
+        # is unchanged.)
+        scoped = self._scope_named_queries_to_prior(
+            named_queries, inner_query.name
         )
+        forbidden_now: Dict[str, str] = {}
+        if scoped is not named_queries and inner_query.name:
+            for k in named_queries:
+                if k not in scoped:
+                    forbidden_now[k] = inner_query.name
 
-        # Enrich the inner query
-        enriched = await self._enrich(query=inner_query, model=inner_model)
+        # Stack the new forbidden refs on top of any from an enclosing
+        # stage; restore on the way out so concurrent / sibling resolutions
+        # don't see this frame's bans.
+        prev_forbidden = _forbidden_sibling_refs_var.get()
+        if forbidden_now:
+            merged_forbidden = dict(prev_forbidden) if prev_forbidden else {}
+            # Outer frames win on the same key (a closer ancestor's ban is
+            # the more specific one), but in practice keys don't overlap
+            # because each frame names a distinct stage.
+            for k, v in forbidden_now.items():
+                merged_forbidden.setdefault(k, v)
+            token = _forbidden_sibling_refs_var.set(merged_forbidden)
+        else:
+            token = None
+
+        try:
+            # Resolve the inner model (handles str, SlayerModel, ModelExtension).
+            # Pass ``effective`` as the next layer's outer_vars so nested
+            # query-backed models inherit this stage's resolved context.
+            inner_model = await self._resolve_query_model(
+                query_model=inner_query.source_model,
+                named_queries=scoped,
+                _resolving=_resolving,
+                outer_vars=effective,
+                runtime_kwarg=runtime_kwarg,
+                dry_run_placeholders=dry_run_placeholders,
+            )
+
+            # Enrich the inner query — pass scoped named_queries so any
+            # ``joins.target_model`` referencing a prior named sibling is
+            # resolvable here too (DEV-1340).
+            enriched = await self._enrich(
+                query=inner_query, model=inner_model, named_queries=scoped
+            )
+        finally:
+            if token is not None:
+                _forbidden_sibling_refs_var.reset(token)
 
         # Generate SQL
         datasource = await self._resolve_datasource(model=inner_model)

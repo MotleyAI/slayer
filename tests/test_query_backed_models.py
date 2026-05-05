@@ -1041,6 +1041,215 @@ class TestRunByNamePlanFlags:
             tmp.cleanup()
 
 
+class TestSiblingStageJoins:
+    """Non-final stages in source_queries can join prior named sibling stages.
+
+    Regression coverage for DEV-1340. The final stage already supported
+    ``joins.target_model`` referencing a named sibling (see
+    ``test_model_extension_over_named_query_stage_adds_columns`` and the
+    "Query lists" docs); this class extends that contract to non-final
+    stages, plus pins clear errors for forward and self references.
+    """
+
+    @staticmethod
+    async def _engine() -> tuple:
+        """Storage with orders (id, customer_id, region, amount) +
+        customers (id, name)."""
+        tmp = tempfile.TemporaryDirectory()
+        storage = YAMLStorage(base_dir=tmp.name)
+        await storage.save_datasource(_ds())
+        await storage.save_model(SlayerModel(
+            name="orders",
+            sql_table="orders_t",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="amount", sql="amount", type=DataType.NUMBER),
+            ],
+        ))
+        await storage.save_model(SlayerModel(
+            name="customers",
+            sql_table="customers_t",
+            data_source="ds",
+            columns=[
+                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="name", sql="name", type=DataType.STRING),
+            ],
+        ))
+        return SlayerQueryEngine(storage=storage), tmp
+
+    @staticmethod
+    def _three_stage_dag() -> list:
+        """3-stage DAG used by both the lookup-fix smoke test and the
+        idempotency test. Stage 1 ``kpis`` aggregates orders per customer;
+        stage 2 ``tagged`` (non-final) joins back to customers; stage 3
+        re-aggregates ``tagged``.
+        """
+        return [
+            SlayerQuery(
+                name="kpis",
+                source_model="orders",
+                measures=[{"formula": "amount:sum"}],
+                dimensions=["customer_id"],
+            ),
+            SlayerQuery.model_validate({
+                "name": "tagged",
+                "source_model": {
+                    "source_name": "customers",
+                    "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+                },
+                "dimensions": ["name"],
+                "measures": [{"formula": "kpis.amount_sum:sum"}],
+            }),
+            SlayerQuery.model_validate({
+                "source_model": "tagged",
+                "dimensions": ["name"],
+            }),
+        ]
+
+    async def test_non_final_named_stage_joins_prior_named_sibling(self) -> None:
+        """Stage 2 (named ``tagged``) joins prior named ``kpis``; stage 3 uses ``tagged``."""
+        engine, tmp = await self._engine()
+        try:
+            resp = await engine.execute(self._three_stage_dag(), dry_run=True)
+            assert resp.sql is not None
+            sql_lower = resp.sql.lower()
+            # Both inner stages must show up in the rendered SQL.
+            assert "orders_t" in sql_lower, resp.sql
+            assert "customers_t" in sql_lower, resp.sql
+            assert "amount_sum" in sql_lower, resp.sql
+        finally:
+            tmp.cleanup()
+
+    async def test_final_stage_joins_two_prior_named_siblings(self) -> None:
+        """Issue's "3-stage definition where stage 3 joins stage 1 and stage 2"."""
+        engine, tmp = await self._engine()
+        try:
+            queries = [
+                SlayerQuery(
+                    name="kpis",
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["customer_id"],
+                ),
+                SlayerQuery(
+                    name="counts",
+                    source_model="orders",
+                    measures=[{"formula": "*:count"}],
+                    dimensions=["customer_id"],
+                ),
+                SlayerQuery.model_validate({
+                    "source_model": {
+                        "source_name": "customers",
+                        "joins": [
+                            {"target_model": "kpis",   "join_pairs": [["id", "customer_id"]]},
+                            {"target_model": "counts", "join_pairs": [["id", "customer_id"]]},
+                        ],
+                    },
+                    "dimensions": ["name"],
+                    "measures": [
+                        {"formula": "kpis.amount_sum:sum"},
+                        {"formula": "counts._count:sum"},
+                    ],
+                }),
+            ]
+            resp = await engine.execute(queries, dry_run=True)
+            assert resp.sql is not None
+            sql_lower = resp.sql.lower()
+            assert "amount_sum" in sql_lower, resp.sql
+            assert "_count" in sql_lower, resp.sql
+            assert "customers_t" in sql_lower, resp.sql
+        finally:
+            tmp.cleanup()
+
+    async def test_named_stage_forward_ref_raises_clear_error(self) -> None:
+        """Stage ``a`` references stage ``b`` that comes later — must error
+        with a clear message naming both stages and saying the ref is
+        forward, later, or not prior. Eliminates the generic
+        ``Model 'b' not found`` that today is indistinguishable from a
+        misspelled stored-model reference.
+        """
+        import re
+
+        engine, tmp = await self._engine()
+        try:
+            queries = [
+                SlayerQuery.model_validate({
+                    "name": "a",
+                    "source_model": {
+                        "source_name": "customers",
+                        "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}],
+                    },
+                    "dimensions": ["name"],
+                    "measures": [{"formula": "b._count:sum"}],
+                }),
+                SlayerQuery(
+                    name="b",
+                    source_model="orders",
+                    measures=[{"formula": "*:count"}],
+                    dimensions=["customer_id"],
+                ),
+                SlayerQuery.model_validate({
+                    "source_model": "a",
+                    "dimensions": ["name"],
+                }),
+            ]
+            with pytest.raises(ValueError) as excinfo:
+                await engine.execute(queries, dry_run=True)
+            msg = str(excinfo.value)
+            assert "'a'" in msg and "'b'" in msg, msg
+            assert re.search(r"forward|later|prior", msg, re.IGNORECASE), msg
+        finally:
+            tmp.cleanup()
+
+    async def test_named_stage_self_ref_raises_clear_error(self) -> None:
+        """A stage referencing its own name must raise a clear error."""
+        import re
+
+        engine, tmp = await self._engine()
+        try:
+            queries = [
+                SlayerQuery.model_validate({
+                    "name": "a",
+                    "source_model": {
+                        "source_name": "customers",
+                        "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+                    },
+                    "dimensions": ["name"],
+                }),
+                SlayerQuery.model_validate({
+                    "source_model": "a",
+                    "dimensions": ["name"],
+                }),
+            ]
+            with pytest.raises(ValueError) as excinfo:
+                await engine.execute(queries, dry_run=True)
+            msg = str(excinfo.value)
+            assert "'a'" in msg, msg
+            assert re.search(r"self|itself|prior", msg, re.IGNORECASE), msg
+        finally:
+            tmp.cleanup()
+
+    async def test_non_final_stage_with_sibling_join_renders_stable_sql(self) -> None:
+        """Re-running a non-final stage that joins a prior sibling produces
+        the same SQL twice — pinning the engine's recursion guard so the
+        sibling-aware codepath is idempotent. This is the regression
+        coverage for the ContextVar-based forbidden-refs frame restoring
+        cleanly between calls.
+        """
+        engine, tmp = await self._engine()
+        try:
+            queries = self._three_stage_dag()
+            r1 = await engine.execute(queries, dry_run=True)
+            r2 = await engine.execute(queries, dry_run=True)
+            assert r1.sql is not None
+            assert r1.sql == r2.sql, "SQL must be stable across calls"
+        finally:
+            tmp.cleanup()
+
+
 class TestMultiStageMeasureRename:
     """DEV-1335: when an inner stage names an aggregated measure via
     ``{"formula": "col:agg", "name": "X"}``, the inner stage's emitted column

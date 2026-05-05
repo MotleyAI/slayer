@@ -1434,6 +1434,54 @@ async def test_query_list_with_joins(cross_model_env):
     assert response.data[2]["orders.customer_scores.avg_score_avg_avg"] == global_avg
 
 
+async def test_sibling_stage_joins_dag(cross_model_env):
+    """3-stage DAG: a non-final named stage joins a prior named stage.
+
+    Regression for DEV-1340. ``kpis`` aggregates per customer; ``tagged``
+    is a non-final named stage whose source is ``customers`` extended with
+    a join back to ``kpis`` and pulls the kpis sum in as a join-traversed
+    dimension; the final stage re-aggregates ``tagged`` across the
+    population.
+
+    Pre-fix this raises ``ValueError: Model 'kpis' not found`` at
+    enrichment time because ``_query_as_model`` dropped the named_queries
+    dict when enriching a non-final stage.
+    """
+    from slayer.core.query import ModelExtension
+
+    engine = cross_model_env
+    queries = [
+        SlayerQuery(
+            name="kpis",
+            source_model="orders",
+            dimensions=[ColumnRef(name="customer_id")],
+            measures=[ModelMeasure(formula="total_amount:sum")],
+        ),
+        SlayerQuery(
+            name="tagged",
+            source_model=ModelExtension(
+                source_name="customers",
+                joins=[{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+            ),
+            # ``kpis.total_amount_sum`` is a join-traversed dimension, so
+            # each customer row carries their own kpis sum.
+            dimensions=[ColumnRef(name="name"), ColumnRef(name="kpis.total_amount_sum")],
+        ),
+        SlayerQuery(
+            source_model="tagged",
+            measures=[ModelMeasure(formula="kpis__total_amount_sum:max")],
+        ),
+    ]
+    response = await engine.execute(query=queries)
+
+    # Per-customer totals: Alice (1) = 100+200+25 = 325; Bob (2) = 50+75 = 125;
+    # Charlie (3) = 300. Final stage takes the max of the per-customer totals.
+    assert response.row_count == 1
+    [row] = response.data
+    [val] = [v for k, v in row.items() if "max" in k.lower()]
+    assert val == pytest.approx(325.0), row
+
+
 # ---------------------------------------------------------------------------
 # Expanded dimensions (SQL expressions)
 # ---------------------------------------------------------------------------
@@ -1561,13 +1609,18 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
 
 
 async def test_circular_query_reference_raises(integration_env):
-    """Circular references between named queries should error clearly."""
+    """Mutually-referential named queries should error clearly. The
+    sibling-stage scoping (DEV-1340) rejects ``a → b`` as a forward
+    reference at the first hop, before the cycle could form, so the
+    error names the offending stage and explains the rule rather than
+    surfacing a generic "Circular reference" trace.
+    """
     engine = integration_env
 
     q1 = SlayerQuery(name="a", source_model="b", measures=[ModelMeasure(formula="*:count")])
     q2 = SlayerQuery(name="b", source_model="a", measures=[ModelMeasure(formula="*:count")])
     main = SlayerQuery(source_model="a", measures=[ModelMeasure(formula="*:count")])
-    with pytest.raises(ValueError, match="Circular reference"):
+    with pytest.raises(ValueError, match=r"forward references are not allowed|Circular reference"):
         await engine.execute(query=[q1, q2, main])
 
 
