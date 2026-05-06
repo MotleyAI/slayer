@@ -157,7 +157,7 @@ class TestPostMemories:
         loaded = await seeded.get_memory(1)
         assert loaded.query is not None
 
-    async def test_resolution_error_returns_400(
+    async def test_resolution_error_returns_400(  # NOSONAR(S7503) — keeps a uniform async signature across the class so the seeded async fixture binds the same way for every test
         self, client: TestClient, seeded: YAMLStorage
     ) -> None:
         resp = client.post(
@@ -172,7 +172,7 @@ class TestPostMemories:
         detail = (resp.json().get("detail") or "").lower()
         assert "amount" in detail or "ambiguous" in detail
 
-    async def test_empty_entity_list_returns_400(
+    async def test_empty_entity_list_returns_400(  # NOSONAR(S7503) — keeps a uniform async signature across the class so the seeded async fixture binds the same way for every test
         self, client: TestClient, seeded: YAMLStorage
     ) -> None:
         resp = client.post(
@@ -194,7 +194,7 @@ class TestDeleteMemory:
         assert resp.json()["deleted_id"] == memory.id
         assert await seeded.list_memories() == []
 
-    async def test_delete_missing_returns_404(
+    async def test_delete_missing_returns_404(  # NOSONAR(S7503) — keeps a uniform async signature across the class so the seeded async fixture binds the same way for every test
         self, client: TestClient, seeded: YAMLStorage
     ) -> None:
         resp = client.delete("/memories/999")
@@ -257,7 +257,7 @@ class TestRecallEndpoint:
         body = resp.json()
         assert len(body["learnings"]) == 1
 
-    async def test_recall_resolution_error_returns_400(
+    async def test_recall_resolution_error_returns_400(  # NOSONAR(S7503) — keeps a uniform async signature across the class so the seeded async fixture binds the same way for every test
         self, client: TestClient, seeded: YAMLStorage
     ) -> None:
         resp = client.post(

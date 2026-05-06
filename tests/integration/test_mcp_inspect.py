@@ -351,7 +351,9 @@ class TestInspectModelSectionGatingIntegration:
         # aggregations / joins, so they render nothing); footer should still
         # document what was omitted.
         assert "> Sections shown: columns." in result
-        assert "> Omitted: reachable_fields, samples." in result
+        # ``learnings`` joined the omittable section list when DEV-1357
+        # landed; the footer now lists every section gated out.
+        assert "> Omitted: reachable_fields, samples, learnings." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""

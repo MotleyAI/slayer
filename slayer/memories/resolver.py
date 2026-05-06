@@ -209,7 +209,7 @@ async def _resolve_dotted_against_model(
     return f"{final_model.data_source}.{final_model.name}"
 
 
-async def resolve_entity(
+async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching the spec's resolution-case table; splitting per-case helpers would obscure the shared error-message style and warning aggregation
     raw: str,
     *,
     storage: StorageBackend,
@@ -431,7 +431,7 @@ def _column_ref_path(ref: ColumnRef) -> str:
     return ref.full_name
 
 
-async def extract_entities_from_query(
+async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (source_model → dimensions → time_dimensions → measures → filters); each branch is independently simple and parallels the SlayerQuery shape
     query: SlayerQuery,
     *,
     storage: StorageBackend,
