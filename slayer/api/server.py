@@ -90,7 +90,18 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.post(
         "/query",
-        responses={400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."}},
+        responses={
+            400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."},
+            422: {
+                "description": (
+                    "Schema drift detected on the touched models — query "
+                    "could not run against the live schema. Body shape: "
+                    "``{\"error\": \"schema_drift\", \"models\": [...], "
+                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
+                    "Run validate_models for the same datasource to inspect."
+                ),
+            },
+        },
     )
     async def query(request: QueryRequest) -> QueryResponse:
         try:
@@ -361,22 +372,47 @@ def create_app(storage: StorageBackend) -> FastAPI:
         entries = await engine.validate_models(data_source=request.data_source)
         return [e.model_dump(mode="json") for e in entries]
 
-    @app.post("/ingest")
+    @app.post(
+        "/ingest",
+        responses={
+            404: {"description": "Datasource not found."},
+            422: {
+                "description": (
+                    "Datasource configuration error — connection refused, "
+                    "authentication failed, or schema introspection failed. "
+                    "Original DB error message in ``detail``."
+                ),
+            },
+        },
+    )
     async def ingest(request: IngestRequest) -> Dict[str, Any]:
         ds = await storage.get_datasource(request.datasource)
         if ds is None:
             raise HTTPException(
                 status_code=404, detail=f"Datasource '{request.datasource}' not found"
             )
+        from sqlalchemy.exc import DatabaseError, OperationalError, SQLAlchemyError
         from slayer.engine.ingestion import ingest_datasource_idempotent
 
-        result = await ingest_datasource_idempotent(
-            datasource=ds,
-            storage=storage,
-            include_tables=request.include_tables,
-            exclude_tables=request.exclude_tables,
-            schema=request.schema_name,
-        )
+        try:
+            result = await ingest_datasource_idempotent(
+                datasource=ds,
+                storage=storage,
+                include_tables=request.include_tables,
+                exclude_tables=request.exclude_tables,
+                schema=request.schema_name,
+            )
+        except (OperationalError, DatabaseError, SQLAlchemyError) as exc:
+            logger.exception(
+                "Ingest failed for datasource %r", request.datasource
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Ingest failed for datasource '{request.datasource}': "
+                    f"{exc}"
+                ),
+            )
         return result.model_dump(mode="json")
 
     return app
