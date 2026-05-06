@@ -1528,8 +1528,13 @@ class TestRankFamilyTransforms:
                 ),
             ],
         )
-        with pytest.raises(ValueError, match=r"partition_by.*customer_id"):
+        with pytest.raises(ValueError) as excinfo:
             await _generate(generator, query, orders_model)
+        msg = str(excinfo.value)
+        assert "partition_by" in msg
+        assert "customer_id" in msg
+        # Contract: error lists the available dimensions so the user knows what to pick.
+        assert "status" in msg
 
 
 class TestTransformRequiresTimeDimension:
