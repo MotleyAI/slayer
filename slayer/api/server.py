@@ -11,11 +11,11 @@ from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
     MemoryNotFoundError,
+    SchemaDriftError,
 )
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.service import MemoryService
 from slayer.storage.base import StorageBackend
@@ -68,6 +68,10 @@ class IngestRequest(BaseModel):
     schema_name: Optional[str] = None
 
 
+class ValidateModelsRequest(BaseModel):
+    data_source: Optional[str] = None
+
+
 class DatasourcePriorityRequest(BaseModel):
     """Body for ``PUT /datasources/priority``. A request model — rather
     than a raw ``Dict[str, List[str]]`` — so OpenAPI advertises the exact
@@ -116,7 +120,18 @@ def create_app(storage: StorageBackend) -> FastAPI:
 
     @app.post(
         "/query",
-        responses={400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."}},
+        responses={
+            400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."},
+            422: {
+                "description": (
+                    "Schema drift detected on the touched models — query "
+                    "could not run against the live schema. Body shape: "
+                    "``{\"error\": \"schema_drift\", \"models\": [...], "
+                    "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
+                    "Run validate_models for the same datasource to inspect."
+                ),
+            },
+        },
     )
     async def query(request: QueryRequest) -> QueryResponse:
         try:
@@ -194,6 +209,18 @@ def create_app(storage: StorageBackend) -> FastAPI:
             return response
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except SchemaDriftError as drift:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "schema_drift",
+                    "models": drift.models,
+                    "to_delete": [
+                        e.model_dump(mode="json") for e in drift.to_delete
+                    ],
+                    "original": str(drift.__cause__) if drift.__cause__ else None,
+                },
+            )
 
     @app.get("/models")
     async def list_models(
@@ -367,22 +394,67 @@ def create_app(storage: StorageBackend) -> FastAPI:
             )
         return {"status": "deleted", "name": name}
 
-    @app.post("/ingest")
+    @app.post("/validate-models")
+    async def validate_models_endpoint(
+        request: ValidateModelsRequest,
+    ) -> List[Dict[str, Any]]:
+        """Diff persisted SlayerModels against live DB schemas. Read-only."""
+        entries = await engine.validate_models(data_source=request.data_source)
+        return [e.model_dump(mode="json") for e in entries]
+
+    @app.post(
+        "/ingest",
+        responses={
+            404: {"description": "Datasource not found."},
+            422: {
+                "description": (
+                    "Datasource configuration error — connection refused, "
+                    "authentication failed, or schema introspection failed. "
+                    "Original DB error message in ``detail``."
+                ),
+            },
+        },
+    )
     async def ingest(request: IngestRequest) -> Dict[str, Any]:
         ds = await storage.get_datasource(request.datasource)
         if ds is None:
             raise HTTPException(
                 status_code=404, detail=f"Datasource '{request.datasource}' not found"
             )
-        models = ingest_datasource(
-            datasource=ds,
-            include_tables=request.include_tables,
-            exclude_tables=request.exclude_tables,
-            schema=request.schema_name,
-        )
-        for model in models:
-            await storage.save_model(model)
-        return {"status": "ingested", "models": [m.name for m in models]}
+        from sqlalchemy.exc import SQLAlchemyError
+        from slayer.engine.ingestion import ingest_datasource_idempotent
+
+        # Strip newlines from the user-controlled datasource name before it
+        # reaches the log or the response detail (S5145 — log-injection
+        # surface). The ds value already round-tripped through Pydantic so
+        # this is purely defence-in-depth.
+        safe_ds_name = request.datasource.replace("\r", "").replace("\n", "")
+        try:
+            result = await ingest_datasource_idempotent(
+                datasource=ds,
+                storage=storage,
+                include_tables=request.include_tables,
+                exclude_tables=request.exclude_tables,
+                schema=request.schema_name,
+            )
+        except SQLAlchemyError as exc:
+            # OperationalError / DatabaseError both derive from SQLAlchemyError
+            # (Sonar S5713 — catching them separately is redundant).
+            logger.exception("Ingest failed for datasource %r", safe_ds_name)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Ingest failed for datasource '{safe_ds_name}': {exc}"
+                ),
+            )
+        if result.errors:
+            # Partial failure — at least one model failed to persist.
+            # Mirror the CLI's exit-1 behaviour by surfacing 422 with the
+            # full IdempotentIngestResult body (additions/to_delete/errors).
+            raise HTTPException(
+                status_code=422, detail=result.model_dump(mode="json")
+            )
+        return result.model_dump(mode="json")
 
     # ---------- DEV-1357 v2: Memory endpoints ------------------------------
 

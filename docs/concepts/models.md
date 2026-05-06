@@ -504,3 +504,7 @@ Query results use `model_name.column_name` format for column keys. Colon syntax 
 {"orders.status": "completed", "orders._count": 42, "orders.revenue_sum": 1500}
 {"orders.customers.regions.name": "US", "orders._count": 3}
 ```
+
+## Keeping models in sync with the live schema
+
+When the live database schema changes (a column drops, a type bucket flips, a table goes away), persisted models stop being valid. SLayer surfaces this as a first-class concept — `slayer validate-models` returns a structured diff, `slayer ingest` is idempotent (additive only), and query-time DBAPI errors get attributed to the right model with a `SchemaDriftError`. See [Schema Drift](schema-drift.md) for the full diff / cascade contract and the `--force-clean` apply path.
