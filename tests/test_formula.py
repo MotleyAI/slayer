@@ -387,6 +387,41 @@ class TestExtractFilterTransforms:
         assert len(transforms) == 1
         assert "price:weighted_avg(weight=quantity)" in transforms[0][1]
 
+    def test_rank_family_kwargs_preserved(self) -> None:
+        """``dense_rank(revenue:sum, partition_by=region) <= 5`` round-trips
+        through filter extraction without losing partition_by — re-parsing the
+        extracted formula yields a TransformField with the original kwargs.
+
+        Regression coverage for DEV-1353: a silent drop here would rank globally
+        instead of within the partition.
+        """
+        rewritten, transforms = extract_filter_transforms(
+            "dense_rank(revenue:sum, partition_by=region) <= 5"
+        )
+        assert len(transforms) == 1
+        _name, formula = transforms[0]
+        assert "partition_by=region" in formula or "partition_by = region" in formula
+
+        reparsed = parse_formula(formula)
+        assert isinstance(reparsed, TransformField)
+        assert reparsed.transform == "dense_rank"
+        assert reparsed.kwargs == {"partition_by": ["region"]}
+
+    def test_ntile_kwargs_preserved(self) -> None:
+        """ntile(x, n=4, partition_by=cohort) preserves both kwargs through the
+        filter-extraction round-trip. n is required, so a silent drop would
+        cause the extracted formula to fail re-parsing.
+        """
+        rewritten, transforms = extract_filter_transforms(
+            "ntile(revenue:sum, n=4, partition_by=cohort) <= 1"
+        )
+        assert len(transforms) == 1
+        _name, formula = transforms[0]
+        reparsed = parse_formula(formula)
+        assert isinstance(reparsed, TransformField)
+        assert reparsed.transform == "ntile"
+        assert reparsed.kwargs == {"n": 4, "partition_by": ["cohort"]}
+
     def test_mixed_args_and_kwargs(self) -> None:
         """Aggregation with both positional and keyword args preserved."""
         rewritten, transforms = extract_filter_transforms(

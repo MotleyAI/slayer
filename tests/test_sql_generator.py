@@ -1353,9 +1353,10 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "RANK()" in sql
-        assert "PARTITION BY" in sql
-        assert "orders.status" in sql
+        assert (
+            'RANK() OVER (PARTITION BY "orders.status" ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_rank_with_partition_by_list(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1370,10 +1371,11 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "RANK()" in sql
-        assert "PARTITION BY" in sql
-        assert "orders.status" in sql
-        assert "orders.customer_id" in sql
+        assert (
+            'RANK() OVER (PARTITION BY "orders.status", "orders.customer_id" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1385,9 +1387,10 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "PERCENT_RANK()" in sql
-        assert "OVER" in sql
-        assert "DESC" in sql
+        assert (
+            'PERCENT_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_percent_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1401,9 +1404,11 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "PERCENT_RANK()" in sql
-        assert "PARTITION BY" in sql
-        assert "orders.status" in sql
+        assert (
+            'PERCENT_RANK() OVER (PARTITION BY "orders.status" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_dense_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1415,8 +1420,10 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "DENSE_RANK()" in sql
-        assert "DESC" in sql
+        assert (
+            'DENSE_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_dense_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1430,9 +1437,11 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "DENSE_RANK()" in sql
-        assert "PARTITION BY" in sql
-        assert "orders.status" in sql
+        assert (
+            'DENSE_RANK() OVER (PARTITION BY "orders.status" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_ntile_n_4(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1444,8 +1453,10 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "NTILE(4)" in sql
-        assert "DESC" in sql
+        assert (
+            'NTILE(4) OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_ntile_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -1460,16 +1471,21 @@ class TestRankFamilyTransforms:
             ],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "NTILE(4)" in sql
-        assert "PARTITION BY" in sql
-        assert "orders.status" in sql
+        assert (
+            'NTILE(4) OVER (PARTITION BY "orders.status" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_dense_rank_in_filter_top_5_distinct(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
         """``dense_rank(...) <= 5`` is auto-extracted as a hidden field and post-filtered.
 
-        Mirrors the existing ``rank(...) <= N`` pattern from DEV-1336.
+        Mirrors the existing ``rank(...) <= N`` pattern from DEV-1336. The window
+        function must materialise inside the inner SELECT (so SQLite doesn't see
+        ``WHERE DENSE_RANK() OVER (...) <= 5``) and the comparison must live in
+        the outer ``_filtered`` wrapper.
         """
         query = SlayerQuery(
             source_model="orders",
@@ -1478,8 +1494,19 @@ class TestRankFamilyTransforms:
             filters=["dense_rank(revenue:sum) <= 5"],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "DENSE_RANK()" in sql
-        assert "<= 5" in sql.replace(" ", "").replace("<=5", "<= 5")  # tolerant whitespace
+        assert "_filtered" in sql, f"expected post-filter wrapper, got:\n{sql}"
+        # Split on the wrapper marker so we can pin DENSE_RANK to the inner SELECT
+        # and the predicate to the outer wrapper, not just "somewhere in the SQL".
+        inner_sql, outer_sql = sql.split("_filtered", 1)
+        assert "DENSE_RANK()" in inner_sql, (
+            f"DENSE_RANK should be materialised in the inner SELECT, got:\n{sql}"
+        )
+        assert "DENSE_RANK()" not in outer_sql, (
+            f"DENSE_RANK should not appear in the outer wrapper, got:\n{sql}"
+        )
+        assert "<= 5" in _norm(outer_sql), (
+            f"<= 5 predicate should live in the outer wrapper, got:\n{sql}"
+        )
 
     async def test_partition_by_must_be_a_query_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
