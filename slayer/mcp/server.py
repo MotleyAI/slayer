@@ -306,7 +306,17 @@ def _render_ingest_result(
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
     if not additions and not result.to_delete and not result.errors:
-        return _empty_ingest_message(schema_name=schema_name, ds=ds)
+        # Two distinct cases produce an empty result:
+        #   1. The schema actually has no tables (the agent should look
+        #      elsewhere — show the "Try schema_name=..." hint).
+        #   2. The schema has tables but every persisted model is sql /
+        #      query-backed (silently skipped by the additive pass) — no
+        #      additive work to do, but the existing models are healthy.
+        # Probe the live table count so we don't misdirect the agent.
+        tables, _err = _fetch_tables(ds=ds, schema_name=schema_name or None)
+        if tables is None or not tables:
+            return _empty_ingest_message(schema_name=schema_name, ds=ds)
+        return "Datasource already in sync — no additive changes."
 
     new_models = [a for a in additions if a.created]
     updated = [a for a in additions if not a.created and (a.new_columns or a.new_joins)]

@@ -740,10 +740,10 @@ class _StageGraph(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    stage_source_name: Optional[str]
-    extension_targets: Set[str]
-    reachable: Set[str]
-    models_by_name: Dict[str, SlayerModel]
+    stage_source_name: Optional[str] = None
+    extension_targets: Set[str] = Field(default_factory=set)
+    reachable: Set[str] = Field(default_factory=set)
+    models_by_name: Dict[str, SlayerModel] = Field(default_factory=dict)
 
 
 def _build_stage_graph(
@@ -805,6 +805,12 @@ def _attribute_ref_to_base(
     current = graph.stage_source_name
     if current is None:
         return None
+    # Root-qualified refs like ``orders.amount`` from a stage rooted at
+    # ``orders``: ``orders`` is not in its own join set, so the regular
+    # walk below would miss this case. Treat path == [stage_source_name]
+    # as a same-model ref.
+    if path == [graph.stage_source_name]:
+        return leaf if graph.stage_source_name == base_name else None
     for hop in path:
         m = graph.models_by_name.get(current)
         join_targets = {j.target_model for j in (m.joins if m is not None else [])}
@@ -1718,8 +1724,13 @@ async def _collect_sql_table_diffs(
     out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
     if not sql_table_models:
         return out
+    # Honour the datasource's configured schema_name so non-default-schema
+    # datasources diff against the right table set; otherwise SQLAlchemy
+    # introspects the default and produces false WholeModelDeletes.
     live_tables = await asyncio.to_thread(
-        _live_schema_for_datasource, datasource=datasource
+        _live_schema_for_datasource,
+        datasource=datasource,
+        schema=datasource.schema_name or None,
     )
     for m in sql_table_models:
         live = _resolve_live_table(

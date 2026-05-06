@@ -765,7 +765,11 @@ def _run_validate_models(args):
             print(f"Datasource '{args.datasource}' not found in {storage_path}")
             sys.exit(1)
     engine = SlayerQueryEngine(storage=storage)
-    entries = run_sync(engine.validate_models(data_source=args.datasource))
+    try:
+        entries = run_sync(engine.validate_models(data_source=args.datasource))
+    except Exception as exc:  # noqa: BLE001 — surface DB/auth/introspection failures cleanly
+        print(f"validate-models failed: {exc}")
+        sys.exit(1)
     print(_format_validate_models_output(entries))
 
     force_clean = bool(getattr(args, "force_clean", False))
