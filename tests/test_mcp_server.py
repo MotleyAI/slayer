@@ -1193,7 +1193,17 @@ class TestInspectModelHelpers:
     def test_resolve_inspect_sections_empty(self) -> None:
         from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections([])
-        assert len(resolved) == 7
+        # Same expansion as the ``None`` case — pin the order so a
+        # missing or duplicated section name fails.
+        assert resolved == [
+            "columns",
+            "measures",
+            "aggregations",
+            "joins",
+            "reachable_fields",
+            "samples",
+            "learnings",
+        ]
         assert unknown == []
 
     def test_resolve_inspect_sections_subset_canonical_order(self) -> None:

@@ -459,6 +459,37 @@ class TestRecallMemories:
         assert payload is not None, result
         assert len(payload["learnings"]) == 5
 
+    async def test_negative_max_learnings_rejected(
+        self, mcp_server, seeded: YAMLStorage
+    ) -> None:
+        # Negative caps would silently slice "all but the last N"
+        # entries via Python's negative-index behaviour. Reject up
+        # front so the API is predictable.
+        result = await _call(
+            mcp_server,
+            name="recall_memories",
+            arguments={
+                "about": ["mydb.orders"],
+                "max_learnings": -1,
+            },
+        )
+        assert "max_learnings" in result
+        assert "ValueError" in result or "must be" in result
+
+    async def test_negative_max_queries_rejected(
+        self, mcp_server, seeded: YAMLStorage
+    ) -> None:
+        result = await _call(
+            mcp_server,
+            name="recall_memories",
+            arguments={
+                "about": ["mydb.orders"],
+                "max_queries": -1,
+            },
+        )
+        assert "max_queries" in result
+        assert "ValueError" in result or "must be" in result
+
     async def test_query_arg_extracts_entities(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:

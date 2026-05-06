@@ -1596,17 +1596,20 @@ def create_mcp_server(storage: StorageBackend):
                 if show_sql and sample_sql:
                     payload["sample_sql"] = sample_sql
 
-            # Learnings (DEV-1357)
+            # Learnings (DEV-1357 v2) — Memory carries ``learning``,
+            # not ``body``; reading ``.body`` here would AttributeError
+            # the moment a memory matches and the caller asked for JSON
+            # output.
             if "learnings" in included_set and relevant_learnings:
                 payload["learnings"] = [
                     {
-                        "id": lr.id,
-                        "body": lr.body,
+                        "id": memory.id,
+                        "learning": memory.learning,
                         "matched_entities": sorted(
-                            set(wanted) & set(lr.entities)
+                            set(wanted) & set(memory.entities)
                         ),
                     }
-                    for lr in relevant_learnings
+                    for memory in relevant_learnings
                 ]
 
             # Top-level gating-state arrays (only when non-empty)

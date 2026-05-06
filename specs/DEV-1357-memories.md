@@ -222,7 +222,7 @@ has non-empty intersection with the input; `entities=[]` → `[]`.
 
 ### YAMLStorage layout
 
-```
+```text
 <storage_root>/
     memories.yaml      # list of Memory dicts
     counters.yaml      # { memory_seq: 42 }

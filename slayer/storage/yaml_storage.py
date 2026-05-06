@@ -186,9 +186,23 @@ class YAMLStorage(StorageBackend):
         with open(self._counters_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump(dict(counters), f, sort_keys=False)
 
+    def _max_memory_id(self) -> int:
+        max_id = 0
+        for row in self._read_yaml_list(self._memories_path):
+            row_id = row.get("id")
+            if isinstance(row_id, int) and row_id > max_id:
+                max_id = row_id
+        return max_id
+
     async def _next_memory_seq(self) -> int:
         counters = self._read_counters()
-        seq = counters.get("memory_seq", 0) + 1
+        # Recover from a missing/wiped counters.yaml: if memories.yaml
+        # already has rows, the next allocation must skip past them so
+        # _save_memory_row never replaces an existing record.
+        base = counters.get("memory_seq")
+        if base is None:
+            base = self._max_memory_id()
+        seq = base + 1
         counters["memory_seq"] = seq
         self._write_counters(counters)
         return seq

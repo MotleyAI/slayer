@@ -456,6 +456,30 @@ class TestResolveEntityStarCount:
         )
         assert result.canonical_forms == ["mydb.orders"]
 
+    async def test_star_with_non_count_aggregation_rejected(
+        self, storage: StorageBackend
+    ) -> None:
+        """``*:sum`` and similar must not silently collapse to the
+        source model — only ``count`` is the valid wildcard form. The
+        previous code accepted any aggregation, which would corrupt the
+        canonical-entity index for memories tagged via a query that
+        used a malformed wildcard."""
+        orders = await storage.get_model("orders", data_source="mydb")
+        for bad in ("*:sum", "*:avg"):
+            with pytest.raises(EntityResolutionError) as exc_info:
+                await resolve_entity(
+                    bad, storage=storage, source_model=orders
+                )
+            assert bad in str(exc_info.value)
+
+    async def test_model_star_with_non_count_aggregation_rejected(
+        self, storage: StorageBackend
+    ) -> None:
+        for bad in ("orders.*:sum", "orders.*:avg"):
+            with pytest.raises(EntityResolutionError) as exc_info:
+                await resolve_entity(bad, storage=storage)
+            assert bad in str(exc_info.value)
+
 
 # ---------------------------------------------------------------------------
 # resolve_entity with source-model context (used inside save_query /
@@ -606,8 +630,10 @@ class TestExtractEntitiesFromQuery:
             measures=[ModelMeasure(formula="*:count")],
         )
         result = await extract_entities_from_query(q, storage=storage)
-        # The source_model tag covers it; no extra entity for *:count.
-        assert "mydb.orders" in result.canonical_forms
+        # Pin the exact list — a regression that adds an extra entity
+        # for ``*:count`` (e.g. tagging ``*`` as its own thing) would
+        # silently pass a membership check.
+        assert result.canonical_forms == ["mydb.orders"]
 
     async def test_unknown_column_in_filter_raises(
         self, storage: StorageBackend

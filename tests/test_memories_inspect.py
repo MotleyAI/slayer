@@ -173,6 +173,9 @@ class TestInspectModelLearningsSection:
             arguments={"model_name": "orders", "data_source": "mydb"},
         )
         assert "customer-only note" not in result
+        # Pin the section header itself — an empty "## Learnings"
+        # heading would still pass the body check above.
+        assert "## Learnings" not in result
 
     async def test_section_pruned_when_no_memories_at_all(
         self, mcp_server, seeded: YAMLStorage
@@ -230,6 +233,36 @@ class TestInspectModelLearningsSection:
             },
         )
         assert "amount is in cents" not in result
+        assert "## Learnings" not in result
+
+    async def test_json_output_uses_learning_field(
+        self, mcp_server, seeded: YAMLStorage
+    ) -> None:
+        """``inspect_model(format='json', sections=['learnings'])`` must
+        emit ``learning`` (the Memory field name) — not the legacy
+        ``body`` alias, which would AttributeError as soon as a memory
+        matches."""
+        import json
+
+        await seeded.save_memory(
+            learning="amount is in cents",
+            entities=["mydb.orders.amount"],
+        )
+        result = await _call(
+            mcp_server,
+            name="inspect_model",
+            arguments={
+                "model_name": "orders",
+                "data_source": "mydb",
+                "format": "json",
+                "sections": ["learnings"],
+            },
+        )
+        payload = json.loads(result)
+        assert payload["learnings"], payload
+        first = payload["learnings"][0]
+        assert first["learning"] == "amount is in cents"
+        assert "body" not in first
 
 
 # ---------------------------------------------------------------------------

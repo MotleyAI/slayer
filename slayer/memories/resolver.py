@@ -233,10 +233,13 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     prefix, agg = _strip_agg_suffix(raw)
 
     # ``*:count`` special case (§3.1): collapses to the source model.
+    # Only ``count`` is valid for the wildcard; ``*:sum`` etc. would
+    # silently get tagged as the model and corrupt the canonical-entity
+    # index, so reject them explicitly.
     if prefix == "*":
-        if agg is None:
+        if agg != "count":
             raise EntityResolutionError(
-                "'*' is not a valid entity reference; use '*:count' "
+                f"'{raw}' is not a valid entity reference; use '*:count' "
                 "to refer to a model's row count."
             )
         if source_model is None:
@@ -252,8 +255,9 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
         )
 
     # Detect ``<model>.*:count`` shape — collapse to the model.
+    # Same wildcard rule as above: only ``count`` is valid here.
     if prefix.endswith(".*"):
-        if agg is None:
+        if agg != "count":
             raise EntityResolutionError(
                 f"'{raw}' is not a valid entity reference; use the "
                 f"'<model>.*:count' form."
