@@ -42,6 +42,7 @@ from slayer.core.formula import (
     parse_formula,
 )
 from slayer.core.models import (
+    Column,
     DatasourceConfig,
     SlayerModel,
 )
@@ -699,8 +700,12 @@ def _resolve_stage_source_to_base(
     source_model: object,
     prior_stages_by_name: Dict[str, SlayerQuery],
 ) -> Optional[str]:
-    """Walk a ``source_model`` reference (str/SlayerModel/inline) through
-    prior stage names back to a real persisted base model name.
+    """Walk a ``source_model`` reference (str / SlayerModel / ModelExtension /
+    prior-stage-name) back to a real persisted base model name.
+
+    ``ModelExtension`` carries a ``source_name: str`` field that names the
+    underlying model — we follow it transparently so query-backed drift
+    attribution doesn't silently skip extension-wrapped stages.
     """
     seen: Set[str] = set()
     current = source_model
@@ -713,6 +718,11 @@ def _resolve_stage_source_to_base(
                 current = prior_stages_by_name[current].source_model
                 continue
             return current
+        # ModelExtension wraps a base model — unwrap via source_name (str).
+        source_name = getattr(current, "source_name", None)
+        if isinstance(source_name, str):
+            current = source_name
+            continue
         if isinstance(current, SlayerModel):
             return current.name
         return None
@@ -806,11 +816,14 @@ def _stage_referenced_columns_for_base(
 def _stage_join_targets(stage: SlayerQuery) -> Set[str]:
     """Return the set of join target_model names referenced by a stage.
 
-    ``SlayerQuery`` itself has no ``joins`` field; the attribute exists on
-    a ``ModelExtension`` source_model. We use ``getattr`` with a default
-    so plain stages return the empty set without raising.
+    ``SlayerQuery`` itself has no ``joins`` field; joins on a stage live
+    on its ``source_model`` when that's a ``ModelExtension``. Read off
+    ``stage.source_model.joins`` via ``getattr`` with defaults so plain
+    stages (str source_model, SlayerModel source_model) return the empty
+    set without raising.
     """
-    joins = getattr(stage, "joins", None) or []
+    source = getattr(stage, "source_model", None)
+    joins = getattr(source, "joins", None) or []
     out: Set[str] = set()
     for j in joins:
         target = getattr(j, "target_model", None)
@@ -837,6 +850,55 @@ def _check_stage_against_base(
     if not cascadable:
         return set()
     return _stage_referenced_columns_for_base(stage=stage, base_name=base_name) & cascadable
+
+
+def _check_stage_for_whole_drop(
+    *,
+    stage: SlayerQuery,
+    base_name: str,
+    qb_name: str,
+    whole_dropped_models: Set[str],
+    dropped_cols: Dict[str, Set[str]],
+    pk_per_model: Dict[str, Set[str]],
+    candidate_base_names: Set[str],
+) -> Optional[DeleteReason]:
+    """Decide whether a single stage of a query-backed model triggers the
+    whole-drop. Returns a ``DeleteReason`` on the first matching trigger,
+    or ``None`` when the stage has no fatal references.
+    """
+    if base_name in whole_dropped_models:
+        return DeleteReason(
+            target=f"model:{qb_name}",
+            reason=(
+                f"source_queries stage references base model "
+                f"{base_name!r} which is being whole-dropped"
+            ),
+        )
+    for join_target in _stage_join_targets(stage):
+        if join_target in whole_dropped_models:
+            return DeleteReason(
+                target=f"model:{qb_name}",
+                reason=(
+                    f"source_queries stage joins to {join_target!r} "
+                    f"which is being whole-dropped"
+                ),
+            )
+    for candidate in candidate_base_names:
+        hits = _check_stage_against_base(
+            stage=stage,
+            base_name=candidate,
+            dropped_cols=dropped_cols,
+            pk_per_model=pk_per_model,
+        )
+        if hits:
+            return DeleteReason(
+                target=f"model:{qb_name}",
+                reason=(
+                    f"source_queries stage references columns on "
+                    f"{candidate!r} that have been dropped: {sorted(hits)}"
+                ),
+            )
+    return None
 
 
 def _query_backed_should_whole_drop(
@@ -873,46 +935,17 @@ def _query_backed_should_whole_drop(
         )
         if base_name is None:
             continue
-
-        if base_name in whole_dropped_models:
-            return DeleteReason(
-                target=f"model:{qb_model.name}",
-                reason=(
-                    f"source_queries stage references base model "
-                    f"{base_name!r} which is being whole-dropped"
-                ),
-            )
-
-        # Whole-drop on any model the stage joins to is also fatal.
-        for join_target in _stage_join_targets(stage):
-            if join_target in whole_dropped_models:
-                return DeleteReason(
-                    target=f"model:{qb_model.name}",
-                    reason=(
-                        f"source_queries stage joins to {join_target!r} "
-                        f"which is being whole-dropped"
-                    ),
-                )
-
-        # Walk every candidate base name (every model in the DS) so
-        # cross-model dotted refs are caught.
-        candidates = candidate_base_names or {base_name}
-        for candidate in candidates:
-            hits = _check_stage_against_base(
-                stage=stage,
-                base_name=candidate,
-                dropped_cols=dropped_cols,
-                pk_per_model=pk_per_model,
-            )
-            if hits:
-                return DeleteReason(
-                    target=f"model:{qb_model.name}",
-                    reason=(
-                        f"source_queries stage references columns on "
-                        f"{candidate!r} that have been dropped: {sorted(hits)}"
-                    ),
-                )
-
+        reason = _check_stage_for_whole_drop(
+            stage=stage,
+            base_name=base_name,
+            qb_name=qb_model.name,
+            whole_dropped_models=whole_dropped_models,
+            dropped_cols=dropped_cols,
+            pk_per_model=pk_per_model,
+            candidate_base_names=candidate_base_names or {base_name},
+        )
+        if reason is not None:
+            return reason
     return None
 
 
@@ -985,38 +1018,50 @@ def _column_ref_targets_dropped(
     return ref_col in state.cascadable(target.name), target
 
 
+def _first_dropped_sql_column_ref(
+    *, col: Column, model: SlayerModel, state: _CascadeState
+) -> Optional[Tuple[SlayerModel, str]]:
+    """Return ``(target_model, ref_col)`` for the first reference in
+    ``col.sql`` that resolves to a dropped column, or ``None`` when
+    nothing in the column's SQL references a dropped target.
+    """
+    if col.sql is None or _is_bare_identifier(col.sql):
+        return None
+    for table_alias, ref_col in _extract_column_refs_from_sql(col.sql):
+        is_dropped, target = _column_ref_targets_dropped(
+            table_alias=table_alias,
+            ref_col=ref_col,
+            model=model,
+            state=state,
+        )
+        if is_dropped and target is not None:
+            return target, ref_col
+    return None
+
+
 def _cascade_derived_columns(
     *, model: SlayerModel, state: _CascadeState
 ) -> bool:
     """Rules 1 + 5: derived ``Column.sql`` referencing dropped columns
     (same model or via the join graph)."""
     changed = False
+    dropped_set = state.dropped_cols.get(model.name, set())
     for col in model.columns:
-        if col.name in state.dropped_cols.get(model.name, set()):
+        if col.name in dropped_set:
             continue
-        if col.sql is None or _is_bare_identifier(col.sql):
+        hit = _first_dropped_sql_column_ref(col=col, model=model, state=state)
+        if hit is None:
             continue
-        for table_alias, ref_col in _extract_column_refs_from_sql(col.sql):
-            is_dropped, target = _column_ref_targets_dropped(
-                table_alias=table_alias,
-                ref_col=ref_col,
-                model=model,
-                state=state,
-            )
-            if not is_dropped or target is None:
-                continue
-            ref_label = (
-                ref_col if target is model else f"{target.name}.{ref_col!r}"
-            )
-            if _add_dropped_column(
-                edit_entries=state.edit_entries,
-                dropped_cols=state.dropped_cols,
-                model=model,
-                column_name=col.name,
-                reason=f"Derived sql {col.sql!r} references dropped column {ref_label}",
-            ):
-                changed = True
-            break
+        target, ref_col = hit
+        ref_label = ref_col if target is model else f"{target.name}.{ref_col!r}"
+        if _add_dropped_column(
+            edit_entries=state.edit_entries,
+            dropped_cols=state.dropped_cols,
+            model=model,
+            column_name=col.name,
+            reason=f"Derived sql {col.sql!r} references dropped column {ref_label}",
+        ):
+            changed = True
     return changed
 
 
@@ -1237,6 +1282,53 @@ def _cascade_one_pass(
     return changed
 
 
+def _seed_state_from_diffs(
+    *,
+    diffs_iterables: Tuple[
+        Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]], ...
+    ],
+    edit_entries: Dict[str, EditModelDelete],
+    whole_entries: Dict[str, WholeModelDelete],
+    dropped_cols: Dict[str, Set[str]],
+    dropped_measures: Dict[str, Set[str]],
+    dropped_joins: Dict[str, Set[str]],
+) -> None:
+    """Populate the cascade state dicts from the base per-model diffs."""
+    for diffs in diffs_iterables:
+        for model_name, (entry, cols) in diffs.items():
+            if isinstance(entry, WholeModelDelete):
+                whole_entries[model_name] = entry
+            elif isinstance(entry, EditModelDelete):
+                edit_entries[model_name] = entry
+                if entry.remove.joins:
+                    dropped_joins.setdefault(model_name, set()).update(
+                        entry.remove.joins
+                    )
+                if entry.remove.measures:
+                    dropped_measures.setdefault(model_name, set()).update(
+                        entry.remove.measures
+                    )
+            if cols:
+                dropped_cols.setdefault(model_name, set()).update(cols)
+
+
+def _collapse_entries(
+    *,
+    edit_entries: Dict[str, EditModelDelete],
+    whole_entries: Dict[str, WholeModelDelete],
+) -> List[ToDeleteEntry]:
+    """Apply the collapse rule (whole-drop preempts edit on the same model)
+    and return the final, name-sorted list of delete entries.
+    """
+    final: List[ToDeleteEntry] = []
+    for name in sorted(set(edit_entries.keys()) | set(whole_entries.keys())):
+        if name in whole_entries:
+            final.append(whole_entries[name])
+        else:
+            final.append(edit_entries[name])
+    return final
+
+
 def compute_datasource_drops(
     *,
     models: List[SlayerModel],
@@ -1255,29 +1347,20 @@ def compute_datasource_drops(
     dropped_measures: Dict[str, Set[str]] = {}
     dropped_joins: Dict[str, Set[str]] = {}
 
-    # Seed from base diffs
-    for diffs in (sql_table_diffs, sql_diffs):
-        for model_name, (entry, cols) in diffs.items():
-            if isinstance(entry, WholeModelDelete):
-                whole_entries[model_name] = entry
-            elif isinstance(entry, EditModelDelete):
-                edit_entries[model_name] = entry
-                if entry.remove.joins:
-                    dropped_joins.setdefault(model_name, set()).update(
-                        entry.remove.joins
-                    )
-                if entry.remove.measures:
-                    dropped_measures.setdefault(model_name, set()).update(
-                        entry.remove.measures
-                    )
-            if cols:
-                dropped_cols.setdefault(model_name, set()).update(cols)
+    _seed_state_from_diffs(
+        diffs_iterables=(sql_table_diffs, sql_diffs),
+        edit_entries=edit_entries,
+        whole_entries=whole_entries,
+        dropped_cols=dropped_cols,
+        dropped_measures=dropped_measures,
+        dropped_joins=dropped_joins,
+    )
 
     models_by_name = {m.name: m for m in models}
     pk_per_model = {m.name: _pk_columns(m) for m in models}
 
-    # Iterate to fixed point
-    for _ in range(100):  # safety bound — DAGs should converge in <10 passes
+    # Iterate to fixed point — safety bound, DAGs converge in <10 passes.
+    for _ in range(100):
         if not _cascade_one_pass(
             models=models,
             models_by_name=models_by_name,
@@ -1290,13 +1373,9 @@ def compute_datasource_drops(
         ):
             break
 
-    # Collapse: whole-drop preempts edit on the same model.
-    final: List[ToDeleteEntry] = []
-    for name in sorted(set(edit_entries.keys()) | set(whole_entries.keys())):
-        if name in whole_entries:
-            final.append(whole_entries[name])
-        else:
-            final.append(edit_entries[name])
+    final = _collapse_entries(
+        edit_entries=edit_entries, whole_entries=whole_entries
+    )
     return final
 
 

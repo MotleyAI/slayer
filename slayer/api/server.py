@@ -417,6 +417,13 @@ def create_app(storage: StorageBackend) -> FastAPI:
                     f"Ingest failed for datasource '{safe_ds_name}': {exc}"
                 ),
             )
+        if result.errors:
+            # Partial failure — at least one model failed to persist.
+            # Mirror the CLI's exit-1 behaviour by surfacing 422 with the
+            # full IdempotentIngestResult body (additions/to_delete/errors).
+            raise HTTPException(
+                status_code=422, detail=result.model_dump(mode="json")
+            )
         return result.model_dump(mode="json")
 
     return app

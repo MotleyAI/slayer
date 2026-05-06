@@ -491,48 +491,53 @@ class SlayerQueryEngine:
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
+    @staticmethod
+    def _collect_query_backed_base_names(model: SlayerModel) -> "set[str]":
+        """Return the set of base model names referenced by a query-backed
+        ``model``'s ``source_queries`` stages — including stage source_models
+        (excluding prior-stage names) and joins declared on each stage's
+        ``source_model`` when that's a ``ModelExtension``.
+        """
+        out: set[str] = set()
+        if not model.source_queries:
+            return out
+        stages = list(model.source_queries)
+        stage_names = {
+            getattr(s, "name", None) for s in stages if getattr(s, "name", None)
+        }
+        for stage in stages:
+            sm = getattr(stage, "source_model", None)
+            if isinstance(sm, str) and sm not in stage_names:
+                out.add(sm)
+            elif isinstance(sm, SlayerModel):
+                out.add(sm.name)
+            # SlayerQuery has no ``.joins``; joins on a stage live on its
+            # source_model when that's a ModelExtension. Read off
+            # ``stage.source_model.joins`` via getattr with defaults so
+            # plain str/SlayerModel source_models are no-ops.
+            for j in (getattr(sm, "joins", None) or []):
+                target = getattr(j, "target_model", None)
+                if target is not None:
+                    out.add(target)
+        return out
+
     async def _collect_models_touched(
         self, *, model: SlayerModel, enriched: "EnrichedQuery"
     ) -> "set[str]":
         """Compute the set of model names that participated in this query.
 
-        Includes:
-        * the source model
-        * direct AND multi-hop join targets reached by walking the join
-          graph from the source model and from every cross-model measure
-          source model. Multi-hop targets matter for drift attribution: a
-          query like ``orders -> customers -> regions`` touches all three
-          even though the SlayerQuery only names ``orders``.
-        * cross-model measure source models
-        * for query-backed source models, every base model name reachable
-          through ``source_queries`` stages.
+        Includes the source model, every cross-model measure root, every
+        query-backed base name, and (transitively) every join target
+        reachable through the join graph.
         """
         touched: set[str] = {model.name}
         for cm in enriched.cross_model_measures:
             touched.add(cm.target_model_name)
             touched.add(cm.source_model_name)
-        if model.source_queries:
-            stages = list(model.source_queries)
-            stage_names = {
-                getattr(s, "name", None) for s in stages if getattr(s, "name", None)
-            }
-            for stage in stages:
-                sm = getattr(stage, "source_model", None)
-                if isinstance(sm, str) and sm not in stage_names:
-                    touched.add(sm)
-                elif isinstance(sm, SlayerModel):
-                    touched.add(sm.name)
-                # SlayerQuery has no .joins (only ModelExtension does as a
-                # source_model). Use getattr with a default to handle both.
-                for j in (getattr(stage, "joins", None) or []):
-                    target = getattr(j, "target_model", None)
-                    if target is not None:
-                        touched.add(target)
-        # Transitive walk of join graph — start from every directly-named
-        # model and follow each model's own joins. ``data_source`` scopes
-        # the lookup so cross-DS join targets aren't pulled in.
-        ds = model.data_source or None
-        await self._expand_join_graph(touched=touched, data_source=ds)
+        touched |= self._collect_query_backed_base_names(model)
+        await self._expand_join_graph(
+            touched=touched, data_source=model.data_source or None
+        )
         return touched
 
     async def _expand_join_graph(

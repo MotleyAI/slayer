@@ -773,12 +773,28 @@ def _additive_merge_existing(
         new_column_names.append(c.name)
 
     existing_join_sigs = _existing_join_signatures(persisted)
+    existing_join_targets = {j.target_model for j in persisted.joins}
     new_joins: List[ModelJoin] = list(persisted.joins)
     new_join_targets: List[str] = []
     for j in fresh.joins:
         sig = (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
         if sig in existing_join_sigs:
             continue
+        if j.target_model in existing_join_targets:
+            # Same target_model already present with a different
+            # join_pairs signature. Downstream consumers key joins by
+            # target_model only — appending a second one would let the
+            # stale join shadow the live one and ``remove.joins=[name]``
+            # would wipe both. Surface the conflict so the user can
+            # decide instead of silently breaking.
+            raise ValueError(
+                f"Model {persisted.name!r} already has a join targeting "
+                f"{j.target_model!r} with different join_pairs; the "
+                f"additive re-ingest cannot represent both join "
+                f"definitions safely. Drop the existing join via "
+                f"``edit_model(remove={{'joins': [{j.target_model!r}]}})`` "
+                f"and re-run."
+            )
         new_joins.append(j)
         new_join_targets.append(j.target_model)
 
