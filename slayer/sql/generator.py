@@ -1560,7 +1560,7 @@ class SQLGenerator:
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
 
     @staticmethod
-    def _build_transform_sql(t) -> str:
+    def _build_transform_sql(t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
         """Build a window function SQL expression for a transform."""
         measure = f'"{t.measure_alias}"'
         time_col = f'"{t.time_alias}"' if t.time_alias else None
@@ -1573,6 +1573,11 @@ class SQLGenerator:
         order_clause = f"ORDER BY {time_col}" if time_col else ""
         over_parts = " ".join(p for p in (partition_clause, order_clause) if p)
 
+        # Rank-family OVER clauses always order by the inner measure DESC; their
+        # partition is empty unless the user passed partition_by= on the call.
+        rank_order = f"ORDER BY {measure} DESC"
+        rank_over = " ".join(p for p in (partition_clause, rank_order) if p)
+
         if t.transform == "cumsum":
             return f"SUM({measure}) OVER ({over_parts})"
         elif t.transform == "consecutive_periods":
@@ -1584,7 +1589,16 @@ class SQLGenerator:
         elif t.transform == "lead":
             return f"LEAD({measure}, {abs(t.offset)}) OVER ({over_parts})"
         elif t.transform == "rank":
-            return f"RANK() OVER (ORDER BY {measure} DESC)"
+            return f"RANK() OVER ({rank_over})"
+        elif t.transform == "percent_rank":
+            return f"PERCENT_RANK() OVER ({rank_over})"
+        elif t.transform == "dense_rank":
+            return f"DENSE_RANK() OVER ({rank_over})"
+        elif t.transform == "ntile":
+            n = getattr(t, "n", None)
+            if not isinstance(n, int) or n <= 0:
+                raise ValueError(f"ntile requires a positive integer n, got {n!r}")
+            return f"NTILE({n}) OVER ({rank_over})"
         elif t.transform == "first":
             return (
                 f"FIRST_VALUE({measure}) OVER ({over_parts} "

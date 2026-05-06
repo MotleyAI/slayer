@@ -112,13 +112,14 @@ class EnrichedTransform(BaseModel):
     """
 
     name: str
-    transform: str = Field(description="Transform name: cumsum, lag, lead, rank, time_shift, first, last, consecutive_periods")
+    transform: str = Field(description="Transform name: cumsum, lag, lead, rank, percent_rank, dense_rank, ntile, time_shift, first, last, consecutive_periods")
     measure_alias: str = Field(description="Alias of the measure in the base CTE to transform")
     alias: str = Field(description="Result column name")
     offset: int = Field(description="For time_shift: number of rows or calendar units")
     granularity: Optional[str] = Field(default=None, description="For time_shift: year, month, quarter, etc.")
     time_alias: Optional[str] = Field(default=None, description="Alias of the time dimension column for ORDER BY")
     partition_aliases: List[str] = Field(default_factory=list, description="Dimension aliases to PARTITION BY")
+    n: Optional[int] = Field(default=None, description="Bucket count for ntile(measure, n=...)")
     predicate_is_boolean: bool = Field(
         default=False,
         description="True when the transform's measure_alias points at a boolean expression "

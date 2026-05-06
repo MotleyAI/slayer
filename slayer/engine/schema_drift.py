@@ -729,19 +729,103 @@ def _resolve_stage_source_to_base(
         return None
 
 
-def _attribute_ref_to_base(
-    *, ref: str, base_name: str, sm_is_base: bool
-) -> Optional[str]:
-    """Return the column name on ``base_name`` that ``ref`` resolves to,
-    or ``None`` if the reference is to a different model.
+class _StageGraph(BaseModel):
+    """Resolved join-graph context for a query-backed stage.
+
+    Carries the stage's resolved source name (``stage_source_name``), the
+    extension-added join targets (``extension_targets``), and the set of
+    every model name reachable from the source via the in-DS join graph.
+    Used to attribute multi-hop dotted refs and to bound dropped-join
+    checks to models the stage can actually reach.
     """
-    if "." in ref:
-        prefix, leaf = ref.rsplit(".", 1)
-        return leaf if prefix == base_name else None
-    return ref if sm_is_base else None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    stage_source_name: Optional[str] = None
+    extension_targets: Set[str] = Field(default_factory=set)
+    reachable: Set[str] = Field(default_factory=set)
+    models_by_name: Dict[str, SlayerModel] = Field(default_factory=dict)
 
 
-def _measure_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool) -> Set[str]:
+def _build_stage_graph(
+    *,
+    stage: SlayerQuery,
+    stage_source_name: Optional[str],
+    models_by_name: Dict[str, SlayerModel],
+) -> _StageGraph:
+    """Build a ``_StageGraph`` for a single stage. ``stage_source_name`` is
+    the resolved base model name (str), or ``None`` for inline / unresolved
+    sources.
+    """
+    extension_targets = _stage_join_targets(stage)
+    reachable: Set[str] = set()
+    if stage_source_name:
+        reachable.add(stage_source_name)
+    reachable |= extension_targets
+    frontier = list(reachable)
+    visited: Set[str] = set()
+    while frontier:
+        name = frontier.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        m = models_by_name.get(name)
+        if m is None:
+            continue
+        for j in m.joins:
+            if j.target_model not in reachable:
+                reachable.add(j.target_model)
+                frontier.append(j.target_model)
+    return _StageGraph(
+        stage_source_name=stage_source_name,
+        extension_targets=extension_targets,
+        reachable=reachable,
+        models_by_name=models_by_name,
+    )
+
+
+def _attribute_ref_to_base(
+    *,
+    ref: str,
+    base_name: str,
+    graph: _StageGraph,
+) -> Optional[str]:
+    """Walk ``ref`` through the stage's join graph and return the leaf
+    column name when it resolves to ``base_name``, else ``None``.
+
+    Bare refs (no dot) attribute to ``stage_source_name``. Single-dot and
+    multi-hop dotted refs are walked through ``models_by_name`` —
+    ``customers.regions.name`` from a stage rooted at ``orders`` resolves
+    to ``regions.name`` if ``orders → customers → regions`` exists.
+    """
+    if "." not in ref:
+        return ref if graph.stage_source_name == base_name else None
+    parts = ref.split(".")
+    leaf = parts[-1]
+    path = parts[:-1]
+    current = graph.stage_source_name
+    if current is None:
+        return None
+    # Root-qualified refs like ``orders.amount`` from a stage rooted at
+    # ``orders``: ``orders`` is not in its own join set, so the regular
+    # walk below would miss this case. Treat path == [stage_source_name]
+    # as a same-model ref.
+    if path == [graph.stage_source_name]:
+        return leaf if graph.stage_source_name == base_name else None
+    for hop in path:
+        m = graph.models_by_name.get(current)
+        join_targets = {j.target_model for j in (m.joins if m is not None else [])}
+        if current == graph.stage_source_name:
+            join_targets |= graph.extension_targets
+        if hop not in join_targets:
+            return None
+        current = hop
+    return leaf if current == base_name else None
+
+
+def _measure_refs_on_base(
+    stage: SlayerQuery, base_name: str, graph: _StageGraph
+) -> Set[str]:
     out: Set[str] = set()
     for m in stage.measures or []:
         formula = getattr(m, "formula", None)
@@ -749,19 +833,21 @@ def _measure_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool) 
             continue
         for ref in _measure_formula_refs(formula):
             attributed = _attribute_ref_to_base(
-                ref=ref, base_name=base_name, sm_is_base=sm_is_base
+                ref=ref, base_name=base_name, graph=graph
             )
             if attributed is not None:
                 out.add(attributed)
     return out
 
 
-def _dimension_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool) -> Set[str]:
+def _dimension_refs_on_base(
+    stage: SlayerQuery, base_name: str, graph: _StageGraph
+) -> Set[str]:
     out: Set[str] = set()
     for d in stage.dimensions or []:
         full = getattr(d, "full_name", None) or str(d)
         attributed = _attribute_ref_to_base(
-            ref=full, base_name=base_name, sm_is_base=sm_is_base
+            ref=full, base_name=base_name, graph=graph
         )
         if attributed is not None:
             out.add(attributed)
@@ -769,24 +855,26 @@ def _dimension_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool
 
 
 def _time_dimension_refs_on_base(
-    stage: SlayerQuery, base_name: str, sm_is_base: bool
+    stage: SlayerQuery, base_name: str, graph: _StageGraph
 ) -> Set[str]:
     out: Set[str] = set()
     for td in stage.time_dimensions or []:
         attributed = _attribute_ref_to_base(
-            ref=td.dimension.full_name, base_name=base_name, sm_is_base=sm_is_base
+            ref=td.dimension.full_name, base_name=base_name, graph=graph
         )
         if attributed is not None:
             out.add(attributed)
     return out
 
 
-def _filter_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool) -> Set[str]:
+def _filter_refs_on_base(
+    stage: SlayerQuery, base_name: str, graph: _StageGraph
+) -> Set[str]:
     out: Set[str] = set()
     for f in stage.filters or []:
         for col in _filter_refs(f):
             attributed = _attribute_ref_to_base(
-                ref=col, base_name=base_name, sm_is_base=sm_is_base
+                ref=col, base_name=base_name, graph=graph
             )
             if attributed is not None:
                 out.add(attributed)
@@ -797,20 +885,29 @@ def _stage_referenced_columns_for_base(
     *,
     stage: SlayerQuery,
     base_name: str,
+    graph: Optional[_StageGraph] = None,
 ) -> Set[str]:
     """Return the set of column names referenced *on* ``base_name`` by a
-    single source_queries stage. Same-model refs (no dot) are attributed
-    to the stage's source_model when it equals ``base_name``; cross-model
-    dotted refs are matched on the prefix.
+    single source_queries stage. Walks the stage's join graph (passed via
+    ``graph``) so multi-hop dotted refs and ModelExtension-added joins are
+    handled. Falls back to a graph with no models (string-prefix match
+    only) when ``graph`` is omitted, preserving legacy callers.
     """
-    sm_is_base = (
-        isinstance(stage.source_model, str) and stage.source_model == base_name
-    )
+    if graph is None:
+        stage_source_name = (
+            stage.source_model if isinstance(stage.source_model, str) else None
+        )
+        graph = _StageGraph(
+            stage_source_name=stage_source_name,
+            extension_targets=_stage_join_targets(stage),
+            reachable={stage_source_name} if stage_source_name else set(),
+            models_by_name={},
+        )
     return (
-        _measure_refs_on_base(stage, base_name, sm_is_base)
-        | _dimension_refs_on_base(stage, base_name, sm_is_base)
-        | _time_dimension_refs_on_base(stage, base_name, sm_is_base)
-        | _filter_refs_on_base(stage, base_name, sm_is_base)
+        _measure_refs_on_base(stage, base_name, graph)
+        | _dimension_refs_on_base(stage, base_name, graph)
+        | _time_dimension_refs_on_base(stage, base_name, graph)
+        | _filter_refs_on_base(stage, base_name, graph)
     )
 
 
@@ -837,11 +934,12 @@ def _check_stage_against_base(
     *,
     stage: SlayerQuery,
     base_name: str,
+    graph: _StageGraph,
     dropped_cols: Dict[str, Set[str]],
     pk_per_model: Dict[str, Set[str]],
 ) -> Set[str]:
     """Return the set of dropped column names on ``base_name`` that this
-    stage references (via same-model bare refs or via dotted-prefix refs).
+    stage references (resolved through the stage's join graph).
 
     PK columns are excluded — rule 7. Returns the empty set when no hits.
     """
@@ -850,29 +948,38 @@ def _check_stage_against_base(
     )
     if not cascadable:
         return set()
-    return _stage_referenced_columns_for_base(stage=stage, base_name=base_name) & cascadable
+    return _stage_referenced_columns_for_base(
+        stage=stage, base_name=base_name, graph=graph
+    ) & cascadable
 
 
 def _stage_uses_dropped_join(
     *,
     stage: SlayerQuery,
     base_name: str,
+    graph: _StageGraph,
     dropped_joins: Dict[str, Set[str]],
 ) -> Optional[str]:
     """If ``stage`` references any column under a join target that's been
-    dropped on ``base_name`` (i.e. ``orders → customers`` was removed and
-    the stage uses ``customers.name``), return the conflicting target
-    name; otherwise None.
+    dropped on ``base_name``, return the conflicting target; else None.
+
+    Bounded to ``graph.reachable`` so a dropped ``invoices → customers``
+    join doesn't whole-drop a stage rooted at ``orders`` that uses
+    ``customers.name`` via its own ``orders → customers`` link.
     """
+    if base_name not in graph.reachable:
+        return None
     targets = dropped_joins.get(base_name, set())
     if not targets:
         return None
     for target in targets:
         # ``_stage_referenced_columns_for_base(stage, base_name=target)``
-        # returns the column names the stage references *on* ``target``.
-        # If non-empty, the dropped join means those references no longer
-        # resolve.
-        if _stage_referenced_columns_for_base(stage=stage, base_name=target):
+        # returns the column names the stage references *on* ``target``
+        # (resolved through the join graph). Non-empty ⇒ the dropped join
+        # means those references no longer resolve.
+        if _stage_referenced_columns_for_base(
+            stage=stage, base_name=target, graph=graph
+        ):
             return target
     return None
 
@@ -882,6 +989,7 @@ def _check_stage_for_whole_drop(
     stage: SlayerQuery,
     base_name: str,
     qb_name: str,
+    graph: _StageGraph,
     whole_dropped_models: Set[str],
     dropped_cols: Dict[str, Set[str]],
     dropped_joins: Dict[str, Set[str]],
@@ -911,7 +1019,10 @@ def _check_stage_for_whole_drop(
             )
     for candidate in candidate_base_names:
         broken_target = _stage_uses_dropped_join(
-            stage=stage, base_name=candidate, dropped_joins=dropped_joins
+            stage=stage,
+            base_name=candidate,
+            graph=graph,
+            dropped_joins=dropped_joins,
         )
         if broken_target is not None:
             return DeleteReason(
@@ -924,6 +1035,7 @@ def _check_stage_for_whole_drop(
         hits = _check_stage_against_base(
             stage=stage,
             base_name=candidate,
+            graph=graph,
             dropped_cols=dropped_cols,
             pk_per_model=pk_per_model,
         )
@@ -946,20 +1058,22 @@ def _query_backed_should_whole_drop(
     whole_dropped_models: Set[str],
     pk_per_model: Dict[str, Set[str]],
     candidate_base_names: Optional[Set[str]] = None,
+    models_by_name: Optional[Dict[str, SlayerModel]] = None,
 ) -> Optional[DeleteReason]:
     """Return a non-None DeleteReason when this query-backed model should be
     whole-dropped due to cascading from base-model drift, else None.
 
     ``candidate_base_names`` is the set of every model name in the same DS;
-    each stage's references are checked against every candidate, so
-    cross-model dotted refs (e.g. ``customers.region`` from a stage whose
-    own source_model is ``orders``) get caught when ``customers.region``
-    drifts. Falls back to checking only the stage's own source_model when
-    not supplied (preserves the legacy unit-test contract).
+    each stage's references are checked against every candidate.
+    ``models_by_name`` carries the join graph so multi-hop refs and
+    extension-added joins resolve correctly. Both default to empty,
+    preserving the legacy contract for any callers that haven't been
+    migrated yet.
     """
     if not qb_model.source_queries:
         return None
     stages = list(qb_model.source_queries)
+    models_by_name = models_by_name or {}
 
     for i, stage in enumerate(stages):
         prior_by_name: Dict[str, SlayerQuery] = {}
@@ -973,10 +1087,16 @@ def _query_backed_should_whole_drop(
         )
         if base_name is None:
             continue
+        graph = _build_stage_graph(
+            stage=stage,
+            stage_source_name=base_name,
+            models_by_name=models_by_name,
+        )
         reason = _check_stage_for_whole_drop(
             stage=stage,
             base_name=base_name,
             qb_name=qb_model.name,
+            graph=graph,
             whole_dropped_models=whole_dropped_models,
             dropped_cols=dropped_cols,
             dropped_joins=dropped_joins,
@@ -1262,6 +1382,7 @@ def _cascade_query_backed(
             whole_dropped_models=whole_dropped_names,
             pk_per_model=state.pk_per_model,
             candidate_base_names=candidate_base_names,
+            models_by_name=state.models_by_name,
         )
         if reason is None:
             continue
@@ -1604,8 +1725,13 @@ async def _collect_sql_table_diffs(
     out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
     if not sql_table_models:
         return out
+    # Honour the datasource's configured schema_name so non-default-schema
+    # datasources diff against the right table set; otherwise SQLAlchemy
+    # introspects the default and produces false WholeModelDeletes.
     live_tables = await asyncio.to_thread(
-        _live_schema_for_datasource, datasource=datasource
+        _live_schema_for_datasource,
+        datasource=datasource,
+        schema=datasource.schema_name or None,
     )
     for m in sql_table_models:
         live = _resolve_live_table(

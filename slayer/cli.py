@@ -897,8 +897,21 @@ def _run_validate_models(args):
     from slayer.engine.query_engine import SlayerQueryEngine
 
     storage = _resolve_storage(args)
+    if args.datasource:
+        # Fail fast on a typoed name. Without this check, ``validate_models``
+        # returns ``[]`` for an unknown datasource (no models match), which
+        # is indistinguishable from "no drift" and silently exits 0.
+        ds = run_sync(storage.get_datasource(args.datasource))
+        if ds is None:
+            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+            print(f"Datasource '{args.datasource}' not found in {storage_path}")
+            sys.exit(1)
     engine = SlayerQueryEngine(storage=storage)
-    entries = run_sync(engine.validate_models(data_source=args.datasource))
+    try:
+        entries = run_sync(engine.validate_models(data_source=args.datasource))
+    except Exception as exc:  # noqa: BLE001 — surface DB/auth/introspection failures cleanly
+        print(f"validate-models failed: {exc}")
+        sys.exit(1)
     print(_format_validate_models_output(entries))
 
     force_clean = bool(getattr(args, "force_clean", False))
@@ -1349,113 +1362,110 @@ def _load_query_arg(value):
         sys.exit(1)
 
 
+def _exit_with_error(exc: Exception) -> None:
+    print(f"Error: {exc}")
+    sys.exit(1)
+
+
+def _run_memory_save(args, service):
+    from slayer.core.errors import AmbiguousModelError, EntityResolutionError
+
+    if not args.entities and not args.query:
+        print("Error: --entities or --query must be supplied (one or the other).")
+        sys.exit(1)
+    if args.entities and args.query:
+        print("Error: --entities and --query are mutually exclusive.")
+        sys.exit(1)
+    linked = (
+        [e.strip() for e in args.entities.split(",") if e.strip()]
+        if args.entities
+        else _load_query_arg(args.query)
+    )
+    try:
+        response = run_sync(
+            service.save_memory(
+                learning=args.learning,
+                linked_entities=linked,
+            )
+        )
+    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
+        _exit_with_error(exc)
+        return  # for type checkers; _exit_with_error never returns
+    print(f"Saved memory {response.memory_id}.")
+    if response.resolved_entities:
+        print("Resolved entities: " + ", ".join(response.resolved_entities))
+    for warning in response.warnings:
+        print(f"Warning: {warning}")
+
+
+def _run_memory_forget(args, service):
+    from slayer.core.errors import MemoryNotFoundError
+
+    try:
+        response = run_sync(service.forget_memory(identifier=args.id))
+    except (MemoryNotFoundError, ValueError) as exc:
+        _exit_with_error(exc)
+        return
+    print(f"Forgot memory {response.deleted_id}.")
+
+
+def _run_memory_recall(args, service):
+    from slayer.core.errors import AmbiguousModelError, EntityResolutionError
+
+    if args.about and args.about_query:
+        print("Error: --about and --about-query are mutually exclusive.")
+        sys.exit(1)
+    if args.about:
+        about = [a.strip() for a in args.about.split(",") if a.strip()]
+    elif args.about_query:
+        about = _load_query_arg(args.about_query)
+    else:
+        about = []
+    try:
+        response = run_sync(
+            service.recall_memories(
+                about=about,
+                max_learnings=args.max_learnings,
+                max_queries=args.max_queries,
+            )
+        )
+    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
+        _exit_with_error(exc)
+        return
+    for warning in response.warnings:
+        print(f"Warning: {warning}")
+    _print_recall_section("Learnings", response.learnings)
+    _print_recall_section("Queries", response.queries)
+    if not response.learnings and not response.queries:
+        print("No matching memories.")
+
+
+def _print_recall_section(title, hits):
+    if not hits:
+        return
+    print(f"{title} ({len(hits)}):")
+    for hit in hits:
+        tags = ", ".join(hit.matched_entities) or "—"
+        print(f"  M{hit.id} [{tags}]: {hit.learning}")
+
+
+_MEMORY_DISPATCH = {
+    "save": _run_memory_save,
+    "forget": _run_memory_forget,
+    "recall": _run_memory_recall,
+}
+
+
 def _run_memory(args):
     """Dispatcher for ``slayer memory <save|forget|recall>``."""
-    from slayer.core.errors import (
-        AmbiguousModelError,
-        EntityResolutionError,
-        MemoryNotFoundError,
-    )
     from slayer.memories.service import MemoryService
 
-    storage = _resolve_storage(args)
-    service = MemoryService(storage=storage)
-
-    sub = args.memory_command
-    if sub == "save":
-        if not args.entities and not args.query:
-            print(
-                "Error: --entities or --query must be supplied (one or the other)."
-            )
-            sys.exit(1)
-        if args.entities and args.query:
-            print(
-                "Error: --entities and --query are mutually exclusive."
-            )
-            sys.exit(1)
-        if args.entities:
-            linked = [e.strip() for e in args.entities.split(",") if e.strip()]
-        else:
-            linked = _load_query_arg(args.query)
-        try:
-            response = run_sync(
-                service.save_memory(
-                    learning=args.learning,
-                    linked_entities=linked,
-                )
-            )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
-            print(f"Error: {exc}")
-            sys.exit(1)
-        print(f"Saved memory {response.memory_id}.")
-        if response.resolved_entities:
-            print(
-                "Resolved entities: "
-                + ", ".join(response.resolved_entities)
-            )
-        for warning in response.warnings:
-            print(f"Warning: {warning}")
-
-    elif sub == "forget":
-        try:
-            response = run_sync(service.forget_memory(identifier=args.id))
-        except MemoryNotFoundError as exc:
-            print(f"Error: {exc}")
-            sys.exit(1)
-        except ValueError as exc:
-            print(f"Error: {exc}")
-            sys.exit(1)
-        print(f"Forgot memory {response.deleted_id}.")
-
-    elif sub == "recall":
-        if args.about and args.about_query:
-            print(
-                "Error: --about and --about-query are mutually exclusive."
-            )
-            sys.exit(1)
-        if args.about:
-            about = [a.strip() for a in args.about.split(",") if a.strip()]
-        elif args.about_query:
-            about = _load_query_arg(args.about_query)
-        else:
-            about = []
-        try:
-            response = run_sync(
-                service.recall_memories(
-                    about=about,
-                    max_learnings=args.max_learnings,
-                    max_queries=args.max_queries,
-                )
-            )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
-            print(f"Error: {exc}")
-            sys.exit(1)
-        for warning in response.warnings:
-            print(f"Warning: {warning}")
-        if response.learnings:
-            print(f"Learnings ({len(response.learnings)}):")
-            for hit in response.learnings:
-                tags = ", ".join(hit.matched_entities) or "—"
-                print(f"  M{hit.id} [{tags}]: {hit.learning}")
-        if response.queries:
-            print(f"Queries ({len(response.queries)}):")
-            for hit in response.queries:
-                tags = ", ".join(hit.matched_entities) or "—"
-                print(f"  M{hit.id} [{tags}]: {hit.learning}")
-        if not response.learnings and not response.queries:
-            print("No matching memories.")
-
-    else:
+    handler = _MEMORY_DISPATCH.get(args.memory_command)
+    if handler is None:
         print("Usage: slayer memory {save,forget,recall}")
         sys.exit(1)
+    storage = _resolve_storage(args)
+    handler(args, MemoryService(storage=storage))
 
 
 if __name__ == "__main__":

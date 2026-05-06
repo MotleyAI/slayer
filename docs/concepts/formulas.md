@@ -116,7 +116,7 @@ All three forms below — bare name, transform, arithmetic — work as query mea
 
 Bare-name references are inline-expanded at parse time into the saved formula's text, so queries that use the saved name produce the same SQL as queries with the formula written out longhand. Saved formulas can reference other saved formulas (transitively) — cycles like `a → b → a` are detected and rejected with the chain in the error message.
 
-The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`, `change_pct`, `consecutive_periods`) are rejected at model construction time.
+The bare name resolves only when it appears as a standalone identifier — a name that's part of colon syntax (`revenue:sum`), preceded by `.` (cross-model: `customers.aov`), or followed by `(` (a transform call) is not expanded. Saved-measure names that would shadow built-in transform names (`cumsum`, `change`, `time_shift`, `lag`, `lead`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`, `change_pct`, `consecutive_periods`) are rejected at model construction time.
 
 Transforms work on cross-model measures: `"cumsum(customers.score:avg)"`, `"first(customers.score:avg)"`, `"last(customers.score:avg)"`. The cross-model measure is computed first (as a sub-query CTE), then the transform is applied on the joined result.
 
@@ -136,11 +136,14 @@ Functions apply window operations to measures:
 | `change(x)` | Difference from previous period | Desugars to `x - time_shift(x, -1)` |
 | `change_pct(x)` | Percentage change from previous | Desugars to `(x - ts) / ts` where `ts = time_shift(x, -1)` |
 | `consecutive_periods(predicate)` | Current trailing run length where predicate is true | Staged window CTEs with reset groups |
-| `rank(x)` | Ranking by value (descending) | `RANK() OVER (ORDER BY x DESC)` |
+| `rank(x[, partition_by=...])` | Ranking by value (descending) | `RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
+| `percent_rank(x[, partition_by=...])` | Relative rank in [0, 1] (descending) | `PERCENT_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
+| `dense_rank(x[, partition_by=...])` | Ranking with no gaps after ties (descending) | `DENSE_RANK() OVER ([PARTITION BY ...] ORDER BY x DESC)` |
+| `ntile(x, n=N[, partition_by=...])` | Bucket the rows into N equal groups (descending) | `NTILE(N) OVER ([PARTITION BY ...] ORDER BY x DESC)` |
 | `first(x)` | Earliest time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time ASC ...)` |
 | `last(x)` | Most recent time bucket's value | `FIRST_VALUE(x) OVER (ORDER BY time DESC ...)` |
 
-**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. `rank` does not need a time dimension.
+**Time dimension requirement:** All time-ordered transforms (`cumsum`, `time_shift`, `change`, `change_pct`, `first`, `last`, `lag`, `lead`, `consecutive_periods`) require an explicit `time_dimensions` entry in the query. With a single entry, it's used automatically. With 2+ time dimensions, specify the query's `main_time_dimension` to disambiguate, or the model's `default_time_dimension` is used if it's among the query's time dimensions. The rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) do not need a time dimension.
 
 Time-ordered window transforms partition by the query's non-time dimensions.
 For example, `cumsum(revenue:sum)` grouped by `status` computes one running
@@ -186,11 +189,9 @@ Use `show_sql=True` on the query to see what SQL is generated for complex formul
 
 **Mathematical identity:** `cumsum(change(x)) == x - x[0]` for all rows after the first.
 
-### Rank
+### Rank-family transforms
 
-`rank(x)` assigns a ranking to each row based on the measure value (highest = rank 1), using `RANK() OVER (ORDER BY x DESC)`. It does not need a time dimension and does not partition — it ranks across the **entire result set**.
-
-The ranking granularity depends on the query's dimensions and time dimensions. Each unique combination of dimension values becomes one row, and rank orders those rows by the measure:
+The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timeless window-function transforms that order rows by the inner measure descending and emit a per-row rank value. They do not need a time dimension and, unlike the time-ordered transforms (`cumsum`, `lag`, `lead`, `first`, `last`, …), they default to **no `PARTITION BY`** — every row in the result set is ranked against every other row.
 
 ```json
 {
@@ -204,20 +205,38 @@ The ranking granularity depends on the query's dimensions and time dimensions. E
 }
 ```
 
-This ranks customers by total revenue. Combine with `limit` to get "top N":
+Combine with a filter to get "top N":
+
+```json
+{"filters": ["rank(revenue:sum) <= 10"]}
+```
+
+**Choosing between the four:**
+
+- `rank(x)` — ties share a rank, then the next rank is skipped (`1, 1, 3, 4`). Use for top-N rows.
+- `dense_rank(x)` — ties share a rank, no gaps after (`1, 1, 2, 3`). Use for "top N distinct values" / tier counting.
+- `percent_rank(x)` — relative position in `[0, 1]` (`(rank - 1) / (count - 1)`). Use for normalized rankings comparable across queries with different result-set sizes.
+- `ntile(x, n=N)` — bucket every row into one of `N` equal-sized groups (`1` is the top bucket; required `n=` kwarg is a positive integer). Use for quartiles / deciles.
+
+**Ranking within a partition (`partition_by=`):**
+
+To rank within groups instead of across the whole result set, pass `partition_by=` referencing one or more **query dimensions** (or time dimensions). The columns must already be grouped on — partitioning by a column that's not a dimension errors at enrichment time.
 
 ```json
 {
-  ...
-  "filters": ["rank(revenue:sum) <= 10"]
+  "source_model": "orders",
+  "dimensions": ["region", "customer_name"],
+  "measures": [
+    "revenue:sum",
+    {"formula": "dense_rank(revenue:sum, partition_by=region)", "name": "rev_rank_within_region"},
+    {"formula": "ntile(revenue:sum, n=4, partition_by=region)", "name": "rev_quartile_within_region"}
+  ]
 }
 ```
 
-With multiple dimensions (e.g., `status` + `month`), each status/month combination is ranked together — there is no automatic partitioning by dimension.
+Multiple partition columns: `partition_by=[region, channel]`. Cross-model dotted paths work too: `partition_by=customers.region`.
 
-Ties receive the same rank (standard SQL `RANK` behavior): if two rows tie at rank 2, the next row is rank 4.
-
-> **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the `rank()` transform for top-N filtering instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+> **Note:** SLayer's formula parser is Python-AST-based and rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
 
 ### First and Last Functions
 

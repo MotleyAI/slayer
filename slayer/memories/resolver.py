@@ -209,7 +209,7 @@ async def _resolve_dotted_against_model(
     return f"{final_model.data_source}.{final_model.name}"
 
 
-async def resolve_entity(
+async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching the spec's resolution-case table; splitting per-case helpers would obscure the shared error-message style and warning aggregation
     raw: str,
     *,
     storage: StorageBackend,
@@ -233,10 +233,13 @@ async def resolve_entity(
     prefix, agg = _strip_agg_suffix(raw)
 
     # ``*:count`` special case (§3.1): collapses to the source model.
+    # Only ``count`` is valid for the wildcard; ``*:sum`` etc. would
+    # silently get tagged as the model and corrupt the canonical-entity
+    # index, so reject them explicitly.
     if prefix == "*":
-        if agg is None:
+        if agg != "count":
             raise EntityResolutionError(
-                "'*' is not a valid entity reference; use '*:count' "
+                f"'{raw}' is not a valid entity reference; use '*:count' "
                 "to refer to a model's row count."
             )
         if source_model is None:
@@ -252,8 +255,9 @@ async def resolve_entity(
         )
 
     # Detect ``<model>.*:count`` shape — collapse to the model.
+    # Same wildcard rule as above: only ``count`` is valid here.
     if prefix.endswith(".*"):
-        if agg is None:
+        if agg != "count":
             raise EntityResolutionError(
                 f"'{raw}' is not a valid entity reference; use the "
                 f"'<model>.*:count' form."
@@ -431,7 +435,7 @@ def _column_ref_path(ref: ColumnRef) -> str:
     return ref.full_name
 
 
-async def extract_entities_from_query(
+async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (source_model → dimensions → time_dimensions → measures → filters); each branch is independently simple and parallels the SlayerQuery shape
     query: SlayerQuery,
     *,
     storage: StorageBackend,

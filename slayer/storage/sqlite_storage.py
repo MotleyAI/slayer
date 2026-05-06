@@ -10,7 +10,7 @@ runs at open time to upgrade legacy v3 single-PK databases in place.
 import asyncio
 import json
 import sqlite3
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
@@ -244,13 +244,39 @@ class SQLiteStorage(StorageBackend):
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
 
+    # Per-counter recovery seed: when ``id_counters`` has no row for the
+    # given counter but the data table already has rows (e.g. someone
+    # restored ``memories`` from a backup without the matching counters
+    # row), seed ``last_value`` from ``MAX(id)`` so the next allocation
+    # skips past existing rows. Otherwise ``_save_memory_sync``'s
+    # INSERT OR REPLACE would clobber memory id 1.
+    _COUNTER_SEED_TABLES: Dict[str, str] = {"memory_seq": "memories"}
+
+    def _seed_counter_sync(
+        self, conn: sqlite3.Connection, counter_name: str
+    ) -> None:
+        existing = conn.execute(
+            "SELECT 1 FROM id_counters WHERE counter_name = ?",
+            (counter_name,),
+        ).fetchone()
+        if existing is not None:
+            return
+        seed = 0
+        table = self._COUNTER_SEED_TABLES.get(counter_name)
+        if table is not None:
+            row = conn.execute(
+                f"SELECT COALESCE(MAX(id), 0) FROM {table}"
+            ).fetchone()
+            seed = int(row[0]) if row else 0
+        conn.execute(
+            "INSERT INTO id_counters (counter_name, last_value) "
+            "VALUES (?, ?)",
+            (counter_name, seed),
+        )
+
     def _next_seq_sync(self, counter_name: str) -> int:
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO id_counters (counter_name, last_value) "
-                "VALUES (?, 0)",
-                (counter_name,),
-            )
+            self._seed_counter_sync(conn, counter_name)
             row = conn.execute(
                 "UPDATE id_counters SET last_value = last_value + 1 "
                 "WHERE counter_name = ? RETURNING last_value",

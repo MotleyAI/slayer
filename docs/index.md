@@ -41,7 +41,7 @@ Given an `orders` [model](concepts/models.md) with a `revenue` measure and joins
 One query, and SLayer handles:
 
 - **`revenue:sum`** — aggregation is chosen at query time, not baked into the measure definition. The same `revenue` measure works with `sum`, `avg`, `median`, `weighted_avg`, or [any custom aggregation](examples/07_aggregations/aggregations.md).
-- **`change_pct(revenue:sum)`** — month-over-month growth as a [transform](examples/04_time/time.md). SLayer generates the necessary window query. Other built-in transforms: `cumsum`, `change`, `time_shift`, `rank`, `lag`, `lead` — all nestable (`"change(cumsum(revenue:sum))"` works).
+- **`change_pct(revenue:sum)`** — month-over-month growth as a [transform](examples/04_time/time.md). SLayer generates the necessary window query. Other built-in transforms: `cumsum`, `change`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable (`"change(cumsum(revenue:sum))"` works).
 - **`revenue:sum / time_shift(revenue:sum, -1, 'year') - 1`** — arithmetic on aggregated measures. `time_shift` runs a separate time-shifted sub-query and joins it back by all dimensions; dividing by it gives year-over-year growth. Standard operator precedence applies.
 - **`customers.score:last(changed_at)`** — a measure from a [joined model](examples/05_joined_measures/joined_measures.md), resolved by walking the [join graph](examples/05_joins/joins.md). `last` is an aggregation that picks the latest record's value — `changed_at` tells it which column defines "latest."
 - **`customers.regions.name`** — a multi-hop dimension: SLayer traces `orders → customers → regions` and builds the joins automatically.
@@ -51,7 +51,7 @@ One query, and SLayer handles:
 
 - **[Auto-ingestion](concepts/ingestion.md)** — Point it at a database, it introspects the schema, detects foreign keys, and generates models with joins. No manual YAML needed to get started ([tutorial](examples/03_auto_ingest/auto_ingest.md)).
 - **Aggregation at query time** — Measures are expressions, not pre-baked aggregates. `"revenue:sum"`, `"revenue:median"`, `"price:weighted_avg(weight=quantity)"`. Built-in and [custom aggregations](examples/07_aggregations/aggregations.md) with parameters.
-- **Composable transforms** — `cumsum`, `change`, `change_pct`, `time_shift`, `rank`, `lag`, `lead` — all nestable: `"change(cumsum(revenue:sum))"` just works ([tutorial](examples/04_time/time.md)).
+- **Composable transforms** — `cumsum`, `change`, `change_pct`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable: `"change(cumsum(revenue:sum))"` just works ([tutorial](examples/04_time/time.md)).
 - **Cross-model measures** — Query measures from [joined models](examples/05_joined_measures/joined_measures.md) with dot syntax: `"customers.score:avg"`. Joins are auto-resolved by walking the model graph ([tutorial](examples/05_joins/joins.md)).
 - **[Multistage queries](examples/06_multistage_queries/multistage_queries.md)** — Use one query as the source for another, or save any query as a permanent model.
 - **Runtime model editing** — Add measures, dimensions, and joins through any interface. No rebuild, no restart.

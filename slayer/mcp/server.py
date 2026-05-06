@@ -307,7 +307,17 @@ def _render_ingest_result(
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
     if not additions and not result.to_delete and not result.errors:
-        return _empty_ingest_message(schema_name=schema_name, ds=ds)
+        # Two distinct cases produce an empty result:
+        #   1. The schema actually has no tables (the agent should look
+        #      elsewhere — show the "Try schema_name=..." hint).
+        #   2. The schema has tables but every persisted model is sql /
+        #      query-backed (silently skipped by the additive pass) — no
+        #      additive work to do, but the existing models are healthy.
+        # Probe the live table count so we don't misdirect the agent.
+        tables, _err = _fetch_tables(ds=ds, schema_name=schema_name or None)
+        if tables is None or not tables:
+            return _empty_ingest_message(schema_name=schema_name, ds=ds)
+        return "Datasource already in sync — no additive changes."
 
     new_models = [a for a in additions if a.created]
     updated = [a for a in additions if not a.created and (a.new_columns or a.new_joins)]
@@ -1696,17 +1706,20 @@ def create_mcp_server(storage: StorageBackend):
                 if show_sql and sample_sql:
                     payload["sample_sql"] = sample_sql
 
-            # Learnings (DEV-1357)
+            # Learnings (DEV-1357 v2) — Memory carries ``learning``,
+            # not ``body``; reading ``.body`` here would AttributeError
+            # the moment a memory matches and the caller asked for JSON
+            # output.
             if "learnings" in included_set and relevant_learnings:
                 payload["learnings"] = [
                     {
-                        "id": lr.id,
-                        "body": lr.body,
+                        "id": memory.id,
+                        "learning": memory.learning,
                         "matched_entities": sorted(
-                            set(wanted) & set(lr.entities)
+                            set(wanted) & set(memory.entities)
                         ),
                     }
-                    for lr in relevant_learnings
+                    for memory in relevant_learnings
                 ]
 
             # Top-level gating-state arrays (only when non-empty)
@@ -2414,8 +2427,18 @@ def create_mcp_server(storage: StorageBackend):
                 datasource is validated concurrently and results are
                 concatenated.
         """
+        if data_source is not None:
+            # Fail loudly on an unknown name. Without this guard the engine
+            # returns ``[]`` because no persisted models match, which is
+            # indistinguishable from "no drift" — risky for an agent flow.
+            ds = await storage.get_datasource(data_source)
+            if ds is None:
+                return f"Datasource '{data_source}' not found."
         engine = SlayerQueryEngine(storage=storage)
-        entries = await engine.validate_models(data_source=data_source)
+        try:
+            entries = await engine.validate_models(data_source=data_source)
+        except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
+            return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
     @mcp.tool()

@@ -183,6 +183,18 @@ class MemoryService:
         max_learnings: Optional[int] = None,
         max_queries: Optional[int] = 2,
     ) -> RecallResponse:
+        # Negative caps would silently slice "all but the last N"
+        # entries; reject up front so the API behaves predictably.
+        if max_learnings is not None and max_learnings < 0:
+            raise ValueError(
+                "max_learnings must be >= 0 or None; "
+                f"got {max_learnings}."
+            )
+        if max_queries is not None and max_queries < 0:
+            raise ValueError(
+                f"max_queries must be >= 0 or None; got {max_queries}."
+            )
+
         canonical: List[str] = []
         warnings: List[str] = []
 

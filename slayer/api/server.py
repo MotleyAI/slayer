@@ -394,12 +394,43 @@ def create_app(storage: StorageBackend) -> FastAPI:
             )
         return {"status": "deleted", "name": name}
 
-    @app.post("/validate-models")
+    @app.post(
+        "/validate-models",
+        responses={
+            404: {"description": "Datasource not found."},
+            422: {
+                "description": (
+                    "Datasource configuration error during introspection "
+                    "(connection refused, authentication failed, etc.). "
+                    "Original DB error message in ``detail``."
+                ),
+            },
+        },
+    )
     async def validate_models_endpoint(
         request: ValidateModelsRequest,
     ) -> List[Dict[str, Any]]:
         """Diff persisted SlayerModels against live DB schemas. Read-only."""
-        entries = await engine.validate_models(data_source=request.data_source)
+        if request.data_source is not None:
+            ds_check = await storage.get_datasource(request.data_source)
+            if ds_check is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Datasource '{request.data_source}' not found",
+                )
+        from sqlalchemy.exc import SQLAlchemyError
+
+        try:
+            entries = await engine.validate_models(data_source=request.data_source)
+        except SQLAlchemyError as exc:
+            safe_ds = (request.data_source or "").replace("\r", "").replace("\n", "")
+            logger.exception("validate_models failed for datasource %r", safe_ds)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"validate_models failed for datasource '{safe_ds}': {exc}"
+                ),
+            )
         return [e.model_dump(mode="json") for e in entries]
 
     @app.post(

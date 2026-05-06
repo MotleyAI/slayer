@@ -118,7 +118,7 @@ Available topics and what they cover (content lives in `slayer/help/topics/*.md`
 | `queries` | Anatomy of a [query](../concepts/queries.md); evaluation order; dimensions vs [time dimensions](../concepts/queries.md#timedimension) on the same column; `main_time_dimension` disambiguation |
 | `formulas` | The [formula mini-language](../concepts/formulas.md) shared by `measures` and `filters`; colon syntax; arithmetic; nesting |
 | `aggregations` | Built-in and [custom aggregations](../examples/07_aggregations/aggregations.md); `first`/`last` time-column resolution; `allowed_aggregations` |
-| `transforms` | `cumsum`, `time_shift`, `change`, `lag`, `rank`, `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
+| `transforms` | `cumsum`, `time_shift`, `change`, `lag`, the rank family (`rank`/`percent_rank`/`dense_rank`/`ntile`, optional `partition_by=`), `last()` — trade-offs and nesting ([time post](../examples/04_time/time.md)) |
 | `time` | Granularities, `date_range`, `whole_periods_only`, the three meanings of "last" |
 | `filters` | Operators; auto-routing to HAVING / post-filter; filtered measures; [model-level filters](../concepts/models.md#model-filters) |
 | `joins` | Dot syntax and the `__` alias convention; cross-model measures and diamond joins ([joins post](../examples/05_joins/joins.md), [joined measures](../examples/05_joined_measures/joined_measures.md)) |

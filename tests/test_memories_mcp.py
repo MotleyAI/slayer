@@ -459,6 +459,37 @@ class TestRecallMemories:
         assert payload is not None, result
         assert len(payload["learnings"]) == 5
 
+    async def test_negative_max_learnings_rejected(
+        self, mcp_server, seeded: YAMLStorage
+    ) -> None:
+        # Negative caps would silently slice "all but the last N"
+        # entries via Python's negative-index behaviour. Reject up
+        # front so the API is predictable.
+        result = await _call(
+            mcp_server,
+            name="recall_memories",
+            arguments={
+                "about": ["mydb.orders"],
+                "max_learnings": -1,
+            },
+        )
+        assert "max_learnings" in result
+        assert "ValueError" in result or "must be" in result
+
+    async def test_negative_max_queries_rejected(
+        self, mcp_server, seeded: YAMLStorage
+    ) -> None:
+        result = await _call(
+            mcp_server,
+            name="recall_memories",
+            arguments={
+                "about": ["mydb.orders"],
+                "max_queries": -1,
+            },
+        )
+        assert "max_queries" in result
+        assert "ValueError" in result or "must be" in result
+
     async def test_query_arg_extracts_entities(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
@@ -556,30 +587,6 @@ class TestRecallMemories:
         bodies = {hit["learning"] for hit in payload["learnings"]}
         assert bodies == {"A", "B"}
         assert payload["warnings"], "expected a warning for empty input"
-
-    async def test_query_with_no_entities_returns_all_with_warning(
-        self,
-        mcp_server,
-        seeded: YAMLStorage,
-    ) -> None:
-        # A query that doesn't reference anything resolvable. We use a
-        # bare query with no source_model + no measures — extraction
-        # yields zero entities, so the recency fallback should fire.
-        await seeded.save_memory(
-            learning="A", entities=["mydb.orders"]
-        )
-        # Empty-ish query payload — we use a model name that doesn't
-        # exist so extraction surfaces no canonical entities. The
-        # call must still succeed with a warning + recency fallback.
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": []},
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        assert payload["warnings"]
-
 
 # ---------------------------------------------------------------------------
 # Tool registration smoke

@@ -264,6 +264,56 @@ class TestMemoryIds:
             )
             assert third.id == 3
 
+    async def test_yaml_seq_recovers_when_counters_file_missing(
+        self,
+    ) -> None:
+        """If counters.yaml is wiped but memories.yaml still has rows,
+        the next allocation must skip past existing ids — not restart at
+        1 and overwrite memory 1 via _save_memory_row's id-replace."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ys = YAMLStorage(base_dir=tmpdir)
+            await ys.save_memory(learning="a", entities=["mydb.orders"])
+            await ys.save_memory(learning="b", entities=["mydb.orders"])
+            os.remove(os.path.join(tmpdir, "counters.yaml"))
+            del ys
+            ys2 = YAMLStorage(base_dir=tmpdir)
+            third = await ys2.save_memory(
+                learning="c", entities=["mydb.orders"]
+            )
+            assert third.id == 3
+            # All three rows must still exist — no id collision.
+            ids = sorted(m.id for m in await ys2.list_memories())
+            assert ids == [1, 2, 3]
+
+    async def test_sqlite_seq_seeds_from_max_id_when_counter_missing(
+        self,
+    ) -> None:
+        """If id_counters has no row for memory_seq but memories has
+        rows (e.g. someone restored memories without the counter row),
+        seq must seed from MAX(id) — not return 1 and let
+        _save_memory_sync clobber memory 1 via INSERT OR REPLACE."""
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test.db")
+            ss = SQLiteStorage(db_path=db_path)
+            await ss.save_memory(learning="a", entities=["mydb.orders"])
+            await ss.save_memory(learning="b", entities=["mydb.orders"])
+            # Wipe just the counter row, leaving the memories rows.
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "DELETE FROM id_counters WHERE counter_name = ?",
+                    ("memory_seq",),
+                )
+            del ss
+            ss2 = SQLiteStorage(db_path=db_path)
+            third = await ss2.save_memory(
+                learning="c", entities=["mydb.orders"]
+            )
+            assert third.id == 3
+            ids = sorted(m.id for m in await ss2.list_memories())
+            assert ids == [1, 2, 3]
+
 
 # ---------------------------------------------------------------------------
 # Persisted shape preservation
