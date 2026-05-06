@@ -16,6 +16,7 @@ import sqlalchemy as sa
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -728,3 +729,185 @@ def ingest_datasource(
 
     sa_engine.dispose()
     return models
+
+
+# ---------------------------------------------------------------------------
+# Idempotent re-ingestion (DEV-1356)
+# ---------------------------------------------------------------------------
+
+
+def _existing_join_signatures(model: SlayerModel) -> Set[Tuple[str, Tuple[Tuple[str, str], ...]]]:
+    """Return the set of (target_model, sorted join_pair tuples) signatures
+    for joins already on ``model``. Used to detect new joins.
+    """
+    out: Set[Tuple[str, Tuple[Tuple[str, str], ...]]] = set()
+    for j in model.joins:
+        sig_pairs = tuple(sorted((p[0], p[1]) for p in j.join_pairs))
+        out.add((j.target_model, sig_pairs))
+    return out
+
+
+def _additive_merge_existing(
+    *,
+    persisted: SlayerModel,
+    fresh: SlayerModel,
+) -> Tuple[SlayerModel, List[str], List[str]]:
+    """Merge a freshly-ingested ``fresh`` model into ``persisted`` additively.
+
+    Returns ``(merged, new_column_names, new_join_target_names)``.
+
+    * Existing columns are preserved verbatim (description / label / format /
+      meta / allowed_aggregations / filter never overwritten).
+    * Live columns whose names are absent from ``persisted.columns`` are
+      appended from ``fresh.columns``.
+    * Joins with new ``(target_model, join_pairs)`` signatures are appended.
+    """
+    existing_col_names = {c.name for c in persisted.columns}
+    new_columns: List[Column] = list(persisted.columns)
+    new_column_names: List[str] = []
+    for c in fresh.columns:
+        if c.name in existing_col_names:
+            continue
+        new_columns.append(c)
+        new_column_names.append(c.name)
+
+    existing_join_sigs = _existing_join_signatures(persisted)
+    new_joins: List[ModelJoin] = list(persisted.joins)
+    new_join_targets: List[str] = []
+    for j in fresh.joins:
+        sig = (j.target_model, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
+        if sig in existing_join_sigs:
+            continue
+        new_joins.append(j)
+        new_join_targets.append(j.target_model)
+
+    if not new_column_names and not new_join_targets:
+        return persisted, [], []
+
+    merged = persisted.model_copy(
+        update={"columns": new_columns, "joins": new_joins}
+    )
+    return merged, new_column_names, new_join_targets
+
+
+async def ingest_datasource_idempotent(
+    *,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+    include_tables: Optional[List[str]] = None,
+    exclude_tables: Optional[List[str]] = None,
+    schema: Optional[str] = None,
+):
+    """Idempotent re-ingestion (DEV-1356).
+
+    Walks the live datasource and, for each in-scope table:
+
+    * Creates a fresh ``sql_table``-mode SlayerModel when none exists.
+    * Appends new columns / joins to an existing ``sql_table``-mode model
+      without ever overwriting existing entries.
+    * Skips ``sql``-mode and query-backed models silently — those are
+      user-authored.
+
+    After the additive pass, runs ``validate_models`` scoped to the same
+    in-scope set so type drift on existing columns / dropped tables show up
+    in ``to_delete``.
+    """
+    # Local import to avoid an import cycle with engine.schema_drift.
+    from slayer.engine.schema_drift import (
+        IdempotentIngestResult,
+        IngestionError,
+        ModelAddition,
+        validate_datasource,
+    )
+
+    additions: List[ModelAddition] = []
+    errors: List[IngestionError] = []
+
+    fresh_models = ingest_datasource(
+        datasource=datasource,
+        include_tables=include_tables,
+        exclude_tables=exclude_tables,
+        schema=schema,
+    )
+    fresh_by_name = {m.name: m for m in fresh_models}
+
+    in_scope_table_names: Set[str] = set(fresh_by_name.keys())
+
+    for table_name, fresh in fresh_by_name.items():
+        try:
+            persisted = await storage.get_model(
+                table_name, data_source=datasource.name
+            )
+            if persisted is None:
+                # New table — save the fresh model verbatim.
+                await storage.save_model(fresh)
+                additions.append(
+                    ModelAddition(
+                        model_name=table_name,
+                        data_source=datasource.name,
+                        created=True,
+                        new_columns=[c.name for c in fresh.columns],
+                        new_joins=[j.target_model for j in fresh.joins],
+                    )
+                )
+                continue
+            if persisted.sql or persisted.source_queries:
+                # User-authored sql / query-backed model with the same
+                # name as a live table — leave it alone.
+                continue
+            merged, new_cols, new_joins = _additive_merge_existing(
+                persisted=persisted, fresh=fresh
+            )
+            if new_cols or new_joins:
+                await storage.save_model(merged)
+            additions.append(
+                ModelAddition(
+                    model_name=table_name,
+                    data_source=datasource.name,
+                    created=False,
+                    new_columns=new_cols,
+                    new_joins=new_joins,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
+            errors.append(
+                IngestionError(
+                    model_name=table_name,
+                    data_source=datasource.name,
+                    error=str(exc),
+                )
+            )
+
+    # Build the in-scope persisted model list for validate_datasource.
+    # Only validates models whose ``sql_table`` belongs to the in-scope set
+    # AND user-authored sql / query-backed models tied to the same DS.
+    identities = await storage._list_all_model_identities()
+    ds_model_names = [n for d, n in identities if d == datasource.name]
+    scoped_models: List[SlayerModel] = []
+    for name in ds_model_names:
+        m = await storage.get_model(name, data_source=datasource.name)
+        if m is None:
+            continue
+        # sql_table-mode: include only when the live table is in scope.
+        if m.sql_table:
+            bare_table = (
+                m.sql_table.split(".", 1)[1]
+                if "." in m.sql_table
+                else m.sql_table
+            )
+            if bare_table in in_scope_table_names:
+                scoped_models.append(m)
+            continue
+        # sql / query-backed: always validate (their drift is independent of
+        # the include/exclude table filter, but stays scoped to the DS).
+        scoped_models.append(m)
+
+    to_delete = await validate_datasource(
+        datasource=datasource, models=scoped_models
+    )
+
+    return IdempotentIngestResult(
+        additions=additions,
+        to_delete=list(to_delete),
+        errors=errors,
+    )

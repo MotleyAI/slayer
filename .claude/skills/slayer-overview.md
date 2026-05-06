@@ -29,7 +29,8 @@ Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample da
 Querying: `query`
 Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`
-Ingestion: `ingest_datasource_models`
+Ingestion: `ingest_datasource_models` (idempotent — re-runs are additive only; returns combined `IdempotentIngestResult` with `additions`, `to_delete` from validate_models, `errors`)
+Schema drift: `validate_models` (read-only diff against live schemas, returns the minimal list of replayable deletes)
 
 ## Package Structure
 

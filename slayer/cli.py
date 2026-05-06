@@ -190,6 +190,38 @@ examples:
     )
     _add_storage_arg(ingest_parser)
 
+    # ── validate-models ───────────────────────────────────────────────
+    validate_parser = subparsers.add_parser(
+        "validate-models",
+        help="Diff persisted models against live DB schemas (read-only)",
+        epilog="""\
+examples:
+  slayer validate-models                      # check every datasource
+  slayer validate-models --datasource my_pg
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    validate_parser.add_argument(
+        "--datasource",
+        default=None,
+        help="Datasource name. If omitted, every datasource is validated.",
+    )
+    validate_parser.add_argument(
+        "--force-clean",
+        action="store_true",
+        help=(
+            "After printing the diff, prompt to apply each delete via "
+            "edit_model / delete_model. Destructive; opt-in only."
+        ),
+    )
+    validate_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="With --force-clean, skip the confirmation prompt.",
+    )
+    _add_storage_arg(validate_parser)
+
     # ── import-dbt ────────────────────────────────────────────────────
     import_dbt_parser = subparsers.add_parser(
         "import-dbt",
@@ -367,6 +399,8 @@ examples:
         _run_query(args)
     elif args.command == "ingest":
         _run_ingest(args)
+    elif args.command == "validate-models":
+        _run_validate_models(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
     elif args.command == "models":
@@ -540,7 +574,7 @@ def _run_mcp(args):
 
 
 def _run_ingest(args):
-    from slayer.engine.ingestion import ingest_datasource
+    from slayer.engine.ingestion import ingest_datasource_idempotent
 
     storage = _resolve_storage(args)
     ds = run_sync(storage.get_datasource(args.datasource))
@@ -552,15 +586,103 @@ def _run_ingest(args):
     include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
     exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
 
-    models = ingest_datasource(
-        datasource=ds,
-        schema=args.schema,
-        include_tables=include,
-        exclude_tables=exclude,
+    result = run_sync(
+        ingest_datasource_idempotent(
+            datasource=ds,
+            storage=storage,
+            schema=args.schema,
+            include_tables=include,
+            exclude_tables=exclude,
+        )
     )
-    for model in models:
-        run_sync(storage.save_model(model))
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+    for addition in result.additions:
+        if addition.created:
+            print(
+                f"Created: {addition.model_name} ({len(addition.new_columns)} columns)"
+            )
+        elif addition.new_columns or addition.new_joins:
+            details = []
+            if addition.new_columns:
+                details.append(f"+columns: {', '.join(addition.new_columns)}")
+            if addition.new_joins:
+                details.append(f"+joins: {', '.join(addition.new_joins)}")
+            print(f"Updated: {addition.model_name} ({'; '.join(details)})")
+    if result.to_delete:
+        print("\nPending drift (run `slayer validate-models` to inspect):")
+        for entry in result.to_delete:
+            print(f"  - {entry.tool}: {entry.model_name}")
+    if result.errors:
+        print(f"\nErrors ({len(result.errors)}):")
+        for err in result.errors:
+            print(f"  - {err.model_name}: {err.error}")
+
+
+def _format_validate_models_output(entries) -> str:
+    """Render a List[ToDeleteEntry] as human-readable text for CLI output."""
+    if not entries:
+        return "No drift detected."
+    lines = []
+    for entry in entries:
+        if entry.tool == "delete_model":
+            lines.append(f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})")
+        else:
+            lines.append(
+                f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"
+            )
+            if entry.remove.columns:
+                lines.append(f"  drop columns: {', '.join(entry.remove.columns)}")
+            if entry.remove.measures:
+                lines.append(f"  drop measures: {', '.join(entry.remove.measures)}")
+            if entry.remove.aggregations:
+                lines.append(
+                    f"  drop aggregations: {', '.join(entry.remove.aggregations)}"
+                )
+            if entry.remove.joins:
+                lines.append(f"  drop joins: {', '.join(entry.remove.joins)}")
+            if entry.remove_filters:
+                lines.append(
+                    "  remove filters: " + "; ".join(entry.remove_filters)
+                )
+        for r in entry.reasons:
+            lines.append(f"    - {r.target}: {r.reason}")
+    return "\n".join(lines)
+
+
+def _run_validate_models(args):
+    from slayer.engine.query_engine import SlayerQueryEngine
+
+    storage = _resolve_storage(args)
+    engine = SlayerQueryEngine(storage=storage)
+    entries = run_sync(engine.validate_models(data_source=args.datasource))
+    print(_format_validate_models_output(entries))
+
+    force_clean = bool(getattr(args, "force_clean", False))
+    if not force_clean:
+        return
+
+    if not entries:
+        return
+
+    if not _confirm(
+        f"\nApply {len(entries)} delete(s) to storage?",
+        assume_yes=bool(getattr(args, "yes", False)),
+    ):
+        print("Aborted; storage unchanged.")
+        return
+
+    result = run_sync(engine.apply_drift_deletes(entries))
+    print(f"\nApplied {len(result.applied)} entry/entries.")
+    if result.errors:
+        print(f"Errors ({len(result.errors)}):")
+        for err in result.errors:
+            print(f"  - {err.tool} {err.model_name}: {err.error}")
+    if result.residual:
+        print("\nResidual drift after apply:")
+        print(_format_validate_models_output(result.residual))
+        sys.exit(1)
+    if result.errors:
+        sys.exit(1)
+    print("\n✓ no remaining drift")
 
 
 def _run_import_dbt(args):

@@ -230,6 +230,65 @@ def _resolve_inspect_sections(
     return resolved, unknown
 
 
+def _render_ingest_result(
+    result: Any,
+    *,
+    datasource_name: str,
+    schema_name: str,
+    ds: DatasourceConfig,
+) -> str:
+    """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
+    additions = list(result.additions)
+    new_models = [a for a in additions if a.created]
+    updated = [a for a in additions if not a.created and (a.new_columns or a.new_joins)]
+    if not additions and not result.to_delete and not result.errors:
+        schema_label = f" in schema '{schema_name}'" if schema_name else ""
+        lines = [f"No tables found{schema_label}."]
+        schemas = _get_schemas(ds)
+        if schemas:
+            lines.append(f"Available schemas: {', '.join(schemas)}")
+            lines.append(
+                "Try: ingest_datasource_models with schema_name set to one of these."
+            )
+        return "\n".join(lines)
+
+    lines: List[str] = []
+    if new_models:
+        lines.append(f"Created {len(new_models)} new model(s):")
+        for a in new_models:
+            lines.append(
+                f"- {a.model_name} ({len(a.new_columns)} columns, {len(a.new_joins)} joins)"
+            )
+    if updated:
+        lines.append(f"Updated {len(updated)} existing model(s):")
+        for a in updated:
+            details = []
+            if a.new_columns:
+                details.append(f"+columns: {', '.join(a.new_columns)}")
+            if a.new_joins:
+                details.append(f"+joins: {', '.join(a.new_joins)}")
+            lines.append(f"- {a.model_name} ({'; '.join(details)})")
+    no_change = [a for a in additions if not a.created and not a.new_columns and not a.new_joins]
+    if no_change:
+        lines.append(
+            f"Re-introspected {len(no_change)} unchanged model(s): "
+            f"{', '.join(a.model_name for a in no_change)}"
+        )
+    if result.to_delete:
+        lines.append("")
+        lines.append("Pending drift (run validate_models / apply manually):")
+        for entry in result.to_delete:
+            lines.append(f"- {entry.tool}: {entry.model_name}")
+    if result.errors:
+        lines.append("")
+        lines.append(f"Errors ({len(result.errors)}):")
+        for err in result.errors:
+            lines.append(f"- {err.model_name}: {err.error}")
+    if not lines:
+        lines.append("Datasource already in sync — no changes.")
+    return "\n".join(lines)
+
+
 def _render_inspect_footer(
     *,
     included: List[str],
@@ -2250,6 +2309,24 @@ def create_mcp_server(storage: StorageBackend):
         return f"Model '{name}' not found."
 
     @mcp.tool()
+    async def validate_models(data_source: Optional[str] = None) -> str:
+        """Diff persisted SLayer models against the live database schema(s).
+
+        Returns a JSON-serialized list of pending delete operations
+        (column drops, measure drops, join drops, filter removals, whole
+        models) needed to keep stored models valid against the current
+        live state. Read-only — does not modify storage.
+
+        Args:
+            data_source: Datasource name to validate. When omitted, every
+                datasource is validated concurrently and results are
+                concatenated.
+        """
+        engine = SlayerQueryEngine(storage=storage)
+        entries = await engine.validate_models(data_source=data_source)
+        return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
+
+    @mcp.tool()
     async def delete_datasource(name: str) -> str:
         """Delete a datasource configuration.
 
@@ -2266,14 +2343,19 @@ def create_mcp_server(storage: StorageBackend):
 
     @mcp.tool()
     async def ingest_datasource_models(datasource_name: str, include_tables: str = "", schema_name: str = "") -> str:
-        """Auto-discover tables in a database and create semantic models from them. Inspects the schema and generates one model per table with dimensions and measures inferred from column types.
+        """Auto-discover tables in a database and create / additively update semantic models from them.
+
+        Idempotent (DEV-1356): re-runs are additive only. New columns and joins
+        are appended to existing models; existing column / join definitions
+        are never overwritten. After the additive pass, returns the pending
+        ``validate_models`` deletes alongside the additions.
 
         Args:
             datasource_name: Name of an existing datasource (from list_datasources).
             include_tables: Comma-separated list of table names to include. If empty, all tables are ingested.
             schema_name: Database schema to inspect (e.g. "public"). If empty, uses the default schema.
         """
-        from slayer.engine.ingestion import ingest_datasource as _ingest
+        from slayer.engine.ingestion import ingest_datasource_idempotent
 
         ds = await storage.get_datasource(datasource_name)
         if ds is None:
@@ -2281,30 +2363,20 @@ def create_mcp_server(storage: StorageBackend):
 
         try:
             include = [t.strip() for t in include_tables.split(",") if t.strip()] or None
-            models = _ingest(datasource=ds, include_tables=include, schema=schema_name or None)
+            result = await ingest_datasource_idempotent(
+                datasource=ds,
+                storage=storage,
+                include_tables=include,
+                schema=schema_name or None,
+            )
         except Exception as e:
             if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
                 return _friendly_db_error(e)
             raise
 
-        for model in models:
-            await storage.save_model(model)
-
-        if not models:
-            schema_label = f" in schema '{schema_name}'" if schema_name else ""
-            lines = [f"No tables found{schema_label}."]
-            schemas = _get_schemas(ds)
-            if schemas:
-                lines.append(f"Available schemas: {', '.join(schemas)}")
-                lines.append("Try: ingest_datasource_models with schema_name set to one of these.")
-            return "\n".join(lines)
-
-        lines = [f"Ingested {len(models)} model(s):"]
-        for m in models:
-            lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
-        lines.append("")
-        lines.append("Use models_summary and inspect_model to explore, then query to fetch data.")
-        return "\n".join(lines)
+        return _render_ingest_result(
+            result, datasource_name=datasource_name, schema_name=schema_name, ds=ds
+        )
 
     @mcp.tool()
     async def set_datasource_priority(priority: List[str]) -> str:

@@ -472,12 +472,114 @@ class SlayerQueryEngine:
         # explain: run dialect-appropriate EXPLAIN on the query
         if explain:
             explain_sql = _build_explain_sql(dialect=dialect, sql=sql)
-            rows = await client.execute(sql=explain_sql)
+            try:
+                rows = await client.execute(sql=explain_sql)
+            except Exception as exc:
+                await self._maybe_raise_schema_drift(
+                    err=exc, model=model, enriched=enriched
+                )
+                raise
             return SlayerResponse(data=rows, sql=sql, attributes=attributes)
 
-        rows = await client.execute(sql=sql)
+        try:
+            rows = await client.execute(sql=sql)
+        except Exception as exc:
+            await self._maybe_raise_schema_drift(
+                err=exc, model=model, enriched=enriched
+            )
+            raise
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
+
+    @staticmethod
+    def _collect_models_touched(
+        *, model: SlayerModel, enriched: "EnrichedQuery"
+    ) -> "set[str]":
+        """Compute the set of model names that participated in this query.
+
+        Includes:
+        * the source model
+        * direct join targets (from enriched.resolved_joins / model.joins)
+        * cross-model measure source models
+        * for query-backed source models, every base model name reachable
+          through ``source_queries`` stages.
+        """
+        touched: set[str] = {model.name}
+        for cm in enriched.cross_model_measures:
+            touched.add(cm.target_model_name)
+            touched.add(cm.source_model_name)
+        # Walk join targets named in the model definition.
+        for j in model.joins:
+            touched.add(j.target_model)
+        # Query-backed transitive base models.
+        if model.source_queries:
+            stages = list(model.source_queries)
+            stage_names = {
+                getattr(s, "name", None) for s in stages if getattr(s, "name", None)
+            }
+            for stage in stages:
+                sm = getattr(stage, "source_model", None)
+                if isinstance(sm, str) and sm not in stage_names:
+                    touched.add(sm)
+                elif isinstance(sm, SlayerModel):
+                    touched.add(sm.name)
+                for j in stage.joins or []:
+                    touched.add(j.target_model)
+        return touched
+
+    async def _maybe_raise_schema_drift(
+        self,
+        *,
+        err: BaseException,
+        model: SlayerModel,
+        enriched: "EnrichedQuery",
+    ) -> None:
+        """Attribute a query-time exception to schema drift via
+        ``validate_models``. If drift is found in the touched models, raise
+        ``SchemaDriftError`` (with ``err`` as ``__cause__``); otherwise
+        return so the caller re-raises the original exception untouched.
+
+        Any error from ``validate_models`` itself is swallowed so the
+        original exception is never masked.
+        """
+        from slayer.core.errors import SchemaDriftError
+
+        try:
+            touched = self._collect_models_touched(model=model, enriched=enriched)
+            data_sources: set[str] = {model.data_source} if model.data_source else set()
+            for cm in enriched.cross_model_measures:
+                # Cross-model measure source models share the parent's DS in
+                # validated queries — we still recompute via storage to be safe.
+                pass
+
+            collected: List[Any] = []
+            for ds_name in data_sources or {None}:
+                try:
+                    entries = await self.validate_models(data_source=ds_name)
+                except Exception as inner:
+                    logger.debug(
+                        "validate_models attribution failed for ds=%r: %s",
+                        ds_name,
+                        inner,
+                    )
+                    continue
+                collected.extend(entries)
+            filtered = [
+                e for e in collected if getattr(e, "model_name", None) in touched
+            ]
+            if filtered:
+                raise SchemaDriftError(
+                    models=sorted(touched),
+                    to_delete=filtered,
+                    original=err,
+                )
+        except SchemaDriftError:
+            raise
+        except Exception as inner:
+            logger.debug(
+                "schema-drift attribution swallowed an internal error: %s",
+                inner,
+            )
 
     def _build_type_probe_query(self, model: SlayerModel) -> SlayerQuery:
         """Build a SlayerQuery for type-probing all of a model's columns.
@@ -595,6 +697,192 @@ class SlayerQueryEngine:
         return run_sync(
             self.execute(query, variables=variables, dry_run=dry_run, explain=explain)
         )
+
+    async def edit_model_remove(
+        self,
+        *,
+        model_name: str,
+        data_source: Optional[str],
+        remove_columns: Optional[List[str]] = None,
+        remove_measures: Optional[List[str]] = None,
+        remove_aggregations: Optional[List[str]] = None,
+        remove_joins: Optional[List[str]] = None,
+        remove_filters: Optional[List[str]] = None,
+    ) -> SlayerModel:
+        """Apply surgical removals to a persisted model.
+
+        Removes columns / measures / aggregations / joins by name, plus
+        verbatim filter strings, and persists the resulting model. Returns
+        the updated model.
+        """
+        existing = await self.storage.get_model(model_name, data_source=data_source)
+        if existing is None:
+            raise ValueError(
+                f"Model {model_name!r} not found in datasource {data_source!r}."
+            )
+        cols_to_remove = set(remove_columns or [])
+        measures_to_remove = set(remove_measures or [])
+        aggs_to_remove = set(remove_aggregations or [])
+        joins_to_remove = set(remove_joins or [])
+        filters_to_remove = list(remove_filters or [])
+
+        new_columns = [c for c in existing.columns if c.name not in cols_to_remove]
+        new_measures = [
+            m for m in existing.measures if m.name not in measures_to_remove
+        ]
+        new_aggs = [a for a in existing.aggregations if a.name not in aggs_to_remove]
+        new_joins = [
+            j for j in existing.joins if j.target_model not in joins_to_remove
+        ]
+        new_filters = [f for f in existing.filters if f not in filters_to_remove]
+
+        updated = existing.model_copy(
+            update={
+                "columns": new_columns,
+                "measures": new_measures,
+                "aggregations": new_aggs,
+                "joins": new_joins,
+                "filters": new_filters,
+            }
+        )
+        # Re-validate via Pydantic, then save.
+        SlayerModel.model_validate(updated.model_dump())
+        await self.storage.save_model(updated)
+        return updated
+
+    async def delete_model_by_name(
+        self, *, model_name: str, data_source: Optional[str]
+    ) -> bool:
+        """Delete a persisted model by name. Returns True if the model existed."""
+        return await self.storage.delete_model(model_name, data_source=data_source)
+
+    async def apply_drift_deletes(
+        self, deletes: "List[Any]"
+    ) -> "Any":
+        """Apply each ``ToDeleteEntry`` via the engine helpers and return
+        the combined ``ApplyDriftResult`` (applied, errors, residual).
+
+        Order is irrelevant for correctness: each entry is a pure storage
+        mutation on a single model. Per-entry failures are captured in
+        ``errors`` and processing continues; after all entries are
+        attempted, ``validate_models`` re-runs on the touched datasources
+        and the result populates ``residual``.
+        """
+        from slayer.engine.schema_drift import (
+            AppliedEntry,
+            ApplyDriftResult,
+            ApplyError,
+        )
+
+        applied: List[AppliedEntry] = []
+        errors: List[ApplyError] = []
+        touched_ds: set[str] = set()
+
+        for entry in deletes:
+            try:
+                if entry.tool == "delete_model":
+                    await self.delete_model_by_name(
+                        model_name=entry.model_name,
+                        data_source=entry.data_source,
+                    )
+                elif entry.tool == "edit_model":
+                    await self.edit_model_remove(
+                        model_name=entry.model_name,
+                        data_source=entry.data_source,
+                        remove_columns=list(entry.remove.columns),
+                        remove_measures=list(entry.remove.measures),
+                        remove_aggregations=list(entry.remove.aggregations),
+                        remove_joins=list(entry.remove.joins),
+                        remove_filters=list(entry.remove_filters),
+                    )
+                else:
+                    raise ValueError(f"Unknown delete tool: {entry.tool!r}")
+                applied.append(
+                    AppliedEntry(
+                        tool=entry.tool,
+                        model_name=entry.model_name,
+                        data_source=entry.data_source,
+                    )
+                )
+                touched_ds.add(entry.data_source)
+            except Exception as exc:  # noqa: BLE001 — best-effort per-entry isolation
+                errors.append(
+                    ApplyError(
+                        tool=entry.tool,
+                        model_name=entry.model_name,
+                        data_source=entry.data_source,
+                        error=str(exc),
+                    )
+                )
+
+        # Re-validate the touched datasources to compute residual drift.
+        residual: List[Any] = []
+        for ds_name in touched_ds:
+            try:
+                residual.extend(await self.validate_models(data_source=ds_name))
+            except Exception as inner:
+                logger.debug(
+                    "post-apply validate_models failed for ds=%r: %s",
+                    ds_name,
+                    inner,
+                )
+        return ApplyDriftResult(
+            applied=applied,
+            errors=errors,
+            residual=list(residual),
+        )
+
+    async def validate_models(
+        self, data_source: Optional[str] = None
+    ) -> "List[Any]":
+        """Diff persisted models against live database schemas.
+
+        Returns the minimal list of deletes needed for SQL generation to
+        remain valid. Read-only — never mutates storage. When
+        ``data_source`` is ``None``, every datasource is validated
+        concurrently and results are concatenated.
+        """
+        import asyncio as _asyncio
+
+        from slayer.engine.schema_drift import (
+            ToDeleteEntry,
+            validate_datasource,
+        )
+
+        if data_source is not None:
+            ds = await self.storage.get_datasource(data_source)
+            if ds is None:
+                return []
+            identities = await self.storage._list_all_model_identities()
+            ds_model_names = [n for d, n in identities if d == data_source]
+            models: List[SlayerModel] = []
+            for name in ds_model_names:
+                m = await self.storage.get_model(name, data_source=data_source)
+                if m is not None:
+                    models.append(m)
+            return await validate_datasource(
+                datasource=ds,
+                models=models,
+                sql_clients=self._sql_clients,
+            )
+
+        ds_names = await self.storage.list_datasources()
+        if not ds_names:
+            return []
+
+        async def _validate_one(name: str) -> "List[ToDeleteEntry]":
+            return await self.validate_models(data_source=name)
+
+        results = await _asyncio.gather(
+            *(_validate_one(n) for n in ds_names), return_exceptions=True
+        )
+        out: List = []
+        for r in results:
+            if isinstance(r, BaseException):
+                logger.warning("validate_models: per-DS validation failed: %s", r)
+                continue
+            out.extend(r)
+        return out
 
     def create_model_from_query_sync(
         self,

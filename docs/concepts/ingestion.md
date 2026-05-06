@@ -62,14 +62,18 @@ slayer ingest --datasource my_postgres --schema public --storage ./slayer_data
 ### Python
 
 ```python
-from slayer.engine.ingestion import ingest_datasource
+from slayer.engine.ingestion import ingest_datasource_idempotent
 
-models = ingest_datasource(
+result = await ingest_datasource_idempotent(
     datasource=ds,
+    storage=storage,
     schema="public",
     include_tables=["orders", "customers"],  # Optional filter
     exclude_tables=["migrations"],            # Optional exclusion
 )
+# result.additions  — what was added (new models / columns / joins)
+# result.to_delete  — pending validate_models drift entries
+# result.errors     — per-model failures (best-effort, doesn't abort)
 ```
 
 ### MCP
@@ -132,3 +136,15 @@ This avoids table alias collisions and allows querying both paths simultaneously
 ## Cycle Handling
 
 If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warning and falls back to simple models without rollup joins.
+
+## Idempotent Re-Ingestion
+
+`slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
+
+- **No persisted model with that name** → ingest from scratch via the path above.
+- **Existing `sql_table`-mode model** → append new columns and joins from the live schema. Existing columns and joins are **never** mutated — `description`, `label`, `format`, `meta`, and `allowed_aggregations` are preserved verbatim.
+- **Existing `sql`-mode or query-backed model with the matching name** → skipped silently; those are user-authored.
+
+After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
+
+`include_tables` / `exclude_tables` constrain both the additive pass and the validator — excluded tables are not touched in either direction.
