@@ -546,11 +546,10 @@ class SlayerQueryEngine:
 
         try:
             touched = self._collect_models_touched(model=model, enriched=enriched)
+            # Cross-model measure source models share the parent's DS in
+            # validated queries (cross-DS joins are rejected at resolve
+            # time), so attribution only needs the parent's data_source.
             data_sources: set[str] = {model.data_source} if model.data_source else set()
-            for cm in enriched.cross_model_measures:
-                # Cross-model measure source models share the parent's DS in
-                # validated queries — we still recompute via storage to be safe.
-                pass
 
             collected: List[Any] = []
             for ds_name in data_sources or {None}:

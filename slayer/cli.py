@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from typing import List
 
 from slayer.async_utils import run_sync
 from slayer.storage.base import default_storage_path
@@ -573,40 +574,23 @@ def _run_mcp(args):
     mcp.run()
 
 
-def _run_ingest(args):
-    from slayer.engine.ingestion import ingest_datasource_idempotent
-
-    storage = _resolve_storage(args)
-    ds = run_sync(storage.get_datasource(args.datasource))
-    if ds is None:
-        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
-        print(f"Datasource '{args.datasource}' not found in {storage_path}")
-        sys.exit(1)
-
-    include = [t for t in (s.strip() for s in args.include.split(",")) if t] if args.include else None
-    exclude = [t for t in (s.strip() for s in args.exclude.split(",")) if t] if args.exclude else None
-
-    result = run_sync(
-        ingest_datasource_idempotent(
-            datasource=ds,
-            storage=storage,
-            schema=args.schema,
-            include_tables=include,
-            exclude_tables=exclude,
+def _print_ingest_addition(addition) -> None:
+    if addition.created:
+        print(
+            f"Created: {addition.model_name} ({len(addition.new_columns)} columns)"
         )
-    )
-    for addition in result.additions:
-        if addition.created:
-            print(
-                f"Created: {addition.model_name} ({len(addition.new_columns)} columns)"
-            )
-        elif addition.new_columns or addition.new_joins:
-            details = []
-            if addition.new_columns:
-                details.append(f"+columns: {', '.join(addition.new_columns)}")
-            if addition.new_joins:
-                details.append(f"+joins: {', '.join(addition.new_joins)}")
-            print(f"Updated: {addition.model_name} ({'; '.join(details)})")
+        return
+    if not (addition.new_columns or addition.new_joins):
+        return
+    details = []
+    if addition.new_columns:
+        details.append(f"+columns: {', '.join(addition.new_columns)}")
+    if addition.new_joins:
+        details.append(f"+joins: {', '.join(addition.new_joins)}")
+    print(f"Updated: {addition.model_name} ({'; '.join(details)})")
+
+
+def _print_ingest_drift_and_errors(result) -> None:
     if result.to_delete:
         print("\nPending drift (run `slayer validate-models` to inspect):")
         for entry in result.to_delete:
@@ -617,32 +601,67 @@ def _run_ingest(args):
             print(f"  - {err.model_name}: {err.error}")
 
 
+def _parse_csv_arg(value):
+    if not value:
+        return None
+    return [t for t in (s.strip() for s in value.split(",")) if t]
+
+
+def _run_ingest(args):
+    from slayer.engine.ingestion import ingest_datasource_idempotent
+
+    storage = _resolve_storage(args)
+    ds = run_sync(storage.get_datasource(args.datasource))
+    if ds is None:
+        storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+        print(f"Datasource '{args.datasource}' not found in {storage_path}")
+        sys.exit(1)
+
+    result = run_sync(
+        ingest_datasource_idempotent(
+            datasource=ds,
+            storage=storage,
+            schema=args.schema,
+            include_tables=_parse_csv_arg(args.include),
+            exclude_tables=_parse_csv_arg(args.exclude),
+        )
+    )
+    for addition in result.additions:
+        _print_ingest_addition(addition)
+    _print_ingest_drift_and_errors(result)
+
+
+_REMOVE_SECTIONS = (
+    ("columns", "drop columns"),
+    ("measures", "drop measures"),
+    ("aggregations", "drop aggregations"),
+    ("joins", "drop joins"),
+)
+
+
+def _format_edit_entry_lines(entry) -> List[str]:
+    lines = [f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"]
+    for attr, label in _REMOVE_SECTIONS:
+        values = getattr(entry.remove, attr)
+        if values:
+            lines.append(f"  {label}: {', '.join(values)}")
+    if entry.remove_filters:
+        lines.append("  remove filters: " + "; ".join(entry.remove_filters))
+    return lines
+
+
 def _format_validate_models_output(entries) -> str:
     """Render a List[ToDeleteEntry] as human-readable text for CLI output."""
     if not entries:
         return "No drift detected."
-    lines = []
+    lines: List[str] = []
     for entry in entries:
         if entry.tool == "delete_model":
-            lines.append(f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})")
-        else:
             lines.append(
-                f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"
+                f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})"
             )
-            if entry.remove.columns:
-                lines.append(f"  drop columns: {', '.join(entry.remove.columns)}")
-            if entry.remove.measures:
-                lines.append(f"  drop measures: {', '.join(entry.remove.measures)}")
-            if entry.remove.aggregations:
-                lines.append(
-                    f"  drop aggregations: {', '.join(entry.remove.aggregations)}"
-                )
-            if entry.remove.joins:
-                lines.append(f"  drop joins: {', '.join(entry.remove.joins)}")
-            if entry.remove_filters:
-                lines.append(
-                    "  remove filters: " + "; ".join(entry.remove_filters)
-                )
+        else:
+            lines.extend(_format_edit_entry_lines(entry))
         for r in entry.reasons:
             lines.append(f"    - {r.target}: {r.reason}")
     return "\n".join(lines)

@@ -439,41 +439,50 @@ def _extract_column_refs_from_sql(sql: str) -> List[Tuple[Optional[str], str]]:
     return refs
 
 
+def _agg_ref_names(agg_refs: Dict[str, AggregatedMeasureRef]) -> Set[str]:
+    """Names from a ``measure:agg`` placeholder map, excluding ``*``."""
+    return {ref.measure_name for ref in agg_refs.values() if ref.measure_name != "*"}
+
+
+def _bare_measure_names(
+    measure_names: List[str],
+    agg_refs: Dict[str, AggregatedMeasureRef],
+    *,
+    skip_placeholder_prefix: Optional[str] = None,
+) -> Set[str]:
+    """Filter raw ``measure_names`` to the ones that are not colon-syntax
+    placeholders, optionally also stripping sub-transform placeholders.
+    """
+    out: Set[str] = set()
+    for n in measure_names:
+        if n in agg_refs:
+            continue
+        if skip_placeholder_prefix and n.startswith(skip_placeholder_prefix):
+            continue
+        out.add(n)
+    return out
+
+
 def _walk_field_spec_measure_refs(spec: Any) -> Set[str]:
     """Walk a ``FieldSpec`` (parse_formula output) and return the set of
     measure_name strings (which may be dotted: ``"customers.revenue"``).
     """
-    out: Set[str] = set()
     if isinstance(spec, AggregatedMeasureRef):
-        if spec.measure_name != "*":
-            out.add(spec.measure_name)
-        return out
+        return _agg_ref_names({"_": spec})
     if isinstance(spec, ArithmeticField):
-        for ref in spec.agg_refs.values():
-            if ref.measure_name != "*":
-                out.add(ref.measure_name)
-        for n in spec.measure_names:
-            if n in spec.agg_refs:
-                continue
-            out.add(n)
-        return out
+        return _agg_ref_names(spec.agg_refs) | _bare_measure_names(
+            spec.measure_names, spec.agg_refs
+        )
     if isinstance(spec, MixedArithmeticField):
-        for ref in spec.agg_refs.values():
-            if ref.measure_name != "*":
-                out.add(ref.measure_name)
-        for n in spec.measure_names:
-            if n in spec.agg_refs:
-                continue
-            # Sub-transform placeholders look like _t0/_t1 — skip them.
-            if not n.startswith("_t"):
-                out.add(n)
+        out = _agg_ref_names(spec.agg_refs) | _bare_measure_names(
+            spec.measure_names, spec.agg_refs, skip_placeholder_prefix="_t"
+        )
         for _, t in spec.sub_transforms:
             out.update(_walk_field_spec_measure_refs(t))
         return out
     if isinstance(spec, TransformField):
-        out.update(_walk_field_spec_measure_refs(spec.inner))
-        return out
-    return out
+        return _walk_field_spec_measure_refs(spec.inner)
+    return set()
 
 
 def _measure_formula_refs(
@@ -683,6 +692,70 @@ def _resolve_stage_source_to_base(
         return None
 
 
+def _attribute_ref_to_base(
+    *, ref: str, base_name: str, sm_is_base: bool
+) -> Optional[str]:
+    """Return the column name on ``base_name`` that ``ref`` resolves to,
+    or ``None`` if the reference is to a different model.
+    """
+    if "." in ref:
+        prefix, leaf = ref.rsplit(".", 1)
+        return leaf if prefix == base_name else None
+    return ref if sm_is_base else None
+
+
+def _measure_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool) -> Set[str]:
+    out: Set[str] = set()
+    for m in stage.measures or []:
+        formula = getattr(m, "formula", None)
+        if not formula:
+            continue
+        for ref in _measure_formula_refs(formula):
+            attributed = _attribute_ref_to_base(
+                ref=ref, base_name=base_name, sm_is_base=sm_is_base
+            )
+            if attributed is not None:
+                out.add(attributed)
+    return out
+
+
+def _dimension_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool) -> Set[str]:
+    out: Set[str] = set()
+    for d in stage.dimensions or []:
+        full = getattr(d, "full_name", None) or str(d)
+        attributed = _attribute_ref_to_base(
+            ref=full, base_name=base_name, sm_is_base=sm_is_base
+        )
+        if attributed is not None:
+            out.add(attributed)
+    return out
+
+
+def _time_dimension_refs_on_base(
+    stage: SlayerQuery, base_name: str, sm_is_base: bool
+) -> Set[str]:
+    out: Set[str] = set()
+    for td in stage.time_dimensions or []:
+        attributed = _attribute_ref_to_base(
+            ref=td.dimension.full_name, base_name=base_name, sm_is_base=sm_is_base
+        )
+        if attributed is not None:
+            out.add(attributed)
+    return out
+
+
+def _filter_refs_on_base(stage: SlayerQuery, base_name: str, sm_is_base: bool) -> Set[str]:
+    out: Set[str] = set()
+    for f in stage.filters or []:
+        for col in _filter_refs(f):
+            attributed = _attribute_ref_to_base(
+                ref=col, base_name=base_name, sm_is_base=sm_is_base
+            )
+            if attributed is not None:
+                out.add(attributed)
+    return out
+
+
 def _stage_referenced_columns_for_base(
     *,
     stage: SlayerQuery,
@@ -693,55 +766,15 @@ def _stage_referenced_columns_for_base(
     to the stage's source_model when it equals ``base_name``; cross-model
     dotted refs are matched on the prefix.
     """
-    out: Set[str] = set()
     sm_is_base = (
         isinstance(stage.source_model, str) and stage.source_model == base_name
     )
-
-    # Measures
-    for m in stage.measures or []:
-        formula = getattr(m, "formula", None)
-        if not formula:
-            continue
-        for ref in _measure_formula_refs(formula):
-            if "." in ref:
-                prefix, leaf = ref.rsplit(".", 1)
-                if prefix == base_name:
-                    out.add(leaf)
-            elif sm_is_base:
-                out.add(ref)
-
-    # Dimensions
-    for d in stage.dimensions or []:
-        full = getattr(d, "full_name", None) or str(d)
-        if "." in full:
-            prefix, leaf = full.rsplit(".", 1)
-            if prefix == base_name:
-                out.add(leaf)
-        elif sm_is_base:
-            out.add(full)
-
-    # Time dimensions
-    for td in stage.time_dimensions or []:
-        full = td.dimension.full_name
-        if "." in full:
-            prefix, leaf = full.rsplit(".", 1)
-            if prefix == base_name:
-                out.add(leaf)
-        elif sm_is_base:
-            out.add(full)
-
-    # Filters
-    for f in stage.filters or []:
-        for col in _filter_refs(f):
-            if "." in col:
-                prefix, leaf = col.rsplit(".", 1)
-                if prefix == base_name:
-                    out.add(leaf)
-            elif sm_is_base:
-                out.add(col)
-
-    return out
+    return (
+        _measure_refs_on_base(stage, base_name, sm_is_base)
+        | _dimension_refs_on_base(stage, base_name, sm_is_base)
+        | _time_dimension_refs_on_base(stage, base_name, sm_is_base)
+        | _filter_refs_on_base(stage, base_name, sm_is_base)
+    )
 
 
 def _query_backed_should_whole_drop(
@@ -807,6 +840,258 @@ def _query_backed_should_whole_drop(
 # ===========================================================================
 
 
+class _CascadeState:
+    """Mutable state threaded through the per-rule cascade helpers.
+
+    Plain class (not Pydantic) so dict/set fields preserve reference
+    identity — the cascade rules mutate them in-place and the orchestrator
+    in ``compute_datasource_drops`` has to see those mutations.
+    """
+
+    __slots__ = (
+        "models_by_name",
+        "edit_entries",
+        "whole_entries",
+        "dropped_cols",
+        "dropped_measures",
+        "dropped_joins",
+        "pk_per_model",
+    )
+
+    def __init__(
+        self,
+        *,
+        models_by_name: Dict[str, SlayerModel],
+        edit_entries: Dict[str, EditModelDelete],
+        whole_entries: Dict[str, WholeModelDelete],
+        dropped_cols: Dict[str, Set[str]],
+        dropped_measures: Dict[str, Set[str]],
+        dropped_joins: Dict[str, Set[str]],
+        pk_per_model: Dict[str, Set[str]],
+    ) -> None:
+        self.models_by_name = models_by_name
+        self.edit_entries = edit_entries
+        self.whole_entries = whole_entries
+        self.dropped_cols = dropped_cols
+        self.dropped_measures = dropped_measures
+        self.dropped_joins = dropped_joins
+        self.pk_per_model = pk_per_model
+
+    def cascadable(self, name: str) -> Set[str]:
+        """Cascadable column drops on ``name`` (excludes PKs — rule 7)."""
+        return self.dropped_cols.get(name, set()) - self.pk_per_model.get(name, set())
+
+
+def _column_ref_targets_dropped(
+    *,
+    table_alias: Optional[str],
+    ref_col: str,
+    model: SlayerModel,
+    state: _CascadeState,
+) -> Tuple[bool, Optional[SlayerModel]]:
+    """Decide if a single ``(table_alias, ref_col)`` reference resolves to a
+    dropped column. Returns ``(is_dropped, resolved_target_model)``.
+    """
+    if table_alias is None or table_alias == model.name:
+        return ref_col in state.cascadable(model.name), model
+    target = _walk_alias_to_target_model(
+        source_model=model,
+        table_alias=table_alias,
+        models_by_name=state.models_by_name,
+    )
+    if target is None or target.data_source != model.data_source:
+        return False, None
+    return ref_col in state.cascadable(target.name), target
+
+
+def _cascade_derived_columns(
+    *, model: SlayerModel, state: _CascadeState
+) -> bool:
+    """Rules 1 + 5: derived ``Column.sql`` referencing dropped columns
+    (same model or via the join graph)."""
+    changed = False
+    for col in model.columns:
+        if col.name in state.dropped_cols.get(model.name, set()):
+            continue
+        if col.sql is None or _is_bare_identifier(col.sql):
+            continue
+        for table_alias, ref_col in _extract_column_refs_from_sql(col.sql):
+            is_dropped, target = _column_ref_targets_dropped(
+                table_alias=table_alias,
+                ref_col=ref_col,
+                model=model,
+                state=state,
+            )
+            if not is_dropped or target is None:
+                continue
+            ref_label = (
+                ref_col if target is model else f"{target.name}.{ref_col!r}"
+            )
+            if _add_dropped_column(
+                edit_entries=state.edit_entries,
+                dropped_cols=state.dropped_cols,
+                model=model,
+                column_name=col.name,
+                reason=f"Derived sql {col.sql!r} references dropped column {ref_label}",
+            ):
+                changed = True
+            break
+    return changed
+
+
+def _measure_drop_cause(
+    *, ref: str, model: SlayerModel, state: _CascadeState
+) -> Optional[str]:
+    """If the measure ref resolves to a dropped column or measure, return a
+    reason string; otherwise None.
+    """
+    tgt_model, leaf = _resolve_dotted_ref_to_model(
+        source_model=model,
+        dotted_ref=ref,
+        models_by_name=state.models_by_name,
+    )
+    if tgt_model is None or tgt_model.data_source != model.data_source:
+        return None
+    if leaf in state.cascadable(tgt_model.name):
+        return f"references dropped column {tgt_model.name}.{leaf!r}"
+    if leaf in state.dropped_measures.get(tgt_model.name, set()):
+        return f"references dropped measure {tgt_model.name}.{leaf!r}"
+    return None
+
+
+def _cascade_measures(*, model: SlayerModel, state: _CascadeState) -> bool:
+    """Rule 2: ``ModelMeasure.formula`` referencing a dropped column or
+    dropped measure."""
+    changed = False
+    named_measures = {m.name: m.formula for m in model.measures if m.name}
+    for measure in model.measures:
+        if measure.name is None:
+            continue
+        if measure.name in state.dropped_measures.get(model.name, set()):
+            continue
+        cause: Optional[str] = None
+        for ref in _measure_formula_refs(
+            measure.formula, named_measures=named_measures
+        ):
+            cause = _measure_drop_cause(ref=ref, model=model, state=state)
+            if cause is not None:
+                break
+        if cause is None:
+            continue
+        if _add_dropped_measure(
+            edit_entries=state.edit_entries,
+            dropped_measures=state.dropped_measures,
+            model=model,
+            measure_name=measure.name,
+            reason=f"Formula {measure.formula!r} {cause}",
+        ):
+            changed = True
+    return changed
+
+
+def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
+    """Rule 3a + 3b: local FK column dropped on this model, or foreign
+    column dropped on the join target."""
+    changed = False
+    for join in model.joins:
+        if join.target_model in state.dropped_joins.get(model.name, set()):
+            continue
+        local_missing = [
+            pair[0] for pair in join.join_pairs
+            if pair[0] in state.cascadable(model.name)
+        ]
+        if local_missing:
+            changed = _add_dropped_join(
+                edit_entries=state.edit_entries,
+                dropped_joins=state.dropped_joins,
+                model=model,
+                target_name=join.target_model,
+                reason=f"Local FK column(s) {local_missing} dropped from this model",
+            ) or changed
+            continue
+        tgt = state.models_by_name.get(join.target_model)
+        if tgt is None or tgt.data_source != model.data_source:
+            continue
+        foreign_missing = [
+            pair[1] for pair in join.join_pairs
+            if pair[1] in state.cascadable(tgt.name)
+        ]
+        if not foreign_missing:
+            continue
+        if _add_dropped_join(
+            edit_entries=state.edit_entries,
+            dropped_joins=state.dropped_joins,
+            model=model,
+            target_name=join.target_model,
+            reason=(
+                f"Foreign column(s) {foreign_missing} dropped on target "
+                f"model {join.target_model!r}"
+            ),
+        ):
+            changed = True
+    return changed
+
+
+def _cascade_filters(*, model: SlayerModel, state: _CascadeState) -> bool:
+    """Rule 4: model-level filter strings referencing dropped columns."""
+    changed = False
+    for filter_str in model.filters:
+        entry = state.edit_entries.get(model.name)
+        if entry is not None and filter_str in entry.remove_filters:
+            continue
+        for col_ref in _filter_refs(filter_str):
+            tgt_model, leaf = _resolve_dotted_ref_to_model(
+                source_model=model,
+                dotted_ref=col_ref,
+                models_by_name=state.models_by_name,
+            )
+            if (
+                tgt_model is None
+                or tgt_model.data_source != model.data_source
+                or leaf not in state.cascadable(tgt_model.name)
+            ):
+                continue
+            if _add_remove_filter(
+                edit_entries=state.edit_entries,
+                model=model,
+                filter_text=filter_str,
+                reason=f"Filter references dropped column {tgt_model.name}.{leaf!r}",
+            ):
+                changed = True
+            break
+    return changed
+
+
+def _cascade_query_backed(
+    *, models: List[SlayerModel], state: _CascadeState
+) -> bool:
+    """Rule 6: query-backed model whose source_queries chain transitively
+    references dropped state — whole-drop."""
+    changed = False
+    whole_dropped_names = set(state.whole_entries.keys())
+    for model in models:
+        if model.name in state.whole_entries or not model.source_queries:
+            continue
+        reason = _query_backed_should_whole_drop(
+            qb_model=model,
+            dropped_cols=state.dropped_cols,
+            whole_dropped_models=whole_dropped_names,
+            pk_per_model=state.pk_per_model,
+        )
+        if reason is None:
+            continue
+        state.whole_entries[model.name] = WholeModelDelete(
+            model_name=model.name,
+            data_source=model.data_source,
+            reasons=[reason],
+        )
+        # Treat all of this model's columns as dropped so further rounds
+        # propagate transitively.
+        state.dropped_cols[model.name] = {c.name for c in model.columns}
+        changed = True
+    return changed
+
+
 def _cascade_one_pass(
     *,
     models: List[SlayerModel],
@@ -818,202 +1103,36 @@ def _cascade_one_pass(
     dropped_joins: Dict[str, Set[str]],
     pk_per_model: Dict[str, Set[str]],
 ) -> bool:
-    """Run a single cascade pass; return True if anything new was added."""
+    """Run a single cascade pass; return True if anything new was added.
+
+    Each cascade rule is delegated to a focused helper. The big
+    function-level switch lives there; this loop only orchestrates.
+    """
+    state = _CascadeState(
+        models_by_name=models_by_name,
+        edit_entries=edit_entries,
+        whole_entries=whole_entries,
+        dropped_cols=dropped_cols,
+        dropped_measures=dropped_measures,
+        dropped_joins=dropped_joins,
+        pk_per_model=pk_per_model,
+    )
+
     changed = False
-
-    def _cascadable(name: str) -> Set[str]:
-        return dropped_cols.get(name, set()) - pk_per_model.get(name, set())
-
     for model in models:
         if model.name in whole_entries:
             continue
-
-        # Rule 1 + 5: derived Column.sql refs
-        for col in model.columns:
-            if col.name in dropped_cols.get(model.name, set()):
-                continue
-            if col.sql is None or _is_bare_identifier(col.sql):
-                continue
-            for table_alias, ref_col in _extract_column_refs_from_sql(col.sql):
-                if table_alias is None or table_alias == model.name:
-                    if ref_col in _cascadable(model.name):
-                        if _add_dropped_column(
-                            edit_entries=edit_entries,
-                            dropped_cols=dropped_cols,
-                            model=model,
-                            column_name=col.name,
-                            reason=(
-                                f"Derived sql {col.sql!r} references "
-                                f"dropped column {ref_col!r}"
-                            ),
-                        ):
-                            changed = True
-                        break
-                    continue
-                target = _walk_alias_to_target_model(
-                    source_model=model,
-                    table_alias=table_alias,
-                    models_by_name=models_by_name,
-                )
-                if target is None:
-                    continue
-                if target.data_source != model.data_source:
-                    continue  # cascade does not cross datasource
-                if ref_col in _cascadable(target.name):
-                    if _add_dropped_column(
-                        edit_entries=edit_entries,
-                        dropped_cols=dropped_cols,
-                        model=model,
-                        column_name=col.name,
-                        reason=(
-                            f"Derived sql {col.sql!r} references dropped "
-                            f"column {target.name}.{ref_col!r}"
-                        ),
-                    ):
-                        changed = True
-                    break
-
-        # Rule 2: ModelMeasure.formula refs
-        named_measures = {m.name: m.formula for m in model.measures if m.name}
-        for measure in model.measures:
-            if measure.name is None:
-                continue
-            if measure.name in dropped_measures.get(model.name, set()):
-                continue
-            refs = _measure_formula_refs(
-                measure.formula, named_measures=named_measures
-            )
-            should_drop = False
-            cause: Optional[str] = None
-            for ref in refs:
-                tgt_model, leaf = _resolve_dotted_ref_to_model(
-                    source_model=model,
-                    dotted_ref=ref,
-                    models_by_name=models_by_name,
-                )
-                if tgt_model is None:
-                    continue
-                if tgt_model.data_source != model.data_source:
-                    continue
-                # Column drop on resolved model?
-                if leaf in _cascadable(tgt_model.name):
-                    should_drop = True
-                    cause = (
-                        f"references dropped column "
-                        f"{tgt_model.name}.{leaf!r}"
-                    )
-                    break
-                # Measure drop on resolved model?
-                if leaf in dropped_measures.get(tgt_model.name, set()):
-                    should_drop = True
-                    cause = (
-                        f"references dropped measure "
-                        f"{tgt_model.name}.{leaf!r}"
-                    )
-                    break
-            if should_drop:
-                if _add_dropped_measure(
-                    edit_entries=edit_entries,
-                    dropped_measures=dropped_measures,
-                    model=model,
-                    measure_name=measure.name,
-                    reason=f"Formula {measure.formula!r} {cause}",
-                ):
-                    changed = True
-
-        # Rule 3a: local FK column dropped on this model.
-        # Rule 3b: foreign column dropped on the target model.
-        for join in model.joins:
-            if join.target_model in dropped_joins.get(model.name, set()):
-                continue
-            local_cascadable = _cascadable(model.name)
-            local_missing = [
-                pair[0] for pair in join.join_pairs
-                if pair[0] in local_cascadable
-            ]
-            if local_missing:
-                if _add_dropped_join(
-                    edit_entries=edit_entries,
-                    dropped_joins=dropped_joins,
-                    model=model,
-                    target_name=join.target_model,
-                    reason=(
-                        f"Local FK column(s) {local_missing} dropped from "
-                        f"this model"
-                    ),
-                ):
-                    changed = True
-                continue
-            tgt = models_by_name.get(join.target_model)
-            if tgt is None or tgt.data_source != model.data_source:
-                continue
-            tgt_cascadable = _cascadable(tgt.name)
-            foreign_missing = [
-                pair[1] for pair in join.join_pairs
-                if pair[1] in tgt_cascadable
-            ]
-            if foreign_missing:
-                if _add_dropped_join(
-                    edit_entries=edit_entries,
-                    dropped_joins=dropped_joins,
-                    model=model,
-                    target_name=join.target_model,
-                    reason=(
-                        f"Foreign column(s) {foreign_missing} dropped on "
-                        f"target model {join.target_model!r}"
-                    ),
-                ):
-                    changed = True
-
-        # Rule 4: filter strings referencing dropped columns.
-        for filter_str in model.filters:
-            entry = edit_entries.get(model.name)
-            if entry is not None and filter_str in entry.remove_filters:
-                continue
-            for col_ref in _filter_refs(filter_str):
-                tgt_model, leaf = _resolve_dotted_ref_to_model(
-                    source_model=model,
-                    dotted_ref=col_ref,
-                    models_by_name=models_by_name,
-                )
-                if tgt_model is None or tgt_model.data_source != model.data_source:
-                    continue
-                if leaf in _cascadable(tgt_model.name):
-                    if _add_remove_filter(
-                        edit_entries=edit_entries,
-                        model=model,
-                        filter_text=filter_str,
-                        reason=(
-                            f"Filter references dropped column "
-                            f"{tgt_model.name}.{leaf!r}"
-                        ),
-                    ):
-                        changed = True
-                    break
-
-    # Rule 6: query-backed transitive whole-drop
-    whole_dropped_names = set(whole_entries.keys())
-    for model in models:
-        if model.name in whole_entries:
-            continue
-        if not model.source_queries:
-            continue
-        reason = _query_backed_should_whole_drop(
-            qb_model=model,
-            dropped_cols=dropped_cols,
-            whole_dropped_models=whole_dropped_names,
-            pk_per_model=pk_per_model,
-        )
-        if reason is not None:
-            whole_entries[model.name] = WholeModelDelete(
-                model_name=model.name,
-                data_source=model.data_source,
-                reasons=[reason],
-            )
-            # Mark all of model's columns as dropped so further cascades
-            # treat refs to this model as fatal.
-            dropped_cols[model.name] = {c.name for c in model.columns}
+        if _cascade_derived_columns(model=model, state=state):
             changed = True
+        if _cascade_measures(model=model, state=state):
+            changed = True
+        if _cascade_joins(model=model, state=state):
+            changed = True
+        if _cascade_filters(model=model, state=state):
+            changed = True
+
+    if _cascade_query_backed(models=models, state=state):
+        changed = True
 
     return changed
 

@@ -230,7 +230,7 @@ class TestDiffSqlTableModel:
                 "status": DataType.STRING,
             }
         )
-        entry, dropped = diff_sql_table_model(
+        entry, _ = diff_sql_table_model(
             model=model, live_table=live, available_models_in_ds={"orders", "customers"}
         )
         assert isinstance(entry, EditModelDelete)

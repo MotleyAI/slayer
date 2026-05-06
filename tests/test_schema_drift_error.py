@@ -149,6 +149,8 @@ class TestSchemaDriftErrorWrap:
         await engine.storage.save_model(broken_model)
 
         # Force validate_models to attribute no drift to the broken model.
+        # NOSONAR(S7503) — patched as side_effect for an awaited method, must
+        # be a coroutine function so the engine's `await` resolves cleanly.
         async def _no_drift(*args, **kwargs):
             return []
 

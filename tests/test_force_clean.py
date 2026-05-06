@@ -262,8 +262,13 @@ class TestForceCleanCLI:
             workspace=cli_workspace,
         )
         assert result.returncode == 0
-        # After apply, residual should be empty.
-        assert "no remaining drift" in result.stdout.lower() or "applied" in result.stdout.lower()
+        # After apply, the diff is empty — re-run validate-models and confirm.
+        follow_up = _run_cli(
+            ["validate-models", "--datasource", "ds"],
+            workspace=cli_workspace,
+        )
+        assert follow_up.returncode == 0
+        assert "no drift detected" in follow_up.stdout.lower()
 
     def test_force_clean_n_aborts(self, cli_workspace) -> None:
         db_path = str(cli_workspace / "live.db")
@@ -272,11 +277,12 @@ class TestForceCleanCLI:
         conn.commit()
         conn.close()
 
-        _run_cli(
+        result = _run_cli(
             ["validate-models", "--datasource", "ds", "--force-clean"],
             input_text="n\n",
             workspace=cli_workspace,
         )
+        assert result.returncode == 0, result.stderr
         # Aborted — region should still be on the persisted model
         from slayer.async_utils import run_sync
 

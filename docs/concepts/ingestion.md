@@ -62,18 +62,23 @@ slayer ingest --datasource my_postgres --schema public --storage ./slayer_data
 ### Python
 
 ```python
+import asyncio
 from slayer.engine.ingestion import ingest_datasource_idempotent
 
-result = await ingest_datasource_idempotent(
-    datasource=ds,
-    storage=storage,
-    schema="public",
-    include_tables=["orders", "customers"],  # Optional filter
-    exclude_tables=["migrations"],            # Optional exclusion
-)
-# result.additions  — what was added (new models / columns / joins)
-# result.to_delete  — pending validate_models drift entries
-# result.errors     — per-model failures (best-effort, doesn't abort)
+async def main():
+    result = await ingest_datasource_idempotent(
+        datasource=ds,
+        storage=storage,
+        schema="public",
+        include_tables=["orders", "customers"],  # Optional filter
+        exclude_tables=["migrations"],            # Optional exclusion
+    )
+    # result.additions  — what was added (new models / columns / joins)
+    # result.to_delete  — pending validate_models drift entries
+    # result.errors     — per-model failures (best-effort, doesn't abort)
+    return result
+
+asyncio.run(main())
 ```
 
 ### MCP
@@ -147,4 +152,4 @@ If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warnin
 
 After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
 
-`include_tables` / `exclude_tables` constrain both the additive pass and the validator — excluded tables are not touched in either direction.
+`include_tables` / `exclude_tables` constrain the additive pass plus the `sql_table`-mode subset of validation: a `sql_table`-mode model whose table is excluded is left out of both. `sql`-mode and query-backed models in the same datasource are still passed through `validate_models` regardless of the table filter — they are not tied to a specific table name. Run `validate_models` directly (no `--include`/`--exclude`) to validate only those modes.

@@ -790,6 +790,80 @@ def _additive_merge_existing(
     return merged, new_column_names, new_join_targets
 
 
+async def _process_one_table(
+    *,
+    table_name: str,
+    fresh: SlayerModel,
+    datasource: DatasourceConfig,
+    storage: StorageBackend,
+):
+    """Save / merge one freshly-introspected model, returning the
+    ``ModelAddition`` to record. Raises on persistence failure — the caller
+    isolates errors per-model.
+    """
+    from slayer.engine.schema_drift import ModelAddition
+
+    persisted = await storage.get_model(table_name, data_source=datasource.name)
+    if persisted is None:
+        await storage.save_model(fresh)
+        return ModelAddition(
+            model_name=table_name,
+            data_source=datasource.name,
+            created=True,
+            new_columns=[c.name for c in fresh.columns],
+            new_joins=[j.target_model for j in fresh.joins],
+        )
+    if persisted.sql or persisted.source_queries:
+        # User-authored sql / query-backed model with the matching name —
+        # leave it alone.
+        return None
+    merged, new_cols, new_joins = _additive_merge_existing(
+        persisted=persisted, fresh=fresh
+    )
+    if new_cols or new_joins:
+        await storage.save_model(merged)
+    return ModelAddition(
+        model_name=table_name,
+        data_source=datasource.name,
+        created=False,
+        new_columns=new_cols,
+        new_joins=new_joins,
+    )
+
+
+def _bare_table_name(sql_table: str) -> str:
+    """Strip an optional schema prefix from a ``schema.table`` reference."""
+    return sql_table.split(".", 1)[1] if "." in sql_table else sql_table
+
+
+async def _scoped_models_for_validation(
+    *,
+    storage: StorageBackend,
+    datasource: DatasourceConfig,
+    in_scope_table_names: Set[str],
+) -> List[SlayerModel]:
+    """Build the list of persisted models to feed to ``validate_datasource``.
+
+    sql_table-mode models are included only when their live table is in
+    scope (matches the additive pass). sql-mode and query-backed models are
+    always validated within this datasource — they're not tied to a
+    specific live table name.
+    """
+    identities = await storage._list_all_model_identities()
+    ds_model_names = [n for d, n in identities if d == datasource.name]
+    scoped: List[SlayerModel] = []
+    for name in ds_model_names:
+        m = await storage.get_model(name, data_source=datasource.name)
+        if m is None:
+            continue
+        if m.sql_table:
+            if _bare_table_name(m.sql_table) in in_scope_table_names:
+                scoped.append(m)
+            continue
+        scoped.append(m)
+    return scoped
+
+
 async def ingest_datasource_idempotent(
     *,
     datasource: DatasourceConfig,
@@ -830,45 +904,18 @@ async def ingest_datasource_idempotent(
         schema=schema,
     )
     fresh_by_name = {m.name: m for m in fresh_models}
-
     in_scope_table_names: Set[str] = set(fresh_by_name.keys())
 
     for table_name, fresh in fresh_by_name.items():
         try:
-            persisted = await storage.get_model(
-                table_name, data_source=datasource.name
+            addition = await _process_one_table(
+                table_name=table_name,
+                fresh=fresh,
+                datasource=datasource,
+                storage=storage,
             )
-            if persisted is None:
-                # New table — save the fresh model verbatim.
-                await storage.save_model(fresh)
-                additions.append(
-                    ModelAddition(
-                        model_name=table_name,
-                        data_source=datasource.name,
-                        created=True,
-                        new_columns=[c.name for c in fresh.columns],
-                        new_joins=[j.target_model for j in fresh.joins],
-                    )
-                )
-                continue
-            if persisted.sql or persisted.source_queries:
-                # User-authored sql / query-backed model with the same
-                # name as a live table — leave it alone.
-                continue
-            merged, new_cols, new_joins = _additive_merge_existing(
-                persisted=persisted, fresh=fresh
-            )
-            if new_cols or new_joins:
-                await storage.save_model(merged)
-            additions.append(
-                ModelAddition(
-                    model_name=table_name,
-                    data_source=datasource.name,
-                    created=False,
-                    new_columns=new_cols,
-                    new_joins=new_joins,
-                )
-            )
+            if addition is not None:
+                additions.append(addition)
         except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
             errors.append(
                 IngestionError(
@@ -878,30 +925,11 @@ async def ingest_datasource_idempotent(
                 )
             )
 
-    # Build the in-scope persisted model list for validate_datasource.
-    # Only validates models whose ``sql_table`` belongs to the in-scope set
-    # AND user-authored sql / query-backed models tied to the same DS.
-    identities = await storage._list_all_model_identities()
-    ds_model_names = [n for d, n in identities if d == datasource.name]
-    scoped_models: List[SlayerModel] = []
-    for name in ds_model_names:
-        m = await storage.get_model(name, data_source=datasource.name)
-        if m is None:
-            continue
-        # sql_table-mode: include only when the live table is in scope.
-        if m.sql_table:
-            bare_table = (
-                m.sql_table.split(".", 1)[1]
-                if "." in m.sql_table
-                else m.sql_table
-            )
-            if bare_table in in_scope_table_names:
-                scoped_models.append(m)
-            continue
-        # sql / query-backed: always validate (their drift is independent of
-        # the include/exclude table filter, but stays scoped to the DS).
-        scoped_models.append(m)
-
+    scoped_models = await _scoped_models_for_validation(
+        storage=storage,
+        datasource=datasource,
+        in_scope_table_names=in_scope_table_names,
+    )
     to_delete = await validate_datasource(
         datasource=datasource, models=scoped_models
     )

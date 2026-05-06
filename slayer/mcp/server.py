@@ -230,60 +230,92 @@ def _resolve_inspect_sections(
     return resolved, unknown
 
 
+def _empty_ingest_message(*, schema_name: str, ds: DatasourceConfig) -> str:
+    schema_label = f" in schema '{schema_name}'" if schema_name else ""
+    lines = [f"No tables found{schema_label}."]
+    schemas = _get_schemas(ds)
+    if schemas:
+        lines.append(f"Available schemas: {', '.join(schemas)}")
+        lines.append(
+            "Try: ingest_datasource_models with schema_name set to one of these."
+        )
+    return "\n".join(lines)
+
+
+def _render_new_models_section(new_models: List[Any]) -> List[str]:
+    if not new_models:
+        return []
+    lines = [f"Created {len(new_models)} new model(s):"]
+    for a in new_models:
+        lines.append(
+            f"- {a.model_name} ({len(a.new_columns)} columns, {len(a.new_joins)} joins)"
+        )
+    return lines
+
+
+def _render_updated_section(updated: List[Any]) -> List[str]:
+    if not updated:
+        return []
+    lines = [f"Updated {len(updated)} existing model(s):"]
+    for a in updated:
+        details = []
+        if a.new_columns:
+            details.append(f"+columns: {', '.join(a.new_columns)}")
+        if a.new_joins:
+            details.append(f"+joins: {', '.join(a.new_joins)}")
+        lines.append(f"- {a.model_name} ({'; '.join(details)})")
+    return lines
+
+
+def _render_unchanged_section(unchanged: List[Any]) -> List[str]:
+    if not unchanged:
+        return []
+    return [
+        f"Re-introspected {len(unchanged)} unchanged model(s): "
+        f"{', '.join(a.model_name for a in unchanged)}"
+    ]
+
+
+def _render_drift_section(to_delete: List[Any]) -> List[str]:
+    if not to_delete:
+        return []
+    out = ["", "Pending drift (run validate_models / apply manually):"]
+    out.extend(f"- {entry.tool}: {entry.model_name}" for entry in to_delete)
+    return out
+
+
+def _render_errors_section(errors: List[Any]) -> List[str]:
+    if not errors:
+        return []
+    out = ["", f"Errors ({len(errors)}):"]
+    out.extend(f"- {err.model_name}: {err.error}" for err in errors)
+    return out
+
+
 def _render_ingest_result(
     result: Any,
     *,
-    datasource_name: str,
     schema_name: str,
     ds: DatasourceConfig,
 ) -> str:
     """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
     additions = list(result.additions)
+    if not additions and not result.to_delete and not result.errors:
+        return _empty_ingest_message(schema_name=schema_name, ds=ds)
+
     new_models = [a for a in additions if a.created]
     updated = [a for a in additions if not a.created and (a.new_columns or a.new_joins)]
-    if not additions and not result.to_delete and not result.errors:
-        schema_label = f" in schema '{schema_name}'" if schema_name else ""
-        lines = [f"No tables found{schema_label}."]
-        schemas = _get_schemas(ds)
-        if schemas:
-            lines.append(f"Available schemas: {', '.join(schemas)}")
-            lines.append(
-                "Try: ingest_datasource_models with schema_name set to one of these."
-            )
-        return "\n".join(lines)
+    unchanged = [
+        a for a in additions
+        if not a.created and not a.new_columns and not a.new_joins
+    ]
 
     lines: List[str] = []
-    if new_models:
-        lines.append(f"Created {len(new_models)} new model(s):")
-        for a in new_models:
-            lines.append(
-                f"- {a.model_name} ({len(a.new_columns)} columns, {len(a.new_joins)} joins)"
-            )
-    if updated:
-        lines.append(f"Updated {len(updated)} existing model(s):")
-        for a in updated:
-            details = []
-            if a.new_columns:
-                details.append(f"+columns: {', '.join(a.new_columns)}")
-            if a.new_joins:
-                details.append(f"+joins: {', '.join(a.new_joins)}")
-            lines.append(f"- {a.model_name} ({'; '.join(details)})")
-    no_change = [a for a in additions if not a.created and not a.new_columns and not a.new_joins]
-    if no_change:
-        lines.append(
-            f"Re-introspected {len(no_change)} unchanged model(s): "
-            f"{', '.join(a.model_name for a in no_change)}"
-        )
-    if result.to_delete:
-        lines.append("")
-        lines.append("Pending drift (run validate_models / apply manually):")
-        for entry in result.to_delete:
-            lines.append(f"- {entry.tool}: {entry.model_name}")
-    if result.errors:
-        lines.append("")
-        lines.append(f"Errors ({len(result.errors)}):")
-        for err in result.errors:
-            lines.append(f"- {err.model_name}: {err.error}")
+    lines.extend(_render_new_models_section(new_models))
+    lines.extend(_render_updated_section(updated))
+    lines.extend(_render_unchanged_section(unchanged))
+    lines.extend(_render_drift_section(list(result.to_delete)))
+    lines.extend(_render_errors_section(list(result.errors)))
     if not lines:
         lines.append("Datasource already in sync — no changes.")
     return "\n".join(lines)
@@ -2375,7 +2407,7 @@ def create_mcp_server(storage: StorageBackend):
             raise
 
         return _render_ingest_result(
-            result, datasource_name=datasource_name, schema_name=schema_name, ds=ds
+            result, schema_name=schema_name, ds=ds
         )
 
     @mcp.tool()
