@@ -578,7 +578,9 @@ class TestIngestDatasourceModelsTool:
         )
         text = content[0].text
 
-        assert "Ingested 1 model(s):" in text
+        # DEV-1356 idempotent ingest renders "Created N new model(s):" for new
+        # tables (replaces the legacy "Ingested N model(s):" wording).
+        assert "Created 1 new model(s):" in text
         assert "widgets" in text
         assert "columns" in text  # v2 wording
         assert "dims" not in text  # v1 leftover would crash before reaching here

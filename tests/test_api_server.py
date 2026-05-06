@@ -263,13 +263,13 @@ class TestQueryBackedModelsAPI:
     ) -> None:
         # Set up upstream + a datasource so cache refresh succeeds at save time.
         from slayer.core.models import DatasourceConfig
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(
+        from slayer.async_utils import run_sync
+        run_sync(
             storage.save_datasource(DatasourceConfig(
                 name="ds", type="sqlite", database=":memory:"
             ))
         )
-        asyncio.get_event_loop().run_until_complete(
+        run_sync(
             storage.save_model(SlayerModel(
                 name="upstream", sql_table="t", data_source="ds",
                 columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
@@ -297,13 +297,13 @@ class TestQueryBackedModelsAPI:
         self, client: TestClient, storage: YAMLStorage
     ) -> None:
         from slayer.core.models import DatasourceConfig
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(
+        from slayer.async_utils import run_sync
+        run_sync(
             storage.save_datasource(DatasourceConfig(
                 name="ds", type="sqlite", database=":memory:"
             ))
         )
-        asyncio.get_event_loop().run_until_complete(
+        run_sync(
             storage.save_model(SlayerModel(
                 name="upstream", sql_table="t", data_source="ds",
                 columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
@@ -401,12 +401,11 @@ class TestOpenAPI400Documentation:
         without ever calling the SQL client.
         """
         from slayer.core.models import DatasourceConfig
-        import asyncio
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(storage.save_datasource(
+        from slayer.async_utils import run_sync
+        run_sync(storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         ))
-        loop.run_until_complete(storage.save_model(SlayerModel(
+        run_sync(storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="ds",
             columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
         )))

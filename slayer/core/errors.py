@@ -7,7 +7,10 @@ message format is decided by the layer that raises it.
 
 from __future__ import annotations
 
-from typing import List
+from typing import TYPE_CHECKING, Any, List
+
+if TYPE_CHECKING:
+    from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
 
 
 class SlayerError(Exception):
@@ -40,6 +43,31 @@ class AmbiguousModelError(SlayerError):
             f"{sorted(self.candidates)}. Specify a data_source or set a "
             f"datasource priority to disambiguate."
         )
+
+
+class SchemaDriftError(SlayerError):
+    """Raised by ``SlayerQueryEngine.execute()`` when a query fails and the
+    failure was attributed to schema drift via ``validate_models``.
+
+    Carries the touched model names, the structured ``to_delete`` payload
+    (filtered to those models), and the original DBAPI exception (set as
+    ``__cause__`` for tracebacks).
+    """
+
+    def __init__(
+        self,
+        models: List[str],
+        to_delete: List[Any],
+        original: BaseException,
+    ) -> None:
+        self.models = list(models)
+        self.to_delete = list(to_delete)
+        super().__init__(
+            f"Schema drift detected on models {sorted(self.models)}. "
+            f"Run validate_models to inspect the {len(self.to_delete)} "
+            f"pending delete(s)."
+        )
+        self.__cause__ = original
 
 
 class EntityResolutionError(SlayerError):
