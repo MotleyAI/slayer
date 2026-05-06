@@ -272,9 +272,23 @@ def _diff_sql_table_joins(
     in-datasource model availability."""
     dropped: List[str] = []
     reasons: List[DeleteReason] = []
+    # ``join.join_pairs[*][0]`` is the semantic column name (``Column.name``).
+    # Resolve to the physical column name via ``Column.sql`` before checking
+    # against the live table — for a base column like
+    # ``Column(name="customer_id", sql="customer_fk")``, ``live_table.columns``
+    # contains ``customer_fk``, not ``customer_id``. Without this resolution
+    # the membership check wrongly drops valid joins.
+    base_sql_by_name = {
+        c.name: (c.sql or c.name).strip()
+        for c in model.columns
+        if _column_is_base(c.sql)
+    }
     for join in model.joins:
         local_cols = [pair[0] for pair in join.join_pairs]
-        missing_locals = [lc for lc in local_cols if lc not in live_table.columns]
+        missing_locals = [
+            lc for lc in local_cols
+            if base_sql_by_name.get(lc, lc) not in live_table.columns
+        ]
         if missing_locals:
             dropped.append(join.target_model)
             reasons.append(

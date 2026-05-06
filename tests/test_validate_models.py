@@ -272,6 +272,43 @@ class TestDiffSqlTableModel:
         assert isinstance(entry, EditModelDelete)
         assert "warehouses" in entry.remove.joins
 
+    def test_join_local_column_resolves_through_column_sql(self) -> None:
+        """``join.join_pairs[*][0]`` is a semantic column name; resolve to
+        the physical column via ``Column.sql`` before checking against the
+        live table. CodeRabbit thread #103/r3196378686.
+        """
+        # Model: ``customer_id`` semantic name maps to physical ``customer_fk``.
+        model = _orders_model(
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_fk", type=DataType.DOUBLE),
+            ],
+            joins=[
+                ModelJoin(
+                    target_model="customers",
+                    join_pairs=[["customer_id", "id"]],  # semantic
+                ),
+            ],
+        )
+        live = _live_orders(
+            columns={
+                "id": DataType.DOUBLE,
+                "amount": DataType.DOUBLE,
+                "status": DataType.TEXT,
+                "customer_fk": DataType.DOUBLE,  # physical name in the live DB
+            }
+        )
+        entry, _ = diff_sql_table_model(
+            model=model, live_table=live,
+            available_models_in_ds={"orders", "customers"},
+        )
+        # No drift — the join's local column resolves to ``customer_fk`` which
+        # is present in the live table. Without the fix, ``customer_id`` would
+        # be flagged as missing and the join wrongly dropped.
+        assert entry is None
+
 
 # ---------------------------------------------------------------------------
 # diff_sql_model — sql mode
