@@ -2408,8 +2408,18 @@ def create_mcp_server(storage: StorageBackend):
                 datasource is validated concurrently and results are
                 concatenated.
         """
+        if data_source is not None:
+            # Fail loudly on an unknown name. Without this guard the engine
+            # returns ``[]`` because no persisted models match, which is
+            # indistinguishable from "no drift" — risky for an agent flow.
+            ds = await storage.get_datasource(data_source)
+            if ds is None:
+                return f"Datasource '{data_source}' not found."
         engine = SlayerQueryEngine(storage=storage)
-        entries = await engine.validate_models(data_source=data_source)
+        try:
+            entries = await engine.validate_models(data_source=data_source)
+        except (sa.exc.OperationalError, sa.exc.DatabaseError) as exc:
+            return _friendly_db_error(exc)
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
     @mcp.tool()

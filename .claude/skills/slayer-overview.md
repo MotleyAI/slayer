@@ -29,8 +29,8 @@ Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample da
 Querying: `query`
 Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`
-Ingestion: `ingest_datasource_models` (idempotent — re-runs are additive only; returns combined `IdempotentIngestResult` with `additions`, `to_delete` from validate_models, `errors`)
-Schema drift: `validate_models` (read-only diff against live schemas, returns the minimal list of replayable deletes)
+Ingestion: `ingest_datasource_models` (idempotent — re-runs are additive only; returns a rendered text summary listing newly-created models, additive updates, pending validate-models drift, and any per-model errors. The structured `IdempotentIngestResult` shape is the engine-layer contract; the MCP tool renders it for the agent)
+Schema drift: `validate_models` (read-only diff against live schemas; returns JSON-serialized list of replayable deletes. Returns ``"Datasource 'X' not found."`` on an unknown name)
 Agent memory (DEV-1357): `save_memory`, `forget_memory`, `recall_memories`
 
 **Recommended agent workflow**: call `recall_memories` BEFORE `query`, supplying either an entity list or the draft query itself via the `about` arg. The returned learnings flag pitfalls (NULL semantics, encoding quirks, deprecated columns) and matching saved queries provide ready-made templates. After issuing a query, save anything non-obvious you discovered via `save_memory(learning=..., linked_entities=[...])` (or pass the query itself as `linked_entities` to record an example).

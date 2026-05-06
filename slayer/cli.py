@@ -755,6 +755,15 @@ def _run_validate_models(args):
     from slayer.engine.query_engine import SlayerQueryEngine
 
     storage = _resolve_storage(args)
+    if args.datasource:
+        # Fail fast on a typoed name. Without this check, ``validate_models``
+        # returns ``[]`` for an unknown datasource (no models match), which
+        # is indistinguishable from "no drift" and silently exits 0.
+        ds = run_sync(storage.get_datasource(args.datasource))
+        if ds is None:
+            storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
+            print(f"Datasource '{args.datasource}' not found in {storage_path}")
+            sys.exit(1)
     engine = SlayerQueryEngine(storage=storage)
     entries = run_sync(engine.validate_models(data_source=args.datasource))
     print(_format_validate_models_output(entries))
