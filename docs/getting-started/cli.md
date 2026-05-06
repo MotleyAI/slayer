@@ -23,14 +23,9 @@ slayer datasources create demo --ingest
 slayer query '{"source_model": "orders", "measures": ["*:count"]}'
 ```
 
-This generates ~1 year of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `order_items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N`.
+This generates ~4 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N` (the default of 4 ensures all six bundled stores have orders — the last store opens on simulated day 1107).
 
-The demo requires `duckdb` and [`jafgen`](https://github.com/rossbowen/jaffle-shop-generator) (a git-only install):
-
-```bash
-pip install duckdb
-pip install 'git+https://github.com/rossbowen/jaffle-shop-generator.git@09557a1118b000071f8171aa97d54d5029bf0f0b'
-```
+DuckDB and `jafgen` ship with `motley-slayer`, so no extra install is needed.
 
 You can also preload the demo at server startup:
 

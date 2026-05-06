@@ -27,7 +27,6 @@ from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.demo.jaffle_shop import (
-    DemoDependencyError,
     create_schema,
     generate_data,
     load_data,
@@ -62,8 +61,6 @@ def jaffle_duckdb_path(tmp_path_factory):
 
     try:
         data_dir = generate_data(output_dir=str(tmpdir), years=1)
-    except DemoDependencyError as exc:
-        pytest.skip(f"Jaffle shop prerequisite missing: {exc}")
     except (FileNotFoundError, RuntimeError) as exc:
         pytest.skip(f"Jaffle shop prerequisite missing: {exc}")
 
@@ -119,11 +116,10 @@ _EXPECTED_COLUMNS: Dict[str, Dict[str, tuple]] = {
         "tax_paid": (DataType.NUMBER, False, NumberFormatType.FLOAT),
         "order_total": (DataType.NUMBER, False, NumberFormatType.FLOAT),
     },
-    "order_items": {
+    "items": {
         "id": (DataType.STRING, True, None),
         "order_id": (DataType.STRING, False, None),
         "sku": (DataType.STRING, False, None),
-        "quantity": (DataType.NUMBER, False, NumberFormatType.INTEGER),
     },
     "supplies": {
         "id": (DataType.STRING, True, None),
@@ -150,7 +146,7 @@ _EXPECTED_JOINS: Dict[str, set] = {
         ("customers", "customer_id", "id"),
         ("stores", "store_id", "id"),
     },
-    "order_items": {
+    "items": {
         ("orders", "order_id", "id"),
         ("products", "sku", "sku"),
     },

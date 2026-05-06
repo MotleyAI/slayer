@@ -80,45 +80,6 @@ class TestDemoKeywordDispatch:
             )
 
 
-class TestMissingDependencyHints:
-    def test_missing_duckdb_prints_install_hint(self, tmp_path, monkeypatch, capsys):
-        def raise_missing():
-            raise jaffle_shop.DemoDependencyError(
-                jaffle_shop._missing_deps_message(["duckdb"])
-            )
-
-        monkeypatch.setattr(jaffle_shop, "check_dependencies", raise_missing)
-
-        with pytest.raises(SystemExit) as exc:
-            cli._run_datasources_create_demo(
-                args=_make_args(storage=str(tmp_path)),
-                storage=object(),
-            )
-
-        assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "pip install duckdb" in out
-
-    def test_missing_jafgen_prints_install_hint(self, tmp_path, monkeypatch, capsys):
-        def raise_missing():
-            raise jaffle_shop.DemoDependencyError(
-                jaffle_shop._missing_deps_message(["jafgen"])
-            )
-
-        monkeypatch.setattr(jaffle_shop, "check_dependencies", raise_missing)
-
-        with pytest.raises(SystemExit) as exc:
-            cli._run_datasources_create_demo(
-                args=_make_args(storage=str(tmp_path)),
-                storage=object(),
-            )
-
-        assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "jaffle-shop-generator" in out
-        assert "pip install" in out
-
-
 class TestServeMcpDemoHook:
     def test_serve_demo_flag_calls_prepare_demo(self, monkeypatch):
         calls = []
@@ -184,17 +145,13 @@ class TestResolveDemoDbPath:
 
 class TestBuildJaffleShopIdempotency:
     def test_returns_false_and_reshifts_when_db_exists(self, tmp_path, monkeypatch):
-        duckdb = pytest.importorskip("duckdb")
+        import duckdb
 
         db = tmp_path / "jaffle_shop.duckdb"
         # Create a real (empty) DuckDB file so the reuse path can open it.
         duckdb.connect(str(db)).close()
 
-        def boom():
-            raise AssertionError("check_dependencies should not be called on the reuse path")
-
         shift_called = []
-        monkeypatch.setattr(jaffle_shop, "check_dependencies", boom)
         monkeypatch.setattr(
             jaffle_shop,
             "shift_dates_to_today",
