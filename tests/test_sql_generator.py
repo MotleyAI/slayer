@@ -134,7 +134,12 @@ class TestBasicQueries:
         )
         query = SlayerQuery(source_model="policy", measures=[ModelMeasure(formula="num_policies:sum")])
         sql = await _generate(generator, query, model)
-        assert "SUM(1)" in sql
+        # DEV-1361: a non-bare ``Column.sql`` (literal ``"1"``) is wrapped
+        # in CAST when ``type`` is set, so the emission becomes
+        # ``SUM(CAST(1 AS DOUBLE PRECISION))``. The original bug pinned by
+        # this test — quoting ``1`` as an identifier ``"1"`` — must still
+        # not happen.
+        assert "SUM(CAST(1 AS" in sql or "SUM(1)" in sql
         assert '"1"' not in sql
 
     async def test_simple_count(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:

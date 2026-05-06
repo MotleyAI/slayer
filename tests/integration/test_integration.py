@@ -2939,18 +2939,27 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     )
     engine = SlayerQueryEngine(storage=storage)
 
-    response = await engine.execute(
-        SlayerQuery(
-            source_model="blobs",
-            measures=[ModelMeasure(formula="score:sum")],
-        )
+    query = SlayerQuery(
+        source_model="blobs",
+        measures=[ModelMeasure(formula="score:sum")],
     )
+    response = await engine.execute(query)
     total = response.data[0]["blobs.score_sum"]
     # With CAST AS REAL the SUM is a native float; without it, json_extract
     # returns TEXT and SUM coerces but emits a different type that breaks
     # the BIRD-Interact tuple comparator.
     assert isinstance(total, float)
     assert total == pytest.approx(7.0)
+
+    # Pin CAST emission directly: a dry-run round-trip through the SQL
+    # generator must produce a CAST(... AS REAL). SQLite's json_extract
+    # already returns numerics on this fixture, so the runtime assertions
+    # above pass with or without the CAST — the dry-run check is what
+    # actually fails if DEV-1361 emission regresses.
+    dry = await engine.execute(query, dry_run=True)
+    sql_lower = dry.sql.lower() if dry.sql else ""
+    assert "cast(" in sql_lower
+    assert "real" in sql_lower
 
     # Hand-written gold using CAST AS REAL produces the same value.
     gold_conn = sqlite3.connect(str(db_path))

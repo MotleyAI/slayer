@@ -192,11 +192,20 @@ class TestDiffSqlTableModel:
         assert dropped == {"amount"}
 
     def test_integer_vs_float_same_bucket(self) -> None:
-        # In SLayer, INTEGER and FLOAT both collapse to DataType.DOUBLE, so
-        # comparisons stay within bucket. This test pins the contract.
+        # DEV-1361: INT and DOUBLE are now distinct enum members but share
+        # the ``"number"`` bucket so drift detection does not false-positive
+        # when a persisted DOUBLE column is reported as INT by live
+        # introspection (the v5 refinement step reconciles these without
+        # raising drift).
         model = _orders_model()
-        # All columns NUMBER on both sides — no drift
-        live = _live_orders()
+        live = _live_orders(
+            columns={
+                "id": DataType.INT,
+                "amount": DataType.DOUBLE,
+                "status": DataType.TEXT,
+                "customer_id": DataType.INT,
+            }
+        )
         entry, _ = diff_sql_table_model(
             model=model, live_table=live, available_models_in_ds={"orders"}
         )

@@ -474,7 +474,12 @@ async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "B", "foo_normalized")
-    assert "SUM(B.foo_raw / 100.0)" in norm or "SUM(B.foo_raw/100.0)" in norm
+    # DEV-1361: a non-bare ``Column.sql`` ("foo_raw / 100.0") may be wrapped
+    # in CAST when its type is set, e.g. ``SUM(CAST(B.foo_raw / 100.0 AS …))``.
+    # Either form is acceptable — the assertion only pins the inlining
+    # behavior, not exact CAST-vs-no-CAST shape.
+    assert "B.foo_raw / 100.0" in norm or "B.foo_raw/100.0" in norm
+    assert "SUM(" in norm
 
 
 # ---------------------------------------------------------------------------

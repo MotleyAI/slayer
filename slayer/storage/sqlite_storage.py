@@ -194,12 +194,12 @@ class SQLiteStorage(StorageBackend):
         write_back = False
         if isinstance(data, dict) and pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
+            # Always persist when a migration ran, even if the optional
+            # introspection refinement is a no-op. Mirrors YAMLStorage.
+            write_back = True
             ds = await self.get_datasource(data_source)
             if ds is not None:
-                if refine_dict_with_live_schema(data, ds):
-                    write_back = True
-            else:
-                write_back = True
+                refine_dict_with_live_schema(data, ds)
         model = SlayerModel.model_validate(data)
         if write_back:
             await self.save_model(model)

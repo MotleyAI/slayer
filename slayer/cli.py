@@ -454,7 +454,6 @@ examples:
         help="Storage maintenance (DEV-1361: migrate-types refines DOUBLE→INT for legacy models)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _add_storage_arg(storage_parser)
     storage_subparsers = storage_parser.add_subparsers(dest="subcommand")
 
     migrate_types_parser = storage_subparsers.add_parser(
@@ -548,11 +547,6 @@ def _run_storage_migrate_types(args) -> None:
     ``refine_dict_with_live_schema`` per model, optionally writes the
     refined v5 dict back. Hard-fails if a datasource is unreachable.
     """
-    import copy as _copy
-
-    from slayer.storage import migrations as _mig
-    from slayer.storage.type_refinement import refine_dict_with_live_schema
-
     storage = _resolve_storage(args)
     # Unwrap JoinSyncStorage so we can list identities and read raw dicts
     # without triggering the get_model auto-refinement path (which would
@@ -561,54 +555,19 @@ def _run_storage_migrate_types(args) -> None:
     data_source_filter = getattr(args, "data_source", None)
     dry_run = bool(getattr(args, "dry_run", False))
 
-    async def _gather():
-        identities = await inner._list_all_model_identities()
-        return identities
-
-    identities = run_sync(_gather())
+    identities = run_sync(inner._list_all_model_identities())
 
     refined_total = 0
     for ds_name, model_name in identities:
         if data_source_filter and ds_name != data_source_filter:
             continue
-        ds = run_sync(inner.get_datasource(ds_name))
-        if ds is None:
-            continue
-        # Read raw dict bypassing the storage's load-side migration so we
-        # see the persisted-on-disk shape. ``inner`` is the un-wrapped
-        # backend (YAMLStorage / SQLiteStorage) so the helper's
-        # backend-specific paths resolve.
-        raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
-        if raw is None:
-            continue
-        # Snapshot the original column types BEFORE migration mutates the
-        # shared inner dicts, so we can show before/after diffs.
-        original_types = {
-            (c.get("name") or "?"): c.get("type", "?")
-            for c in raw.get("columns", []) or []
-            if isinstance(c, dict)
-        }
-        # Walk the dict-migrator chain (coarse rename only), then refine
-        # via live introspection. Deep-copy first so mutations don't leak
-        # back into the on-disk-equivalent ``raw`` dict.
-        upgraded = _mig.migrate("SlayerModel", _copy.deepcopy(raw))
-        applied = refine_dict_with_live_schema(upgraded, ds)
-        if applied:
+        if _refine_one_model_for_cli(
+            inner=inner,
+            ds_name=ds_name,
+            model_name=model_name,
+            dry_run=dry_run,
+        ):
             refined_total += 1
-            print(f"refined {ds_name}.{model_name}:")
-            for col in upgraded.get("columns", []) or []:
-                if col.get("type") != "INT":
-                    continue
-                before = original_types.get(col.get("name") or "", None)
-                if before != "INT":
-                    print(f"  - {col['name']}: {before or '?'} → INT")
-            if not dry_run:
-                from slayer.core.models import SlayerModel as _SM
-
-                model = _SM.model_validate(upgraded)
-                # Save through inner so we don't re-trigger the load-time
-                # refinement / join-sync mirror loop.
-                run_sync(inner.save_model(model))
 
     if refined_total == 0:
         print("No models needed refinement.")
@@ -616,6 +575,53 @@ def _run_storage_migrate_types(args) -> None:
         print(f"\nDry run: {refined_total} model(s) would be refined.")
     else:
         print(f"\nDone: refined {refined_total} model(s).")
+
+
+def _refine_one_model_for_cli(
+    *, inner, ds_name: str, model_name: str, dry_run: bool,
+) -> bool:
+    """Per-model refinement loop body for ``slayer storage migrate-types``.
+
+    Returns True iff the model needed refinement. Reads the raw on-disk
+    dict, runs the v5 migrator chain, applies live-schema refinement, and
+    optionally persists. Skipped silently when the datasource record is
+    missing or the on-disk dict can't be read.
+    """
+    import copy as _copy
+
+    from slayer.core.models import SlayerModel as _SM
+    from slayer.storage import migrations as _mig
+    from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+    ds = run_sync(inner.get_datasource(ds_name))
+    if ds is None:
+        return False
+    raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
+    if raw is None:
+        return False
+    # Snapshot the original column types before migration mutates the
+    # shared inner dicts, so we can show before/after diffs.
+    original_types = {
+        (c.get("name") or "?"): c.get("type", "?")
+        for c in raw.get("columns", []) or []
+        if isinstance(c, dict)
+    }
+    upgraded = _mig.migrate("SlayerModel", _copy.deepcopy(raw))
+    if not refine_dict_with_live_schema(upgraded, ds):
+        return False
+    print(f"refined {ds_name}.{model_name}:")
+    for col in upgraded.get("columns", []) or []:
+        if col.get("type") != "INT":
+            continue
+        before = original_types.get(col.get("name") or "", None)
+        if before != "INT":
+            print(f"  - {col['name']}: {before or '?'} → INT")
+    if not dry_run:
+        model = _SM.model_validate(upgraded)
+        # Save through inner so we don't re-trigger the load-time
+        # refinement / join-sync mirror loop.
+        run_sync(inner.save_model(model))
+    return True
 
 
 async def _load_raw_model_dict(storage, data_source: str, name: str) -> Optional[dict]:
@@ -629,7 +635,7 @@ async def _load_raw_model_dict(storage, data_source: str, name: str) -> Optional
         path = storage._model_path(data_source, name)
         if not _os.path.exists(path):
             return None
-        with open(path) as f:
+        with open(path) as f:  # NOSONAR(S7493) — sync I/O in async by design (CLAUDE.md, Async Architecture)
             return _yaml.safe_load(f)
     if hasattr(storage, "_get_model_sync"):  # SQLiteStorage
         import asyncio as _asyncio

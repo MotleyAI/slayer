@@ -70,11 +70,11 @@ async def env(tmp_path):
         data_source="test_sqlite",
         description="Orders model used in integration tests.",
         columns=[
-            Column(name="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="status", type=DataType.TEXT, label="Status", description="Order state"),
             Column(name="is_paid", type=DataType.BOOLEAN),
             Column(name="amount", sql="amount", type=DataType.DOUBLE, description="Revenue per order"),
-            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+            Column(name="quantity", sql="quantity", type=DataType.INT),
             Column(name="ordered_at", type=DataType.TIMESTAMP),
             Column(name="notes", type=DataType.TEXT),
         ],
@@ -140,7 +140,7 @@ class TestGetRowCount:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="empty_ds",
-            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True)],
+            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
@@ -201,7 +201,7 @@ class TestCollectDimProfile:
         model = SlayerModel(
             name="t", sql_table="t", data_source="hc_ds",
             columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="id", type=DataType.INT, primary_key=True),
                 Column(name="label", type=DataType.TEXT),
             ],
         )
@@ -228,7 +228,7 @@ class TestCollectDimProfile:
         model = SlayerModel(
             name="t", sql_table="t", data_source="empty_ds2",
             columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="id", type=DataType.INT, primary_key=True),
                 Column(name="status", type=DataType.TEXT),
                 Column(name="amount", type=DataType.DOUBLE),
             ],
@@ -400,9 +400,9 @@ class TestMeasureTypeInference:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="types_ds",
-            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True),
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
 
-                Column(name="label", sql="label", type=DataType.DOUBLE),
+                Column(name="label", sql="label", type=DataType.TEXT),
                 Column(name="price", sql="price", type=DataType.DOUBLE),
             ],
         )
@@ -457,7 +457,7 @@ class TestMeasureTypeInference:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="null_ds",
-            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True),
+            columns=[Column(name="id", type=DataType.INT, primary_key=True),
 Column(name="val", sql="val", type=DataType.DOUBLE)
             ],
         )

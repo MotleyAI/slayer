@@ -30,10 +30,17 @@ def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Exp
     Skipped when ``dt`` is ``None`` (no declared type) or ``DataType.TEXT``
     (cosmetic — SQL TEXT/VARCHAR roundtripping is already a no-op for our
     purposes and ``CAST(... AS TEXT)`` does not unwrap SQLite's
-    JSON-quoted-string return values anyway). Idempotent: if ``expr`` is
-    already a CAST to the same target, return it unchanged.
+    JSON-quoted-string return values anyway). Skipped when ``expr`` is a
+    plain ``exp.Column`` (possibly qualified ``model.col``) — those are
+    bare column references whose runtime type already matches the declared
+    type by definition; wrapping them in CAST is dead noise and on SQLite
+    can be lossy (e.g. ``CAST(text_timestamp AS TIMESTAMP)`` truncating
+    to a year). Idempotent: if ``expr`` is already a CAST to the same
+    target, return it unchanged.
     """
     if dt is None or dt == DataType.TEXT:
+        return expr
+    if isinstance(expr, exp.Column):
         return expr
     target = exp.DataType.Type(dt.value)
     if isinstance(expr, exp.Cast):
@@ -1302,6 +1309,12 @@ class SQLGenerator:
                     deferred_consecutive_periods.append(t)
                 else:
                     window_sql = self._build_transform_sql(t)
+                    # DEV-1361: wrap in CAST when the source ModelMeasure
+                    # declared a result type (propagated to t.type at
+                    # enrichment time).
+                    if t.type is not None:
+                        wrapped = _wrap_cast_for_type(self._parse(window_sql), t.type)
+                        window_sql = wrapped.sql(dialect=self.dialect)
                     layer_parts.append(f'{window_sql} AS "{t.alias}"')
                     added_this_layer.append(t.alias)
 
@@ -1387,6 +1400,9 @@ class SQLGenerator:
             if t.transform == "consecutive_periods":
                 raise ValueError("consecutive_periods could not be materialized")
             window_sql = self._build_transform_sql(t)
+            if t.type is not None:
+                wrapped = _wrap_cast_for_type(self._parse(window_sql), t.type)
+                window_sql = wrapped.sql(dialect=self.dialect)
             final_parts.append(f'{window_sql} AS "{t.alias}"')
 
         outer_select = "SELECT\n    " + ",\n    ".join(final_parts)
@@ -1960,7 +1976,12 @@ class SQLGenerator:
         if not agg_name:
             # Not an aggregation — raw expression
             if measure.sql:
-                return self._resolve_sql(sql=measure.sql, name=measure.name, model_name=measure.model_name), False
+                return self._resolve_sql(
+                    sql=measure.sql,
+                    name=measure.name,
+                    model_name=measure.model_name,
+                    type=measure.column_type,
+                ), False
             return exp.Column(
                 this=exp.to_identifier(measure.name),
                 table=exp.to_identifier(measure.model_name),
@@ -1969,7 +1990,10 @@ class SQLGenerator:
         # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
         if agg_name in ("first", "last"):
             col_expr = self._resolve_sql(
-                sql=measure.sql, name=measure.name, model_name=measure.model_name,
+                sql=measure.sql,
+                name=measure.name,
+                model_name=measure.model_name,
+                type=measure.column_type,
             )
             col = col_expr.sql(dialect=self.dialect)
             suffix = ""
@@ -2029,7 +2053,12 @@ class SQLGenerator:
             else:
                 inner = exp.Star()
         elif measure.sql:
-            inner = self._resolve_sql(sql=measure.sql, name=measure.name, model_name=measure.model_name)
+            inner = self._resolve_sql(
+                sql=measure.sql,
+                name=measure.name,
+                model_name=measure.model_name,
+                type=measure.column_type,
+            )
         else:
             inner = exp.Column(
                 this=exp.to_identifier(measure.name),

@@ -350,6 +350,14 @@ async def enrich_query(
             filter_sql = resolved[0].sql
             filter_columns = list(resolved[0].columns)
 
+        # DEV-1361: pull through the source Column's declared type so the
+        # generator can wrap the pre-aggregation expression in CAST when the
+        # column's sql is non-bare (e.g. json_extract).
+        column_type = (
+            measure_def.type
+            if measure_def is not None and isinstance(measure_def.type, DataType)
+            else None
+        )
         measures.append(
             EnrichedMeasure(
                 name=canonical_name,
@@ -366,6 +374,7 @@ async def enrich_query(
                 source_measure_name=measure_name,
                 filter_sql=filter_sql,
                 filter_columns=filter_columns,
+                column_type=column_type,
             )
         )
         known_aliases[alias_key] = alias
@@ -772,6 +781,13 @@ async def enrich_query(
                 for e in enriched_expressions:
                     if e.alias == alias:
                         e.type = qfield.type
+                # Pure-transform measures (lag/lead/cumsum/...) end up in
+                # ``enriched_transforms``, not ``enriched_expressions``;
+                # propagate the declared type there too so the window-layer
+                # emitter can wrap in CAST.
+                for t in enriched_transforms:
+                    if t.alias == alias:
+                        t.type = qfield.type
 
     # --- Enrich ORDER BY formulas as hidden fields ---
     for item in query.order or []:

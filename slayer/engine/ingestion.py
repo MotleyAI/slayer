@@ -410,7 +410,10 @@ def _get_columns_fallback(
             sa_type = sa_type or DataType.DOUBLE
             is_float = _parse_info_schema_is_float(data_type_str)
         elif sa_type is None and "INT" in base_type:
-            sa_type = DataType.DOUBLE
+            # DEV-1361: integer-shaped types should narrow to INT, not the
+            # coarse DOUBLE fallback (e.g. MEDIUMINT, TINYINT variants not
+            # otherwise mapped).
+            sa_type = DataType.INT
         elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
             sa_type = DataType.TEXT
         result.append({"name": col_name, "type": sa_type or DataType.TEXT, "is_float": is_float})

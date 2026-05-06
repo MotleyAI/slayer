@@ -256,7 +256,7 @@ class TestRefineDictWithLiveSchema:
             port=1,  # closed
             database="nope",
             username="nobody",
-            password="nope",
+            password="nope",  # NOSONAR(S2068) — test fixture, not a real credential; targets a closed port to assert hard-fail
         )
         with pytest.raises(sa.exc.OperationalError):
             refine_dict_with_live_schema(d, ds)
@@ -285,7 +285,7 @@ class TestYamlStorageRefinementOnLoad:
     ) -> None:
         await storage_with_v4_model["storage"].get_model("items", data_source="live")
         # Re-read raw YAML; should be v5 with refined types.
-        with open(storage_with_v4_model["model_path"]) as f:
+        with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
         assert raw["version"] == 5
         types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
@@ -325,14 +325,14 @@ class TestYamlStorageRefinementOnLoad:
         # for the loader's get_datasource path.
         datasources_dir = os.path.join(base, "datasources")
         os.makedirs(datasources_dir, exist_ok=True)
-        with open(os.path.join(datasources_dir, "live.yaml"), "w") as f:
+        with open(os.path.join(datasources_dir, "live.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {"name": "live", "type": "sqlite", "database": sqlite_with_int_double_text["db_path"], "version": 1},
                 f,
             )
         models_dir = os.path.join(base, "models", "live")
         os.makedirs(models_dir, exist_ok=True)
-        with open(os.path.join(models_dir, "items.yaml"), "w") as f:
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {
                     "version": 4,
@@ -348,7 +348,7 @@ class TestYamlStorageRefinementOnLoad:
         storage = YAMLStorage(base_dir=base)
 
         def _boom(*, datasource: Any, schema: Any = None) -> Any:
-            raise sa.exc.OperationalError("simulated", None, Exception("connect refused"))
+            raise sa.exc.OperationalError("simulated", None, Exception("connect refused"))  # NOSONAR(S112) — Exception(...) is the cause-of arg for the simulated SQLAlchemy connect error
 
         monkeypatch.setattr(schema_drift, "_live_schema_for_datasource", _boom)
         with pytest.raises(sa.exc.OperationalError):
@@ -369,7 +369,7 @@ class TestCliMigrateTypes:
     inspectable tool. ``--dry-run`` reports planned refinements without
     writing; without it, refinements are persisted."""
 
-    async def test_dry_run_reports_without_writing(
+    async def test_dry_run_reports_without_writing(  # NOSONAR(S7503) — pytest-asyncio test body; capsys fixture wired in async context
         self, storage_with_v4_model, capsys
     ) -> None:
         from slayer.cli import _run_storage  # introduced in Phase 2.9
@@ -384,7 +384,7 @@ class TestCliMigrateTypes:
         )
         _run_storage(args)
         # On-disk YAML must remain at v4 (no write-back during dry-run).
-        with open(storage_with_v4_model["model_path"]) as f:
+        with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
         assert raw["version"] == 4
         # Output should mention the planned refinements.
@@ -392,7 +392,7 @@ class TestCliMigrateTypes:
         assert "id" in out
         assert "INT" in out
 
-    async def test_apply_writes_refinements(self, storage_with_v4_model) -> None:
+    async def test_apply_writes_refinements(self, storage_with_v4_model) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
         from slayer.cli import _run_storage
 
         args = _build_args(
@@ -404,7 +404,7 @@ class TestCliMigrateTypes:
             data_source=None,
         )
         _run_storage(args)
-        with open(storage_with_v4_model["model_path"]) as f:
+        with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
         assert raw["version"] == 5
         types_by_name = {c["name"]: c["type"] for c in raw["columns"]}

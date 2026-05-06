@@ -95,12 +95,15 @@ class YAMLStorage(StorageBackend):
         write_back = False
         if isinstance(data, dict) and pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
+            # Always persist when a migration ran, even if the optional
+            # introspection refinement is a no-op (text-only model,
+            # query-backed model, DOUBLE columns that stay DOUBLE). Without
+            # this, the on-disk file would re-migrate / re-introspect on
+            # every load.
+            write_back = True
             ds = await self.get_datasource(data_source)
             if ds is not None:
-                refined = refine_dict_with_live_schema(data, ds)
-                write_back = True if refined else write_back
-            else:
-                write_back = True  # Coarse-rename-only; persist v5 anyway.
+                refine_dict_with_live_schema(data, ds)
         model = SlayerModel.model_validate(data)
         if write_back:
             await self.save_model(model)

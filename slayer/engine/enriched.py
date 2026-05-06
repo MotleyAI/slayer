@@ -68,6 +68,15 @@ class EnrichedMeasure(BaseModel):
             "Inherits from ModelMeasure.type at enrichment time."
         ),
     )
+    column_type: Optional[DataType] = Field(
+        default=None,
+        description=(
+            "DEV-1361: source column's declared type — wraps the inner "
+            "(pre-aggregation) expression in CAST when the column.sql is a "
+            "non-bare expression like json_extract(...). Distinct from "
+            "``type`` which wraps the outer aggregation result."
+        ),
+    )
 
 
 class EnrichedTimeDimension(BaseModel):
@@ -128,6 +137,13 @@ class EnrichedTransform(BaseModel):
         "predicate cannot be used.",
     )
     label: Optional[str] = None
+    type: Optional[DataType] = Field(
+        default=None,
+        description=(
+            "DEV-1361: declared result type — when set, the window-layer "
+            "emitter wraps the transform expression in CAST AS <type>."
+        ),
+    )
 
 
 class EnrichedQuery(BaseModel):
