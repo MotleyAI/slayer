@@ -38,7 +38,9 @@ Each entry in `measures` is either a bare formula string or a `{"formula": ..., 
   "last(revenue:sum)",
   "time_shift(revenue:sum, -1, 'year')",
   "lag(revenue:sum, 1)",
-  "rank(revenue:sum)"
+  "rank(revenue:sum)",
+  {"formula": "dense_rank(revenue:sum, partition_by=region)", "name": "rnk_in_region"},
+  {"formula": "ntile(revenue:sum, n=4)", "name": "rev_quartile"}
 ]
 ```
 
@@ -66,7 +68,7 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
 
-**Top-N filtering**: use `"rank(<measure>) <= N"` (e.g. `"rank(revenue:sum) <= 10"`) — dialect-portable and auto-promoted to a post-filter on the outer query. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error — use `rank()` / `first()` / `last()` / `lag()` / `lead()`, or define a `Column` whose `sql` is the window expression and filter on the column (SLayer auto-wraps the SELECT in a post-aggregation outer `WHERE`).
+**Top-N filtering**: use `"rank(<measure>) <= N"` or one of the rank-family transforms (`dense_rank`, `percent_rank`, `ntile`) — all dialect-portable and auto-promoted to a post-filter on the outer query. Pass `partition_by=col` (or `partition_by=[c1, c2]`) to rank within partitions; the columns must be query dimensions. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error — use the rank-family / `first()` / `last()` / `lag()` / `lead()` transforms, or define a `Column` whose `sql` is the window expression and filter on the column (SLayer auto-wraps the SELECT in a post-aggregation outer `WHERE`).
 
 **Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces.
 

@@ -48,7 +48,7 @@ Key terms used throughout SLayer documentation and code.
 
 ## Formulas
 
-**Transform function** — A function applied to a measure, computing values across time buckets. Examples: `cumsum` (running total), `time_shift`/`change`/`change_pct` (self-join-based), `lag`/`lead` (window-function-based), `rank` (ordering).
+**Transform function** — A function applied to a measure, computing values across time buckets or partitions. Examples: `cumsum` (running total), `time_shift`/`change`/`change_pct` (self-join-based), `lag`/`lead` (window-function-based), and the rank family `rank`/`percent_rank`/`dense_rank`/`ntile` (timeless ranking; optional `partition_by=`).
 
 **Self-join vs window-function transforms:**
 

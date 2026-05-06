@@ -40,6 +40,8 @@ slayer_data/
     my_postgres.yaml
     other_db.yaml
   priority.yaml            # datasource priority list (optional)
+  memories.yaml            # agent memories (DEV-1357, optional)
+  counters.yaml            # monotonic memory ID allocator state
 ```
 
 **v4 layout (DEV-1330):** Models live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a pre-v4 directory migrates flat `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
@@ -53,6 +55,8 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 
 storage = SQLiteStorage(db_path="./slayer.db")
 ```
+
+Tables: `models`, `datasources`, `settings` (for the datasource priority list), `memories` + `memory_entities` (DEV-1357 indexed by canonical entity), and `id_counters` (monotonic positive-int memory id allocator).
 
 ## Storage Resolution
 

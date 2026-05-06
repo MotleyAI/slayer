@@ -5,8 +5,10 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from slayer.core.errors import AmbiguousModelError
+from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.query import SlayerQuery
+from slayer.memories.models import Memory
 
 
 def storage_base_dir(path: str) -> str:
@@ -250,6 +252,74 @@ class StorageBackend(ABC):
             if ds in candidates:
                 return (ds, name)
         raise AmbiguousModelError(name=name, candidates=candidates)
+
+    # ---- memories (DEV-1357 v2) -------------------------------------------
+    #
+    # Monotonic positive-int ids, no reuse on delete, and the missing-row
+    # → ``MemoryNotFoundError`` policy live on this class so they can
+    # never diverge between backends. Backends only implement the row-
+    # shaped CRUD primitives + the seq counter below.
+
+    @abstractmethod
+    async def _save_memory_row(self, memory: Memory) -> None:
+        """Persist a fully-populated ``Memory`` (id and created_at set)."""
+
+    @abstractmethod
+    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
+        """Read a ``Memory`` by id; return ``None`` when not present."""
+
+    @abstractmethod
+    async def _list_memories_rows(
+        self, *, entities: Optional[List[str]]
+    ) -> List[Memory]:
+        """Return every ``Memory`` whose stored entity set has non-empty
+        intersection with ``entities``. ``entities=None`` returns all rows.
+        ``entities=[]`` returns ``[]`` (intersection with the empty set is
+        empty)."""
+
+    @abstractmethod
+    async def _delete_memory_row(self, memory_id: int) -> bool:
+        """Delete by id; return ``True`` if a row was removed, ``False``
+        when the id did not exist."""
+
+    @abstractmethod
+    async def _next_memory_seq(self) -> int:
+        """Atomically allocate and return the next memory sequence
+        integer. Counter is monotonically increasing — deleted ids are
+        never reused."""
+
+    async def save_memory(
+        self,
+        *,
+        learning: str,
+        entities: List[str],
+        query: Optional[SlayerQuery] = None,
+    ) -> Memory:
+        """Allocate the next id, persist the memory, return it."""
+        seq = await self._next_memory_seq()
+        memory = Memory(
+            id=seq,
+            learning=learning,
+            entities=list(entities),
+            query=query,
+        )
+        await self._save_memory_row(memory)
+        return memory
+
+    async def get_memory(self, memory_id: int) -> Memory:
+        row = await self._get_memory_row(memory_id)
+        if row is None:
+            raise MemoryNotFoundError(memory_id)
+        return row
+
+    async def list_memories(
+        self, *, entities: Optional[List[str]] = None
+    ) -> List[Memory]:
+        return await self._list_memories_rows(entities=entities)
+
+    async def delete_memory(self, memory_id: int) -> None:
+        if not await self._delete_memory_row(memory_id):
+            raise MemoryNotFoundError(memory_id)
 
 
 # ---------------------------------------------------------------------------

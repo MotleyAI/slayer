@@ -166,7 +166,7 @@ A query can use a saved measure name in any formula position — root, inside a 
 ]
 ```
 
-Bare references are inline-expanded into the saved formula's text at parse time, so the SQL is identical to writing the formula longhand. Saved formulas can reference other saved formulas; cycles (`a → b → a`) are detected and rejected with the chain in the error message. Names that would shadow built-in transforms (`cumsum`, `change`, `change_pct`, `time_shift`, `lag`, `lead`, `rank`, `first`, `last`) are rejected at model construction time.
+Bare references are inline-expanded into the saved formula's text at parse time, so the SQL is identical to writing the formula longhand. Saved formulas can reference other saved formulas; cycles (`a → b → a`) are detected and rejected with the chain in the error message. Names that would shadow built-in transforms (`cumsum`, `change`, `change_pct`, `time_shift`, `lag`, `lead`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) are rejected at model construction time.
 
 ### Filtered Columns
 

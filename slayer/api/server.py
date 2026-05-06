@@ -7,11 +7,17 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from slayer.mcp.server import create_mcp_server
-from slayer.core.errors import AmbiguousModelError, SchemaDriftError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    EntityResolutionError,
+    MemoryNotFoundError,
+    SchemaDriftError,
+)
 from slayer.core.format import NumberFormat
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.memories.service import MemoryService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,30 @@ class DatasourcePriorityRequest(BaseModel):
     silently coercing them downstream.
     """
     priority: List[str] = []
+
+
+class SaveMemoryRequest(BaseModel):
+    """Body for ``POST /memories``.
+
+    ``linked_entities`` accepts either a list of entity-reference
+    strings or an inline ``SlayerQuery`` payload (a JSON object). Both
+    forms are dispatched server-side: a list runs strict per-token
+    resolution, an object validates as a ``SlayerQuery`` and triggers
+    entity extraction (the query is then persisted alongside the
+    learning).
+    """
+
+    learning: str
+    linked_entities: Any
+
+
+class RecallMemoriesRequest(BaseModel):
+    """Body for ``POST /memories/recall``. Same union as ``about`` on
+    the MCP / Python-client surfaces."""
+
+    about: Any
+    max_learnings: Optional[int] = None
+    max_queries: Optional[int] = 2
 
 
 def create_app(storage: StorageBackend) -> FastAPI:
@@ -425,5 +455,78 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 status_code=422, detail=result.model_dump(mode="json")
             )
         return result.model_dump(mode="json")
+
+    # ---------- DEV-1357 v2: Memory endpoints ------------------------------
+
+    memory_service = MemoryService(storage=storage)
+
+    @app.post(
+        "/memories",
+        responses={
+            400: {
+                "description": (
+                    "Invalid input: empty learning, empty entity list, "
+                    "ambiguous bare-name reference, or unknown entity."
+                )
+            }
+        },
+    )
+    async def save_memory(request: SaveMemoryRequest) -> Dict[str, Any]:
+        try:
+            response = await memory_service.save_memory(
+                learning=request.learning,
+                linked_entities=request.linked_entities,
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return response.model_dump(mode="json")
+
+    @app.delete(
+        "/memories/{memory_id}",
+        responses={
+            400: {"description": "Invalid memory id (non-numeric or non-positive)."},
+            404: {"description": "Memory not found."},
+        },
+    )
+    async def delete_memory(memory_id: int) -> Dict[str, Any]:
+        try:
+            response = await memory_service.forget_memory(identifier=memory_id)
+        except MemoryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return response.model_dump(mode="json")
+
+    @app.post(
+        "/memories/recall",
+        responses={
+            400: {
+                "description": (
+                    "Invalid input: ambiguous bare-name reference, "
+                    "unknown entity, or malformed query payload."
+                )
+            }
+        },
+    )
+    async def recall_memories(
+        request: RecallMemoriesRequest,
+    ) -> Dict[str, Any]:
+        try:
+            response = await memory_service.recall_memories(
+                about=request.about,
+                max_learnings=request.max_learnings,
+                max_queries=request.max_queries,
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return response.model_dump(mode="json")
 
     return app

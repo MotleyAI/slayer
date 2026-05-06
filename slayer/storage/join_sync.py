@@ -16,6 +16,7 @@ from typing import List, Optional, Set, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
+from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 
 
@@ -195,3 +196,22 @@ class JoinSyncStorage(StorageBackend):
 
     async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
         return await self._inner._set_datasource_priority_raw(priority)
+
+    # -- memories (DEV-1357 v2) — pure delegation -------------------------
+
+    async def _save_memory_row(self, memory: Memory) -> None:
+        await self._inner._save_memory_row(memory)
+
+    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
+        return await self._inner._get_memory_row(memory_id)
+
+    async def _list_memories_rows(
+        self, *, entities: Optional[List[str]]
+    ) -> List[Memory]:
+        return await self._inner._list_memories_rows(entities=entities)
+
+    async def _delete_memory_row(self, memory_id: int) -> bool:
+        return await self._inner._delete_memory_row(memory_id)
+
+    async def _next_memory_seq(self) -> int:
+        return await self._inner._next_memory_seq()

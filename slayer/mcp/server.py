@@ -6,7 +6,11 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import sqlalchemy as sa
 
-from slayer.core.errors import AmbiguousModelError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    EntityResolutionError,
+    MemoryNotFoundError,
+)
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -18,6 +22,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
+from slayer.memories.service import MemoryService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -34,7 +39,7 @@ _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_disti
 # caller drops the section from `sections`; reachable_fields/samples are fully
 # omitted (they have no natural "names" to list).
 _INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
-_INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples")
+_INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples", "learnings")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
 _MAX_REACHABLE_FIELDS_DEPTH = 20
@@ -972,6 +977,8 @@ def create_mcp_server(storage: StorageBackend):
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
 
         Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
+
+        Before calling this tool, run ``recall_memories`` first, supplying the entities you're thinking of using (or the query itself via the ``about`` arg). Read the returned learnings and consider any matching saved queries before formulating the final query.
         """
         data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
@@ -1532,6 +1539,37 @@ def create_mcp_server(storage: StorageBackend):
                 out_sections.append(sample_section)
 
         # ------------------------------------------------------------------
+        # Learnings (DEV-1357 v2) — surfaces only memories where ``query`` is
+        # ``None``; query-bearing memories are recall-only. Auto-pruned when
+        # no learning-shaped memory matches.
+        # ------------------------------------------------------------------
+        relevant_learnings: List[Any] = []
+        wanted: List[str] = []
+        if "learnings" in included_set:
+            ds = model.data_source
+            wanted = [f"{ds}.{model.name}"]
+            wanted.extend(f"{ds}.{model.name}.{c.name}" for c in model.columns)
+            wanted.extend(
+                f"{ds}.{model.name}.{m.name}"
+                for m in model.measures
+                if m.name is not None
+            )
+            wanted.extend(
+                f"{ds}.{model.name}.{a.name}" for a in model.aggregations
+            )
+            candidates = await storage.list_memories(entities=wanted)
+            relevant_learnings = [m for m in candidates if m.query is None]
+            if relevant_learnings:
+                lines = [f"## Learnings ({len(relevant_learnings)})", ""]
+                for memory in relevant_learnings:
+                    matched = sorted(set(wanted) & set(memory.entities))
+                    matched_md = ", ".join(f"`{e}`" for e in matched)
+                    lines.append(
+                        f"- **M{memory.id}** ({matched_md}): {memory.learning}"
+                    )
+                out_sections.append("\n".join(lines))
+
+        # ------------------------------------------------------------------
         # Per-call truncation footer (only when something was trimmed or an
         # unknown section name was supplied).
         # ------------------------------------------------------------------
@@ -1648,6 +1686,22 @@ def create_mcp_server(storage: StorageBackend):
                 payload["sample_data_error"] = sample_error
                 if show_sql and sample_sql:
                     payload["sample_sql"] = sample_sql
+
+            # Learnings (DEV-1357 v2) — Memory carries ``learning``,
+            # not ``body``; reading ``.body`` here would AttributeError
+            # the moment a memory matches and the caller asked for JSON
+            # output.
+            if "learnings" in included_set and relevant_learnings:
+                payload["learnings"] = [
+                    {
+                        "id": memory.id,
+                        "learning": memory.learning,
+                        "matched_entities": sorted(
+                            set(wanted) & set(memory.entities)
+                        ),
+                    }
+                    for memory in relevant_learnings
+                ]
 
             # Top-level gating-state arrays (only when non-empty)
             if names_only_sections:
@@ -2440,6 +2494,146 @@ def create_mcp_server(storage: StorageBackend):
         first), or ``[]`` if none is set."""
         priority = await storage.get_datasource_priority()
         return f"Datasource priority: {priority}"
+
+    # ---------- DEV-1357 v2: unified Memory surface -------------------
+
+    memory_service = MemoryService(storage=storage)
+
+    def _format_resolution_error(exc: Exception) -> str:
+        """Convert a typed resolution / not-found / ambiguous error into
+        a friendly text response (matches the existing convention of
+        never raising back to the agent)."""
+        if isinstance(exc, AmbiguousModelError):
+            return _ambiguous_with_mcp_hint(exc)
+        return f"Error: {type(exc).__name__}: {exc}"
+
+    @mcp.tool()
+    async def save_memory(
+        learning: str,
+        linked_entities: Any,
+    ) -> str:
+        """Save an agent memory: a free-form note plus the SLayer
+        entities it concerns.
+
+        ``linked_entities`` accepts either:
+
+        * a list of entity reference strings — each item is resolved to
+          the canonical ``<datasource>.<model>[.<leaf>]`` form. Bare
+          names use the datasource priority list; ambiguous bare-column
+          matches are rejected.
+        * a ``SlayerQuery`` (dict) — entities are auto-extracted from
+          ``source_model``, ``dimensions``, ``time_dimensions``,
+          ``measures``, and ``filters``; resolution warnings are
+          non-fatal. The query itself is stored alongside the
+          learning, so the memory surfaces in
+          ``recall_memories``'s ``queries`` list (vs the
+          ``learnings`` list for entity-list memories).
+
+        Returns the assigned ``memory_id`` (a positive int), the
+        canonical entities stored, and any non-fatal warnings.
+
+        Args:
+            learning: The note text. Required, non-empty.
+            linked_entities: List of entity strings, or an inline
+                ``SlayerQuery`` payload.
+
+        Examples:
+            save_memory(
+                learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
+                linked_entities=["orders.is_returned"],
+            )
+
+            save_memory(
+                learning="Paid revenue by status",
+                linked_entities={
+                    "source_model": "orders",
+                    "measures": [{"formula": "amount:sum"}],
+                    "filters": ["status = 'paid'"],
+                },
+            )
+        """
+        try:
+            response = await memory_service.save_memory(
+                learning=learning, linked_entities=linked_entities
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
+
+    @mcp.tool()
+    async def forget_memory(id: Any) -> str:  # noqa: A002 — MCP arg name
+        """Delete a memory by id.
+
+        Args:
+            id: The ``memory_id`` returned by ``save_memory`` (a positive
+                int). String forms (``"42"``) are accepted and coerced.
+
+        Raises a friendly error if the id is invalid or the memory does
+        not exist.
+        """
+        try:
+            response = await memory_service.forget_memory(identifier=id)
+        except (
+            MemoryNotFoundError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
+
+    @mcp.tool()
+    async def recall_memories(
+        about: Any,
+        max_learnings: Optional[int] = None,
+        max_queries: Optional[int] = 2,
+    ) -> str:
+        """Look up agent memories by entity overlap.
+
+        Call this BEFORE ``query`` to surface any notes or example
+        queries previously saved against the entities you're
+        considering.
+
+        ``about`` accepts either:
+
+        * a list of entity reference strings — each is resolved
+          strictly; resolution failures raise.
+        * a ``SlayerQuery`` (dict) — the entity extractor walks the
+          query and warnings are non-fatal.
+
+        Empty input (``about=[]`` or a query with no extractable
+        entities) returns all memories ranked by recency (newest first)
+        with an explanatory warning.
+
+        Stored memories are ranked by the size of the intersection
+        between their stored entity set and the input set. Ties break
+        by recency (newest first). The result splits memories without
+        an attached query (``learnings``) from those with one
+        (``queries``); each list is capped independently.
+
+        Args:
+            about: List of entity reference strings, or an inline
+                ``SlayerQuery`` payload.
+            max_learnings: Cap on returned learning-shaped memories.
+                ``None`` = all.
+            max_queries: Cap on returned query-bearing memories.
+                Default ``2``.
+        """
+        try:
+            response = await memory_service.recall_memories(
+                about=about,
+                max_learnings=max_learnings,
+                max_queries=max_queries,
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
 
     return mcp
 

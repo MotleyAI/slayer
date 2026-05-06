@@ -38,7 +38,12 @@ TIME_TRANSFORMS = {
 }
 
 # Transforms that don't need time ordering
-TIMELESS_TRANSFORMS = {"rank"}
+TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
+
+# Transforms whose default partition is "no partition" (rank across the entire
+# result set) rather than the query's group-by dimensions. They accept an
+# explicit ``partition_by=`` kwarg to opt into per-partition ranking.
+RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
 
@@ -129,9 +134,16 @@ class ArithmeticField(BaseModel):
 
 class TransformField(BaseModel):
     """A transform function call, possibly wrapping another transform or arithmetic."""
-    transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, time_shift, first, last, consecutive_periods")
+    transform: str = Field(description="Transform name: cumsum, lag, lead, change, change_pct, rank, percent_rank, dense_rank, ntile, time_shift, first, last, consecutive_periods")
     inner: "FieldSpec" = Field(description="The measure or expression being transformed")
     args: List[Any] = Field(default_factory=list, description="Extra transform args (offset, granularity, etc.)")
+    kwargs: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Keyword args from the call site, e.g. partition_by=[...] for the "
+            "rank family or n=4 for ntile. Validated per-transform at parse time."
+        ),
+    )
 
 
 class MixedArithmeticField(BaseModel):
@@ -578,12 +590,26 @@ def _parse_node(
         # First arg is the measure/expression being transformed
         inner = _parse_node(node.args[0], original, agg_refs)
 
-        # Remaining args are transform parameters (offset, granularity, etc.)
+        # Remaining positional args are transform parameters (offset, granularity, etc.)
+        # The rank family is keyword-only after the measure; reject extra positionals
+        # so calls like `rank(revenue:sum, 2)` or `ntile(revenue:sum, 4, n=2)` fail
+        # fast instead of silently dropping the extra arg downstream.
+        if func_name in RANK_FAMILY_TRANSFORMS and len(node.args) > 1:
+            raise ValueError(
+                f"Transform '{func_name}' does not accept positional arguments "
+                f"beyond the measure; use keyword args (e.g. partition_by=, n=). "
+                f"Formula: {original!r}"
+            )
         extra_args = []
         for arg in node.args[1:]:
-            extra_args.append(_parse_literal(arg, original))
+            extra_args.append(_parse_literal(node=arg, original=original))
 
-        return TransformField(transform=func_name, inner=inner, args=extra_args)
+        # Keyword args, validated per-transform.
+        kwargs = _parse_transform_kwargs(
+            transform=func_name, keywords=node.keywords, original=original
+        )
+
+        return TransformField(transform=func_name, inner=inner, args=extra_args, kwargs=kwargs)
 
     # Binary/unary/comparison/boolean operation → check if it contains transform calls
     if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp)):
@@ -732,6 +758,94 @@ def _parse_literal(node: ast.AST, original: str) -> Any:
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
         return -node.operand.value
     raise ValueError(f"Expected a literal value (number or string) in formula: {original!r}")
+
+
+# Per-transform kwarg whitelist. Empty set means the transform takes no kwargs.
+_ALLOWED_TRANSFORM_KWARGS: Dict[str, frozenset] = {
+    "rank": frozenset({"partition_by"}),
+    "percent_rank": frozenset({"partition_by"}),
+    "dense_rank": frozenset({"partition_by"}),
+    "ntile": frozenset({"partition_by", "n"}),
+}
+
+
+def _parse_dotted_name(node: ast.AST, original: str) -> str:
+    """Render a Name / Attribute node back into a dotted-path string.
+
+    ``region`` → ``"region"``; ``customers.region`` → ``"customers.region"``.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_parse_dotted_name(node=node.value, original=original)}.{node.attr}"
+    raise ValueError(
+        f"Expected a column name or dotted path in formula {original!r}, "
+        f"got {ast.dump(node)}"
+    )
+
+
+def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-kwarg validation; splitting into helpers would force threading transform/original through every call just to preserve the error-message context
+    transform: str, keywords: List[ast.keyword], original: str
+) -> Dict[str, Any]:
+    """Parse and validate a transform's keyword arguments.
+
+    Each transform has a fixed kwarg whitelist (see ``_ALLOWED_TRANSFORM_KWARGS``).
+    Unknown kwargs raise with the accepted set in the message. ``ntile`` requires
+    ``n`` (positive integer); ``partition_by`` accepts a column name, dotted
+    path, or list of those.
+    """
+    allowed = _ALLOWED_TRANSFORM_KWARGS.get(transform, frozenset())
+    parsed: Dict[str, Any] = {}
+
+    for kw in keywords:
+        if kw.arg is None:
+            raise ValueError(
+                f"Transform '{transform}' does not accept **kwargs in formula {original!r}"
+            )
+        if kw.arg not in allowed:
+            if not allowed:
+                raise ValueError(
+                    f"Transform '{transform}' does not accept keyword arguments; "
+                    f"got '{kw.arg}=' in formula {original!r}"
+                )
+            raise ValueError(
+                f"Transform '{transform}' does not accept keyword '{kw.arg}'. "
+                f"Accepted kwargs: {', '.join(sorted(allowed))}. "
+                f"Formula: {original!r}"
+            )
+
+        if kw.arg == "partition_by":
+            value = kw.value
+            if isinstance(value, ast.List):
+                cols = [
+                    _parse_dotted_name(node=elt, original=original) for elt in value.elts
+                ]
+            else:
+                cols = [_parse_dotted_name(node=value, original=original)]
+            if not cols:
+                raise ValueError(
+                    f"Transform '{transform}': partition_by must reference at "
+                    f"least one column in formula {original!r}"
+                )
+            parsed["partition_by"] = cols
+        elif kw.arg == "n":
+            n_val = _parse_literal(node=kw.value, original=original)
+            if not isinstance(n_val, int) or isinstance(n_val, bool) or n_val <= 0:
+                raise ValueError(
+                    f"Transform '{transform}': n must be a positive integer, "
+                    f"got {n_val!r} in formula {original!r}"
+                )
+            parsed["n"] = n_val
+        else:  # pragma: no cover — guarded by the whitelist check above
+            parsed[kw.arg] = _parse_literal(node=kw.value, original=original)
+
+    if transform == "ntile" and "n" not in parsed:
+        raise ValueError(
+            f"Transform 'ntile' requires keyword argument 'n' (positive integer) "
+            f"in formula {original!r}"
+        )
+
+    return parsed
 
 
 # ---------------------------------------------------------------------------

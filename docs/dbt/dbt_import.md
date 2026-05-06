@@ -146,7 +146,7 @@ Some dbt metrics cannot be expressed as a `ModelMeasure`. They are reported in `
 
 - **Cumulative with window or grain_to_date**: SLayer's `cumsum` is unbounded.
 - **Conversion metrics**: entity-based sequential event tracking is not supported.
-- **Transform-name shadowing**: a dbt measure or metric named after a SLayer transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `first`, `last`) is rejected — using it bare in a formula would shadow the transform.
+- **Transform-name shadowing**: a dbt measure or metric named after a SLayer transform (`cumsum`, `lag`, `lead`, `change`, `change_pct`, `time_shift`, `rank`, `percent_rank`, `dense_rank`, `ntile`, `first`, `last`) is rejected — using it bare in a formula would shadow the transform.
 
 ## Filter Syntax Conversion
 
