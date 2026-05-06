@@ -217,6 +217,41 @@ class TestDatasources:
         assert resp.status_code == 404
 
 
+class TestIngestEndpoint:
+    """``POST /ingest`` translates user-correctable config errors into 422s.
+
+    SQLAlchemy connect/auth/introspection failures already round-trip as
+    422; non-SQLAlchemy ``ValueError``s raised before the driver is involved
+    (e.g. unresolved ``${ENV_VAR}`` placeholder, malformed connection
+    string) used to escape as 500. CodeRabbit thread #103/r3196378592.
+    """
+
+    def test_unresolved_env_var_returns_422(self, client: TestClient) -> None:
+        # Save a datasource whose database path references an undefined env
+        # var. ``DatasourceConfig.resolve_env_vars()`` raises ValueError when
+        # the var is missing — that's the path we want to catch.
+        os.environ.pop("DEV1361_NOT_SET", None)
+        resp = client.post(
+            "/datasources",
+            json={
+                "name": "broken_ds",
+                "type": "sqlite",
+                "database": "${DEV1361_NOT_SET}",
+            },
+        )
+        assert resp.status_code == 200
+
+        resp = client.post("/ingest", json={"datasource": "broken_ds"})
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "broken_ds" in body["detail"]
+        assert "DEV1361_NOT_SET" in body["detail"]
+
+    def test_unknown_datasource_returns_404(self, client: TestClient) -> None:
+        resp = client.post("/ingest", json={"datasource": "nope"})
+        assert resp.status_code == 404
+
+
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
         resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "*:count"}]})
