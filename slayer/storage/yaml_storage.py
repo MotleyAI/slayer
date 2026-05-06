@@ -17,7 +17,7 @@ import yaml
 from pydantic import ValidationError
 
 from slayer.core.models import DatasourceConfig, SlayerModel
-from slayer.learnings.models import Learning, SavedQuery
+from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend, _validate_path_component
 from slayer.storage.v4_migration import migrate_yaml_layout
 
@@ -28,8 +28,7 @@ class YAMLStorage(StorageBackend):
         self.models_dir = os.path.join(base_dir, "models")
         self.datasources_dir = os.path.join(base_dir, "datasources")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
-        self._learnings_path = os.path.join(base_dir, "learnings.yaml")
-        self._saved_queries_path = os.path.join(base_dir, "saved_queries.yaml")
+        self._memories_path = os.path.join(base_dir, "memories.yaml")
         self._counters_path = os.path.join(base_dir, "counters.yaml")
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
@@ -159,7 +158,7 @@ class YAMLStorage(StorageBackend):
         with open(self._priority_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump({"priority": list(priority)}, f, sort_keys=False)
 
-    # ---- learnings + saved queries (DEV-1357) -----------------------------
+    # ---- memories (DEV-1357 v2) -------------------------------------------
 
     def _read_yaml_list(self, path: str) -> List[Dict[str, Any]]:
         if not os.path.exists(path):
@@ -187,77 +186,41 @@ class YAMLStorage(StorageBackend):
         with open(self._counters_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump(dict(counters), f, sort_keys=False)
 
-    async def _next_learning_seq(self) -> int:
+    async def _next_memory_seq(self) -> int:
         counters = self._read_counters()
-        seq = counters.get("learning_seq", 0) + 1
-        counters["learning_seq"] = seq
+        seq = counters.get("memory_seq", 0) + 1
+        counters["memory_seq"] = seq
         self._write_counters(counters)
         return seq
 
-    async def _next_saved_query_seq(self) -> int:
-        counters = self._read_counters()
-        seq = counters.get("saved_query_seq", 0) + 1
-        counters["saved_query_seq"] = seq
-        self._write_counters(counters)
-        return seq
+    async def _save_memory_row(self, memory: Memory) -> None:
+        rows = self._read_yaml_list(self._memories_path)
+        rows = [r for r in rows if r.get("id") != memory.id]
+        rows.append(memory.model_dump(mode="json"))
+        self._write_yaml_list(self._memories_path, rows)
 
-    async def _save_learning_row(self, learning: Learning) -> None:
-        rows = self._read_yaml_list(self._learnings_path)
-        rows = [r for r in rows if r.get("id") != learning.id]
-        rows.append(learning.model_dump(mode="json"))
-        self._write_yaml_list(self._learnings_path, rows)
-
-    async def _get_learning_row(self, learning_id: str) -> Optional[Learning]:
-        for row in self._read_yaml_list(self._learnings_path):
-            if row.get("id") == learning_id:
-                return Learning.model_validate(row)
+    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
+        for row in self._read_yaml_list(self._memories_path):
+            if row.get("id") == memory_id:
+                return Memory.model_validate(row)
         return None
 
-    async def _list_learnings_rows(
+    async def _list_memories_rows(
         self, *, entities: Optional[List[str]]
-    ) -> List[Learning]:
-        rows = [Learning.model_validate(r) for r in self._read_yaml_list(self._learnings_path)]
-        if entities is None:
-            return rows
-        wanted = set(entities)
-        return [r for r in rows if wanted & set(r.entities)]
-
-    async def _delete_learning_row(self, learning_id: str) -> bool:
-        rows = self._read_yaml_list(self._learnings_path)
-        kept = [r for r in rows if r.get("id") != learning_id]
-        if len(kept) == len(rows):
-            return False
-        self._write_yaml_list(self._learnings_path, kept)
-        return True
-
-    async def _save_saved_query_row(self, saved: SavedQuery) -> None:
-        rows = self._read_yaml_list(self._saved_queries_path)
-        rows = [r for r in rows if r.get("id") != saved.id]
-        rows.append(saved.model_dump(mode="json"))
-        self._write_yaml_list(self._saved_queries_path, rows)
-
-    async def _get_saved_query_row(self, query_id: str) -> Optional[SavedQuery]:
-        for row in self._read_yaml_list(self._saved_queries_path):
-            if row.get("id") == query_id:
-                return SavedQuery.model_validate(row)
-        return None
-
-    async def _list_saved_queries_rows(
-        self, *, entities: Optional[List[str]]
-    ) -> List[SavedQuery]:
+    ) -> List[Memory]:
         rows = [
-            SavedQuery.model_validate(r)
-            for r in self._read_yaml_list(self._saved_queries_path)
+            Memory.model_validate(r)
+            for r in self._read_yaml_list(self._memories_path)
         ]
         if entities is None:
             return rows
         wanted = set(entities)
         return [r for r in rows if wanted & set(r.entities)]
 
-    async def _delete_saved_query_row(self, query_id: str) -> bool:
-        rows = self._read_yaml_list(self._saved_queries_path)
-        kept = [r for r in rows if r.get("id") != query_id]
+    async def _delete_memory_row(self, memory_id: int) -> bool:
+        rows = self._read_yaml_list(self._memories_path)
+        kept = [r for r in rows if r.get("id") != memory_id]
         if len(kept) == len(rows):
             return False
-        self._write_yaml_list(self._saved_queries_path, kept)
+        self._write_yaml_list(self._memories_path, kept)
         return True

@@ -335,6 +335,86 @@ examples:
     datasources_test_parser = datasources_subparsers.add_parser("test", help="Test datasource connectivity")
     datasources_test_parser.add_argument("name", help="Datasource name")
 
+    # ── memory ────────────────────────────────────────────────────────
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="Manage agent memories (learnings + saved queries)",
+        epilog="""\
+examples:
+  # Save a learning indexed by entities
+  slayer memory save --learning "amount is in cents" --entities mydb.orders.amount
+
+  # Save a learning that comes with an example SlayerQuery
+  slayer memory save --learning "Paid revenue" --query @paid_revenue.json
+
+  # Forget a memory by id
+  slayer memory forget 42
+
+  # Recall memories about specific entities
+  slayer memory recall --about mydb.orders.amount,mydb.orders.status
+
+  # Recall memories relevant to a query
+  slayer memory recall --about-query @paid_revenue.json
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(memory_parser)
+    memory_subparsers = memory_parser.add_subparsers(dest="memory_command")
+
+    memory_save_parser = memory_subparsers.add_parser(
+        "save",
+        help="Save a memory (learning + linked entities or example query)",
+    )
+    memory_save_parser.add_argument(
+        "--learning",
+        required=True,
+        help="The free-form note text. Required.",
+    )
+    memory_save_parser.add_argument(
+        "--entities",
+        default=None,
+        help="Comma-separated list of entity references (e.g. mydb.orders.amount).",
+    )
+    memory_save_parser.add_argument(
+        "--query",
+        default=None,
+        help="Inline JSON SlayerQuery (or @file.json) to extract entities from and persist alongside the learning.",
+    )
+
+    memory_forget_parser = memory_subparsers.add_parser(
+        "forget", help="Delete a memory by id"
+    )
+    memory_forget_parser.add_argument("id", type=int, help="Memory id (positive int)")
+
+    memory_recall_parser = memory_subparsers.add_parser(
+        "recall", help="Look up memories by entity overlap"
+    )
+    memory_recall_parser.add_argument(
+        "--about",
+        default=None,
+        help="Comma-separated list of entity references to search by.",
+    )
+    memory_recall_parser.add_argument(
+        "--about-query",
+        default=None,
+        dest="about_query",
+        help="Inline JSON SlayerQuery (or @file.json) whose entities augment --about.",
+    )
+    memory_recall_parser.add_argument(
+        "--max-learnings",
+        type=int,
+        default=None,
+        dest="max_learnings",
+        help="Cap on returned learning-shaped memories (default: all).",
+    )
+    memory_recall_parser.add_argument(
+        "--max-queries",
+        type=int,
+        default=2,
+        dest="max_queries",
+        help="Cap on returned query-bearing memories (default: 2).",
+    )
+
     # ── help ──────────────────────────────────────────────────────────
     from slayer.help import TOPIC_SUMMARY_LINE
 
@@ -373,6 +453,8 @@ examples:
         _run_models(args)
     elif args.command == "datasources":
         _run_datasources(args)
+    elif args.command == "memory":
+        _run_memory(args)
     elif args.command == "help":
         _run_help(args)
     else:
@@ -957,6 +1039,138 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
     _persist_ingested_models(
         models, storage, assume_yes=args.yes, pre_save=_apply_demo_time_dim
     )
+
+
+def _load_query_arg(value):
+    """Resolve a CLI ``--query`` / ``--about-query`` argument.
+
+    Accepts inline JSON or ``@/path/to/file.json``. Returns the parsed
+    dict so the caller can hand it to the service layer (which validates
+    it as a ``SlayerQuery``).
+    """
+    if value.startswith("@"):
+        path = value[1:]
+        if not os.path.exists(path):
+            print(f"Error: Query file not found: {path}")
+            sys.exit(1)
+        with open(path) as f:
+            text = f.read()
+    else:
+        text = value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        print(f"Error: invalid JSON for query argument: {exc}")
+        sys.exit(1)
+
+
+def _run_memory(args):
+    """Dispatcher for ``slayer memory <save|forget|recall>``."""
+    from slayer.core.errors import (
+        AmbiguousModelError,
+        EntityResolutionError,
+        MemoryNotFoundError,
+    )
+    from slayer.memories.service import MemoryService
+
+    storage = _resolve_storage(args)
+    service = MemoryService(storage=storage)
+
+    sub = args.memory_command
+    if sub == "save":
+        if not args.entities and not args.query:
+            print(
+                "Error: --entities or --query must be supplied (one or the other)."
+            )
+            sys.exit(1)
+        if args.entities and args.query:
+            print(
+                "Error: --entities and --query are mutually exclusive."
+            )
+            sys.exit(1)
+        if args.entities:
+            linked = [e.strip() for e in args.entities.split(",") if e.strip()]
+        else:
+            linked = _load_query_arg(args.query)
+        try:
+            response = run_sync(
+                service.save_memory(
+                    learning=args.learning,
+                    linked_entities=linked,
+                )
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+        print(f"Saved memory {response.memory_id}.")
+        if response.resolved_entities:
+            print(
+                "Resolved entities: "
+                + ", ".join(response.resolved_entities)
+            )
+        for warning in response.warnings:
+            print(f"Warning: {warning}")
+
+    elif sub == "forget":
+        try:
+            response = run_sync(service.forget_memory(identifier=args.id))
+        except MemoryNotFoundError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+        print(f"Forgot memory {response.deleted_id}.")
+
+    elif sub == "recall":
+        if args.about and args.about_query:
+            print(
+                "Error: --about and --about-query are mutually exclusive."
+            )
+            sys.exit(1)
+        if args.about:
+            about = [a.strip() for a in args.about.split(",") if a.strip()]
+        elif args.about_query:
+            about = _load_query_arg(args.about_query)
+        else:
+            about = []
+        try:
+            response = run_sync(
+                service.recall_memories(
+                    about=about,
+                    max_learnings=args.max_learnings,
+                    max_queries=args.max_queries,
+                )
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
+        for warning in response.warnings:
+            print(f"Warning: {warning}")
+        if response.learnings:
+            print(f"Learnings ({len(response.learnings)}):")
+            for hit in response.learnings:
+                tags = ", ".join(hit.matched_entities) or "—"
+                print(f"  M{hit.id} [{tags}]: {hit.learning}")
+        if response.queries:
+            print(f"Queries ({len(response.queries)}):")
+            for hit in response.queries:
+                tags = ", ".join(hit.matched_entities) or "—"
+                print(f"  M{hit.id} [{tags}]: {hit.learning}")
+        if not response.learnings and not response.queries:
+            print("No matching memories.")
+
+    else:
+        print("Usage: slayer memory {save,forget,recall}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Entity resolution for Learnings + saved queries (DEV-1357).
+"""Entity resolution for the unified Memory surface (DEV-1357 v2).
 
 Maps every input form valid inside a ``SlayerQuery`` to the canonical
 ``<datasource>.<model>[.<leaf>]`` string described in the spec, §3-4. The
@@ -18,8 +18,8 @@ The leaf rule (§3.2):
 Two public entry points:
 
 * ``resolve_entity(raw, *, storage, source_model=None)`` — single-token
-  resolution; used by ``save_learning`` and as the backbone of
-  ``extract_entities_from_query``.
+  resolution; used by ``save_memory`` (entity-list path) and as the
+  backbone of ``extract_entities_from_query``.
 * ``extract_entities_from_query(query, *, storage)`` — walks every
   field of a ``SlayerQuery`` (source_model, dimensions, time_dimensions,
   measures, filters) and returns the deduplicated canonical entity set

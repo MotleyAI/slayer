@@ -54,16 +54,14 @@ class EntityResolutionError(SlayerError):
     """
 
 
-class LearningOrQueryNotFoundError(SlayerError):
-    """Raised when a learning or saved-query ID does not exist in storage.
+class MemoryNotFoundError(SlayerError):
+    """Raised when a memory id does not exist in storage (DEV-1357).
 
-    Used by both the learning APIs (``L<int>`` IDs) and the saved-query APIs
-    (``Q<int>`` IDs); the unified ``delete_learning_or_query`` MCP tool also
-    surfaces this error.
+    Memory ids are monotonic positive integers; the unified
+    ``forget_memory`` MCP tool / REST endpoint / CLI subcommand surface
+    this error when the requested id is unknown.
     """
 
-    def __init__(self, identifier: str) -> None:
-        self.identifier = identifier
-        super().__init__(
-            f"No learning or saved query with id '{identifier}'."
-        )
+    def __init__(self, identifier: int) -> None:
+        self.identifier = int(identifier)
+        super().__init__(f"No memory with id '{self.identifier}'.")

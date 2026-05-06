@@ -33,7 +33,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
-from slayer.learnings.resolver import (
+from slayer.memories.resolver import (
     EntityResolution,
     extract_entities_from_query,
     resolve_entity,

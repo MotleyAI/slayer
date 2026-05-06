@@ -5,10 +5,10 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from slayer.core.errors import AmbiguousModelError, LearningOrQueryNotFoundError
+from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.learnings.models import Learning, SavedQuery
+from slayer.memories.models import Memory
 
 
 def storage_base_dir(path: str) -> str:
@@ -253,120 +253,73 @@ class StorageBackend(ABC):
                 return (ds, name)
         raise AmbiguousModelError(name=name, candidates=candidates)
 
-    # ---- learnings + saved queries (DEV-1357) -----------------------------
+    # ---- memories (DEV-1357 v2) -------------------------------------------
     #
-    # ID format (``L<int>``/``Q<int>``), monotonic non-reuse, and the
-    # missing-row → ``LearningOrQueryNotFoundError`` policy live on this
-    # class so they can never diverge between backends. Backends only
-    # implement the row-shaped CRUD primitives + the seq counters below.
+    # Monotonic positive-int ids, no reuse on delete, and the missing-row
+    # → ``MemoryNotFoundError`` policy live on this class so they can
+    # never diverge between backends. Backends only implement the row-
+    # shaped CRUD primitives + the seq counter below.
 
     @abstractmethod
-    async def _save_learning_row(self, learning: Learning) -> None:
-        """Persist a fully-populated ``Learning`` (id and created_at set)."""
+    async def _save_memory_row(self, memory: Memory) -> None:
+        """Persist a fully-populated ``Memory`` (id and created_at set)."""
 
     @abstractmethod
-    async def _get_learning_row(self, learning_id: str) -> Optional[Learning]:
-        """Read a ``Learning`` by id; return ``None`` when not present."""
+    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
+        """Read a ``Memory`` by id; return ``None`` when not present."""
 
     @abstractmethod
-    async def _list_learnings_rows(
+    async def _list_memories_rows(
         self, *, entities: Optional[List[str]]
-    ) -> List[Learning]:
-        """Return every ``Learning`` whose stored entity set has non-empty
+    ) -> List[Memory]:
+        """Return every ``Memory`` whose stored entity set has non-empty
         intersection with ``entities``. ``entities=None`` returns all rows.
         ``entities=[]`` returns ``[]`` (intersection with the empty set is
         empty)."""
 
     @abstractmethod
-    async def _delete_learning_row(self, learning_id: str) -> bool:
+    async def _delete_memory_row(self, memory_id: int) -> bool:
         """Delete by id; return ``True`` if a row was removed, ``False``
         when the id did not exist."""
 
     @abstractmethod
-    async def _next_learning_seq(self) -> int:
-        """Atomically allocate and return the next learning sequence
+    async def _next_memory_seq(self) -> int:
+        """Atomically allocate and return the next memory sequence
         integer. Counter is monotonically increasing — deleted ids are
         never reused."""
 
-    @abstractmethod
-    async def _save_saved_query_row(self, saved: SavedQuery) -> None: ...
-
-    @abstractmethod
-    async def _get_saved_query_row(
-        self, query_id: str
-    ) -> Optional[SavedQuery]: ...
-
-    @abstractmethod
-    async def _list_saved_queries_rows(
-        self, *, entities: Optional[List[str]]
-    ) -> List[SavedQuery]: ...
-
-    @abstractmethod
-    async def _delete_saved_query_row(self, query_id: str) -> bool: ...
-
-    @abstractmethod
-    async def _next_saved_query_seq(self) -> int: ...
-
-    async def save_learning(
-        self, *, body: str, entities: List[str]
-    ) -> Learning:
-        """Allocate a new ``L<int>`` id, persist the learning, return it."""
-        seq = await self._next_learning_seq()
-        learning = Learning(
-            id=f"L{seq}",
-            body=body,
-            entities=list(entities),
-        )
-        await self._save_learning_row(learning)
-        return learning
-
-    async def get_learning(self, learning_id: str) -> Learning:
-        row = await self._get_learning_row(learning_id)
-        if row is None:
-            raise LearningOrQueryNotFoundError(learning_id)
-        return row
-
-    async def list_learnings(
-        self, *, entities: Optional[List[str]] = None
-    ) -> List[Learning]:
-        return await self._list_learnings_rows(entities=entities)
-
-    async def delete_learning(self, learning_id: str) -> None:
-        if not await self._delete_learning_row(learning_id):
-            raise LearningOrQueryNotFoundError(learning_id)
-
-    async def save_saved_query(
+    async def save_memory(
         self,
         *,
-        query: SlayerQuery,
-        description: str,
+        learning: str,
         entities: List[str],
-    ) -> SavedQuery:
-        """Allocate a new ``Q<int>`` id, persist the saved query, return it."""
-        seq = await self._next_saved_query_seq()
-        saved = SavedQuery(
-            id=f"Q{seq}",
-            description=description,
-            query=query,
+        query: Optional[SlayerQuery] = None,
+    ) -> Memory:
+        """Allocate the next id, persist the memory, return it."""
+        seq = await self._next_memory_seq()
+        memory = Memory(
+            id=seq,
+            learning=learning,
             entities=list(entities),
+            query=query,
         )
-        await self._save_saved_query_row(saved)
-        return saved
+        await self._save_memory_row(memory)
+        return memory
 
-    async def get_saved_query(self, query_id: str) -> SavedQuery:
-        row = await self._get_saved_query_row(query_id)
+    async def get_memory(self, memory_id: int) -> Memory:
+        row = await self._get_memory_row(memory_id)
         if row is None:
-            raise LearningOrQueryNotFoundError(query_id)
+            raise MemoryNotFoundError(memory_id)
         return row
 
-    async def list_saved_queries(
+    async def list_memories(
         self, *, entities: Optional[List[str]] = None
-    ) -> List[SavedQuery]:
-        return await self._list_saved_queries_rows(entities=entities)
+    ) -> List[Memory]:
+        return await self._list_memories_rows(entities=entities)
 
-    async def delete_saved_query(self, query_id: str) -> None:
-        if not await self._delete_saved_query_row(query_id):
-            raise LearningOrQueryNotFoundError(query_id)
+    async def delete_memory(self, memory_id: int) -> None:
+        if not await self._delete_memory_row(memory_id):
+            raise MemoryNotFoundError(memory_id)
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
-    LearningOrQueryNotFoundError,
+    MemoryNotFoundError,
 )
 from slayer.core.models import (
     Aggregation,
@@ -22,7 +22,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
-from slayer.learnings.service import LearningService
+from slayer.memories.service import MemoryService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -887,7 +887,7 @@ def create_mcp_server(storage: StorageBackend):
 
         Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
 
-        Before calling this tool, run ``recall`` first, supplying the entities you're thinking of using (or the query itself via the ``query`` arg). Read the returned learnings and consider any matching saved queries before formulating the final query.
+        Before calling this tool, run ``recall_memories`` first, supplying the entities you're thinking of using (or the query itself via the ``about`` arg). Read the returned learnings and consider any matching saved queries before formulating the final query.
         """
         data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
@@ -1448,7 +1448,9 @@ def create_mcp_server(storage: StorageBackend):
                 out_sections.append(sample_section)
 
         # ------------------------------------------------------------------
-        # Learnings (DEV-1357) — auto-pruned when no relevant learning exists.
+        # Learnings (DEV-1357 v2) — surfaces only memories where ``query`` is
+        # ``None``; query-bearing memories are recall-only. Auto-pruned when
+        # no learning-shaped memory matches.
         # ------------------------------------------------------------------
         relevant_learnings: List[Any] = []
         wanted: List[str] = []
@@ -1464,13 +1466,16 @@ def create_mcp_server(storage: StorageBackend):
             wanted.extend(
                 f"{ds}.{model.name}.{a.name}" for a in model.aggregations
             )
-            relevant_learnings = await storage.list_learnings(entities=wanted)
+            candidates = await storage.list_memories(entities=wanted)
+            relevant_learnings = [m for m in candidates if m.query is None]
             if relevant_learnings:
                 lines = [f"## Learnings ({len(relevant_learnings)})", ""]
-                for lr in relevant_learnings:
-                    matched = sorted(set(wanted) & set(lr.entities))
+                for memory in relevant_learnings:
+                    matched = sorted(set(wanted) & set(memory.entities))
                     matched_md = ", ".join(f"`{e}`" for e in matched)
-                    lines.append(f"- **{lr.id}** ({matched_md}): {lr.body}")
+                    lines.append(
+                        f"- **M{memory.id}** ({matched_md}): {memory.learning}"
+                    )
                 out_sections.append("\n".join(lines))
 
         # ------------------------------------------------------------------
@@ -2383,9 +2388,9 @@ def create_mcp_server(storage: StorageBackend):
         priority = await storage.get_datasource_priority()
         return f"Datasource priority: {priority}"
 
-    # ---------- DEV-1357: Learnings + saved queries -------------------
+    # ---------- DEV-1357 v2: unified Memory surface -------------------
 
-    learning_service = LearningService(storage=storage)
+    memory_service = MemoryService(storage=storage)
 
     def _format_resolution_error(exc: Exception) -> str:
         """Convert a typed resolution / not-found / ambiguous error into
@@ -2396,33 +2401,52 @@ def create_mcp_server(storage: StorageBackend):
         return f"Error: {type(exc).__name__}: {exc}"
 
     @mcp.tool()
-    async def save_learning(
+    async def save_memory(
         learning: str,
-        linked_entities: List[str],
+        linked_entities: Any,
     ) -> str:
-        """Save a free-form note ("learning") indexed by the canonical
-        SLayer entities it references.
+        """Save an agent memory: a free-form note plus the SLayer
+        entities it concerns.
 
-        Each ``linked_entities`` item is resolved to the canonical
-        ``<datasource>.<model>[.<leaf>]`` form. Bare names use the
-        datasource priority list; ambiguous bare-column matches are
-        rejected with an error. Returns the assigned learning_id
-        (e.g. ``"L42"``), the canonical forms stored, and any non-fatal
-        warnings (e.g. model-vs-column collisions).
+        ``linked_entities`` accepts either:
+
+        * a list of entity reference strings — each item is resolved to
+          the canonical ``<datasource>.<model>[.<leaf>]`` form. Bare
+          names use the datasource priority list; ambiguous bare-column
+          matches are rejected.
+        * a ``SlayerQuery`` (dict) — entities are auto-extracted from
+          ``source_model``, ``dimensions``, ``time_dimensions``,
+          ``measures``, and ``filters``; resolution warnings are
+          non-fatal. The query itself is stored alongside the
+          learning, so the memory surfaces in
+          ``recall_memories``'s ``queries`` list (vs the
+          ``learnings`` list for entity-list memories).
+
+        Returns the assigned ``memory_id`` (a positive int), the
+        canonical entities stored, and any non-fatal warnings.
 
         Args:
             learning: The note text. Required, non-empty.
-            linked_entities: One or more entity references. Required,
-                non-empty.
+            linked_entities: List of entity strings, or an inline
+                ``SlayerQuery`` payload.
 
         Examples:
-            save_learning(
-                learning="orders.is_returned ∈ {0,1,NULL}; treat NULL as not returned",
+            save_memory(
+                learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned",
                 linked_entities=["orders.is_returned"],
+            )
+
+            save_memory(
+                learning="Paid revenue by status",
+                linked_entities={
+                    "source_model": "orders",
+                    "measures": [{"formula": "amount:sum"}],
+                    "filters": ["status = 'paid'"],
+                },
             )
         """
         try:
-            response = await learning_service.save_learning(
+            response = await memory_service.save_memory(
                 learning=learning, linked_entities=linked_entities
             )
         except (
@@ -2434,104 +2458,65 @@ def create_mcp_server(storage: StorageBackend):
         return response.model_dump_json(indent=2)
 
     @mcp.tool()
-    async def save_query(
-        query: Any,
-        description: str,
-    ) -> str:
-        """Save an example ``SlayerQuery`` alongside a human description.
-
-        The entity extractor walks the query's ``source_model``,
-        ``dimensions``, ``time_dimensions``, ``measures``, and
-        ``filters``, applies the leaf rule, and stores the canonical
-        entity set with the saved query. The ``source_model`` is always
-        tagged automatically.
+    async def forget_memory(id: Any) -> str:  # noqa: A002 — MCP arg name
+        """Delete a memory by id.
 
         Args:
-            query: A ``SlayerQuery`` (as a dict) or a model name string
-                (run-by-name). String input is wrapped into
-                ``SlayerQuery(source_model=str)`` so the persisted
-                record is always a fully-materialised query.
-            description: Human-readable explanation of what the query
-                computes. Required, non-empty.
+            id: The ``memory_id`` returned by ``save_memory`` (a positive
+                int). String forms (``"42"``) are accepted and coerced.
 
-        Examples:
-            save_query(
-                query={
-                    "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
-                    "filters": ["status = 'paid'"],
-                },
-                description="Total paid revenue",
-            )
+        Raises a friendly error if the id is invalid or the memory does
+        not exist.
         """
         try:
-            response = await learning_service.save_query(
-                query=query, description=description
-            )
+            response = await memory_service.forget_memory(identifier=id)
         except (
-            EntityResolutionError,
-            AmbiguousModelError,
+            MemoryNotFoundError,
             ValueError,
         ) as exc:
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
     @mcp.tool()
-    async def delete_learning_or_query(id: str) -> str:  # noqa: A002 — MCP arg name
-        """Delete a learning (``L<int>``) or saved query (``Q<int>``).
-
-        Args:
-            id: The ID returned by ``save_learning`` or ``save_query``.
-
-        Raises a friendly error if the id format is wrong or the row
-        does not exist.
-        """
-        try:
-            response = await learning_service.delete_learning_or_query(
-                identifier=id
-            )
-        except (
-            LearningOrQueryNotFoundError,
-            ValueError,
-        ) as exc:
-            return _format_resolution_error(exc)
-        return response.model_dump_json(indent=2)
-
-    @mcp.tool()
-    async def recall(
-        entities: Optional[List[str]] = None,
-        query: Optional[Any] = None,
+    async def recall_memories(
+        about: Any,
         max_learnings: Optional[int] = None,
         max_queries: Optional[int] = 2,
     ) -> str:
-        """Look up learnings and saved queries by entity overlap.
+        """Look up agent memories by entity overlap.
 
-        Call this BEFORE ``query`` (the execute tool) to surface any
-        notes or example queries previously saved against the entities
-        you're considering.
+        Call this BEFORE ``query`` to surface any notes or example
+        queries previously saved against the entities you're
+        considering.
 
-        At least one of ``entities`` or ``query`` must be supplied.
-        Each input entity is resolved to its canonical form; if
-        ``query`` is supplied, the entity extractor pulls leaf entities
-        from it (same logic as ``save_query``). The two sources are
-        unioned and deduplicated.
+        ``about`` accepts either:
 
-        Stored learnings/queries are ranked by the size of the
-        intersection between their stored entity set and the input set.
-        Ties break by recency (newest first).
+        * a list of entity reference strings — each is resolved
+          strictly; resolution failures raise.
+        * a ``SlayerQuery`` (dict) — the entity extractor walks the
+          query and warnings are non-fatal.
+
+        Empty input (``about=[]`` or a query with no extractable
+        entities) returns all memories ranked by recency (newest first)
+        with an explanatory warning.
+
+        Stored memories are ranked by the size of the intersection
+        between their stored entity set and the input set. Ties break
+        by recency (newest first). The result splits memories without
+        an attached query (``learnings``) from those with one
+        (``queries``); each list is capped independently.
 
         Args:
-            entities: Entity references to search by. Optional; treated
-                as ``None`` if empty.
-            query: A ``SlayerQuery`` (dict) or model-name string whose
-                referenced entities augment ``entities``.
-            max_learnings: Cap on returned learnings. ``None`` = all.
-            max_queries: Cap on returned saved queries. Default ``2``.
+            about: List of entity reference strings, or an inline
+                ``SlayerQuery`` payload.
+            max_learnings: Cap on returned learning-shaped memories.
+                ``None`` = all.
+            max_queries: Cap on returned query-bearing memories.
+                Default ``2``.
         """
         try:
-            response = await learning_service.recall(
-                entities=entities,
-                query=query,
+            response = await memory_service.recall_memories(
+                about=about,
                 max_learnings=max_learnings,
                 max_queries=max_queries,
             )

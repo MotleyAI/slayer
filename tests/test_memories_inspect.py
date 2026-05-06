@@ -1,10 +1,10 @@
-"""``inspect_model`` integration + ``query`` docstring tests for DEV-1357.
+"""``inspect_model`` integration + ``query`` docstring tests for DEV-1357 v2.
 
-The ``inspect_model`` tool gains a new ``learnings`` section (auto-pruned
-when empty) listing every learning whose stored entity set overlaps the
-model's own entity set (the model itself, every column, every named
-measure, every custom aggregation). The ``query`` MCP tool docstring
-gains a paragraph directing agents to call ``recall`` first.
+The ``inspect_model`` tool gains a ``Learnings`` section that surfaces
+**only memories where ``query is None``** — query-bearing memories appear
+only via ``recall_memories``. The section is auto-pruned when no
+matching learning-shaped memory exists. The ``query`` MCP tool docstring
+gains a paragraph directing agents to call ``recall_memories`` first.
 """
 
 import os
@@ -21,6 +21,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
+from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -48,8 +49,7 @@ def _reset_storage(storage: YAMLStorage) -> None:
                     os.remove(path)
     for f in (
         "priority.yaml",
-        "learnings.yaml",
-        "saved_queries.yaml",
+        "memories.yaml",
         "counters.yaml",
     ):
         p = os.path.join(storage.base_dir, f)
@@ -120,7 +120,7 @@ async def _call(
 
 
 # ---------------------------------------------------------------------------
-# inspect_model — learnings section
+# inspect_model — Learnings section (only memories where query is None)
 # ---------------------------------------------------------------------------
 
 
@@ -128,8 +128,8 @@ class TestInspectModelLearningsSection:
     async def test_learnings_section_appears_when_match_exists(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        await seeded.save_learning(
-            body="orders.amount in cents not dollars",
+        await seeded.save_memory(
+            learning="orders.amount in cents not dollars",
             entities=["mydb.orders.amount"],
         )
         result = await _call(
@@ -137,18 +137,34 @@ class TestInspectModelLearningsSection:
             name="inspect_model",
             arguments={"model_name": "orders", "data_source": "mydb"},
         )
-        # The section header appears.
         assert "Learnings" in result or "learnings" in result.lower()
-        # The body of the matching learning is rendered.
         assert "orders.amount in cents not dollars" in result
 
-    async def test_section_pruned_when_no_relevant_learnings(
+    async def test_section_pruned_when_only_query_bearing_memories_match(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        # Save a learning that targets a different model — orders'
-        # inspect must NOT show it.
-        await seeded.save_learning(
-            body="customer-only note",
+        # A memory with a query attached must NOT surface in inspect_model.
+        await seeded.save_memory(
+            learning="example query",
+            entities=["mydb.orders.amount"],
+            query=SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="amount:sum")],
+            ),
+        )
+        result = await _call(
+            mcp_server,
+            name="inspect_model",
+            arguments={"model_name": "orders", "data_source": "mydb"},
+        )
+        assert "## Learnings" not in result
+        assert "example query" not in result
+
+    async def test_section_pruned_when_no_relevant_memories(
+        self, mcp_server, seeded: YAMLStorage
+    ) -> None:
+        await seeded.save_memory(
+            learning="customer-only note",
             entities=["mydb.customers.name"],
         )
         result = await _call(
@@ -156,11 +172,9 @@ class TestInspectModelLearningsSection:
             name="inspect_model",
             arguments={"model_name": "orders", "data_source": "mydb"},
         )
-        # No "Learnings" section header, and the customer-specific note
-        # text isn't anywhere in the orders response.
         assert "customer-only note" not in result
 
-    async def test_section_pruned_when_no_learnings_at_all(
+    async def test_section_pruned_when_no_memories_at_all(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
         result = await _call(
@@ -168,17 +182,14 @@ class TestInspectModelLearningsSection:
             name="inspect_model",
             arguments={"model_name": "orders", "data_source": "mydb"},
         )
-        # No "Learnings" header should appear when no learnings exist.
-        # (Models always render the columns section, so a generic
-        # "## Learnings" check is the right shape.)
         assert "## Learnings" not in result
         assert "## learnings" not in result.lower()
 
     async def test_learning_against_named_measure_appears(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        await seeded.save_learning(
-            body="aov measure excludes refunded orders",
+        await seeded.save_memory(
+            learning="aov measure excludes refunded orders",
             entities=["mydb.orders.aov"],
         )
         result = await _call(
@@ -191,8 +202,8 @@ class TestInspectModelLearningsSection:
     async def test_learning_against_model_itself_appears(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        await seeded.save_learning(
-            body="orders is the canonical revenue table",
+        await seeded.save_memory(
+            learning="orders is the canonical revenue table",
             entities=["mydb.orders"],
         )
         result = await _call(
@@ -205,12 +216,10 @@ class TestInspectModelLearningsSection:
     async def test_section_excluded_when_not_in_sections(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        await seeded.save_learning(
-            body="amount is in cents",
+        await seeded.save_memory(
+            learning="amount is in cents",
             entities=["mydb.orders.amount"],
         )
-        # Caller asks for only the columns section — learnings should
-        # not appear.
         result = await _call(
             mcp_server,
             name="inspect_model",
@@ -229,10 +238,10 @@ class TestInspectModelLearningsSection:
 
 
 class TestQueryDocstring:
-    async def test_query_docstring_mentions_recall(
+    async def test_query_docstring_mentions_recall_memories(
         self, mcp_server
     ) -> None:
         tools = await mcp_server.list_tools()
         query_tool = next(t for t in tools if t.name == "query")
-        # The §8 paragraph adds an explicit "call recall first" hint.
-        assert "recall" in (query_tool.description or "").lower()
+        # The docstring directs agents to call recall_memories first.
+        assert "recall_memories" in (query_tool.description or "")
