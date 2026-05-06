@@ -265,8 +265,8 @@ The single-arg aliases `log10(x)` and `log2(x)` round-trip verbatim in emitted S
 
 ```python
 # Examples (in Column.sql):
-Column(name="ln_amount", sql="ln(amount)", type=DataType.NUMBER)
-Column(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", type=DataType.NUMBER)
+Column(name="ln_amount", sql="ln(amount)", type=DataType.DOUBLE)
+Column(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", type=DataType.DOUBLE)
 ```
 
 ---

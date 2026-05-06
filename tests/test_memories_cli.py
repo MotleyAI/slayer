@@ -50,18 +50,18 @@ async def seeded_storage_path():
                     Column(
                         name="id",
                         sql="id",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                         primary_key=True,
                     ),
                     Column(
                         name="amount",
                         sql="amount",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                     ),
                     Column(
                         name="status",
                         sql="status",
-                        type=DataType.STRING,
+                        type=DataType.TEXT,
                     ),
                 ],
                 measures=[ModelMeasure(formula="amount:sum", name="rev")],

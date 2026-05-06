@@ -23,9 +23,9 @@ def sample_model() -> SlayerModel:
         sql_table="public.test_table",
         data_source="test_ds",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
-            Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
         ],
     )
 

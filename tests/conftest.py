@@ -16,11 +16,11 @@ def sample_model() -> SlayerModel:
         sql_table="public.orders",
         data_source="test_ds",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="revenue", sql="amount", type=DataType.NUMBER),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
         ],
     )
 

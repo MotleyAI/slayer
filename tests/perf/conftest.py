@@ -32,18 +32,18 @@ def _build_orders_model(ds_name: str) -> SlayerModel:
         data_source=ds_name,
         default_time_dimension="created_at",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="shop_id", sql="shop_id", type=DataType.NUMBER),
-            Column(name="category", sql="category", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="shop_id", sql="shop_id", type=DataType.DOUBLE),
+            Column(name="category", sql="category", type=DataType.TEXT),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
             Column(name="completed_at", sql="completed_at", type=DataType.TIMESTAMP),
             Column(name="cancelled_at", sql="cancelled_at", type=DataType.TIMESTAMP),
-            Column(name="total_cost", sql="cost", type=DataType.NUMBER),
-            Column(name="avg_cost", sql="cost", type=DataType.NUMBER),
-            Column(name="min_cost", sql="cost", type=DataType.NUMBER),
-            Column(name="max_cost", sql="cost", type=DataType.NUMBER),
-            Column(name="latest_cost", sql="cost", type=DataType.NUMBER),
+            Column(name="total_cost", sql="cost", type=DataType.DOUBLE),
+            Column(name="avg_cost", sql="cost", type=DataType.DOUBLE),
+            Column(name="min_cost", sql="cost", type=DataType.DOUBLE),
+            Column(name="max_cost", sql="cost", type=DataType.DOUBLE),
+            Column(name="latest_cost", sql="cost", type=DataType.DOUBLE),
         ],
     )
 
@@ -54,9 +54,9 @@ def _build_shops_model(ds_name: str) -> SlayerModel:
         sql_table="shops",
         data_source=ds_name,
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
-            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
         ],
     )
 
@@ -67,10 +67,10 @@ def _build_customers_model(ds_name: str) -> SlayerModel:
         sql_table="customers",
         data_source=ds_name,
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
-            Column(name="segment", sql="segment", type=DataType.STRING),
-            Column(name="primary_shop_id", sql="primary_shop_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="segment", sql="segment", type=DataType.TEXT),
+            Column(name="primary_shop_id", sql="primary_shop_id", type=DataType.DOUBLE),
         ],
     )
 

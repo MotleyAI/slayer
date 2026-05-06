@@ -16,10 +16,31 @@ from sqlglot import exp
 from slayer.core.enums import (
     BUILTIN_AGGREGATION_FORMULAS,
     BUILTIN_AGGREGATION_REQUIRED_PARAMS,
+    DataType,
     TimeGranularity,
 )
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+
+
+def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
+    """DEV-1361: wrap ``expr`` in ``CAST(expr AS <dialect-rendered dt>)`` so the
+    declared SLayer ``DataType`` is enforced in emitted SQL.
+
+    Skipped when ``dt`` is ``None`` (no declared type) or ``DataType.TEXT``
+    (cosmetic — SQL TEXT/VARCHAR roundtripping is already a no-op for our
+    purposes and ``CAST(... AS TEXT)`` does not unwrap SQLite's
+    JSON-quoted-string return values anyway). Idempotent: if ``expr`` is
+    already a CAST to the same target, return it unchanged.
+    """
+    if dt is None or dt == DataType.TEXT:
+        return expr
+    target = exp.DataType.Type(dt.value)
+    if isinstance(expr, exp.Cast):
+        existing = expr.args.get("to")
+        if isinstance(existing, exp.DataType) and existing.this == target:
+            return expr
+    return exp.Cast(this=expr, to=exp.DataType(this=target))
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +416,7 @@ class SQLGenerator:
                 group_exprs = []
 
                 for dim in cm.shared_dimensions:
-                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=cm.source_model_name)
+                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=cm.source_model_name, type=dim.type)
                     select = select.select(col_expr.as_(dim.alias))
                     group_exprs.append(col_expr)
                 for td in cm.shared_time_dimensions:
@@ -405,6 +426,9 @@ class SQLGenerator:
                     group_exprs.append(td_expr)
 
                 agg_expr, _ = self._build_agg(measure=cm.measure)
+                # DEV-1361: cast the cross-model agg result if a result type
+                # was declared on the source ModelMeasure.
+                agg_expr = _wrap_cast_for_type(agg_expr, cm.measure.type)
                 select = select.select(agg_expr.as_(cm.alias))
 
                 # FROM source model
@@ -523,7 +547,7 @@ class SQLGenerator:
                 select = exp.Select()
                 group_exprs = []
                 for dim in enriched.dimensions:
-                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+                    col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name, type=dim.type)
                     select = select.select(col_expr.as_(dim.alias))
                     group_exprs.append(col_expr)
                 for td in enriched.time_dimensions:
@@ -858,7 +882,7 @@ class SQLGenerator:
             return exp.Column(this=exp.to_identifier(alias), table=exp.to_identifier("_base"))
 
         for idx, dim in enumerate(enriched.dimensions):
-            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name, type=dim.type)
             src_alias = f"_w_dim_{idx}"
             source_cols.append(col_expr.as_(src_alias))
             join_eqs.append(exp.EQ(this=_src_col(src_alias), expression=_base_col(dim.alias)))
@@ -1051,7 +1075,7 @@ class SQLGenerator:
         group_by_columns = []
 
         for dim in enriched.dimensions:
-            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name, type=dim.type)
             if has_first_or_last:
                 # In ranked subquery, dimensions are already columns — reference directly
                 col_expr = exp.Column(this=exp.to_identifier(dim.name))
@@ -1079,6 +1103,10 @@ class SQLGenerator:
                 filtered_rn_map=filtered_rn_map,
                 filtered_match_map=filtered_match_map,
             )
+            # DEV-1361: wrap the aggregation result in CAST when the measure
+            # has a declared result type.
+            if is_agg:
+                agg_expr = _wrap_cast_for_type(agg_expr, measure.type)
             select_columns.append(agg_expr.as_(measure.alias))
             if is_agg:
                 has_aggregation = True
@@ -1250,7 +1278,14 @@ class SQLGenerator:
 
             for expr in pending_expressions:
                 if self._deps_available(expr.sql, available_aliases):
-                    layer_parts.append(f'{expr.sql} AS "{expr.alias}"')
+                    # DEV-1361: when the source ModelMeasure declared a
+                    # result type, wrap the expression in CAST so the outer
+                    # SELECT yields the typed value.
+                    expr_sql = expr.sql
+                    if expr.type is not None:
+                        wrapped = _wrap_cast_for_type(self._parse(expr_sql), expr.type)
+                        expr_sql = wrapped.sql(dialect=self.dialect)
+                    layer_parts.append(f'{expr_sql} AS "{expr.alias}"')
                     added_this_layer.append(expr.alias)
                 else:
                     remaining_expressions.append(expr)
@@ -1691,7 +1726,7 @@ class SQLGenerator:
         # Must use full expressions (not aliases) since aliases aren't visible in OVER()
         partition_parts = []
         for dim in enriched.dimensions:
-            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name)
+            col_expr = self._resolve_sql(sql=dim.sql, name=dim.name, model_name=dim.model_name, type=dim.type)
             partition_parts.append(col_expr.sql(dialect=self.dialect))
         for td in enriched.time_dimensions:
             col_expr = self._resolve_sql(sql=td.sql, name=td.name, model_name=td.model_name)
@@ -1828,15 +1863,29 @@ class SQLGenerator:
             return exp.Anonymous(this="log2", expressions=[arg.copy()])
         return node
 
-    def _resolve_sql(self, sql: Optional[str], name: str, model_name: str) -> exp.Expression:
-        """Resolve an enriched SQL expression to a sqlglot AST node."""
+    def _resolve_sql(
+        self,
+        sql: Optional[str],
+        name: str,
+        model_name: str,
+        type: Optional[DataType] = None,
+    ) -> exp.Expression:
+        """Resolve an enriched SQL expression to a sqlglot AST node.
+
+        DEV-1361: when the caller has a typed object in scope (an
+        ``EnrichedDimension``, a ``Column``), it passes ``type=`` so the
+        generator wraps non-trivial expressions in ``CAST(... AS <type>)``.
+        Bare identifiers (``sql=None`` or ``sql`` is a single identifier)
+        trust the DB schema and sqlglot — no CAST is emitted regardless of
+        ``type``.
+        """
         if sql is None:
             return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(model_name))
         # Bare column name → qualify with model name
         # Use isidentifier() to distinguish column names from literals (e.g. "1")
         if sql.isidentifier():
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
-        return self._parse(sql)
+        return _wrap_cast_for_type(self._parse(sql), type)
 
     def _resolve_value_sql(self, measure: "EnrichedMeasure") -> str:
         """Resolve ``measure.sql`` (or ``measure.name``) into a fully-qualified

@@ -37,8 +37,8 @@ class TestLocalMode:
             sql_table="public.orders",
             data_source="test_ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         ))
         await storage.save_datasource(DatasourceConfig(
@@ -59,8 +59,8 @@ class TestLocalMode:
             sql_table="public.orders",
             data_source="test_ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         ))
         await storage.save_datasource(DatasourceConfig(
@@ -79,8 +79,8 @@ class TestLocalMode:
             sql_table="public.orders",
             data_source="test_ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         ))
         await storage.save_datasource(DatasourceConfig(

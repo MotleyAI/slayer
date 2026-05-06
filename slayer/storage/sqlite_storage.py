@@ -181,7 +181,29 @@ class SQLiteStorage(StorageBackend):
                 return None
             data_source, name = identity
         raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
-        return SlayerModel.model_validate(json.loads(raw)) if raw else None
+        if not raw:
+            return None
+        data = json.loads(raw)
+        # DEV-1361: storage-driven type refinement; mirrors YAMLStorage path.
+        from slayer.storage import migrations as _mig
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        pre_version = (
+            int(data.get("version", 1)) if isinstance(data, dict) else _mig.CURRENT_VERSIONS["SlayerModel"]
+        )
+        write_back = False
+        if isinstance(data, dict) and pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
+            data = _mig.migrate("SlayerModel", data)
+            ds = await self.get_datasource(data_source)
+            if ds is not None:
+                if refine_dict_with_live_schema(data, ds):
+                    write_back = True
+            else:
+                write_back = True
+        model = SlayerModel.model_validate(data)
+        if write_back:
+            await self.save_model(model)
+        return model
 
     async def delete_model(
         self,

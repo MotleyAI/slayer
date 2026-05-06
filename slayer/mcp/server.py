@@ -6,6 +6,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import sqlalchemy as sa
 
+from slayer.core.enums import DataType
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
@@ -425,7 +426,8 @@ def _build_sample_query_args(
     for c in model.columns:
         if c.hidden or c.primary_key:
             continue
-        if str(c.type) not in ("string", "boolean"):
+        # DEV-1361: TEXT/BOOLEAN are the categorical-shaped types.
+        if c.type not in (DataType.TEXT, DataType.BOOLEAN):
             continue
         dims.append({"name": c.name})
         dim_names.add(c.name)
@@ -443,10 +445,12 @@ def _build_sample_query_args(
             safe = next((a for a in allowed if a in _SAFE_SAMPLE_AGGS), None)
             agg = safe if safe else allowed[0]
         else:
+            # DEV-1361: numeric columns (INT/DOUBLE) are avg-able; everything
+            # else falls back to count_distinct.
             inferred = measure_types.get(c.name)
-            if inferred and inferred != "number":
+            if inferred and inferred not in ("number", "DOUBLE", "INT"):
                 agg = "count_distinct"
-            elif str(c.type) in ("string", "boolean", "date", "time"):
+            elif c.type not in (DataType.INT, DataType.DOUBLE):
                 agg = "count_distinct"
             else:
                 agg = "avg"
@@ -567,8 +571,13 @@ async def _collect_dim_profile(
         c for c in model.columns
         if not c.hidden and not c.primary_key
     ][:max_dims]
-    categorical = [c for c in eligible if str(c.type) in ("string", "boolean")]
-    numeric_temporal = [c for c in eligible if str(c.type) in ("number", "date", "time")]
+    # DEV-1361: type vocabulary aligned to sqlglot — TEXT/BOOLEAN are
+    # categorical; INT/DOUBLE/DATE/TIMESTAMP are numeric/temporal.
+    categorical = [c for c in eligible if c.type in (DataType.TEXT, DataType.BOOLEAN)]
+    numeric_temporal = [
+        c for c in eligible
+        if c.type in (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
+    ]
 
     entries: Dict[str, _DimProfileEntry] = {}
 

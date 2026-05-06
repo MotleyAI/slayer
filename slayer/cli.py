@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from typing import List
+from typing import List, Optional
 
 from slayer.async_utils import run_sync
 from slayer.storage.base import default_storage_path
@@ -448,6 +448,37 @@ examples:
         help="Cap on returned query-bearing memories (default: 2).",
     )
 
+    # ── storage ──────────────────────────────────────────────────────
+    storage_parser = subparsers.add_parser(
+        "storage",
+        help="Storage maintenance (DEV-1361: migrate-types refines DOUBLE→INT for legacy models)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(storage_parser)
+    storage_subparsers = storage_parser.add_subparsers(dest="subcommand")
+
+    migrate_types_parser = storage_subparsers.add_parser(
+        "migrate-types",
+        help=(
+            "Walk every persisted model, introspect its datasource, and refine "
+            "DOUBLE → INT on base columns whose live SQL type is integer. "
+            "Hard-fails if a datasource is unreachable."
+        ),
+    )
+    migrate_types_parser.add_argument(
+        "--data-source",
+        default=None,
+        dest="data_source",
+        help="Optional datasource filter; defaults to all datasources.",
+    )
+    migrate_types_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Report planned refinements without writing them back to storage.",
+    )
+    _add_storage_arg(migrate_types_parser)
+
     # ── help ──────────────────────────────────────────────────────────
     from slayer.help import TOPIC_SUMMARY_LINE
 
@@ -490,11 +521,122 @@ examples:
         _run_datasources(args)
     elif args.command == "memory":
         _run_memory(args)
+    elif args.command == "storage":
+        _run_storage(args)
     elif args.command == "help":
         _run_help(args)
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_storage(args) -> None:
+    """Dispatch the ``slayer storage <subcommand>`` group."""
+    subcommand = getattr(args, "subcommand", None)
+    if subcommand == "migrate-types":
+        _run_storage_migrate_types(args)
+    else:
+        print(
+            "Usage: slayer storage <subcommand>\n  available: migrate-types"
+        )
+        sys.exit(1)
+
+
+def _run_storage_migrate_types(args) -> None:
+    """DEV-1361: refine DOUBLE → INT on every base column whose live SQL
+    type is integer. Iterates models in storage, calls
+    ``refine_dict_with_live_schema`` per model, optionally writes the
+    refined v5 dict back. Hard-fails if a datasource is unreachable.
+    """
+    import copy as _copy
+
+    from slayer.storage import migrations as _mig
+    from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+    storage = _resolve_storage(args)
+    # Unwrap JoinSyncStorage so we can list identities and read raw dicts
+    # without triggering the get_model auto-refinement path (which would
+    # rewrite the file before our dry-run gets to inspect it).
+    inner = getattr(storage, "_inner", storage)
+    data_source_filter = getattr(args, "data_source", None)
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    async def _gather():
+        identities = await inner._list_all_model_identities()
+        return identities
+
+    identities = run_sync(_gather())
+
+    refined_total = 0
+    for ds_name, model_name in identities:
+        if data_source_filter and ds_name != data_source_filter:
+            continue
+        ds = run_sync(inner.get_datasource(ds_name))
+        if ds is None:
+            continue
+        # Read raw dict bypassing the storage's load-side migration so we
+        # see the persisted-on-disk shape. ``inner`` is the un-wrapped
+        # backend (YAMLStorage / SQLiteStorage) so the helper's
+        # backend-specific paths resolve.
+        raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
+        if raw is None:
+            continue
+        # Snapshot the original column types BEFORE migration mutates the
+        # shared inner dicts, so we can show before/after diffs.
+        original_types = {
+            (c.get("name") or "?"): c.get("type", "?")
+            for c in raw.get("columns", []) or []
+            if isinstance(c, dict)
+        }
+        # Walk the dict-migrator chain (coarse rename only), then refine
+        # via live introspection. Deep-copy first so mutations don't leak
+        # back into the on-disk-equivalent ``raw`` dict.
+        upgraded = _mig.migrate("SlayerModel", _copy.deepcopy(raw))
+        applied = refine_dict_with_live_schema(upgraded, ds)
+        if applied:
+            refined_total += 1
+            print(f"refined {ds_name}.{model_name}:")
+            for col in upgraded.get("columns", []) or []:
+                if col.get("type") != "INT":
+                    continue
+                before = original_types.get(col.get("name") or "", None)
+                if before != "INT":
+                    print(f"  - {col['name']}: {before or '?'} → INT")
+            if not dry_run:
+                from slayer.core.models import SlayerModel as _SM
+
+                model = _SM.model_validate(upgraded)
+                # Save through inner so we don't re-trigger the load-time
+                # refinement / join-sync mirror loop.
+                run_sync(inner.save_model(model))
+
+    if refined_total == 0:
+        print("No models needed refinement.")
+    elif dry_run:
+        print(f"\nDry run: {refined_total} model(s) would be refined.")
+    else:
+        print(f"\nDone: refined {refined_total} model(s).")
+
+
+async def _load_raw_model_dict(storage, data_source: str, name: str) -> Optional[dict]:
+    """Read a model's raw on-disk dict bypassing Pydantic's validator chain."""
+    import json as _json
+    import os as _os
+
+    import yaml as _yaml
+
+    if hasattr(storage, "_model_path"):  # YAMLStorage
+        path = storage._model_path(data_source, name)
+        if not _os.path.exists(path):
+            return None
+        with open(path) as f:
+            return _yaml.safe_load(f)
+    if hasattr(storage, "_get_model_sync"):  # SQLiteStorage
+        import asyncio as _asyncio
+
+        raw = await _asyncio.to_thread(storage._get_model_sync, data_source, name)
+        return _json.loads(raw) if raw else None
+    return None
 
 
 def _run_help(args):

@@ -35,9 +35,9 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[ModelJ
         sql_table=sql_table,
         data_source=data_source,
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
         ],
         joins=joins or [],
     )
@@ -45,11 +45,11 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[ModelJ
 
 def _customers(data_source: str, *, sql_table: str = "customers_t", with_revenue: bool = False) -> SlayerModel:
     cols = [
-        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-        Column(name="region", sql="region", type=DataType.STRING),
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="region", sql="region", type=DataType.TEXT),
     ]
     if with_revenue:
-        cols.append(Column(name="revenue", sql="revenue", type=DataType.NUMBER))
+        cols.append(Column(name="revenue", sql="revenue", type=DataType.DOUBLE))
     return SlayerModel(
         name="customers",
         sql_table=sql_table,

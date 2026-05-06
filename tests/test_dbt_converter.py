@@ -131,7 +131,7 @@ class TestBasicConversion:
         orders = next(m for m in result.models if m.name == "orders")
         status = next(d for d in orders.columns if d.name == "status")
         order_date = next(d for d in orders.columns if d.name == "order_date")
-        assert status.type == DataType.STRING
+        assert status.type == DataType.TEXT
         assert order_date.type == DataType.TIMESTAMP
 
     def test_measures(self) -> None:
@@ -727,8 +727,8 @@ def _sample_slayer_model(name: str = "raw_events") -> SlayerModel:
         sql_table="staging.raw_events",
         data_source="test_db",
         columns=[
-            Column(name="event_id", sql="event_id", type=DataType.NUMBER, primary_key=True),
-            Column(name="event_type", sql="event_type", type=DataType.STRING),
+            Column(name="event_id", sql="event_id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="event_type", sql="event_type", type=DataType.TEXT),
         ],
     )
 
@@ -1465,3 +1465,35 @@ class TestUnconvertedTransformShadowing:
             u.metric_name == "cumsum"
             for u in result.unconverted_metrics
         )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1361: dbt converter pure rename — STRING → TEXT, NUMBER → DOUBLE.
+# Behavioural change (data_type-driven mapping) tracked in DEV-1363.
+# ---------------------------------------------------------------------------
+
+
+class TestDbtConverterRenamedDataTypes:
+    """Categorical dim → TEXT (was STRING), measure column → DOUBLE (was
+    NUMBER), time dim → TIMESTAMP (unchanged)."""
+
+    def test_categorical_dim_is_text(self) -> None:
+        project = _make_simple_project()
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        status = next(d for d in orders.columns if d.name == "status")
+        assert status.type == DataType.TEXT
+
+    def test_time_dim_is_timestamp(self) -> None:
+        project = _make_simple_project()
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        order_date = next(d for d in orders.columns if d.name == "order_date")
+        assert order_date.type == DataType.TIMESTAMP
+
+    def test_measure_column_is_double(self) -> None:
+        project = _make_simple_project()
+        result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
+        orders = next(m for m in result.models if m.name == "orders")
+        amount = next(c for c in orders.columns if c.name == "amount")
+        assert amount.type == DataType.DOUBLE

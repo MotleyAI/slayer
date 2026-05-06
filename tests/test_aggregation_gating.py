@@ -24,9 +24,9 @@ def _orders_model() -> SlayerModel:
         sql_table="public.orders",
         data_source="test",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     )
@@ -34,8 +34,8 @@ def _orders_model() -> SlayerModel:
 
 def _customers_model(extra_columns=None, extra_aggregations=None) -> SlayerModel:
     columns = [
-        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-        Column(name="name", sql="name", type=DataType.STRING),
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="name", sql="name", type=DataType.TEXT),
     ]
     if extra_columns:
         columns.extend(extra_columns)
@@ -112,7 +112,7 @@ class TestCrossModelGating:
                 Column(
                     name="rating",
                     sql="rating",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     allowed_aggregations=["avg"],
                 ),
             ]
@@ -131,7 +131,7 @@ class TestCrossModelGating:
                 Column(
                     name="rating",
                     sql="rating",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     allowed_aggregations=["avg"],
                 ),
             ]
@@ -185,11 +185,11 @@ class TestStatAggregationEligibility:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
@@ -334,7 +334,7 @@ class TestCrossModelColumnFilter:
                 Column(
                     name="completed_rev",
                     sql="amount",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     filter="status = 'completed'",
                 ),
             ]

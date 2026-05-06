@@ -227,7 +227,7 @@ class TestQuery:
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
@@ -272,7 +272,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_model(SlayerModel(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
         )
         resp = client.post("/models", json={
@@ -306,7 +306,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_model(SlayerModel(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
         )
         resp = client.post("/models", json={
@@ -407,7 +407,7 @@ class TestOpenAPI400Documentation:
         ))
         run_sync(storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         )))
         # Save a query-backed model whose stage does NOT have dry_run set.
         setup_resp = client.post("/models", json={

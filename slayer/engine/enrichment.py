@@ -654,6 +654,10 @@ async def enrich_query(
                     aggregation_name=spec.aggregation_name,
                     agg_kwargs=spec.agg_kwargs,
                 )
+                # DEV-1361: propagate declared result type into the inner
+                # EnrichedMeasure so _build_combined wraps the agg in CAST.
+                if qfield.type is not None:
+                    cm.measure.type = qfield.type
                 cross_model_measures.append(cm)
                 continue
 
@@ -694,6 +698,12 @@ async def enrich_query(
                 for m in measures:
                     if m.name == target_name:
                         m.label = qfield.label
+            # DEV-1361: declared result type → wrap aggregation in CAST.
+            if qfield.type is not None:
+                target_name = qfield.name if (qfield.name and qfield.name != canonical_name) else canonical_name
+                for m in measures:
+                    if m.name == target_name:
+                        m.type = qfield.type
 
         else:
             await _flatten_spec(spec, field_name)
@@ -705,6 +715,13 @@ async def enrich_query(
                 for t in enriched_transforms:
                     if t.alias == alias:
                         t.label = qfield.label
+            # DEV-1361: declared result type → wrap arithmetic / transform
+            # expression in CAST at the outer SELECT.
+            if qfield.type is not None:
+                alias = f"{model_name_str}.{field_name}"
+                for e in enriched_expressions:
+                    if e.alias == alias:
+                        e.type = qfield.type
 
     # --- Enrich ORDER BY formulas as hidden fields ---
     for item in query.order or []:
@@ -948,7 +965,7 @@ async def _resolve_dimensions(
             EnrichedDimension(
                 name=dim_ref.name,
                 sql=expanded_sql,
-                type=dim_def.type if dim_def else DataType.STRING,
+                type=dim_def.type if dim_def else DataType.TEXT,
                 alias=f"{model_name_str}.{dim_ref.full_name}",
                 model_name=effective_model,
                 label=dim_ref.label or (dim_def.label if dim_def else None),

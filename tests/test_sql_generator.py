@@ -91,15 +91,15 @@ def orders_model() -> SlayerModel:
         sql_table="public.orders",
         data_source="test",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
             Column(name="delivery_at", sql="delivery_at", type=DataType.TIMESTAMP),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
 
-            Column(name="revenue", sql="amount", type=DataType.NUMBER),
-            Column(name="avg_revenue", sql="amount", type=DataType.NUMBER),
-            Column(name="distinct_customers", sql="customer_id", type=DataType.NUMBER),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            Column(name="avg_revenue", sql="amount", type=DataType.DOUBLE),
+            Column(name="distinct_customers", sql="customer_id", type=DataType.DOUBLE),
         ],
     )
 
@@ -127,9 +127,9 @@ class TestBasicQueries:
             sql_table="policy",
             data_source="test",
             columns=[
-                Column(name="status", type=DataType.STRING),
+                Column(name="status", type=DataType.TEXT),
 
-                Column(name="num_policies", sql="1", allowed_aggregations=["sum"], type=DataType.NUMBER),
+                Column(name="num_policies", sql="1", allowed_aggregations=["sum"], type=DataType.DOUBLE),
             ],
         )
         query = SlayerQuery(source_model="policy", measures=[ModelMeasure(formula="num_policies:sum")])
@@ -364,8 +364,8 @@ class TestFilters:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="order_status", sql="status_col", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="order_status", sql="status_col", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -410,8 +410,8 @@ class TestSubquery:
             name="recent_orders",
             sql="SELECT * FROM public.orders WHERE created_at > '2024-01-01'",
             data_source="test",
-            columns=[Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="recent_orders",
@@ -431,9 +431,9 @@ class TestBareColumnNames:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="status", sql="status", type=DataType.TEXT),
 
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
@@ -455,7 +455,7 @@ class TestBareColumnNames:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="total", sql="amount", type=DataType.NUMBER),
+                Column(name="total", sql="amount", type=DataType.DOUBLE),
             ],
         )
         gen = SQLGenerator(dialect="postgres")
@@ -658,19 +658,19 @@ class TestFields:
         await storage.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
             ],
         ))
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
@@ -761,26 +761,26 @@ class TestFields:
         await storage.save_model(SlayerModel(
             name="regions", sql_table="regions", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
             ],
         ))
         await storage.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
         ))
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
@@ -972,7 +972,7 @@ class TestFields:
     async def test_last_measure_type(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """A measure with last aggregation should use ROW_NUMBER + conditional aggregate."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
@@ -990,7 +990,7 @@ class TestFields:
     async def test_last_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """last(ordered_at) should ORDER BY the explicit time column, not the default."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
@@ -1005,7 +1005,7 @@ class TestFields:
     async def test_first_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """first(ordered_at) should ORDER BY the explicit time column ASC."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
@@ -1020,7 +1020,7 @@ class TestFields:
     async def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Two last measures with different explicit time cols get separate ROW_NUMBER columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         orders_model.columns.append(Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
@@ -1046,7 +1046,7 @@ class TestFields:
     async def test_mixed_explicit_and_default_time_columns(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """One last with explicit time, one last with default — separate ROW_NUMBER columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
@@ -1065,7 +1065,7 @@ class TestFields:
     async def test_same_explicit_time_column_shared(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Two first/last measures with the same explicit time col share one ROW_NUMBER."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="balance", type=DataType.DOUBLE))
         orders_model.columns.append(Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP))
         query = SlayerQuery(
             source_model="orders",
@@ -1331,10 +1331,10 @@ class TestTransformRequiresTimeDimension:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.DATE),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             default_time_dimension="created_at",
         )
         query = SlayerQuery(
@@ -1353,10 +1353,10 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.DATE),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             default_time_dimension="created_at",
         )
         query = SlayerQuery(
@@ -1374,10 +1374,10 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.DATE),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
             default_time_dimension="created_at",
         )
@@ -1396,10 +1396,10 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.DATE),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -1524,14 +1524,14 @@ class TestMultiDialectGeneration:
             data_source="test",
             default_time_dimension="created_at",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
 
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
                 # Second numeric column so 2-arg stat aggregates
                 # (corr(other=...) / covar_*(other=...)) have a valid LHS+RHS pair.
-                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
             ],
         )
         return model
@@ -1779,12 +1779,12 @@ class TestSqliteJsonExtractInGenerator:
             sql_table="users",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="payload", sql="payload", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="payload", sql="payload", type=DataType.TEXT),
                 Column(
                     name="tier",
                     sql="json_extract(payload, '$.tier')",
-                    type=DataType.STRING,
+                    type=DataType.TEXT,
                 ),
                 Column(
                     name="is_gold",
@@ -1792,7 +1792,7 @@ class TestSqliteJsonExtractInGenerator:
                         "CASE LOWER(json_extract(payload, '$.tier')) "
                         "WHEN 'gold' THEN 1 ELSE 0 END"
                     ),
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
         )
@@ -1832,8 +1832,8 @@ class TestSqliteJsonExtractInGenerator:
             ),
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="tier", sql="tier", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="tier", sql="tier", type=DataType.TEXT),
             ],
         )
         gen = SQLGenerator(dialect="sqlite")
@@ -2305,10 +2305,10 @@ class TestStatAggsViaQueryEnrichment:
             sql_table="public.sales",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="price", sql="price", type=DataType.NUMBER),
-                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
-                Column(name="latency", sql="latency", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="price", sql="price", type=DataType.DOUBLE),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+                Column(name="latency", sql="latency", type=DataType.DOUBLE),
             ],
         )
 
@@ -2362,16 +2362,16 @@ class TestPathAliasJoinInference:
         await s.save_model(SlayerModel(
             name="regions", sql_table="regions", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="population", sql="population", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="population", sql="population", type=DataType.DOUBLE),
             ],
         ))
         await s.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
         ))
@@ -2385,13 +2385,13 @@ class TestPathAliasJoinInference:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
                 Column(
                     name="is_us",
                     sql="CASE WHEN customers__regions.name = 'US' THEN 1 ELSE 0 END",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
 
             ],
@@ -2423,15 +2423,15 @@ class TestPathAliasJoinInference:
         await storage.save_model(SlayerModel(
             name="orgs", sql_table="orgs", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="signup_date", sql="signup_date", type=DataType.TIMESTAMP),
             ],
         ))
         await storage.save_model(SlayerModel(
             name="users", sql_table="users", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="org_id", sql="org_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="org_id", sql="org_id", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="orgs", join_pairs=[["org_id", "id"]])],
         ))
@@ -2440,8 +2440,8 @@ class TestPathAliasJoinInference:
             sql_table="events",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="user_id", sql="user_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="user_id", sql="user_id", type=DataType.DOUBLE),
                 Column(
                     name="user_signup_date",
                     sql="users__orgs.signup_date",
@@ -2474,7 +2474,7 @@ class TestPathAliasJoinInference:
     ) -> None:
         """Measure SQL like 'customers__regions.population' should infer joins for both tables."""
         chained_model.columns.append(
-            Column(name="region_pop_sum", sql="customers__regions.population", type=DataType.NUMBER)
+            Column(name="region_pop_sum", sql="customers__regions.population", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -2496,12 +2496,12 @@ class TestAggParamSanitization:
             sql_table="public.sales",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
 
-                Column(name="price", sql="price", type=DataType.NUMBER),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
-                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+                Column(name="price", sql="price", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
             ],
         )
 
@@ -2597,7 +2597,7 @@ class TestAggParamSanitization:
                 name="active_revenue",
                 sql="amount",
                 filter="status = 'active'",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             )
         )
         query = SlayerQuery(
@@ -2623,7 +2623,7 @@ class TestAggParamSanitization:
                 name="active_price",
                 sql="price",
                 filter="status = 'active'",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             )
         )
         query = SlayerQuery(
@@ -2661,7 +2661,7 @@ class TestFilteredMeasures:
 
     async def test_filtered_sum(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.columns.append(
-            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="active_revenue:sum")])
         sql = await _generate(generator, query, orders_model)
@@ -2677,7 +2677,7 @@ class TestFilteredMeasures:
         rather than literal 1. Either form is correct for ``count`` aggregation.
         """
         orders_model.columns.append(
-            Column(name="active_count", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_count", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="active_count:count")])
         sql = await _generate(generator, query, orders_model)
@@ -2688,7 +2688,7 @@ class TestFilteredMeasures:
 
     async def test_filtered_avg(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         orders_model.columns.append(
-            Column(name="active_avg", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_avg", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="active_avg:avg")])
         sql = await _generate(generator, query, orders_model)
@@ -2710,10 +2710,10 @@ class TestFilteredMeasures:
         in the denominator sums all weights regardless of filter, producing a
         wrong (under-weighted) result."""
         orders_model.columns.append(
-            Column(name="quantity", sql="quantity", type=DataType.NUMBER)
+            Column(name="quantity", sql="quantity", type=DataType.DOUBLE)
         )
         orders_model.columns.append(
-            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -2732,7 +2732,7 @@ class TestFilteredMeasures:
     async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         """Query with both filtered and unfiltered measures."""
         orders_model.columns.append(
-            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -2749,7 +2749,7 @@ class TestFilteredMeasures:
         """Filtered last measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
-            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -2777,7 +2777,7 @@ class TestFilteredMeasures:
         """Filtered first measure generates a dedicated ROW_NUMBER with filter in ORDER BY."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
-            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -2797,7 +2797,7 @@ class TestFilteredMeasures:
     ) -> None:
         """Unfiltered last measure uses the shared ROW_NUMBER, no _rn_f columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.DOUBLE))
         query = SlayerQuery(
             source_model="orders",
             time_dimensions=[
@@ -2814,9 +2814,9 @@ class TestFilteredMeasures:
     ) -> None:
         """Both filtered and unfiltered last measures get separate ROW_NUMBER columns."""
         orders_model.default_time_dimension = "created_at"
-        orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.NUMBER))
+        orders_model.columns.append(Column(name="balance", sql="amount", type=DataType.DOUBLE))
         orders_model.columns.append(
-            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -2847,8 +2847,8 @@ class TestFilteredMeasures:
             sql_table="public.customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
             ],
         )
         orders = SlayerModel(
@@ -2856,14 +2856,14 @@ class TestFilteredMeasures:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
 
                 Column(
                     name="active_balance",
                     sql="amount",
-                    filter="customers.status = 'active'", type=DataType.NUMBER),
+                    filter="customers.status = 'active'", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
             default_time_dimension="created_at",
@@ -2923,8 +2923,8 @@ class TestFilteredMeasures:
             sql_table="public.customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
             ],
         )
         orders = SlayerModel(
@@ -2932,14 +2932,14 @@ class TestFilteredMeasures:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
 
                 Column(
                     name="active_balance",
                     sql="amount",
-                    filter="customers.status = 'active'", type=DataType.NUMBER),
+                    filter="customers.status = 'active'", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
             default_time_dimension="created_at",
@@ -3016,14 +3016,14 @@ class TestFilteredMeasures:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="url", sql="url", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="url", sql="url", type=DataType.TEXT),
 
                 Column(
                     name="vendor_revenue",
                     sql="amount",
                     # The dot inside the literal is what would trip the regex.
-                    filter="url LIKE 'foo.bar%'", type=DataType.NUMBER),
+                    filter="url LIKE 'foo.bar%'", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="foo", join_pairs=[["id", "id"]])],
         )
@@ -3056,10 +3056,10 @@ class TestFilteredMeasures:
         the second one clobbered the first and both pointed at the same _rn alias."""
         orders_model.default_time_dimension = "created_at"
         orders_model.columns.append(
-            Column(name="active_balance", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_balance", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         orders_model.columns.append(
-            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
+            Column(name="completed_balance", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders",
@@ -3088,7 +3088,7 @@ class TestFilteredMeasures:
         / sub-query sources)."""
 
         orders_model.columns.append(
-            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         # Underlying model loaded under a different name than the query references.
         underlying = orders_model.model_copy(update={"name": "orders_underlying"})
@@ -3122,7 +3122,7 @@ class TestFilteredMeasures:
         invalid because the source alias isn't in the FROM."""
 
         orders_model.columns.append(
-            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         underlying = orders_model.model_copy(update={"name": "orders_underlying"})
         query = SlayerQuery(
@@ -3173,7 +3173,7 @@ class TestMeasureFilterInjection:
             Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a'; DROP TABLE orders; --'", type=DataType.NUMBER)
+                filter="status = 'a'; DROP TABLE orders; --'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         with pytest.raises(ValueError, match="Invalid filter syntax"):
@@ -3185,7 +3185,7 @@ class TestMeasureFilterInjection:
             Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a' UNION SELECT * FROM users --'", type=DataType.NUMBER)
+                filter="status = 'a' UNION SELECT * FROM users --'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         with pytest.raises(ValueError, match="Invalid filter syntax"):
@@ -3197,7 +3197,7 @@ class TestMeasureFilterInjection:
             Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a' /* x */ OR 1=1", type=DataType.NUMBER)
+                filter="status = 'a' /* x */ OR 1=1", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         with pytest.raises(ValueError, match="Invalid filter syntax"):
@@ -3221,7 +3221,7 @@ class TestMeasureFilterInjection:
                 name="irish_names",
                 sql="amount",
                 # Runtime value of the literal:  O'Brien
-                filter="status = 'O\\'Brien'", type=DataType.NUMBER)
+                filter="status = 'O\\'Brien'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders", measures=[ModelMeasure(formula="irish_names:sum")]
@@ -3261,7 +3261,7 @@ class TestMeasureFilterInjection:
                 name="evil",
                 sql="amount",
                 # Runtime filter string:  status = 'a\'
-                filter="status = 'a\\\\'", type=DataType.NUMBER)
+                filter="status = 'a\\\\'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
@@ -3288,7 +3288,7 @@ class TestMeasureFilterInjection:
                 name="evil",
                 sql="amount",
                 # Runtime filter string:  status = 'a\b'
-                filter="status = 'a\\\\b'", type=DataType.NUMBER)
+                filter="status = 'a\\\\b'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
@@ -3305,7 +3305,7 @@ class TestMeasureFilterInjection:
                 name="evil",
                 sql="amount",
                 # Runtime filter string:  status like 'a\'
-                filter="status like 'a\\\\'", type=DataType.NUMBER)
+                filter="status like 'a\\\\'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
@@ -3324,7 +3324,7 @@ class TestMeasureFilterInjection:
         """
         evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\' OR 1=1 --
         try:
-            orders_model.columns.append(Column(name="evil", sql="amount", filter=evil, type=DataType.NUMBER))
+            orders_model.columns.append(Column(name="evil", sql="amount", filter=evil, type=DataType.DOUBLE))
             query = SlayerQuery(
                 source_model="orders", measures=[ModelMeasure(formula="evil:sum")]
             )
@@ -3339,7 +3339,7 @@ class TestMeasureFilterInjection:
         """Sanity: ordinary filters (no backslashes, no apostrophes) keep
         producing the same SQL shape after the escape-hardening change."""
         orders_model.columns.append(
-            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+            Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders", measures=[ModelMeasure(formula="active_revenue:sum")]
@@ -3363,17 +3363,17 @@ class TestAutoMoveDimensions:
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="region", sql="region", type=DataType.TEXT),
 
             ],
         )
@@ -3452,8 +3452,8 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
@@ -3461,7 +3461,7 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
             ],
             measures=[ModelMeasure(name="name_count", formula="id:count_distinct")],
         )
@@ -3507,9 +3507,9 @@ class TestInlineSQLJoins:
             sql="SELECT id, customer_id, amount FROM raw_orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -3520,9 +3520,9 @@ Column(name="amount", sql="amount", type=DataType.NUMBER)],
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -3579,17 +3579,17 @@ class TestSelfReferencingPaths:
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-Column(name="score", sql="score", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+Column(name="score", sql="score", type=DataType.DOUBLE)],
         )
         await storage.save_model(orders)
         await storage.save_model(customers)
@@ -3646,9 +3646,9 @@ class TestConstantSQLFilters:
             sql_table="Premium",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="has_premium", sql="1", type=DataType.NUMBER),
-Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="has_premium", sql="1", type=DataType.DOUBLE),
+Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="premium",
@@ -3668,8 +3668,8 @@ Column(name="amount", sql="amount", type=DataType.NUMBER)],
             sql_table="Premium",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="has_premium", sql="1", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="has_premium", sql="1", type=DataType.DOUBLE),
             ],
         )
         policy_amount = SlayerModel(
@@ -3677,9 +3677,9 @@ Column(name="amount", sql="amount", type=DataType.NUMBER)],
             sql_table="Policy_Amount",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="premium_id", sql="premium_id", type=DataType.NUMBER),
-Column(name="total", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="premium_id", sql="premium_id", type=DataType.DOUBLE),
+Column(name="total", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="premium", join_pairs=[["premium_id", "id"]])],
         )
 
@@ -3711,9 +3711,9 @@ Column(name="total", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -3732,8 +3732,8 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
             ],
         )
         orders = SlayerModel(
@@ -3741,9 +3741,9 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -3779,7 +3779,7 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="order_id", sql="order_id", type=DataType.NUMBER, primary_key=True),
+                Column(name="order_id", sql="order_id", type=DataType.DOUBLE, primary_key=True),
 
             ],
         )
@@ -3798,8 +3798,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
 
             ],
         )
@@ -3818,8 +3818,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
 
             ],
         )
@@ -3837,8 +3837,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
 
             ],
         )
@@ -3846,7 +3846,7 @@ class TestDimensionAggregation:
             source_model="orders",
             measures=[ModelMeasure(formula="status:sum")],
         )
-        with pytest.raises(ValueError, match="not applicable to string column"):
+        with pytest.raises(ValueError, match="not applicable to TEXT column"):
             await _generate(generator, query, model)
 
     async def test_sum_on_number_dimension_allowed(self, generator: SQLGenerator) -> None:
@@ -3856,8 +3856,8 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="quantity", sql="qty", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="quantity", sql="qty", type=DataType.DOUBLE),
 
             ],
         )
@@ -3876,10 +3876,10 @@ class TestDimensionAggregation:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
 
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         )
         query = SlayerQuery(
@@ -3901,9 +3901,9 @@ class TestDimensionAggregation:
             sql_table="amounts",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
-                Column(name="total", sql="amount", type=DataType.NUMBER),
+                Column(name="total", sql="amount", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="policies", join_pairs=[["policy_id", "id"]])],
         )
@@ -3912,8 +3912,8 @@ class TestDimensionAggregation:
             sql_table="policies",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="policy_number", sql="policy_number", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="policy_number", sql="policy_number", type=DataType.TEXT),
 
             ],
         )
@@ -3949,9 +3949,9 @@ class TestCrossModelCustomAggFuncStyle:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
@@ -3959,8 +3959,8 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="score", sql="score", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="score", sql="score", type=DataType.DOUBLE)],
             aggregations=[
                 Aggregation(name="rolling_avg", formula="AVG({value})"),
             ],
@@ -3995,36 +3995,36 @@ class TestReachableAggDiscoveryUnbounded:
 
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
             ],
             joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
         )
         b = SlayerModel(
             name="b", sql_table="b", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
             ],
             joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
         )
         c = SlayerModel(
             name="c", sql_table="c", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
             ],
             joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
         )
         d = SlayerModel(
             name="d", sql_table="d", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
             ],
             joins=[ModelJoin(target_model="e", join_pairs=[["e_id", "id"]])],
         )
         e = SlayerModel(
             name="e", sql_table="e", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="score", sql="score", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="score", sql="score", type=DataType.DOUBLE)],
             aggregations=[Aggregation(name="rolling_avg", formula="AVG({value})")],
         )
 
@@ -4050,14 +4050,14 @@ Column(name="score", sql="score", type=DataType.NUMBER)],
 
         a = SlayerModel(
             name="a", sql_table="a", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             aggregations=[Aggregation(name="rolling_a", formula="AVG({value})")],
             joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
         )
         b = SlayerModel(
             name="b", sql_table="b", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
             ],
             joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
@@ -4087,10 +4087,10 @@ class TestTransformAmbiguousTimeDimension:
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
                 Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -4113,10 +4113,10 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
                 Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -4151,11 +4151,11 @@ class TestParameterizedAggCanonicalDistinct:
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
                 Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -4190,9 +4190,9 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -4230,8 +4230,8 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -4246,8 +4246,8 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
@@ -4270,8 +4270,8 @@ class TestMultiHopCrossModelMeasure:
             sql_table="policy_coverage_detail",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="coverage_code", sql="coverage_code", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="coverage_code", sql="coverage_code", type=DataType.TEXT),
 
             ],
             joins=[ModelJoin(target_model="claim_coverage", join_pairs=[["id", "pcd_id"]])],
@@ -4281,7 +4281,7 @@ class TestMultiHopCrossModelMeasure:
             sql_table="claim_coverage",
             data_source="test",
             columns=[
-                Column(name="pcd_id", sql="pcd_id", type=DataType.NUMBER, primary_key=True),
+                Column(name="pcd_id", sql="pcd_id", type=DataType.DOUBLE, primary_key=True),
 
             ],
             joins=[ModelJoin(target_model="claim_amount", join_pairs=[["claim_id", "claim_id"]])],
@@ -4291,8 +4291,8 @@ class TestMultiHopCrossModelMeasure:
             sql_table="claim_amount",
             data_source="test",
             columns=[
-                Column(name="claim_id", sql="claim_id", type=DataType.NUMBER, primary_key=True),
-Column(name="total_claim_amount", sql="amount", type=DataType.NUMBER)],
+                Column(name="claim_id", sql="claim_id", type=DataType.DOUBLE, primary_key=True),
+Column(name="total_claim_amount", sql="amount", type=DataType.DOUBLE)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -4318,27 +4318,27 @@ Column(name="total_claim_amount", sql="amount", type=DataType.NUMBER)],
 
         model_a = SlayerModel(
             name="a", sql_table="a_table", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                        Column(name="status", sql="status", type=DataType.STRING),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                        Column(name="status", sql="status", type=DataType.TEXT),
 
             ], joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
         )
         model_b = SlayerModel(
             name="b", sql_table="b_table", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
             ], joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
         )
         model_c = SlayerModel(
             name="c", sql_table="c_table", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
             ], joins=[ModelJoin(target_model="d", join_pairs=[["d_id", "id"]])],
         )
         model_d = SlayerModel(
             name="d", sql_table="d_table", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="value", sql="val", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="value", sql="val", type=DataType.DOUBLE)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -4362,15 +4362,15 @@ Column(name="value", sql="val", type=DataType.NUMBER)],
 
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                        Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                        Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="score", sql="score", type=DataType.NUMBER)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="score", sql="score", type=DataType.DOUBLE)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -4404,9 +4404,9 @@ class TestCrossModelRerootedSubquery:
         policy = SlayerModel(
             name="policy", sql_table="policy", data_source="test",
             columns=[
-                Column(name="policy_identifier", type=DataType.NUMBER, primary_key=True),
-                Column(name="policy_number", type=DataType.STRING),
-                Column(name="status_code", type=DataType.STRING),
+                Column(name="policy_identifier", type=DataType.DOUBLE, primary_key=True),
+                Column(name="policy_number", type=DataType.TEXT),
+                Column(name="status_code", type=DataType.TEXT),
             ],
             joins=[
                 ModelJoin(target_model="policy_amount", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
@@ -4416,9 +4416,9 @@ class TestCrossModelRerootedSubquery:
         policy_amount = SlayerModel(
             name="policy_amount", sql_table="policy_amount", data_source="test",
             columns=[
-                Column(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
+                Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
                 Column(name="effective_date", type=DataType.TIMESTAMP),
-Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)],
+Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             joins=[
                 ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
                 ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
@@ -4428,15 +4428,15 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)],
         premium = SlayerModel(
             name="premium", sql_table="premium", data_source="test",
             columns=[
-                Column(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
-                Column(name="has_premium", sql="1", type=DataType.STRING),
+                Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
+                Column(name="has_premium", sql="1", type=DataType.TEXT),
             ],
         )
         agreement_party_role = SlayerModel(
             name="agreement_party_role", sql_table="agreement_party_role", data_source="test",
             columns=[
-                Column(name="agreement_identifier", type=DataType.NUMBER, primary_key=True),
-                Column(name="party_role_code", type=DataType.STRING),
+                Column(name="agreement_identifier", type=DataType.DOUBLE, primary_key=True),
+                Column(name="party_role_code", type=DataType.TEXT),
             ],
         )
         return policy, policy_amount, premium, agreement_party_role
@@ -4509,8 +4509,8 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)],
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
 
             ],
             joins=[
@@ -4521,14 +4521,14 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)],
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-Column(name="score", sql="score", type=DataType.NUMBER)],
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="score", sql="score", type=DataType.DOUBLE)],
         )
         warehouse = SlayerModel(
             name="warehouse", sql_table="warehouse", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", type=DataType.TEXT),
             ],
         )
         async with self._setup_engine(orders, customers, warehouse) as engine:
@@ -4579,7 +4579,7 @@ Column(name="score", sql="score", type=DataType.NUMBER)],
         # Add a local column on policy that the formula will aggregate
         policy_with_measure = policy.model_copy(update={
             "columns": list(policy.columns) + [
-                Column(name="number_of_policies", sql="1", type=DataType.NUMBER),
+                Column(name="number_of_policies", sql="1", type=DataType.DOUBLE),
             ],
         })
         async with self._setup_engine(policy_with_measure, policy_amount, premium, agreement_party_role) as engine:
@@ -4626,18 +4626,18 @@ Column(name="score", sql="score", type=DataType.NUMBER)],
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", type=DataType.STRING),
-Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
+Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             aggregations=[Aggregation(name="custom_sum", formula="SUM({value})")],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
             name="customers", sql_table="customers", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", type=DataType.STRING),
-Column(name="lifetime_value", sql="lifetime_value", type=DataType.NUMBER)],
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", type=DataType.TEXT),
+Column(name="lifetime_value", sql="lifetime_value", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]])],
         )
         async with self._setup_engine(orders, customers) as engine:
@@ -4665,10 +4665,10 @@ class TestOrderByCustomFieldName:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -4696,10 +4696,10 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -4722,11 +4722,11 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -4760,9 +4760,9 @@ class TestOrderByColonSyntax:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -4781,9 +4781,9 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -4803,9 +4803,9 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
@@ -4813,9 +4813,9 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-Column(name="score", sql="score", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+Column(name="score", sql="score", type=DataType.DOUBLE)],
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -4844,9 +4844,9 @@ Column(name="score", sql="score", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = SlayerModel(
@@ -4854,9 +4854,9 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-Column(name="score", sql="score", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+Column(name="score", sql="score", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
         )
         regions = SlayerModel(
@@ -4864,8 +4864,8 @@ Column(name="score", sql="score", type=DataType.NUMBER)],
             sql_table="regions",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region_name", sql="region_name", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region_name", sql="region_name", type=DataType.TEXT),
 
             ],
         )
@@ -4901,9 +4901,9 @@ class TestOrderByFormulaEnrichment:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -4923,10 +4923,10 @@ Column(name="revenue", sql="amount", type=DataType.NUMBER)],
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="ordered_at", sql="ordered_at", type=DataType.DATE),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         query = SlayerQuery(
             source_model="orders",
@@ -4954,8 +4954,8 @@ class TestJoinType:
             sql_table="customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
             ],
         )
         orders = SlayerModel(
@@ -4963,9 +4963,9 @@ class TestJoinType:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], join_type="inner")],
         )
 
@@ -5002,8 +5002,8 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="Loss_Payment",
             data_source="test",
             columns=[
-                Column(name="id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
-                Column(name="has_flag", sql="1", type=DataType.NUMBER),
+                Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+                Column(name="has_flag", sql="1", type=DataType.DOUBLE),
             ],
         )
         claim_amount = SlayerModel(
@@ -5011,9 +5011,9 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="Claim_Amount",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
-                Column(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.NUMBER),
+                Column(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
         )
@@ -5047,8 +5047,8 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="customers",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
             ],
         )
         orders = SlayerModel(
@@ -5056,9 +5056,9 @@ class TestMeasureFilterCrossModelJoin:
             sql_table="orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
@@ -5094,11 +5094,11 @@ class TestIsolatedFilteredMeasureCTEs:
             sql_table="Claim_Amount",
             data_source="test",
             columns=[
-                Column(name="claim_amount_id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="claim_amount_id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
-                Column(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.NUMBER),
-                Column(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.NUMBER),
-                Column(name="total_amount", sql="amount", type=DataType.NUMBER),
+                Column(name="loss_payment_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.DOUBLE),
+                Column(name="loss_reserve_amt", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.DOUBLE),
+                Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
             ],
             joins=[
                 ModelJoin(target_model="loss_payment", join_pairs=[["id", "claim_amount_id"]], join_type="inner"),
@@ -5113,22 +5113,22 @@ class TestIsolatedFilteredMeasureCTEs:
             "loss_payment": SlayerModel(
                 name="loss_payment", sql_table="Loss_Payment", data_source="test",
                 columns=[
-                    Column(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
-                    Column(name="has_flag", sql="1", type=DataType.NUMBER),
+                    Column(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="has_flag", sql="1", type=DataType.DOUBLE),
                 ],
             ),
             "loss_reserve": SlayerModel(
                 name="loss_reserve", sql_table="Loss_Reserve", data_source="test",
                 columns=[
-                    Column(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.NUMBER, primary_key=True),
-                    Column(name="has_flag", sql="1", type=DataType.NUMBER),
+                    Column(name="claim_amount_id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="has_flag", sql="1", type=DataType.DOUBLE),
                 ],
             ),
             "claim": SlayerModel(
                 name="claim", sql_table="Claim", data_source="test",
                 columns=[
-                    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                    Column(name="claim_number", sql="claim_number", type=DataType.STRING),
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="claim_number", sql="claim_number", type=DataType.TEXT),
                 ],
             ),
         }
@@ -5302,7 +5302,7 @@ class TestIsolatedFilteredMeasureCTEs:
             model_name="orders",
             sql_table="Orders",
             dimensions=[
-                EnrichedDimension(name="order_id", sql="order_id", type=DataType.NUMBER, alias="orders.order_id", model_name="orders"),
+                EnrichedDimension(name="order_id", sql="order_id", type=DataType.DOUBLE, alias="orders.order_id", model_name="orders"),
             ],
             time_dimensions=[],
             measures=[],
@@ -5319,7 +5319,7 @@ class TestIsolatedFilteredMeasureCTEs:
                     ),
                     join_pairs=[["customer_id", "id"]],
                     shared_dimensions=[
-                        EnrichedDimension(name="order_id", sql="order_id", type=DataType.NUMBER, alias="orders.order_id", model_name="orders"),
+                        EnrichedDimension(name="order_id", sql="order_id", type=DataType.DOUBLE, alias="orders.order_id", model_name="orders"),
                     ],
                     shared_time_dimensions=[],
                     source_model_name="orders",
@@ -5414,7 +5414,7 @@ class TestIsolatedFilteredMeasureCTEs:
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
         )
         claim_amount_model.columns.append(
-            Column(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.NUMBER),
+            Column(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.DOUBLE),
         )
         return claim_amount_model
 
@@ -5534,7 +5534,7 @@ class TestIsolatedFilteredMeasureCTEs:
             Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
         )
         claim_amount_model_with_time.columns.append(
-            Column(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.NUMBER),
+            Column(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.DOUBLE),
         )
         # Explicit time column specified at query time: first(updated_at)
         query = SlayerQuery(
@@ -5572,7 +5572,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER in base."""
         # latest_payment already has cross-model filter; add another
         claim_amount_model_with_time.columns.append(
-            Column(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.NUMBER),
+            Column(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", type=DataType.DOUBLE),
         )
         query = SlayerQuery(
             source_model="claim_amount",
@@ -5616,7 +5616,7 @@ class TestIsolatedFilteredMeasureCTEs:
         """Same cross-model measure with sum + avg must produce distinct CTEs."""
 
         dim = EnrichedDimension(
-            name="order_id", sql="order_id", type=DataType.NUMBER,
+            name="order_id", sql="order_id", type=DataType.DOUBLE,
             alias="orders.order_id", model_name="orders",
         )
         enriched = EnrichedQuery(
@@ -5700,10 +5700,10 @@ class TestGetColumnTypesSql:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
-                Column(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                Column(name="safe_amount", sql="COALESCE(amount, 0)", type=DataType.DOUBLE),
             ],
         )
         with patch.object(storage, "get_model", new_callable=AsyncMock, return_value=model):
@@ -5744,10 +5744,10 @@ class TestGetColumnTypesSql:
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
-                Column(name="customer_score", sql="customers.score", type=DataType.NUMBER),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                Column(name="customer_score", sql="customers.score", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
@@ -5795,12 +5795,12 @@ class TestGetColumnTypesSql:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
                 Column(
                     name="opaque",
                     sql="amount",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     allowed_aggregations=[],
                 ),
             ],
@@ -5847,19 +5847,19 @@ class TestLogAliasPreservation:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 # Scalar log expressions inside Column.sql — the primary
                 # path the issue surfaced through.
-                Column(name="log_amount", sql="log10(amount)", type=DataType.NUMBER),
-                Column(name="log2_amount", sql="log2(amount)", type=DataType.NUMBER),
+                Column(name="log_amount", sql="log10(amount)", type=DataType.DOUBLE),
+                Column(name="log2_amount", sql="log2(amount)", type=DataType.DOUBLE),
                 # Negative-control: a non-alias literal base. Must keep the
                 # standard 2-arg LOG(base, x) form post-fix.
-                Column(name="log3_amount", sql="log(3, amount)", type=DataType.NUMBER),
+                Column(name="log3_amount", sql="log(3, amount)", type=DataType.DOUBLE),
                 # ln(...) is a separate AST node (exp.Ln); the rewrite must
                 # not touch it.
-                Column(name="ln_amount", sql="ln(amount)", type=DataType.NUMBER),
+                Column(name="ln_amount", sql="ln(amount)", type=DataType.DOUBLE),
             ],
         )
 
@@ -5934,14 +5934,14 @@ class TestLogAliasPreservation:
             sql_table="public.orders",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 Column(
                     name="log_completed_amount",
                     sql="log10(amount)",
                     filter="status = 'completed'",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
         )
@@ -6035,13 +6035,13 @@ def planets_model() -> SlayerModel:
         sql_table="planets",
         data_source="test",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
-            Column(name="mass", sql="mass", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="mass", sql="mass", type=DataType.DOUBLE),
             Column(
                 name="rn",
                 sql="row_number() over (order by mass desc)",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             ),
         ],
     )
@@ -6171,9 +6171,9 @@ class TestWindowFunctionInFilter:
                 sql_table="planets",
                 data_source="test",
                 columns=[
-                    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                    Column(name="name", sql="name", type=DataType.STRING),
-                    Column(name="mass", sql="mass", type=DataType.NUMBER),
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="name", sql="name", type=DataType.TEXT),
+                    Column(name="mass", sql="mass", type=DataType.DOUBLE),
                 ],
                 measures=[
                     ModelMeasure(
@@ -6243,14 +6243,14 @@ class TestWindowFunctionInFilter:
             sql_table="planets",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="mass", sql="mass", type=DataType.DOUBLE),
                 Column(name="observed_at", sql="observed_at", type=DataType.TIMESTAMP),
                 Column(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
             default_time_dimension="observed_at",
@@ -6297,9 +6297,9 @@ class TestWindowFunctionInFilter:
             sql_table="public.systems",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="galaxy_id", sql="galaxy_id", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="galaxy_id", sql="galaxy_id", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
             ],
         )
         planets = SlayerModel(
@@ -6307,23 +6307,23 @@ class TestWindowFunctionInFilter:
             sql_table="public.planets",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="mass", sql="mass", type=DataType.NUMBER),
-                Column(name="system_id", sql="system_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="mass", sql="mass", type=DataType.DOUBLE),
+                Column(name="system_id", sql="system_id", type=DataType.DOUBLE),
                 # Window expression partitions on a JOINED column via the
                 # direct join alias.
                 Column(
                     name="rn_in_system",
                     sql="row_number() over (partition by systems.galaxy_id order by mass desc)",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
                 # A measure with a cross-model filter forces skip_isolated=True.
                 Column(
                     name="active_mass",
                     sql="mass",
                     filter="systems.status = 'active'",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
             joins=[ModelJoin(target_model="systems", join_pairs=[["system_id", "id"]])],
@@ -6369,3 +6369,205 @@ class TestWindowFunctionInFilter:
             f"windowed column references planets__systems.galaxy_id.\n"
             f"_base CTE:\n{base_chunk}\n\nfull sql:\n{sql}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1361: Type-aware CAST emission driven by Column.type / ModelMeasure.type.
+# ---------------------------------------------------------------------------
+
+
+class TestCastEmissionColumn:
+    """``Column.type`` declares the result type of the column expression; the
+    generator wraps non-bare ``Column.sql`` in ``CAST(... AS <type>)``. Bare
+    identifiers and ``sql=None`` paths are NOT wrapped (trust DB schema +
+    sqlglot). ``DataType.TEXT`` is a no-op wrapper (cosmetic).
+    """
+
+    @pytest.fixture
+    def items_model_factory(self):
+        def make(*, blob_type: DataType) -> SlayerModel:
+            return SlayerModel(
+                name="items",
+                sql_table="public.items",
+                data_source="test",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                    Column(
+                        name="x",
+                        sql="json_extract(blob, '$.x')",
+                        type=blob_type,
+                    ),
+                ],
+            )
+
+        return make
+
+    async def test_double_wraps_json_extract_postgres(self, items_model_factory) -> None:
+        model = items_model_factory(blob_type=DataType.DOUBLE)
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="x")])
+        sql = await _generate(gen, query, model)
+        assert "CAST(JSON_EXTRACT(" in _norm(sql).upper() or "CAST(JSON" in _norm(sql).upper()
+        assert "DOUBLE" in sql.upper()
+
+    async def test_double_wraps_json_extract_sqlite(self, items_model_factory) -> None:
+        model = items_model_factory(blob_type=DataType.DOUBLE)
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="x")])
+        sql = await _generate(gen, query, model)
+        assert "CAST(" in sql.upper()
+        assert "REAL" in sql.upper()
+
+    async def test_int_wraps_non_bare_sql_sqlite(self) -> None:
+        model = SlayerModel(
+            name="items",
+            sql_table="public.items",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="name_len", sql="length(name)", type=DataType.INT),
+            ],
+        )
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="name_len")])
+        sql = await _generate(gen, query, model)
+        # SQLite: CAST(... AS INTEGER) — sqlglot transpiles INT → INTEGER.
+        assert "CAST(" in sql.upper()
+        assert "INTEGER" in sql.upper()
+
+    async def test_boolean_wraps_non_bare(self, items_model_factory) -> None:
+        model = items_model_factory(blob_type=DataType.BOOLEAN)
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="x")])
+        sql = await _generate(gen, query, model)
+        assert "CAST(" in sql.upper()
+        assert "BOOLEAN" in sql.upper()
+
+    async def test_timestamp_wraps_non_bare(self, items_model_factory) -> None:
+        model = items_model_factory(blob_type=DataType.TIMESTAMP)
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="x")])
+        sql = await _generate(gen, query, model)
+        assert "CAST(" in sql.upper()
+        assert "TIMESTAMP" in sql.upper()
+
+    async def test_date_wraps_non_bare(self, items_model_factory) -> None:
+        model = items_model_factory(blob_type=DataType.DATE)
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="x")])
+        sql = await _generate(gen, query, model)
+        assert "CAST(" in sql.upper()
+        assert " DATE" in sql.upper()
+
+    async def test_text_skips_cast(self, items_model_factory) -> None:
+        """TEXT is the no-cast type — emission is unchanged from today."""
+        model = items_model_factory(blob_type=DataType.TEXT)
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="x")])
+        sql = await _generate(gen, query, model)
+        # JSON_EXTRACT call appears bare — no CAST wrapping it.
+        assert "JSON_EXTRACT" in sql.upper()
+        # No cast-to-text/varchar wrapper.
+        assert "AS TEXT" not in sql.upper()
+        assert "AS VARCHAR" not in sql.upper()
+
+    async def test_bare_identifier_not_wrapped(self) -> None:
+        """Bare ``sql='amount'`` (and ``sql=None``) trust the DB schema and
+        sqlglot — no CAST emitted regardless of declared type."""
+        model = SlayerModel(
+            name="items",
+            sql_table="public.items",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="qty", sql=None, type=DataType.INT),
+            ],
+        )
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="items",
+            dimensions=[ColumnRef(name="amount"), ColumnRef(name="qty")],
+        )
+        sql = await _generate(gen, query, model)
+        assert "CAST(" not in sql.upper()
+
+    async def test_idempotent_cast(self) -> None:
+        """If the user pre-wrapped ``Column.sql`` in a CAST to the same target,
+        the generator does NOT double-wrap."""
+        model = SlayerModel(
+            name="items",
+            sql_table="public.items",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="x",
+                    sql="CAST(json_extract(blob, '$.x') AS DOUBLE)",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(source_model="items", dimensions=[ColumnRef(name="x")])
+        sql = await _generate(gen, query, model)
+        # Exactly one CAST in the projection. Any double-wrap would produce
+        # CAST(CAST(... AS ...) AS ...) — assert that pattern is absent.
+        assert "CAST(CAST(" not in sql.upper()
+
+
+class TestCastEmissionMeasure:
+    """``ModelMeasure.type`` (when set) wraps the aggregation expression in a
+    final CAST. ``None`` (default) → no cast."""
+
+    @pytest.fixture
+    def orders_model(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+
+    async def test_measure_type_none_no_cast(self, orders_model) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count", name="cnt")],  # type=None default
+        )
+        sql = await _generate(gen, query, orders_model)
+        # COUNT(*) emitted bare; no outer CAST around the aggregation result.
+        assert "CAST(COUNT(" not in sql.upper()
+
+    async def test_measure_type_double_wraps_outer_count(self, orders_model) -> None:
+        gen = SQLGenerator(dialect="sqlite")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="*:count", name="cnt", type=DataType.DOUBLE),
+            ],
+        )
+        sql = await _generate(gen, query, orders_model)
+        # SQLite: DOUBLE → REAL.
+        assert "CAST(" in sql.upper()
+        assert "REAL" in sql.upper()
+
+    async def test_measure_type_double_on_ratio(self, orders_model) -> None:
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(
+                    formula="revenue:sum / *:count",
+                    name="ratio",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        sql = await _generate(gen, query, orders_model)
+        # Outer CAST around the divided expression.
+        assert "CAST(" in sql.upper()
+        assert "DOUBLE" in sql.upper()

@@ -70,13 +70,13 @@ async def env(tmp_path):
         data_source="test_sqlite",
         description="Orders model used in integration tests.",
         columns=[
-            Column(name="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", type=DataType.STRING, label="Status", description="Order state"),
+            Column(name="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", type=DataType.TEXT, label="Status", description="Order state"),
             Column(name="is_paid", type=DataType.BOOLEAN),
-            Column(name="amount", sql="amount", type=DataType.NUMBER, description="Revenue per order"),
-            Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE, description="Revenue per order"),
+            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
             Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="notes", type=DataType.STRING),
+            Column(name="notes", type=DataType.TEXT),
         ],
     )
     await storage.save_model(model)
@@ -140,7 +140,7 @@ class TestGetRowCount:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="empty_ds",
-            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True)],
         )
         await storage.save_model(model)
         engine = SlayerQueryEngine(storage=storage)
@@ -154,14 +154,14 @@ class TestCollectDimProfile:
         by_name = {e.name: e for e in profile}
 
         status = by_name["status"]
-        assert status.type_str == "string"
+        assert status.type_str == "TEXT"
         assert status.distinct_count == 3
         assert set(status.values or []) == {"completed", "pending", "cancelled"}
         assert status.min_value is None
         assert status.max_value is None
 
         is_paid = by_name["is_paid"]
-        assert is_paid.type_str == "boolean"
+        assert is_paid.type_str == "BOOLEAN"
         assert is_paid.distinct_count == 2
 
     async def test_numeric_and_temporal_min_max(self, env) -> None:
@@ -170,13 +170,14 @@ class TestCollectDimProfile:
         by_name = {e.name: e for e in profile}
 
         amt = by_name["amount"]
-        assert amt.type_str == "number"
+        # DEV-1361: SQLite REAL columns now narrow to DOUBLE.
+        assert amt.type_str == "DOUBLE"
         assert amt.values is None
         assert float(amt.min_value) == 25.0
         assert float(amt.max_value) == 300.0
 
         ordered_at = by_name["ordered_at"]
-        assert ordered_at.type_str == "time"
+        assert ordered_at.type_str == "TIMESTAMP"
         # SQLite returns strings for TEXT timestamps — both ends populate
         assert str(ordered_at.min_value).startswith("2025-01-15")
         assert str(ordered_at.max_value).startswith("2025-03-20")
@@ -200,8 +201,8 @@ class TestCollectDimProfile:
         model = SlayerModel(
             name="t", sql_table="t", data_source="hc_ds",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="label", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="label", type=DataType.TEXT),
             ],
         )
         await storage.save_model(model)
@@ -227,9 +228,9 @@ class TestCollectDimProfile:
         model = SlayerModel(
             name="t", sql_table="t", data_source="empty_ds2",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", type=DataType.STRING),
-                Column(name="amount", type=DataType.NUMBER),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
+                Column(name="amount", type=DataType.DOUBLE),
             ],
         )
         await storage.save_model(model)
@@ -351,7 +352,8 @@ class TestInspectModelSectionGatingIntegration:
         # aggregations / joins, so they render nothing); footer should still
         # document what was omitted.
         assert "> Sections shown: columns." in result
-        assert "> Omitted: reachable_fields, samples." in result
+        # DEV-1357 added a "learnings" section to the omitted list.
+        assert "> Omitted: reachable_fields, samples, learnings." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
@@ -397,10 +399,10 @@ class TestMeasureTypeInference:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="types_ds",
-            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True),
+            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True),
 
-                Column(name="label", sql="label", type=DataType.NUMBER),
-                Column(name="price", sql="price", type=DataType.NUMBER),
+                Column(name="label", sql="label", type=DataType.DOUBLE),
+                Column(name="price", sql="price", type=DataType.DOUBLE),
             ],
         )
         await storage.save_model(model)
@@ -419,7 +421,8 @@ class TestMeasureTypeInference:
         result = content[0].text
         columns_section = result.split("## Columns")[1].split("##")[0]
         assert "| type |" in columns_section
-        assert "number" in columns_section
+        # DEV-1361: number → DOUBLE in the new sqlglot-aligned vocabulary.
+        assert "DOUBLE" in columns_section
 
     async def test_measure_sampled_shows_min_max(self, env) -> None:
         """Measures with data show min .. max in the sampled column."""
@@ -453,8 +456,8 @@ class TestMeasureTypeInference:
         ))
         model = SlayerModel(
             name="t", sql_table="t", data_source="null_ds",
-            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True),
-Column(name="val", sql="val", type=DataType.NUMBER)
+            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="val", sql="val", type=DataType.DOUBLE)
             ],
         )
         await storage.save_model(model)
@@ -484,7 +487,7 @@ class TestStringAggregationRejection:
 
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
     async def test_numeric_only_aggregations_rejected_on_string(self, env, agg: str) -> None:
-        with pytest.raises(ValueError, match="is not applicable to string column"):
+        with pytest.raises(ValueError, match="is not applicable to TEXT column"):
             await self._run(env, f"status:{agg}")
 
     async def test_min_max_allowed_on_string(self, env) -> None:

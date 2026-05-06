@@ -60,6 +60,14 @@ class EnrichedMeasure(BaseModel):
         default_factory=list,
         description="Resolved (qualified) column names referenced by the filter, for join planning",
     )
+    type: Optional[DataType] = Field(
+        default=None,
+        description=(
+            "DEV-1361: declared result type of the aggregation. When set, "
+            "the SQL generator wraps the final agg expression in CAST AS <type>. "
+            "Inherits from ModelMeasure.type at enrichment time."
+        ),
+    )
 
 
 class EnrichedTimeDimension(BaseModel):
@@ -85,6 +93,13 @@ class EnrichedExpression(BaseModel):
     sql: str = Field(description="Expression referencing measure aliases")
     alias: str = Field(description="Result column name")
     label: Optional[str] = None
+    type: Optional[DataType] = Field(
+        default=None,
+        description=(
+            "DEV-1361: declared result type — when set, the outer SELECT "
+            "wraps the expression in CAST AS <type>."
+        ),
+    )
 
 
 class EnrichedTransform(BaseModel):

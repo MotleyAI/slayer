@@ -25,51 +25,62 @@ logger = logging.getLogger(__name__)
 # _sa_type_to_data_type). Keyed by upper-cased class name.
 _logged_unmapped_sa_types: Set[str] = set()
 
-# Map SQLAlchemy types to SLayer DataTypes
+# Map SQLAlchemy types to SLayer DataTypes.
+# DEV-1361: integer family → INT, floating family → DOUBLE, NUMERIC/DECIMAL
+# resolved via _sa_type_is_float (scale>0 → DOUBLE, scale=0 → INT).
 _SA_TYPE_MAP = {
-    "INTEGER": DataType.NUMBER,
-    "BIGINT": DataType.NUMBER,
-    "SMALLINT": DataType.NUMBER,
-    "FLOAT": DataType.NUMBER,
-    "REAL": DataType.NUMBER,
-    "DOUBLE": DataType.NUMBER,
-    "DOUBLE_PRECISION": DataType.NUMBER,
-    "NUMERIC": DataType.NUMBER,
-    "DECIMAL": DataType.NUMBER,
-    "VARCHAR": DataType.STRING,
-    "CHAR": DataType.STRING,
-    "TEXT": DataType.STRING,
-    "STRING": DataType.STRING,
+    # Integer family → INT
+    "INTEGER": DataType.INT,
+    "BIGINT": DataType.INT,
+    "SMALLINT": DataType.INT,
+    "SERIAL": DataType.INT,
+    "BIGSERIAL": DataType.INT,
+    # Floating family → DOUBLE
+    "FLOAT": DataType.DOUBLE,
+    "REAL": DataType.DOUBLE,
+    "DOUBLE": DataType.DOUBLE,
+    "DOUBLE_PRECISION": DataType.DOUBLE,
+    # NUMERIC/DECIMAL — refined via _sa_type_is_float in
+    # _sa_type_to_data_type. Default-mapped to DOUBLE here for the rare path
+    # where scale info is unavailable.
+    "NUMERIC": DataType.DOUBLE,
+    "DECIMAL": DataType.DOUBLE,
+    # Strings
+    "VARCHAR": DataType.TEXT,
+    "CHAR": DataType.TEXT,
+    "TEXT": DataType.TEXT,
+    "STRING": DataType.TEXT,
+    # Boolean
     "BOOLEAN": DataType.BOOLEAN,
     "BOOL": DataType.BOOLEAN,
+    # Temporal
     "TIMESTAMP": DataType.TIMESTAMP,
     "DATETIME": DataType.TIMESTAMP,
     "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
     "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
     "DATE": DataType.DATE,
     "TIME": DataType.TIMESTAMP,
-    "SERIAL": DataType.NUMBER,
-    "BIGSERIAL": DataType.NUMBER,
-    # ClickHouse adapter type names (clickhouse-sqlalchemy)
-    "INT8": DataType.NUMBER,
-    "INT16": DataType.NUMBER,
-    "INT32": DataType.NUMBER,
-    "INT64": DataType.NUMBER,
-    "INT128": DataType.NUMBER,
-    "INT256": DataType.NUMBER,
-    "UINT8": DataType.NUMBER,
-    "UINT16": DataType.NUMBER,
-    "UINT32": DataType.NUMBER,
-    "UINT64": DataType.NUMBER,
-    "UINT128": DataType.NUMBER,
-    "UINT256": DataType.NUMBER,
-    "FLOAT32": DataType.NUMBER,
-    "FLOAT64": DataType.NUMBER,
+    # ClickHouse adapter integer types → INT
+    "INT8": DataType.INT,
+    "INT16": DataType.INT,
+    "INT32": DataType.INT,
+    "INT64": DataType.INT,
+    "INT128": DataType.INT,
+    "INT256": DataType.INT,
+    "UINT8": DataType.INT,
+    "UINT16": DataType.INT,
+    "UINT32": DataType.INT,
+    "UINT64": DataType.INT,
+    "UINT128": DataType.INT,
+    "UINT256": DataType.INT,
+    # ClickHouse adapter float types → DOUBLE
+    "FLOAT32": DataType.DOUBLE,
+    "FLOAT64": DataType.DOUBLE,
     "DATETIME64": DataType.TIMESTAMP,
     "DATE32": DataType.DATE,
 }
 
-_NUMERIC_TYPES = {DataType.NUMBER}
+_NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
 
 # Float-like SA type names — these columns get a FLOAT NumberFormat on the emitted Column.
@@ -103,19 +114,23 @@ _FLOAT_LIKE_INFO_SCHEMA_TYPES = frozenset(
     }
 )
 
-# Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback)
+# Map INFORMATION_SCHEMA type names to SLayer DataTypes (for DuckDB fallback).
+# DEV-1361: integer family → INT, floating family → DOUBLE.
 _INFO_SCHEMA_TYPE_MAP = {
-    "INTEGER": DataType.NUMBER,
-    "BIGINT": DataType.NUMBER,
-    "SMALLINT": DataType.NUMBER,
-    "TINYINT": DataType.NUMBER,
-    "HUGEINT": DataType.NUMBER,
-    "FLOAT": DataType.NUMBER,
-    "DOUBLE": DataType.NUMBER,
-    "REAL": DataType.NUMBER,
-    "VARCHAR": DataType.STRING,
-    "CHAR": DataType.STRING,
-    "TEXT": DataType.STRING,
+    # Integer family
+    "INTEGER": DataType.INT,
+    "BIGINT": DataType.INT,
+    "SMALLINT": DataType.INT,
+    "TINYINT": DataType.INT,
+    "HUGEINT": DataType.INT,
+    # Floating family
+    "FLOAT": DataType.DOUBLE,
+    "DOUBLE": DataType.DOUBLE,
+    "REAL": DataType.DOUBLE,
+    # Strings / boolean / temporal
+    "VARCHAR": DataType.TEXT,
+    "CHAR": DataType.TEXT,
+    "TEXT": DataType.TEXT,
     "BOOLEAN": DataType.BOOLEAN,
     "TIMESTAMP": DataType.TIMESTAMP,
     "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
@@ -153,20 +168,24 @@ def _unwrap_clickhouse_wrappers(sa_type: sa.types.TypeEngine) -> sa.types.TypeEn
 def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     sa_type = _unwrap_clickhouse_wrappers(sa_type)
     type_name = type(sa_type).__name__.upper()
+    type_str = str(sa_type).split("(")[0].upper().strip()
+    # DEV-1361: NUMERIC/DECIMAL with scale=0 are integer-shaped → INT.
+    # Anything float-like (scale>0 or unknown) → DOUBLE.
+    if type_name in _NUMERIC_DECIMAL_TYPES or type_str in _NUMERIC_DECIMAL_TYPES:
+        return DataType.DOUBLE if _sa_type_is_float(sa_type) else DataType.INT
     if type_name in _SA_TYPE_MAP:
         return _SA_TYPE_MAP[type_name]
-    type_str = str(sa_type).split("(")[0].upper().strip()
     if type_str in _SA_TYPE_MAP:
         return _SA_TYPE_MAP[type_str]
     if type_name not in _logged_unmapped_sa_types:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.STRING. Consider adding to _SA_TYPE_MAP.",
+            "DataType.TEXT. Consider adding to _SA_TYPE_MAP.",
             type_name,
             str(sa_type),
         )
-    return DataType.STRING
+    return DataType.TEXT
 
 
 def _sa_type_is_float(sa_type: sa.types.TypeEngine) -> bool:
@@ -388,13 +407,13 @@ def _get_columns_fallback(
         if base_type in ("NUMERIC", "DECIMAL") or (
             sa_type is None and ("DECIMAL" in base_type or "NUMERIC" in base_type)
         ):
-            sa_type = sa_type or DataType.NUMBER
+            sa_type = sa_type or DataType.DOUBLE
             is_float = _parse_info_schema_is_float(data_type_str)
         elif sa_type is None and "INT" in base_type:
-            sa_type = DataType.NUMBER
+            sa_type = DataType.DOUBLE
         elif sa_type is None and ("CHAR" in base_type or "TEXT" in base_type):
-            sa_type = DataType.STRING
-        result.append({"name": col_name, "type": sa_type or DataType.STRING, "is_float": is_float})
+            sa_type = DataType.TEXT
+        result.append({"name": col_name, "type": sa_type or DataType.TEXT, "is_float": is_float})
     return result
 
 

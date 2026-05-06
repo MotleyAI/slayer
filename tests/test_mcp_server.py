@@ -117,8 +117,8 @@ class TestModelsSummary:
             sql_table="t",
             data_source="mydb",
             description="Orders fact table.",
-            columns=[Column(name="status", type=DataType.STRING, description="Order state"),
-Column(name="revenue", sql="amount", description="USD", type=DataType.NUMBER)
+            columns=[Column(name="status", type=DataType.TEXT, description="Order state"),
+Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE)
             ],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         ))
@@ -155,14 +155,14 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.NUMBER)
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="mydb",
             columns=[
-                Column(name="x", type=DataType.STRING),
-                Column(name="y", type=DataType.NUMBER),
+                Column(name="x", type=DataType.TEXT),
+                Column(name="y", type=DataType.DOUBLE),
             ],
         ))
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
         col_section = result.split("**Columns")[1].split("**Measures")[0]
-        assert "| x | string |" in col_section
-        assert "| y | number |" in col_section
+        assert "| x | TEXT |" in col_section
+        assert "| y | DOUBLE |" in col_section
 
 
 class TestInspectModel:
@@ -178,9 +178,9 @@ class TestInspectModel:
             data_source="test",
             description="A test model used in unit tests.",
             columns=[
-                Column(name="status", type=DataType.STRING, label="Status", description="Order state"),
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-Column(name="revenue", sql="amount", label="Revenue", description="USD total", type=DataType.NUMBER)
+                Column(name="status", type=DataType.TEXT, label="Status", description="Order state"),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="revenue", sql="amount", label="Revenue", description="USD total", type=DataType.DOUBLE)
             ],
             filters=["deleted_at IS NULL"],
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -227,7 +227,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
             columns=[Column(
                 name="completed_rev", sql="amount",
                 filter="status = 'completed'",
-                allowed_aggregations=["sum", "avg"], type=DataType.NUMBER)],
+                allowed_aggregations=["sum", "avg"], type=DataType.DOUBLE)],
             aggregations=[Aggregation(
                 name="wavg",
                 formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
@@ -266,7 +266,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         """
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
-            columns=[Column(name="amount", type=DataType.NUMBER, meta={"kb_id": 7})],
+            columns=[Column(name="amount", type=DataType.DOUBLE, meta={"kb_id": 7})],
         ))
         # Markdown
         md = await _call(mcp_server, name="inspect_model", arguments={
@@ -285,7 +285,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         """ModelMeasure.meta surfaces in both markdown and JSON inspect_model output."""
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", type=DataType.DOUBLE)],
             measures=[ModelMeasure(
                 name="aov", formula="revenue:sum / *:count",
                 meta={"kb_id": "abc-123"},
@@ -350,7 +350,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         """
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
-            columns=[Column(name="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", type=DataType.DOUBLE)],
             measures=[ModelMeasure(name="aov", formula="amount:sum")],
             aggregations=[Aggregation(name="my_agg", formula="SUM({expr})")],
         ))
@@ -402,16 +402,16 @@ class TestMdCodeSpan:
         await storage.save_model(SlayerModel(
             name="claim", sql_table="t", data_source="test",
             columns=[
-                Column(name="claim_id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", type=DataType.STRING),
+                Column(name="claim_id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
             ],
             joins=[ModelJoin(target_model="claim_detail", join_pairs=[["claim_id", "claim_id"]])],
         ))
         await storage.save_model(SlayerModel(
             name="claim_detail", sql_table="t2", data_source="test",
             columns=[
-                Column(name="claim_id", type=DataType.NUMBER, primary_key=True),
-                Column(name="detail_notes", type=DataType.STRING),
+                Column(name="claim_id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="detail_notes", type=DataType.TEXT),
             ],
             joins=[ModelJoin(target_model="claim", join_pairs=[["claim_id", "claim_id"]])],
         ))
@@ -435,10 +435,10 @@ class TestMdCodeSpan:
             name="typed",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="status", type=DataType.STRING),
+            columns=[Column(name="status", type=DataType.TEXT),
 
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="label", sql="label", type=DataType.NUMBER),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="label", sql="label", type=DataType.DOUBLE),
             ],
         )
         # Without types: both get avg (label has no matching dim to trigger heuristic)
@@ -470,8 +470,8 @@ class TestInspectModelQueryBacked:
         await storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="test",
             columns=[
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="region", sql="region", type=DataType.TEXT),
             ],
         ))
         # Route the query-backed model through engine.save_model so the cache
@@ -531,7 +531,7 @@ class TestInspectModelQueryBacked:
         ))
         await storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         await storage.save_model(SlayerModel(
             name="qb_missing_default",
@@ -555,7 +555,7 @@ class TestInspectModelQueryBacked:
     ) -> None:
         await storage.save_model(SlayerModel(
             name="plain", sql_table="t", data_source="test",
-            columns=[Column(name="x", sql="x", type=DataType.STRING)],
+            columns=[Column(name="x", sql="x", type=DataType.TEXT)],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={
             "model_name": "plain", "format": "json",
@@ -583,7 +583,7 @@ class TestInspectModelJsonFormat:
             sql_table="t",
             data_source="test",
             columns=[Column(name="x"),
-Column(name="m", sql="val", type=DataType.NUMBER)
+Column(name="m", sql="val", type=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={
@@ -606,8 +606,8 @@ class TestInspectModelShowSQL:
             name="sqlt",
             sql="SELECT id, val FROM raw_table",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="val", sql="val", type=DataType.NUMBER)
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="val", sql="val", type=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={
@@ -623,8 +623,8 @@ Column(name="val", sql="val", type=DataType.NUMBER)
             name="sqlshow",
             sql="SELECT id, val FROM raw_table",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="val", sql="val", type=DataType.NUMBER)
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="val", sql="val", type=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={
@@ -640,8 +640,8 @@ Column(name="val", sql="val", type=DataType.NUMBER)
             sql="SELECT id, val FROM raw_table",
             sql_table=None,
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="val", sql="val", filter="val > 0", type=DataType.NUMBER)
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="val", sql="val", filter="val > 0", type=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={
@@ -663,8 +663,8 @@ Column(name="val", sql="val", filter="val > 0", type=DataType.NUMBER)
             sql="SELECT id, val FROM raw_table",
             sql_table=None,
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-Column(name="val", sql="val", filter="val > 0", type=DataType.NUMBER)
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+Column(name="val", sql="val", filter="val > 0", type=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect_model", arguments={
@@ -687,9 +687,9 @@ class TestInspectModelSectionGating:
             name="rich", sql_table="t", data_source="test",
             description="A rich model used to exercise inspect_model section gating.",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", type=DataType.STRING, description="Order state"),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", type=DataType.TEXT, description="Order state"),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
             measures=[
                 ModelMeasure(name="aov", formula="amount:sum / *:count", description="Average order value"),
@@ -752,7 +752,7 @@ class TestInspectModelSectionGating:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
             name="bare", sql_table="t", data_source="test",
-            columns=[Column(name="id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True)],
         ))
         result = await _call(
             mcp_server, name="inspect_model",
@@ -820,14 +820,14 @@ class TestInspectModelSectionGating:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
             name="parent", sql_table="t", data_source="test",
-            columns=[Column(name="child_id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="child_id", type=DataType.DOUBLE, primary_key=True)],
             joins=[ModelJoin(target_model="child", join_pairs=[["child_id", "id"]])],
         ))
         await storage.save_model(SlayerModel(
             name="child", sql_table="t2", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="label", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="label", type=DataType.TEXT),
             ],
         ))
         result = await _call(
@@ -846,7 +846,7 @@ class TestInspectModelDescriptionsMaxChars:
         await storage.save_model(SlayerModel(
             name="m", sql_table="t", data_source="test",
             description="A" * 100,
-            columns=[Column(name="status", type=DataType.STRING, description="B" * 100)],
+            columns=[Column(name="status", type=DataType.TEXT, description="B" * 100)],
             measures=[ModelMeasure(name="rev", formula="*:count", description="C" * 100)],
             aggregations=[Aggregation(
                 name="wavg", formula="SUM({x})", description="D" * 100,
@@ -881,7 +881,7 @@ class TestInspectModelDescriptionsMaxChars:
         await storage.save_model(SlayerModel(
             name="short", sql_table="t", data_source="test",
             description="hi",
-            columns=[Column(name="x", type=DataType.STRING, description="ok")],
+            columns=[Column(name="x", type=DataType.TEXT, description="ok")],
         ))
         result = await _call(
             mcp_server, name="inspect_model",
@@ -921,23 +921,23 @@ class TestInspectModelReachableFieldsDepth:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_model(SlayerModel(
             name="a", sql_table="ta", data_source="test",
-            columns=[Column(name="b_id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="b_id", type=DataType.DOUBLE, primary_key=True)],
             joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
         ))
         await storage.save_model(SlayerModel(
             name="b", sql_table="tb", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="c_id", type=DataType.NUMBER),
-                Column(name="b_label", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="c_id", type=DataType.DOUBLE),
+                Column(name="b_label", type=DataType.TEXT),
             ],
             joins=[ModelJoin(target_model="c", join_pairs=[["c_id", "id"]])],
         ))
         await storage.save_model(SlayerModel(
             name="c", sql_table="tc", data_source="test",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="c_label", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="c_label", type=DataType.TEXT),
             ],
         ))
 
@@ -1055,8 +1055,8 @@ class TestInspectModelJsonGating:
             name="rich", sql_table="t", data_source="test",
             description="X" * 50,
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", type=DataType.TEXT),
             ],
             measures=[ModelMeasure(name="aov", formula="*:count")],
             aggregations=[Aggregation(
@@ -1277,11 +1277,11 @@ class TestBuildSampleQueryArgs:
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
             columns=[
-                Column(name="status", type=DataType.STRING),
-                Column(name="region", type=DataType.STRING),
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="rev", sql="amt", type=DataType.NUMBER),
-                Column(name="qty", sql="quantity", type=DataType.NUMBER),
+                Column(name="status", type=DataType.TEXT),
+                Column(name="region", type=DataType.TEXT),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="rev", sql="amt", type=DataType.DOUBLE),
+                Column(name="qty", sql="quantity", type=DataType.DOUBLE),
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=7)
@@ -1293,7 +1293,7 @@ class TestBuildSampleQueryArgs:
     def test_fallback_to_first_allowed_when_avg_not_permitted(self) -> None:
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=["sum", "max"], type=DataType.NUMBER)],
+            columns=[Column(name="rev", sql="amt", allowed_aggregations=["sum", "max"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:sum"]
@@ -1304,7 +1304,7 @@ class TestBuildSampleQueryArgs:
         zero-arg aggregation from the list."""
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"], type=DataType.NUMBER)],
+            columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:min"]
@@ -1314,7 +1314,7 @@ class TestBuildSampleQueryArgs:
         first entry (even if it requires extra context like a time column)."""
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first"], type=DataType.NUMBER)],
+            columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first"], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["*:count", "rev:last"]
@@ -1322,7 +1322,7 @@ class TestBuildSampleQueryArgs:
     def test_skip_when_allowed_is_empty(self) -> None:
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=[], type=DataType.NUMBER)],
+            columns=[Column(name="rev", sql="amt", allowed_aggregations=[], type=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["*:count"]
@@ -1331,11 +1331,11 @@ class TestBuildSampleQueryArgs:
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="hidden_d", type=DataType.STRING, hidden=True),
-                Column(name="a", type=DataType.STRING),
-                Column(name="b", type=DataType.STRING),
-                Column(name="c", type=DataType.STRING),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="hidden_d", type=DataType.TEXT, hidden=True),
+                Column(name="a", type=DataType.TEXT),
+                Column(name="b", type=DataType.TEXT),
+                Column(name="c", type=DataType.TEXT),
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
@@ -1345,8 +1345,8 @@ class TestBuildSampleQueryArgs:
         model = SlayerModel(
             name="t", sql_table="t", data_source="ds",
             columns=[
-                Column(name="rev", sql="amt", hidden=True, type=DataType.NUMBER),
-                Column(name="qty", sql="quantity", type=DataType.NUMBER),
+                Column(name="rev", sql="amt", hidden=True, type=DataType.DOUBLE),
+                Column(name="qty", sql="quantity", type=DataType.DOUBLE),
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
@@ -1359,11 +1359,11 @@ class TestBuildSampleQueryArgs:
         model = SlayerModel(
             name="order_items", sql_table="order_items", data_source="ds",
             columns=[
-                Column(name="id", type=DataType.STRING, primary_key=True),
-                Column(name="sku", sql="sku", type=DataType.STRING),
+                Column(name="id", type=DataType.TEXT, primary_key=True),
+                Column(name="sku", sql="sku", type=DataType.TEXT),
                 Column(name="is_flagged", sql="is_flagged", type=DataType.BOOLEAN),
-                Column(name="extra_string", sql="extra_string", type=DataType.STRING),
-                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+                Column(name="extra_string", sql="extra_string", type=DataType.TEXT),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
             ],
         )
         args = _build_sample_query_args(model=model, num_rows=3)
@@ -1472,10 +1472,10 @@ class TestReachableFields:
         await storage.save_model(SlayerModel(
             name="customers", sql_table="customers", data_source="ds",
             columns=[
-                Column(name="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", type=DataType.STRING),
-                Column(name="region", type=DataType.STRING),
-                Column(name="lifetime_value", sql="ltv", type=DataType.NUMBER),
+                Column(name="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", type=DataType.TEXT),
+                Column(name="region", type=DataType.TEXT),
+                Column(name="lifetime_value", sql="ltv", type=DataType.DOUBLE),
             ],
         ))
         orders = SlayerModel(
@@ -1669,7 +1669,7 @@ class TestCreateModel:
         """Empty lists/strings should not trigger the mixed-parameter error."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="test_ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
@@ -1685,7 +1685,7 @@ class TestCreateModel:
         # but the error message proves we routed to the query path.
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="test_ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
@@ -1709,7 +1709,7 @@ class TestCreateModel:
         ))
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
@@ -1737,7 +1737,7 @@ class TestEditModel:
         """Upserting a new column adds it to ``columns``."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1752,7 +1752,7 @@ class TestEditModel:
     async def test_upsert_column_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1768,7 +1768,7 @@ class TestEditModel:
         """Upserting an existing column updates it instead of erroring."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", description="old", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", description="old", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1785,7 +1785,7 @@ class TestEditModel:
         """Partial upsert: only specified fields change, others are preserved."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", description="Total revenue", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", description="Total revenue", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1803,7 +1803,7 @@ class TestEditModel:
         """Upserting a new model-level ModelMeasure adds it to ``measures``."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1820,7 +1820,7 @@ class TestEditModel:
 
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -1836,7 +1836,7 @@ class TestEditModel:
         """One new + one existing column in the same call."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2025,7 +2025,7 @@ class TestEditModel:
     async def test_multiple_changes(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2048,7 +2048,7 @@ class TestEditModel:
     async def test_remove_column_typed(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER), Column(name="total", sql="x", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE), Column(name="total", sql="x", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2079,7 +2079,7 @@ class TestEditModel:
         """Remove a column then upsert one with the same name in the same call."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="status", sql="old_col", type=DataType.STRING)],
+            columns=[Column(name="status", sql="old_col", type=DataType.TEXT)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2132,11 +2132,11 @@ class TestEditModel:
         # non-cyclic source.
         await storage.save_model(SlayerModel(
             name="orders_source", sql_table="orders_t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2174,7 +2174,7 @@ class TestEditModel:
         # Set up a query-backed model
         await storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         await storage.save_model(SlayerModel(
             name="qb",
@@ -2222,7 +2222,7 @@ class TestEditModel:
         """
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2242,7 +2242,7 @@ class TestEditModel:
         round-trip. The existing measure had no meta; the edit adds it."""
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             measures=[ModelMeasure(name="aov", formula="revenue:sum / *:count")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -2307,7 +2307,7 @@ class TestEditModel:
         """
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             measures=[ModelMeasure(
                 name="aov", formula="revenue:sum / *:count",
                 meta={"a": 1},
@@ -2329,7 +2329,7 @@ class TestEditModel:
         """
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             measures=[ModelMeasure(
                 name="aov", formula="revenue:sum / *:count",
                 meta={"kb_id": 9},
@@ -2365,12 +2365,12 @@ class TestEditModelDatasourceMoveSafety:
             ))
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders_a", data_source="db_a",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
             description="source",
         ))
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders_b", data_source="db_b",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
             description="target",
         ))
 
@@ -2412,8 +2412,8 @@ class TestEditModelDatasourceMoveSafety:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders", data_source="db_a",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -2460,7 +2460,7 @@ class TestEditModelDatasourceMoveSafety:
             ))
         await storage.save_model(SlayerModel(
             name="orders", sql_table="orders_a", data_source="db_a",
-            columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
             description="source",
         ))
 
@@ -2514,8 +2514,8 @@ class TestEditModelMultiStageRename:
         await storage.save_model(SlayerModel(
             name="orders", sql_table="t", data_source="test",
             columns=[
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="region", sql="region", type=DataType.TEXT),
             ],
         ))
         # Build initial source_queries via the engine save path so the cache
@@ -2680,7 +2680,7 @@ class TestEditModelColumnsRejected:
         ))
         await storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         await storage.save_model(SlayerModel(
             name="qb",
@@ -2726,7 +2726,7 @@ class TestInspectModelRequiredVariables:
         ))
         await storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         # Stage has its own variables={"x": 1}, so {x} placeholder is NOT
         # required from outside.
@@ -2764,7 +2764,7 @@ class TestRunByNamePlanFlagsMCP:
         ))
         await storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         ))
         await storage.save_model(SlayerModel(
             name="qb_dr",

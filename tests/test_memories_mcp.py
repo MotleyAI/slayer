@@ -94,14 +94,14 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="orders",
             columns=[
                 Column(
-                    name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(
                     name="customer_id",
                     sql="customer_id",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
             measures=[ModelMeasure(formula="amount:sum / *:count", name="aov")],
@@ -126,9 +126,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="customers",
             columns=[
                 Column(
-                    name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="name", sql="name", type=DataType.TEXT),
             ],
         )
     )
@@ -139,9 +139,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="invoices",
             columns=[
                 Column(
-                    name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         )
     )

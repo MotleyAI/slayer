@@ -183,15 +183,16 @@ class LiveTable(BaseModel):
 def data_type_bucket(dt: DataType) -> str:
     """Return the coarse bucket used to compare persisted vs live types.
 
-    INTEGER and FLOAT both map to ``DataType.NUMBER`` in
-    ``slayer/engine/ingestion.py:_SA_TYPE_MAP``, so they collapse to
-    ``"number"`` automatically. ``DATE`` and ``TIMESTAMP`` collapse to
-    ``"temporal"`` so a persisted DATE column does not flag as drift when
-    the driver reports TIMESTAMP (or vice versa).
+    DEV-1361: ``INT`` and ``DOUBLE`` are now distinct enum members but both
+    bucket as ``"number"`` so drift detection does not false-positive when a
+    persisted ``DOUBLE`` column is reported as ``INT`` by live introspection
+    (the v5 refinement step reconciles these without raising drift). ``DATE``
+    and ``TIMESTAMP`` collapse to ``"temporal"`` so a persisted DATE column
+    does not flag as drift when the driver reports TIMESTAMP (or vice versa).
     """
-    if dt == DataType.NUMBER:
+    if dt in (DataType.INT, DataType.DOUBLE):
         return "number"
-    if dt == DataType.STRING:
+    if dt == DataType.TEXT:
         return "string"
     if dt == DataType.BOOLEAN:
         return "boolean"
@@ -1530,8 +1531,8 @@ def _introspect_one_table(
 # Map cursor type-category strings (as returned by SlayerSQLClient.get_column_types)
 # to DataType buckets.
 _CURSOR_CATEGORY_TO_DATATYPE = {
-    "number": DataType.NUMBER,
-    "string": DataType.STRING,
+    "number": DataType.DOUBLE,
+    "string": DataType.TEXT,
     "boolean": DataType.BOOLEAN,
     "time": DataType.TIMESTAMP,
 }
@@ -1568,7 +1569,7 @@ async def _live_columns_for_sql_model(
         )
         return None
     return {
-        name: _CURSOR_CATEGORY_TO_DATATYPE.get(cat, DataType.STRING)
+        name: _CURSOR_CATEGORY_TO_DATATYPE.get(cat, DataType.TEXT)
         for name, cat in cats.items()
     }
 

@@ -81,7 +81,30 @@ class YAMLStorage(StorageBackend):
             return None
         with open(path) as f:
             data = yaml.safe_load(f)
-        return SlayerModel.model_validate(data)
+        # DEV-1361: storage-driven type refinement. The dict migrator chain
+        # is invoked by SlayerModel.model_validate(...). When the on-disk
+        # version was below the current SlayerModel version, also run a live
+        # DB-introspection refinement to narrow DOUBLE → INT, then write the
+        # refined v5 dict back so subsequent loads skip both steps.
+        from slayer.storage import migrations as _mig
+        from slayer.storage.type_refinement import refine_dict_with_live_schema
+
+        pre_version = (
+            int(data.get("version", 1)) if isinstance(data, dict) else _mig.CURRENT_VERSIONS["SlayerModel"]
+        )
+        write_back = False
+        if isinstance(data, dict) and pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
+            data = _mig.migrate("SlayerModel", data)
+            ds = await self.get_datasource(data_source)
+            if ds is not None:
+                refined = refine_dict_with_live_schema(data, ds)
+                write_back = True if refined else write_back
+            else:
+                write_back = True  # Coarse-rename-only; persist v5 anyway.
+        model = SlayerModel.model_validate(data)
+        if write_back:
+            await self.save_model(model)
+        return model
 
     async def delete_model(
         self,
