@@ -40,3 +40,28 @@ class AmbiguousModelError(SlayerError):
             f"{sorted(self.candidates)}. Specify a data_source or set a "
             f"datasource priority to disambiguate."
         )
+
+
+class EntityResolutionError(SlayerError):
+    """Raised when an entity reference cannot be resolved to a canonical
+    ``<datasource>.<model>[.<leaf>]`` form (DEV-1357).
+
+    Wraps the spec's resolution-failure cases: unknown segment, ambiguous
+    bare column matching multiple models in the priority-winner
+    datasource, ``*:count`` invoked outside a query context, and similar.
+    Distinct from ``AmbiguousModelError`` (which fires for the model leg
+    of bare-name resolution and is reused by the resolver verbatim).
+    """
+
+
+class MemoryNotFoundError(SlayerError):
+    """Raised when a memory id does not exist in storage (DEV-1357).
+
+    Memory ids are monotonic positive integers; the unified
+    ``forget_memory`` MCP tool / REST endpoint / CLI subcommand surface
+    this error when the requested id is unknown.
+    """
+
+    def __init__(self, identifier: int) -> None:
+        self.identifier = int(identifier)
+        super().__init__(f"No memory with id '{self.identifier}'.")

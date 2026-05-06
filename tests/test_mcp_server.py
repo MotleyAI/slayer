@@ -744,7 +744,7 @@ class TestInspectModelSectionGating:
         # Footer present
         assert "> Sections shown: columns." in result
         assert "> Names-only: measures, aggregations, joins." in result
-        assert "> Omitted: reachable_fields, samples." in result
+        assert "> Omitted: reachable_fields, samples, learnings." in result
         assert "Re-call inspect_model" in result
 
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
@@ -772,7 +772,7 @@ class TestInspectModelSectionGating:
             arguments={"model_name": "rich", "sections": ["columns", "fish"]},
         )
         assert "> Warning: ignored unknown sections: 'fish'." in result
-        assert "Valid: columns, measures, aggregations, joins, reachable_fields, samples." in result
+        assert "Valid: columns, measures, aggregations, joins, reachable_fields, samples, learnings." in result
         # Valid section still rendered
         assert "## Columns (3)" in result
 
@@ -1090,7 +1090,7 @@ class TestInspectModelJsonGating:
         assert "sample_data_error" not in parsed
         # Top-level state arrays
         assert parsed["names_only_sections"] == ["measures", "aggregations", "joins"]
-        assert parsed["omitted_sections"] == ["reachable_fields", "samples"]
+        assert parsed["omitted_sections"] == ["reachable_fields", "samples", "learnings"]
         assert "unknown_sections" not in parsed
 
     async def test_json_unknown_sections_array(self, mcp_server, storage: YAMLStorage) -> None:
@@ -1187,13 +1187,23 @@ class TestInspectModelHelpers:
     def test_resolve_inspect_sections_none(self) -> None:
         from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections(None)
-        assert resolved == ["columns", "measures", "aggregations", "joins", "reachable_fields", "samples"]
+        assert resolved == ["columns", "measures", "aggregations", "joins", "reachable_fields", "samples", "learnings"]
         assert unknown == []
 
     def test_resolve_inspect_sections_empty(self) -> None:
         from slayer.mcp.server import _resolve_inspect_sections
         resolved, unknown = _resolve_inspect_sections([])
-        assert len(resolved) == 6
+        # Same expansion as the ``None`` case — pin the order so a
+        # missing or duplicated section name fails.
+        assert resolved == [
+            "columns",
+            "measures",
+            "aggregations",
+            "joins",
+            "reachable_fields",
+            "samples",
+            "learnings",
+        ]
         assert unknown == []
 
     def test_resolve_inspect_sections_subset_canonical_order(self) -> None:

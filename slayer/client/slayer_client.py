@@ -1,10 +1,15 @@
 """Python client for SLayer API."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import FieldMetadata, ResponseAttributes, SlayerResponse
+from slayer.memories.models import (
+    ForgetMemoryResponse,
+    RecallResponse,
+    SaveMemoryResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +180,84 @@ class SlayerClient:
             path="/datasources/priority",
             json={"priority": list(priority)},
         )
+
+    # ----- Memory API (DEV-1357 v2) -----
+
+    def _memory_service(self):
+        # Lazy import to avoid pulling MemoryService into the client's
+        # remote-only dependency graph (httpx-only deployments).
+        from slayer.memories.service import MemoryService
+
+        if self._storage is None:
+            raise RuntimeError(
+                "Memory operations need a storage backend; remote-mode "
+                "callers go through the HTTP code path."
+            )
+        return MemoryService(storage=self._storage)
+
+    @staticmethod
+    def _coerce_linked_entities(value):
+        # SlayerQuery → dict for JSON serialisation; lists / dicts pass
+        # through. The service layer revalidates at the boundary.
+        if isinstance(value, SlayerQuery):
+            return value.model_dump(mode="json", exclude_none=True)
+        return value
+
+    async def save_memory(
+        self,
+        *,
+        learning: str,
+        linked_entities: Union[List[str], SlayerQuery, Dict[str, Any]],
+    ) -> SaveMemoryResponse:
+        """Save a memory: a learning text + linked entities (or an
+        inline SlayerQuery to extract entities from)."""
+        if self._storage is not None:
+            response = await self._memory_service().save_memory(
+                learning=learning,
+                linked_entities=self._coerce_linked_entities(linked_entities),
+            )
+            return response
+        body = {
+            "learning": learning,
+            "linked_entities": self._coerce_linked_entities(linked_entities),
+        }
+        result = await self._request(method="POST", path="/memories", json=body)
+        return SaveMemoryResponse.model_validate(result)
+
+    async def forget_memory(
+        self, identifier: Union[int, str]
+    ) -> ForgetMemoryResponse:
+        if self._storage is not None:
+            return await self._memory_service().forget_memory(
+                identifier=identifier
+            )
+        result = await self._request(
+            method="DELETE", path=f"/memories/{int(identifier)}"
+        )
+        return ForgetMemoryResponse.model_validate(result)
+
+    async def recall_memories(
+        self,
+        *,
+        about: Union[List[str], SlayerQuery, Dict[str, Any]],
+        max_learnings: Optional[int] = None,
+        max_queries: Optional[int] = 2,
+    ) -> RecallResponse:
+        if self._storage is not None:
+            return await self._memory_service().recall_memories(
+                about=self._coerce_linked_entities(about),
+                max_learnings=max_learnings,
+                max_queries=max_queries,
+            )
+        body = {
+            "about": self._coerce_linked_entities(about),
+            "max_learnings": max_learnings,
+            "max_queries": max_queries,
+        }
+        result = await self._request(
+            method="POST", path="/memories/recall", json=body
+        )
+        return RecallResponse.model_validate(result)
 
     # ----- Sync API (for notebooks, scripts, CLI) -----
 
