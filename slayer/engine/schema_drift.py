@@ -224,6 +224,81 @@ def _column_is_base(col_sql: Optional[str]) -> bool:
 # ===========================================================================
 
 
+def _diff_sql_table_columns(
+    *, model: SlayerModel, live_table: LiveTable
+) -> Tuple[List[str], List[DeleteReason]]:
+    """Per-column diff of a sql_table-mode model against live columns."""
+    dropped: List[str] = []
+    reasons: List[DeleteReason] = []
+    for col in model.columns:
+        # Only compare base columns directly. Derived columns are handled
+        # by cascade.
+        if not _column_is_base(col.sql):
+            continue
+        bare_name = (col.sql or col.name).strip()
+        if bare_name not in live_table.columns:
+            dropped.append(col.name)
+            reasons.append(
+                DeleteReason(
+                    target=f"column:{col.name}",
+                    reason=f"Live column {bare_name!r} not found",
+                )
+            )
+            continue
+        live_dt = live_table.columns[bare_name]
+        if data_type_bucket(col.type) != data_type_bucket(live_dt):
+            dropped.append(col.name)
+            reasons.append(
+                DeleteReason(
+                    target=f"column:{col.name}",
+                    reason=(
+                        f"Type bucket mismatch: persisted={col.type}, "
+                        f"live={live_dt}"
+                    ),
+                )
+            )
+    return dropped, reasons
+
+
+def _diff_sql_table_joins(
+    *,
+    model: SlayerModel,
+    live_table: LiveTable,
+    available_models_in_ds: Set[str],
+) -> Tuple[List[str], List[DeleteReason]]:
+    """Per-join diff of a sql_table-mode model against live FK columns and
+    in-datasource model availability."""
+    dropped: List[str] = []
+    reasons: List[DeleteReason] = []
+    for join in model.joins:
+        local_cols = [pair[0] for pair in join.join_pairs]
+        missing_locals = [lc for lc in local_cols if lc not in live_table.columns]
+        if missing_locals:
+            dropped.append(join.target_model)
+            reasons.append(
+                DeleteReason(
+                    target=f"join:{join.target_model}",
+                    reason=(
+                        f"Local FK column(s) {missing_locals} missing from "
+                        f"live table"
+                    ),
+                )
+            )
+            continue
+        if join.target_model not in available_models_in_ds:
+            dropped.append(join.target_model)
+            reasons.append(
+                DeleteReason(
+                    target=f"join:{join.target_model}",
+                    reason=(
+                        f"Join target {join.target_model!r} not present in "
+                        f"datasource {model.data_source!r}"
+                    ),
+                )
+            )
+    return dropped, reasons
+
+
 def diff_sql_table_model(
     *,
     model: SlayerModel,
@@ -262,67 +337,18 @@ def diff_sql_table_model(
             {c.name for c in model.columns},
         )
 
-    dropped_cols: List[str] = []
-    dropped_joins: List[str] = []
-    reasons: List[DeleteReason] = []
-
-    for col in model.columns:
-        # Only compare base columns directly. Derived columns (col.sql is
-        # an expression, not a bare identifier) are handled by cascade.
-        if not _column_is_base(col.sql):
-            continue
-        bare_name = (col.sql or col.name).strip()
-        if bare_name not in live_table.columns:
-            dropped_cols.append(col.name)
-            reasons.append(
-                DeleteReason(
-                    target=f"column:{col.name}",
-                    reason=f"Live column {bare_name!r} not found",
-                )
-            )
-            continue
-        live_dt = live_table.columns[bare_name]
-        if data_type_bucket(col.type) != data_type_bucket(live_dt):
-            dropped_cols.append(col.name)
-            reasons.append(
-                DeleteReason(
-                    target=f"column:{col.name}",
-                    reason=(
-                        f"Type bucket mismatch: persisted={col.type}, "
-                        f"live={live_dt}"
-                    ),
-                )
-            )
-
-    for join in model.joins:
-        local_cols = [pair[0] for pair in join.join_pairs]
-        missing_locals = [lc for lc in local_cols if lc not in live_table.columns]
-        if missing_locals:
-            dropped_joins.append(join.target_model)
-            reasons.append(
-                DeleteReason(
-                    target=f"join:{join.target_model}",
-                    reason=(
-                        f"Local FK column(s) {missing_locals} missing from "
-                        f"live table"
-                    ),
-                )
-            )
-            continue
-        if join.target_model not in available_models_in_ds:
-            dropped_joins.append(join.target_model)
-            reasons.append(
-                DeleteReason(
-                    target=f"join:{join.target_model}",
-                    reason=(
-                        f"Join target {join.target_model!r} not present in "
-                        f"datasource {model.data_source!r}"
-                    ),
-                )
-            )
+    dropped_cols, col_reasons = _diff_sql_table_columns(
+        model=model, live_table=live_table
+    )
+    dropped_joins, join_reasons = _diff_sql_table_joins(
+        model=model,
+        live_table=live_table,
+        available_models_in_ds=available_models_in_ds,
+    )
 
     if not dropped_cols and not dropped_joins:
         return None, set()
+    reasons = col_reasons + join_reasons
 
     return (
         EditModelDelete(
@@ -777,15 +803,59 @@ def _stage_referenced_columns_for_base(
     )
 
 
+def _stage_join_targets(stage: SlayerQuery) -> Set[str]:
+    """Return the set of join target_model names referenced by a stage.
+
+    ``SlayerQuery`` itself has no ``joins`` field; the attribute exists on
+    a ``ModelExtension`` source_model. We use ``getattr`` with a default
+    so plain stages return the empty set without raising.
+    """
+    joins = getattr(stage, "joins", None) or []
+    out: Set[str] = set()
+    for j in joins:
+        target = getattr(j, "target_model", None)
+        if isinstance(target, str):
+            out.add(target)
+    return out
+
+
+def _check_stage_against_base(
+    *,
+    stage: SlayerQuery,
+    base_name: str,
+    dropped_cols: Dict[str, Set[str]],
+    pk_per_model: Dict[str, Set[str]],
+) -> Set[str]:
+    """Return the set of dropped column names on ``base_name`` that this
+    stage references (via same-model bare refs or via dotted-prefix refs).
+
+    PK columns are excluded — rule 7. Returns the empty set when no hits.
+    """
+    cascadable = dropped_cols.get(base_name, set()) - pk_per_model.get(
+        base_name, set()
+    )
+    if not cascadable:
+        return set()
+    return _stage_referenced_columns_for_base(stage=stage, base_name=base_name) & cascadable
+
+
 def _query_backed_should_whole_drop(
     *,
     qb_model: SlayerModel,
     dropped_cols: Dict[str, Set[str]],
     whole_dropped_models: Set[str],
     pk_per_model: Dict[str, Set[str]],
+    candidate_base_names: Optional[Set[str]] = None,
 ) -> Optional[DeleteReason]:
     """Return a non-None DeleteReason when this query-backed model should be
     whole-dropped due to cascading from base-model drift, else None.
+
+    ``candidate_base_names`` is the set of every model name in the same DS;
+    each stage's references are checked against every candidate, so
+    cross-model dotted refs (e.g. ``customers.region`` from a stage whose
+    own source_model is ``orders``) get caught when ``customers.region``
+    drifts. Falls back to checking only the stage's own source_model when
+    not supplied (preserves the legacy unit-test contract).
     """
     if not qb_model.source_queries:
         return None
@@ -813,24 +883,35 @@ def _query_backed_should_whole_drop(
                 ),
             )
 
-        cascadable = dropped_cols.get(base_name, set()) - pk_per_model.get(
-            base_name, set()
-        )
-        if not cascadable:
-            continue
+        # Whole-drop on any model the stage joins to is also fatal.
+        for join_target in _stage_join_targets(stage):
+            if join_target in whole_dropped_models:
+                return DeleteReason(
+                    target=f"model:{qb_model.name}",
+                    reason=(
+                        f"source_queries stage joins to {join_target!r} "
+                        f"which is being whole-dropped"
+                    ),
+                )
 
-        referenced = _stage_referenced_columns_for_base(
-            stage=stage, base_name=base_name
-        )
-        hits = referenced & cascadable
-        if hits:
-            return DeleteReason(
-                target=f"model:{qb_model.name}",
-                reason=(
-                    f"source_queries stage references columns on "
-                    f"{base_name!r} that have been dropped: {sorted(hits)}"
-                ),
+        # Walk every candidate base name (every model in the DS) so
+        # cross-model dotted refs are caught.
+        candidates = candidate_base_names or {base_name}
+        for candidate in candidates:
+            hits = _check_stage_against_base(
+                stage=stage,
+                base_name=candidate,
+                dropped_cols=dropped_cols,
+                pk_per_model=pk_per_model,
             )
+            if hits:
+                return DeleteReason(
+                    target=f"model:{qb_model.name}",
+                    reason=(
+                        f"source_queries stage references columns on "
+                        f"{candidate!r} that have been dropped: {sorted(hits)}"
+                    ),
+                )
 
     return None
 
@@ -959,23 +1040,35 @@ def _measure_drop_cause(
     return None
 
 
+def _first_dropped_cause(
+    *,
+    refs: Set[str],
+    model: SlayerModel,
+    state: _CascadeState,
+) -> Optional[str]:
+    """Return the cause string for the first ref that resolves to a dropped
+    column or measure, or ``None`` when nothing in ``refs`` is dropped.
+    """
+    for ref in refs:
+        cause = _measure_drop_cause(ref=ref, model=model, state=state)
+        if cause is not None:
+            return cause
+    return None
+
+
 def _cascade_measures(*, model: SlayerModel, state: _CascadeState) -> bool:
     """Rule 2: ``ModelMeasure.formula`` referencing a dropped column or
     dropped measure."""
     changed = False
     named_measures = {m.name: m.formula for m in model.measures if m.name}
+    dropped_set = state.dropped_measures.get(model.name, set())
     for measure in model.measures:
-        if measure.name is None:
+        if measure.name is None or measure.name in dropped_set:
             continue
-        if measure.name in state.dropped_measures.get(model.name, set()):
-            continue
-        cause: Optional[str] = None
-        for ref in _measure_formula_refs(
+        refs = _measure_formula_refs(
             measure.formula, named_measures=named_measures
-        ):
-            cause = _measure_drop_cause(ref=ref, model=model, state=state)
-            if cause is not None:
-                break
+        )
+        cause = _first_dropped_cause(refs=refs, model=model, state=state)
         if cause is None:
             continue
         if _add_dropped_measure(
@@ -1012,9 +1105,12 @@ def _cascade_joins(*, model: SlayerModel, state: _CascadeState) -> bool:
         tgt = state.models_by_name.get(join.target_model)
         if tgt is None or tgt.data_source != model.data_source:
             continue
+        # Check raw dropped_cols, not cascadable (rule 7 PK exclusion):
+        # a target PK drop still invalidates the join itself even though
+        # downstream cascades stop at the column level.
         foreign_missing = [
             pair[1] for pair in join.join_pairs
-            if pair[1] in state.cascadable(tgt.name)
+            if pair[1] in state.dropped_cols.get(tgt.name, set())
         ]
         if not foreign_missing:
             continue
@@ -1069,6 +1165,9 @@ def _cascade_query_backed(
     references dropped state — whole-drop."""
     changed = False
     whole_dropped_names = set(state.whole_entries.keys())
+    # Every model name in the DS is a candidate base for cross-model dotted
+    # refs inside the query-backed stages.
+    candidate_base_names = set(state.models_by_name.keys())
     for model in models:
         if model.name in state.whole_entries or not model.source_queries:
             continue
@@ -1077,6 +1176,7 @@ def _cascade_query_backed(
             dropped_cols=state.dropped_cols,
             whole_dropped_models=whole_dropped_names,
             pk_per_model=state.pk_per_model,
+            candidate_base_names=candidate_base_names,
         )
         if reason is None:
             continue
@@ -1329,6 +1429,68 @@ async def _live_columns_for_sql_model(
 # ===========================================================================
 
 
+def _resolve_live_table(
+    *, sql_table: str, live_tables: Dict[str, LiveTable]
+) -> Optional[LiveTable]:
+    """Look up a model's ``sql_table`` in the live introspection map,
+    falling back to the bare name when the persisted value is schema-
+    qualified (``schema.table``).
+    """
+    live = live_tables.get(sql_table)
+    if live is None and "." in sql_table:
+        live = live_tables.get(sql_table.split(".", 1)[1])
+    return live
+
+
+async def _collect_sql_table_diffs(
+    *,
+    datasource: DatasourceConfig,
+    sql_table_models: List[SlayerModel],
+    available_in_ds: Set[str],
+) -> Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]]:
+    """Run live SQLAlchemy introspection (off the event loop) and diff each
+    sql_table-mode model against it.
+    """
+    out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
+    if not sql_table_models:
+        return out
+    live_tables = await asyncio.to_thread(
+        _live_schema_for_datasource, datasource=datasource
+    )
+    for m in sql_table_models:
+        live = _resolve_live_table(
+            sql_table=m.sql_table or "", live_tables=live_tables
+        )
+        out[m.name] = diff_sql_table_model(
+            model=m,
+            live_table=live,
+            available_models_in_ds=available_in_ds,
+        )
+    return out
+
+
+async def _collect_sql_diffs(
+    *,
+    datasource: DatasourceConfig,
+    sql_models: List[SlayerModel],
+    sql_clients: Optional[Dict[str, SlayerSQLClient]],
+) -> Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]]:
+    """Trial-execute each sql-mode model concurrently and produce its diff."""
+    out: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
+    if not sql_models:
+        return out
+    client = (sql_clients or {}).get(datasource.get_connection_string())
+    if client is None:
+        client = SlayerSQLClient(datasource=datasource)
+
+    async def _diff_one(model: SlayerModel) -> None:
+        live_cols = await _live_columns_for_sql_model(model=model, client=client)
+        out[model.name] = diff_sql_model(model=model, live_columns=live_cols)
+
+    await asyncio.gather(*(_diff_one(m) for m in sql_models))
+    return out
+
+
 async def validate_datasource(
     *,
     datasource: DatasourceConfig,
@@ -1341,45 +1503,17 @@ async def validate_datasource(
     if not models:
         return []
 
-    sql_table_diffs: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
-    sql_diffs: Dict[str, Tuple[Optional[ToDeleteEntry], Set[str]]] = {}
-
     available_in_ds = {m.name for m in models}
-
-    # 1. sql_table-mode introspection — synchronous SQLAlchemy.
-    sql_table_models = [m for m in models if m.sql_table]
-    if sql_table_models:
-        live_tables = await asyncio.to_thread(
-            _live_schema_for_datasource, datasource=datasource
-        )
-        for m in sql_table_models:
-            sql_table = m.sql_table or ""
-            live = live_tables.get(sql_table)
-            if live is None and "." in sql_table:
-                # Schema-qualified — try the bare table name.
-                live = live_tables.get(sql_table.split(".", 1)[1])
-            sql_table_diffs[m.name] = diff_sql_table_model(
-                model=m,
-                live_table=live,
-                available_models_in_ds=available_in_ds,
-            )
-
-    # 2. sql-mode trial-execute — async via SlayerSQLClient.
-    sql_models = [m for m in models if m.sql]
-    if sql_models:
-        client = (sql_clients or {}).get(datasource.get_connection_string())
-        if client is None:
-            client = SlayerSQLClient(datasource=datasource)
-        async def _diff_one(model: SlayerModel) -> None:
-            live_cols = await _live_columns_for_sql_model(
-                model=model, client=client
-            )
-            sql_diffs[model.name] = diff_sql_model(
-                model=model, live_columns=live_cols
-            )
-        await asyncio.gather(*(_diff_one(m) for m in sql_models))
-
-    # 3. Cascade + collapse, scoped to this DS only.
+    sql_table_diffs = await _collect_sql_table_diffs(
+        datasource=datasource,
+        sql_table_models=[m for m in models if m.sql_table],
+        available_in_ds=available_in_ds,
+    )
+    sql_diffs = await _collect_sql_diffs(
+        datasource=datasource,
+        sql_models=[m for m in models if m.sql],
+        sql_clients=sql_clients,
+    )
     return compute_datasource_drops(
         models=models,
         sql_table_diffs=sql_table_diffs,

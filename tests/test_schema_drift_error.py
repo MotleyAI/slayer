@@ -149,9 +149,7 @@ class TestSchemaDriftErrorWrap:
         await engine.storage.save_model(broken_model)
 
         # Force validate_models to attribute no drift to the broken model.
-        # NOSONAR(S7503) — patched as side_effect for an awaited method, must
-        # be a coroutine function so the engine's `await` resolves cleanly.
-        async def _no_drift(*args, **kwargs):
+        async def _no_drift(*args, **kwargs):  # NOSONAR(S7503) — must be a coroutine for the awaited side_effect
             return []
 
         with patch.object(engine, "validate_models", side_effect=_no_drift):
@@ -159,10 +157,15 @@ class TestSchemaDriftErrorWrap:
                 source_model="broken",
                 measures=[{"formula": "amount:sum", "name": "total"}],
             )
-            # Original error type should bubble up — NOT SchemaDriftError.
-            with pytest.raises(Exception) as exc:
+            # Original SQLAlchemy/DBAPI error should bubble up — NOT
+            # SchemaDriftError. Assert on the original error class so a
+            # regression that re-wraps as something else still fails here.
+            from sqlalchemy.exc import SQLAlchemyError
+
+            with pytest.raises(SQLAlchemyError) as exc:
                 await engine.execute(q)
             assert not isinstance(exc.value, SchemaDriftError)
+            assert "this_col_does_not_exist" in str(exc.value)
 
     async def test_validate_models_attribution_failure_re_raises_original(
         self, workspace: Path
@@ -176,17 +179,20 @@ class TestSchemaDriftErrorWrap:
         async def _boom(*args, **kwargs):
             raise RuntimeError("validate_models exploded")
 
+        from sqlalchemy.exc import SQLAlchemyError
+
         with patch.object(engine, "validate_models", side_effect=_boom):
             q = SlayerQuery(
                 source_model="orders",
                 measures=[{"formula": "amount:sum", "name": "total"}],
             )
-            with pytest.raises(Exception) as exc:
+            # The original DBAPI error should bubble up — NOT SchemaDriftError
+            # and NOT the RuntimeError from the failing attribution.
+            with pytest.raises(SQLAlchemyError) as exc:
                 await engine.execute(q)
-            # Should NOT be SchemaDriftError nor RuntimeError("validate_models
-            # exploded"); should be the original DBAPI error.
             assert not isinstance(exc.value, SchemaDriftError)
             assert "exploded" not in str(exc.value)
+            assert "orders" in str(exc.value).lower()
 
 
 class TestHealthyPathNoOverhead:

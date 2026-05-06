@@ -7,6 +7,7 @@ Flow:
 4. Generate one Column per non-joined column (v2 unified-columns shape)
 """
 
+import asyncio
 import logging
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Set, Tuple
@@ -897,7 +898,11 @@ async def ingest_datasource_idempotent(
     additions: List[ModelAddition] = []
     errors: List[IngestionError] = []
 
-    fresh_models = ingest_datasource(
+    # ``ingest_datasource`` is sync (it drives SQLAlchemy ``Inspector``).
+    # Offload to a thread so a slow / large datasource doesn't block the
+    # event loop while server-facing requests are in flight.
+    fresh_models = await asyncio.to_thread(
+        ingest_datasource,
         datasource=datasource,
         include_tables=include_tables,
         exclude_tables=exclude_tables,

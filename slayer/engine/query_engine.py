@@ -491,15 +491,18 @@ class SlayerQueryEngine:
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
         return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
 
-    @staticmethod
-    def _collect_models_touched(
-        *, model: SlayerModel, enriched: "EnrichedQuery"
+    async def _collect_models_touched(
+        self, *, model: SlayerModel, enriched: "EnrichedQuery"
     ) -> "set[str]":
         """Compute the set of model names that participated in this query.
 
         Includes:
         * the source model
-        * direct join targets (from enriched.resolved_joins / model.joins)
+        * direct AND multi-hop join targets reached by walking the join
+          graph from the source model and from every cross-model measure
+          source model. Multi-hop targets matter for drift attribution: a
+          query like ``orders -> customers -> regions`` touches all three
+          even though the SlayerQuery only names ``orders``.
         * cross-model measure source models
         * for query-backed source models, every base model name reachable
           through ``source_queries`` stages.
@@ -508,10 +511,6 @@ class SlayerQueryEngine:
         for cm in enriched.cross_model_measures:
             touched.add(cm.target_model_name)
             touched.add(cm.source_model_name)
-        # Walk join targets named in the model definition.
-        for j in model.joins:
-            touched.add(j.target_model)
-        # Query-backed transitive base models.
         if model.source_queries:
             stages = list(model.source_queries)
             stage_names = {
@@ -523,9 +522,43 @@ class SlayerQueryEngine:
                     touched.add(sm)
                 elif isinstance(sm, SlayerModel):
                     touched.add(sm.name)
-                for j in stage.joins or []:
-                    touched.add(j.target_model)
+                # SlayerQuery has no .joins (only ModelExtension does as a
+                # source_model). Use getattr with a default to handle both.
+                for j in (getattr(stage, "joins", None) or []):
+                    target = getattr(j, "target_model", None)
+                    if target is not None:
+                        touched.add(target)
+        # Transitive walk of join graph — start from every directly-named
+        # model and follow each model's own joins. ``data_source`` scopes
+        # the lookup so cross-DS join targets aren't pulled in.
+        ds = model.data_source or None
+        await self._expand_join_graph(touched=touched, data_source=ds)
         return touched
+
+    async def _expand_join_graph(
+        self, *, touched: "set[str]", data_source: Optional[str]
+    ) -> None:
+        """Follow each touched model's joins transitively, adding reachable
+        target_model names to ``touched``. Visited-set guarded to avoid
+        infinite loops on diamond / cyclic join graphs.
+        """
+        frontier = list(touched)
+        visited: set[str] = set()
+        while frontier:
+            name = frontier.pop()
+            if name in visited:
+                continue
+            visited.add(name)
+            try:
+                m = await self.storage.get_model(name, data_source=data_source)
+            except Exception:
+                m = None
+            if m is None:
+                continue
+            for j in m.joins:
+                if j.target_model not in touched:
+                    touched.add(j.target_model)
+                    frontier.append(j.target_model)
 
     async def _maybe_raise_schema_drift(
         self,
@@ -545,7 +578,7 @@ class SlayerQueryEngine:
         from slayer.core.errors import SchemaDriftError
 
         try:
-            touched = self._collect_models_touched(model=model, enriched=enriched)
+            touched = await self._collect_models_touched(model=model, enriched=enriched)
             # Cross-model measure source models share the parent's DS in
             # validated queries (cross-DS joins are rejected at resolve
             # time), so attribution only needs the parent's data_source.
@@ -719,6 +752,15 @@ class SlayerQueryEngine:
             raise ValueError(
                 f"Model {model_name!r} not found in datasource {data_source!r}."
             )
+        if existing.source_queries:
+            # Query-backed models manage ``columns`` / ``backing_query_sql``
+            # as engine-side cache; bypassing engine.save_model would
+            # persist stale cache that no longer matches source_queries.
+            raise ValueError(
+                f"edit_model_remove() does not support query-backed models "
+                f"({model_name!r}); edit source_queries via engine.save_model() "
+                f"instead."
+            )
         cols_to_remove = set(remove_columns or [])
         measures_to_remove = set(remove_measures or [])
         aggs_to_remove = set(remove_aggregations or [])
@@ -778,6 +820,9 @@ class SlayerQueryEngine:
         touched_ds: set[str] = set()
 
         for entry in deletes:
+            # Track every entry's datasource up front so post-apply
+            # re-validation runs even when every mutation on that DS fails.
+            touched_ds.add(entry.data_source)
             try:
                 if entry.tool == "delete_model":
                     await self.delete_model_by_name(
@@ -803,7 +848,6 @@ class SlayerQueryEngine:
                         data_source=entry.data_source,
                     )
                 )
-                touched_ds.add(entry.data_source)
             except Exception as exc:  # noqa: BLE001 — best-effort per-entry isolation
                 errors.append(
                     ApplyError(

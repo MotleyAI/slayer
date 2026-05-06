@@ -391,9 +391,14 @@ def create_app(storage: StorageBackend) -> FastAPI:
             raise HTTPException(
                 status_code=404, detail=f"Datasource '{request.datasource}' not found"
             )
-        from sqlalchemy.exc import DatabaseError, OperationalError, SQLAlchemyError
+        from sqlalchemy.exc import SQLAlchemyError
         from slayer.engine.ingestion import ingest_datasource_idempotent
 
+        # Strip newlines from the user-controlled datasource name before it
+        # reaches the log or the response detail (S5145 — log-injection
+        # surface). The ds value already round-tripped through Pydantic so
+        # this is purely defence-in-depth.
+        safe_ds_name = request.datasource.replace("\r", "").replace("\n", "")
         try:
             result = await ingest_datasource_idempotent(
                 datasource=ds,
@@ -402,15 +407,14 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 exclude_tables=request.exclude_tables,
                 schema=request.schema_name,
             )
-        except (OperationalError, DatabaseError, SQLAlchemyError) as exc:
-            logger.exception(
-                "Ingest failed for datasource %r", request.datasource
-            )
+        except SQLAlchemyError as exc:
+            # OperationalError / DatabaseError both derive from SQLAlchemyError
+            # (Sonar S5713 — catching them separately is redundant).
+            logger.exception("Ingest failed for datasource %r", safe_ds_name)
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"Ingest failed for datasource '{request.datasource}': "
-                    f"{exc}"
+                    f"Ingest failed for datasource '{safe_ds_name}': {exc}"
                 ),
             )
         return result.model_dump(mode="json")

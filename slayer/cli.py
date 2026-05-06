@@ -629,6 +629,8 @@ def _run_ingest(args):
     for addition in result.additions:
         _print_ingest_addition(addition)
     _print_ingest_drift_and_errors(result)
+    if result.errors:
+        sys.exit(1)
 
 
 _REMOVE_SECTIONS = (
