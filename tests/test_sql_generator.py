@@ -1340,8 +1340,10 @@ class TestRankFamilyTransforms:
             measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="rank(revenue:sum)", name="rev_rank")],
         )
         sql = await _generate(generator, query, orders_model)
-        assert "RANK()" in sql
-        assert "PARTITION BY" not in sql.upper().split("RANK()", 1)[1].split(")", 1)[0] + ")"
+        assert (
+            'RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
 
     async def test_rank_with_partition_by_single(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(

@@ -395,7 +395,7 @@ class TestExtractFilterTransforms:
         Regression coverage for DEV-1353: a silent drop here would rank globally
         instead of within the partition.
         """
-        rewritten, transforms = extract_filter_transforms(
+        _, transforms = extract_filter_transforms(
             "dense_rank(revenue:sum, partition_by=region) <= 5"
         )
         assert len(transforms) == 1
@@ -412,7 +412,7 @@ class TestExtractFilterTransforms:
         filter-extraction round-trip. n is required, so a silent drop would
         cause the extracted formula to fail re-parsing.
         """
-        rewritten, transforms = extract_filter_transforms(
+        _, transforms = extract_filter_transforms(
             "ntile(revenue:sum, n=4, partition_by=cohort) <= 1"
         )
         assert len(transforms) == 1
