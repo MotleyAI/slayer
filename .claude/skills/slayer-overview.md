@@ -25,11 +25,14 @@ Query-backed models support two access patterns: **run by name** (`engine.execut
 
 ## MCP Tools
 
-Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data)
+Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data, includes auto-pruned `Learnings` section)
 Querying: `query`
 Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`
 Ingestion: `ingest_datasource_models`
+Agent memory (DEV-1357): `save_learning`, `save_query`, `delete_learning_or_query`, `recall`
+
+**Recommended agent workflow**: call `recall` BEFORE `query`, supplying either an entity list or the draft query itself. The returned learnings flag pitfalls (NULL semantics, encoding quirks, deprecated columns) and matching saved queries provide ready-made templates. After issuing a query, save anything non-obvious you discovered via `save_learning`.
 
 ## Package Structure
 

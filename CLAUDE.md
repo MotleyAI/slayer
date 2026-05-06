@@ -83,6 +83,8 @@ poetry run ruff check slayer/ tests/
 - Integration tests are marked with `@pytest.mark.integration` and skip when DB is unavailable
 - NEVER use dataclasses, if you want to use dataclasses, use Pydantic classes instead. 
 
+- **Learnings + saved queries** (DEV-1357): An agent-memory layer indexed by canonical entity strings. Four MCP tools — `save_learning`, `save_query`, `delete_learning_or_query`, `recall` — let agents record per-entity notes and example queries, then look them up before drafting a new query. The canonical form is exactly one of `<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>` (≤ 3 dotted segments after canonicalisation). Aggregation suffixes are stripped (`revenue:sum` → `<ds>.<model>.revenue`); `*:count` collapses to the source model; multi-hop dotted paths keep only the leaf (`orders.customers.regions.name` → `{<orders.ds>.orders, <regions.ds>.regions.name}`). The resolver lives in `slayer/learnings/resolver.py`; storage methods are concrete on `StorageBackend` (ID format / monotonic non-reuse / entity-intersection filter), with backends only implementing the row-shaped CRUD + seq counter primitives. `inspect_model` auto-renders a `Learnings` section (auto-pruned when empty). IDs are monotonic and never reused — `L<int>` for learnings, `Q<int>` for saved queries. See [docs/concepts/learnings.md](docs/concepts/learnings.md).
+
 ## Async Architecture
 
 - **Engine is async-first**: `SlayerQueryEngine.execute()` is `async`. Use `execute_sync()` for CLI/notebooks/scripts.

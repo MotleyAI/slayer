@@ -16,6 +16,7 @@ from typing import List, Optional, Set, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
+from slayer.learnings.models import Learning, SavedQuery
 from slayer.storage.base import StorageBackend
 
 
@@ -195,3 +196,41 @@ class JoinSyncStorage(StorageBackend):
 
     async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
         return await self._inner._set_datasource_priority_raw(priority)
+
+    # -- learnings + saved queries (DEV-1357) — pure delegation -----------
+
+    async def _save_learning_row(self, learning: Learning) -> None:
+        await self._inner._save_learning_row(learning)
+
+    async def _get_learning_row(self, learning_id: str) -> Optional[Learning]:
+        return await self._inner._get_learning_row(learning_id)
+
+    async def _list_learnings_rows(
+        self, *, entities: Optional[List[str]]
+    ) -> List[Learning]:
+        return await self._inner._list_learnings_rows(entities=entities)
+
+    async def _delete_learning_row(self, learning_id: str) -> bool:
+        return await self._inner._delete_learning_row(learning_id)
+
+    async def _next_learning_seq(self) -> int:
+        return await self._inner._next_learning_seq()
+
+    async def _save_saved_query_row(self, saved: SavedQuery) -> None:
+        await self._inner._save_saved_query_row(saved)
+
+    async def _get_saved_query_row(
+        self, query_id: str
+    ) -> Optional[SavedQuery]:
+        return await self._inner._get_saved_query_row(query_id)
+
+    async def _list_saved_queries_rows(
+        self, *, entities: Optional[List[str]]
+    ) -> List[SavedQuery]:
+        return await self._inner._list_saved_queries_rows(entities=entities)
+
+    async def _delete_saved_query_row(self, query_id: str) -> bool:
+        return await self._inner._delete_saved_query_row(query_id)
+
+    async def _next_saved_query_seq(self) -> int:
+        return await self._inner._next_saved_query_seq()

@@ -6,7 +6,11 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import sqlalchemy as sa
 
-from slayer.core.errors import AmbiguousModelError
+from slayer.core.errors import (
+    AmbiguousModelError,
+    EntityResolutionError,
+    LearningOrQueryNotFoundError,
+)
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -18,6 +22,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
+from slayer.learnings.service import LearningService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -34,7 +39,7 @@ _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_disti
 # caller drops the section from `sections`; reachable_fields/samples are fully
 # omitted (they have no natural "names" to list).
 _INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
-_INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples")
+_INSPECT_SECTIONS_OMITTABLE = ("reachable_fields", "samples", "learnings")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
 _MAX_REACHABLE_FIELDS_DEPTH = 20
@@ -881,6 +886,8 @@ def create_mcp_server(storage: StorageBackend):
             format: Output format — "markdown" (default, compact and LLM-friendly), "json" (structured), or "csv" (most compact). Case-insensitive.
 
         Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
+
+        Before calling this tool, run ``recall`` first, supplying the entities you're thinking of using (or the query itself via the ``query`` arg). Read the returned learnings and consider any matching saved queries before formulating the final query.
         """
         data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
@@ -1441,6 +1448,32 @@ def create_mcp_server(storage: StorageBackend):
                 out_sections.append(sample_section)
 
         # ------------------------------------------------------------------
+        # Learnings (DEV-1357) — auto-pruned when no relevant learning exists.
+        # ------------------------------------------------------------------
+        relevant_learnings: List[Any] = []
+        wanted: List[str] = []
+        if "learnings" in included_set:
+            ds = model.data_source
+            wanted = [f"{ds}.{model.name}"]
+            wanted.extend(f"{ds}.{model.name}.{c.name}" for c in model.columns)
+            wanted.extend(
+                f"{ds}.{model.name}.{m.name}"
+                for m in model.measures
+                if m.name is not None
+            )
+            wanted.extend(
+                f"{ds}.{model.name}.{a.name}" for a in model.aggregations
+            )
+            relevant_learnings = await storage.list_learnings(entities=wanted)
+            if relevant_learnings:
+                lines = [f"## Learnings ({len(relevant_learnings)})", ""]
+                for lr in relevant_learnings:
+                    matched = sorted(set(wanted) & set(lr.entities))
+                    matched_md = ", ".join(f"`{e}`" for e in matched)
+                    lines.append(f"- **{lr.id}** ({matched_md}): {lr.body}")
+                out_sections.append("\n".join(lines))
+
+        # ------------------------------------------------------------------
         # Per-call truncation footer (only when something was trimmed or an
         # unknown section name was supplied).
         # ------------------------------------------------------------------
@@ -1557,6 +1590,19 @@ def create_mcp_server(storage: StorageBackend):
                 payload["sample_data_error"] = sample_error
                 if show_sql and sample_sql:
                     payload["sample_sql"] = sample_sql
+
+            # Learnings (DEV-1357)
+            if "learnings" in included_set and relevant_learnings:
+                payload["learnings"] = [
+                    {
+                        "id": lr.id,
+                        "body": lr.body,
+                        "matched_entities": sorted(
+                            set(wanted) & set(lr.entities)
+                        ),
+                    }
+                    for lr in relevant_learnings
+                ]
 
             # Top-level gating-state arrays (only when non-empty)
             if names_only_sections:
@@ -2336,6 +2382,166 @@ def create_mcp_server(storage: StorageBackend):
         first), or ``[]`` if none is set."""
         priority = await storage.get_datasource_priority()
         return f"Datasource priority: {priority}"
+
+    # ---------- DEV-1357: Learnings + saved queries -------------------
+
+    learning_service = LearningService(storage=storage)
+
+    def _format_resolution_error(exc: Exception) -> str:
+        """Convert a typed resolution / not-found / ambiguous error into
+        a friendly text response (matches the existing convention of
+        never raising back to the agent)."""
+        if isinstance(exc, AmbiguousModelError):
+            return _ambiguous_with_mcp_hint(exc)
+        return f"Error: {type(exc).__name__}: {exc}"
+
+    @mcp.tool()
+    async def save_learning(
+        learning: str,
+        linked_entities: List[str],
+    ) -> str:
+        """Save a free-form note ("learning") indexed by the canonical
+        SLayer entities it references.
+
+        Each ``linked_entities`` item is resolved to the canonical
+        ``<datasource>.<model>[.<leaf>]`` form. Bare names use the
+        datasource priority list; ambiguous bare-column matches are
+        rejected with an error. Returns the assigned learning_id
+        (e.g. ``"L42"``), the canonical forms stored, and any non-fatal
+        warnings (e.g. model-vs-column collisions).
+
+        Args:
+            learning: The note text. Required, non-empty.
+            linked_entities: One or more entity references. Required,
+                non-empty.
+
+        Examples:
+            save_learning(
+                learning="orders.is_returned ∈ {0,1,NULL}; treat NULL as not returned",
+                linked_entities=["orders.is_returned"],
+            )
+        """
+        try:
+            response = await learning_service.save_learning(
+                learning=learning, linked_entities=linked_entities
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
+
+    @mcp.tool()
+    async def save_query(
+        query: Any,
+        description: str,
+    ) -> str:
+        """Save an example ``SlayerQuery`` alongside a human description.
+
+        The entity extractor walks the query's ``source_model``,
+        ``dimensions``, ``time_dimensions``, ``measures``, and
+        ``filters``, applies the leaf rule, and stores the canonical
+        entity set with the saved query. The ``source_model`` is always
+        tagged automatically.
+
+        Args:
+            query: A ``SlayerQuery`` (as a dict) or a model name string
+                (run-by-name). String input is wrapped into
+                ``SlayerQuery(source_model=str)`` so the persisted
+                record is always a fully-materialised query.
+            description: Human-readable explanation of what the query
+                computes. Required, non-empty.
+
+        Examples:
+            save_query(
+                query={
+                    "source_model": "orders",
+                    "measures": [{"formula": "amount:sum"}],
+                    "filters": ["status = 'paid'"],
+                },
+                description="Total paid revenue",
+            )
+        """
+        try:
+            response = await learning_service.save_query(
+                query=query, description=description
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
+
+    @mcp.tool()
+    async def delete_learning_or_query(id: str) -> str:  # noqa: A002 — MCP arg name
+        """Delete a learning (``L<int>``) or saved query (``Q<int>``).
+
+        Args:
+            id: The ID returned by ``save_learning`` or ``save_query``.
+
+        Raises a friendly error if the id format is wrong or the row
+        does not exist.
+        """
+        try:
+            response = await learning_service.delete_learning_or_query(
+                identifier=id
+            )
+        except (
+            LearningOrQueryNotFoundError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
+
+    @mcp.tool()
+    async def recall(
+        entities: Optional[List[str]] = None,
+        query: Optional[Any] = None,
+        max_learnings: Optional[int] = None,
+        max_queries: Optional[int] = 2,
+    ) -> str:
+        """Look up learnings and saved queries by entity overlap.
+
+        Call this BEFORE ``query`` (the execute tool) to surface any
+        notes or example queries previously saved against the entities
+        you're considering.
+
+        At least one of ``entities`` or ``query`` must be supplied.
+        Each input entity is resolved to its canonical form; if
+        ``query`` is supplied, the entity extractor pulls leaf entities
+        from it (same logic as ``save_query``). The two sources are
+        unioned and deduplicated.
+
+        Stored learnings/queries are ranked by the size of the
+        intersection between their stored entity set and the input set.
+        Ties break by recency (newest first).
+
+        Args:
+            entities: Entity references to search by. Optional; treated
+                as ``None`` if empty.
+            query: A ``SlayerQuery`` (dict) or model-name string whose
+                referenced entities augment ``entities``.
+            max_learnings: Cap on returned learnings. ``None`` = all.
+            max_queries: Cap on returned saved queries. Default ``2``.
+        """
+        try:
+            response = await learning_service.recall(
+                entities=entities,
+                query=query,
+                max_learnings=max_learnings,
+                max_queries=max_queries,
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
 
     return mcp
 

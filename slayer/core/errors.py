@@ -40,3 +40,30 @@ class AmbiguousModelError(SlayerError):
             f"{sorted(self.candidates)}. Specify a data_source or set a "
             f"datasource priority to disambiguate."
         )
+
+
+class EntityResolutionError(SlayerError):
+    """Raised when an entity reference cannot be resolved to a canonical
+    ``<datasource>.<model>[.<leaf>]`` form (DEV-1357).
+
+    Wraps the spec's resolution-failure cases: unknown segment, ambiguous
+    bare column matching multiple models in the priority-winner
+    datasource, ``*:count`` invoked outside a query context, and similar.
+    Distinct from ``AmbiguousModelError`` (which fires for the model leg
+    of bare-name resolution and is reused by the resolver verbatim).
+    """
+
+
+class LearningOrQueryNotFoundError(SlayerError):
+    """Raised when a learning or saved-query ID does not exist in storage.
+
+    Used by both the learning APIs (``L<int>`` IDs) and the saved-query APIs
+    (``Q<int>`` IDs); the unified ``delete_learning_or_query`` MCP tool also
+    surfaces this error.
+    """
+
+    def __init__(self, identifier: str) -> None:
+        self.identifier = identifier
+        super().__init__(
+            f"No learning or saved query with id '{identifier}'."
+        )
