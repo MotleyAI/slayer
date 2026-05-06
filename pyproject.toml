@@ -1,10 +1,6 @@
 [project]
 name = "motley-slayer"
-<<<<<<< egor/dev-1353-add-percent_rank-dense_rank-row_number-ntile-as-first-class
 version = "0.4.4"
-=======
-version = "0.4.3"
->>>>>>> main
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
