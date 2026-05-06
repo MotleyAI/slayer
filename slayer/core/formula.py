@@ -773,7 +773,7 @@ def _parse_dotted_name(node: ast.AST, original: str) -> str:
     )
 
 
-def _parse_transform_kwargs(
+def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-kwarg validation; splitting into helpers would force threading transform/original through every call just to preserve the error-message context
     transform: str, keywords: List[ast.keyword], original: str
 ) -> Dict[str, Any]:
     """Parse and validate a transform's keyword arguments.

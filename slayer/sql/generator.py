@@ -1525,7 +1525,7 @@ class SQLGenerator:
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
 
     @staticmethod
-    def _build_transform_sql(t) -> str:
+    def _build_transform_sql(t) -> str:  # NOSONAR S3776 — flat dispatch over transform names; per-transform SQL forms read better as one if/elif tree than as named helpers
         """Build a window function SQL expression for a transform."""
         measure = f'"{t.measure_alias}"'
         time_col = f'"{t.time_alias}"' if t.time_alias else None
