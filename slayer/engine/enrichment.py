@@ -9,7 +9,7 @@ transformation step in the query pipeline.
 """
 
 import re
-from typing import Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -26,6 +26,7 @@ from slayer.core.formula import (
     AggregatedMeasureRef,
     ArithmeticField,
     MixedArithmeticField,
+    RANK_FAMILY_TRANSFORMS,
     TIME_TRANSFORMS,
     TransformField,
     _preprocess_like,
@@ -377,6 +378,37 @@ async def enrich_query(
             resolved = re.sub(rf'(?<![."])\b{re.escape(name)}\b', f'"{alias}"', resolved)
         return resolved
 
+    def _resolve_rank_partition(transform: str, partition_by: List[str]) -> List[str]:
+        """Resolve partition_by= column references to base-CTE aliases.
+
+        partition_by entries must reference query dimensions or time dimensions —
+        otherwise the column wouldn't be in the base CTE. Match by bare name
+        (e.g. 'customer_id' against EnrichedDimension.name) or by qualified
+        alias (e.g. 'orders.customer_id'). Cross-model dotted paths
+        ('customers.region') match via the dimension alias as built by
+        _resolve_dimensions.
+        """
+        by_name = {d.name: d.alias for d in dimensions}
+        by_alias = {d.alias: d.alias for d in dimensions}
+        for td in time_dimensions:
+            by_name.setdefault(td.name, td.alias)
+            by_alias.setdefault(td.alias, td.alias)
+
+        resolved: List[str] = []
+        for col in partition_by:
+            if col in by_alias:
+                resolved.append(by_alias[col])
+            elif col in by_name:
+                resolved.append(by_name[col])
+            else:
+                available = sorted(set(by_name) | set(by_alias))
+                raise ValueError(
+                    f"Transform '{transform}': partition_by column '{col}' is not "
+                    f"a query dimension. Add it to dimensions/time_dimensions, or "
+                    f"choose one of: {', '.join(available) or '(none)'}."
+                )
+        return resolved
+
     def _add_transform(
         name: str,
         transform: str,
@@ -384,6 +416,7 @@ async def enrich_query(
         offset: int = 1,
         granularity: str = None,
         predicate_is_boolean: bool = False,
+        kwargs: Optional[Dict[str, Any]] = None,
     ):
         needs_time = transform in TIME_TRANSFORMS
         if needs_time and resolved_time_alias is None:
@@ -393,6 +426,21 @@ async def enrich_query(
                 f"select among multiple time dimensions."
             )
         alias = f"{model_name_str}.{name}"
+        kwargs = kwargs or {}
+
+        # Rank-family transforms default to no partition (rank across the entire
+        # result set) and accept an explicit partition_by= override. Other
+        # transforms (cumsum, lag, lead, first, last, time_shift,
+        # consecutive_periods) partition by all query dimensions, matching the
+        # invariant that adding a measure must not change cardinality.
+        if transform in RANK_FAMILY_TRANSFORMS:
+            partition_by = kwargs.get("partition_by")
+            partition_aliases = (
+                _resolve_rank_partition(transform, partition_by) if partition_by else []
+            )
+        else:
+            partition_aliases = [d.alias for d in dimensions]
+
         enriched_transforms.append(
             EnrichedTransform(
                 name=name,
@@ -402,8 +450,9 @@ async def enrich_query(
                 offset=offset,
                 granularity=granularity,
                 time_alias=resolved_time_alias if needs_time else None,
-                partition_aliases=[d.alias for d in dimensions],
+                partition_aliases=partition_aliases,
                 predicate_is_boolean=predicate_is_boolean,
+                n=kwargs.get("n"),
             )
         )
         known_aliases[name] = alias
@@ -613,6 +662,7 @@ async def enrich_query(
                 offset=offset,
                 granularity=granularity,
                 predicate_is_boolean=inner_is_predicate,
+                kwargs=spec.kwargs,
             )
             return f"{model_name_str}.{field_name}"
 

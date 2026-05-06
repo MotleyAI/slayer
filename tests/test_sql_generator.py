@@ -1321,6 +1321,252 @@ class TestFields:
         assert "aov" in sql.lower()
 
 
+class TestRankFamilyTransforms:
+    """rank, percent_rank, dense_rank, ntile — first-class window-function transforms.
+
+    All four are timeless (no time_dimension required), all default to no
+    PARTITION BY (rank across the entire result set), all order by the inner
+    measure DESC. The ``partition_by=`` kwarg opts into per-partition ranking;
+    its value must be a subset of the query's dimensions / time_dimensions.
+
+    Pinning DEV-1353.
+    """
+
+    async def test_rank_no_partition_unchanged(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        """Today's behavior: rank without partition_by emits no PARTITION BY clause."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="revenue:sum"), ModelMeasure(formula="rank(revenue:sum)", name="rev_rank")],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_rank_with_partition_by_single(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="rank(revenue:sum, partition_by=status)", name="rev_rank"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'RANK() OVER (PARTITION BY "orders.status" ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_rank_with_partition_by_list(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(
+                    formula="rank(revenue:sum, partition_by=[status, customer_id])",
+                    name="rev_rank",
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'RANK() OVER (PARTITION BY "orders.status", "orders.customer_id" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="percent_rank(revenue:sum)", name="rev_pr"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'PERCENT_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_percent_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(
+                    formula="percent_rank(revenue:sum, partition_by=status)", name="rev_pr"
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'PERCENT_RANK() OVER (PARTITION BY "orders.status" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_dense_rank_default(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="dense_rank(revenue:sum)", name="rev_dr"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'DENSE_RANK() OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_dense_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(
+                    formula="dense_rank(revenue:sum, partition_by=status)", name="rev_dr"
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'DENSE_RANK() OVER (PARTITION BY "orders.status" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_ntile_n_4(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="ntile(revenue:sum, n=4)", name="rev_quartile"),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'NTILE(4) OVER (ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_ntile_with_partition(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(
+                    formula="ntile(revenue:sum, n=4, partition_by=status)",
+                    name="rev_quartile",
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'NTILE(4) OVER (PARTITION BY "orders.status" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_dense_rank_in_filter_top_5_distinct(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """``dense_rank(...) <= 5`` is auto-extracted as a hidden field and post-filtered.
+
+        Mirrors the existing ``rank(...) <= N`` pattern from DEV-1336. The window
+        function must materialise inside the inner SELECT (so SQLite doesn't see
+        ``WHERE DENSE_RANK() OVER (...) <= 5``) and the comparison must live in
+        the outer ``_filtered`` wrapper.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customer_id")],
+            measures=[ModelMeasure(formula="revenue:sum")],
+            filters=["dense_rank(revenue:sum) <= 5"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "_filtered" in sql, f"expected post-filter wrapper, got:\n{sql}"
+        # Split on the wrapper marker so we can pin DENSE_RANK to the inner SELECT
+        # and the predicate to the outer wrapper, not just "somewhere in the SQL".
+        inner_sql, outer_sql = sql.split("_filtered", 1)
+        assert "DENSE_RANK()" in inner_sql, (
+            f"DENSE_RANK should be materialised in the inner SELECT, got:\n{sql}"
+        )
+        assert "DENSE_RANK()" not in outer_sql, (
+            f"DENSE_RANK should not appear in the outer wrapper, got:\n{sql}"
+        )
+        assert "<= 5" in _norm(outer_sql), (
+            f"<= 5 predicate should live in the outer wrapper, got:\n{sql}"
+        )
+
+    async def test_rank_partition_by_time_dimension(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """partition_by= can reference a query time_dimension, not just a regular dimension.
+
+        Pins the time-alias resolution path in _resolve_rank_partition's
+        ``for td in time_dimensions`` loop — without this case, a regression
+        there would silently pass.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH
+                )
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(
+                    formula="rank(revenue:sum, partition_by=created_at)", name="rev_rank"
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'RANK() OVER (PARTITION BY "orders.created_at" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
+    async def test_partition_by_must_be_a_query_dimension(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """partition_by referencing a column NOT in dimensions errors clearly.
+
+        Otherwise the partition column wouldn't be in the base CTE and the
+        emitted SQL would be silently invalid.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(
+                    formula="rank(revenue:sum, partition_by=customer_id)", name="rev_rank"
+                ),
+            ],
+        )
+        with pytest.raises(ValueError) as excinfo:
+            await _generate(generator, query, orders_model)
+        msg = str(excinfo.value)
+        assert "partition_by" in msg
+        assert "customer_id" in msg
+        # Contract: error lists the available dimensions so the user knows what to pick.
+        assert "status" in msg
+
+
 class TestTransformRequiresTimeDimension:
     """All time-ordered transforms require an explicit time_dimensions entry."""
 

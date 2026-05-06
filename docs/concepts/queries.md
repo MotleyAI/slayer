@@ -185,7 +185,7 @@ against a model with `Column(name="rn", sql="row_number() over (order by mass de
 
 **Raw `OVER (...)` in filter strings is rejected.** Inline window-function SQL inside a filter or `ModelMeasure.formula` is not parseable by SLayer's formula grammar. Use one of:
 
-- `rank(<measure>) <= N` for top-N filtering — simpler and dialect-portable.
+- `rank(<measure>) <= N` (or `dense_rank` / `percent_rank` / `ntile(<measure>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
 - `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
 - A `Column` with the window expression in its `sql` (auto-promotion path above).
 - A multi-stage model where the window computation lives in an earlier stage.
