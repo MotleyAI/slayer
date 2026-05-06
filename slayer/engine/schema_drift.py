@@ -852,6 +852,30 @@ def _check_stage_against_base(
     return _stage_referenced_columns_for_base(stage=stage, base_name=base_name) & cascadable
 
 
+def _stage_uses_dropped_join(
+    *,
+    stage: SlayerQuery,
+    base_name: str,
+    dropped_joins: Dict[str, Set[str]],
+) -> Optional[str]:
+    """If ``stage`` references any column under a join target that's been
+    dropped on ``base_name`` (i.e. ``orders → customers`` was removed and
+    the stage uses ``customers.name``), return the conflicting target
+    name; otherwise None.
+    """
+    targets = dropped_joins.get(base_name, set())
+    if not targets:
+        return None
+    for target in targets:
+        # ``_stage_referenced_columns_for_base(stage, base_name=target)``
+        # returns the column names the stage references *on* ``target``.
+        # If non-empty, the dropped join means those references no longer
+        # resolve.
+        if _stage_referenced_columns_for_base(stage=stage, base_name=target):
+            return target
+    return None
+
+
 def _check_stage_for_whole_drop(
     *,
     stage: SlayerQuery,
@@ -859,6 +883,7 @@ def _check_stage_for_whole_drop(
     qb_name: str,
     whole_dropped_models: Set[str],
     dropped_cols: Dict[str, Set[str]],
+    dropped_joins: Dict[str, Set[str]],
     pk_per_model: Dict[str, Set[str]],
     candidate_base_names: Set[str],
 ) -> Optional[DeleteReason]:
@@ -884,6 +909,17 @@ def _check_stage_for_whole_drop(
                 ),
             )
     for candidate in candidate_base_names:
+        broken_target = _stage_uses_dropped_join(
+            stage=stage, base_name=candidate, dropped_joins=dropped_joins
+        )
+        if broken_target is not None:
+            return DeleteReason(
+                target=f"model:{qb_name}",
+                reason=(
+                    f"source_queries stage references {broken_target!r} "
+                    f"via {candidate!r} but that join has been dropped"
+                ),
+            )
         hits = _check_stage_against_base(
             stage=stage,
             base_name=candidate,
@@ -905,6 +941,7 @@ def _query_backed_should_whole_drop(
     *,
     qb_model: SlayerModel,
     dropped_cols: Dict[str, Set[str]],
+    dropped_joins: Dict[str, Set[str]],
     whole_dropped_models: Set[str],
     pk_per_model: Dict[str, Set[str]],
     candidate_base_names: Optional[Set[str]] = None,
@@ -941,6 +978,7 @@ def _query_backed_should_whole_drop(
             qb_name=qb_model.name,
             whole_dropped_models=whole_dropped_models,
             dropped_cols=dropped_cols,
+            dropped_joins=dropped_joins,
             pk_per_model=pk_per_model,
             candidate_base_names=candidate_base_names or {base_name},
         )
@@ -1219,6 +1257,7 @@ def _cascade_query_backed(
         reason = _query_backed_should_whole_drop(
             qb_model=model,
             dropped_cols=state.dropped_cols,
+            dropped_joins=state.dropped_joins,
             whole_dropped_models=whole_dropped_names,
             pk_per_model=state.pk_per_model,
             candidate_base_names=candidate_base_names,
@@ -1282,6 +1321,35 @@ def _cascade_one_pass(
     return changed
 
 
+def _seed_one_diff_entry(
+    *,
+    model_name: str,
+    entry: Optional[ToDeleteEntry],
+    cols: Set[str],
+    edit_entries: Dict[str, EditModelDelete],
+    whole_entries: Dict[str, WholeModelDelete],
+    dropped_cols: Dict[str, Set[str]],
+    dropped_measures: Dict[str, Set[str]],
+    dropped_joins: Dict[str, Set[str]],
+) -> None:
+    """Apply one ``(entry, dropped_columns)`` diff result to the cascade
+    state dicts."""
+    if isinstance(entry, WholeModelDelete):
+        whole_entries[model_name] = entry
+    elif isinstance(entry, EditModelDelete):
+        edit_entries[model_name] = entry
+        if entry.remove.joins:
+            dropped_joins.setdefault(model_name, set()).update(
+                entry.remove.joins
+            )
+        if entry.remove.measures:
+            dropped_measures.setdefault(model_name, set()).update(
+                entry.remove.measures
+            )
+    if cols:
+        dropped_cols.setdefault(model_name, set()).update(cols)
+
+
 def _seed_state_from_diffs(
     *,
     diffs_iterables: Tuple[
@@ -1296,20 +1364,16 @@ def _seed_state_from_diffs(
     """Populate the cascade state dicts from the base per-model diffs."""
     for diffs in diffs_iterables:
         for model_name, (entry, cols) in diffs.items():
-            if isinstance(entry, WholeModelDelete):
-                whole_entries[model_name] = entry
-            elif isinstance(entry, EditModelDelete):
-                edit_entries[model_name] = entry
-                if entry.remove.joins:
-                    dropped_joins.setdefault(model_name, set()).update(
-                        entry.remove.joins
-                    )
-                if entry.remove.measures:
-                    dropped_measures.setdefault(model_name, set()).update(
-                        entry.remove.measures
-                    )
-            if cols:
-                dropped_cols.setdefault(model_name, set()).update(cols)
+            _seed_one_diff_entry(
+                model_name=model_name,
+                entry=entry,
+                cols=cols,
+                edit_entries=edit_entries,
+                whole_entries=whole_entries,
+                dropped_cols=dropped_cols,
+                dropped_measures=dropped_measures,
+                dropped_joins=dropped_joins,
+            )
 
 
 def _collapse_entries(
@@ -1485,10 +1549,16 @@ async def _live_columns_for_sql_model(
     """
     if not model.sql:
         return None
+    # Strip trailing whitespace and a single statement terminator before
+    # wrapping — a persisted ``SELECT 1;`` is valid at top level but
+    # invalid inside ``SELECT * FROM (...) AS _sd_validate``. Without the
+    # strip, that bogus syntax error would be attributed to drift and
+    # produce a false WholeModelDelete.
+    inner_sql = model.sql.rstrip()
+    if inner_sql.endswith(";"):
+        inner_sql = inner_sql[:-1].rstrip()
     try:
-        trial_sql = (
-            f"SELECT * FROM ({model.sql}) AS _sd_validate WHERE 1=0"
-        )
+        trial_sql = f"SELECT * FROM ({inner_sql}) AS _sd_validate WHERE 1=0"
         cats = await client.get_column_types(trial_sql)
     except Exception as exc:
         logger.info(

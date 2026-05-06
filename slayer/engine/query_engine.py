@@ -527,14 +527,29 @@ class SlayerQueryEngine:
         """Compute the set of model names that participated in this query.
 
         Includes the source model, every cross-model measure root, every
-        query-backed base name, and (transitively) every join target
-        reachable through the join graph.
+        query-backed base name (resolved from storage when ``model`` is a
+        virtual stage produced by ``_query_as_model``), and (transitively)
+        every join target reachable through the join graph.
         """
         touched: set[str] = {model.name}
         for cm in enriched.cross_model_measures:
             touched.add(cm.target_model_name)
             touched.add(cm.source_model_name)
         touched |= self._collect_query_backed_base_names(model)
+        # The resolved ``model`` may be a virtual stage from
+        # _query_as_model() — its ``source_queries`` is already expanded,
+        # so the base-name walk above turns up nothing. Fall back to the
+        # persisted record under ``model.name`` (if any) so query-backed
+        # drift attribution still names the real persisted base models.
+        if model.data_source:
+            try:
+                persisted = await self.storage.get_model(
+                    model.name, data_source=model.data_source
+                )
+            except Exception:
+                persisted = None
+            if persisted is not None and persisted.source_queries:
+                touched |= self._collect_query_backed_base_names(persisted)
         await self._expand_join_graph(
             touched=touched, data_source=model.data_source or None
         )
