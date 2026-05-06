@@ -5,9 +5,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("duckdb")
-pytest.importorskip("jafgen")
-
 import duckdb
 
 from slayer.demo.jaffle_shop import (

@@ -18,9 +18,6 @@ from typing import Dict
 import pytest
 import yaml
 
-pytest.importorskip("duckdb")
-pytest.importorskip("jafgen")
-
 import duckdb
 
 from slayer.core.enums import DataType

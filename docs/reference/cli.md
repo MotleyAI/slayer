@@ -36,7 +36,7 @@ slayer serve --demo            # auto-ingest the bundled Jaffle Shop demo first
 | `--host` | `0.0.0.0` | Bind address |
 | `--port` | `5143` | Port number |
 | `--storage` | `./slayer_data` | Storage path (directory for YAML, .db file for SQLite) |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). Requires `duckdb` + `jafgen`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 
 ### `slayer mcp`
 
@@ -55,7 +55,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | `./slayer_data` | Storage path |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). Requires `duckdb` + `jafgen`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 
 ### `slayer query`
 
