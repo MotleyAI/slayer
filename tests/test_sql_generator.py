@@ -1510,6 +1510,36 @@ class TestRankFamilyTransforms:
             f"<= 5 predicate should live in the outer wrapper, got:\n{sql}"
         )
 
+    async def test_rank_partition_by_time_dimension(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """partition_by= can reference a query time_dimension, not just a regular dimension.
+
+        Pins the time-alias resolution path in _resolve_rank_partition's
+        ``for td in time_dimensions`` loop — without this case, a regression
+        there would silently pass.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH
+                )
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(
+                    formula="rank(revenue:sum, partition_by=created_at)", name="rev_rank"
+                ),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert (
+            'RANK() OVER (PARTITION BY "orders.created_at" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(sql)
+        )
+
     async def test_partition_by_must_be_a_query_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:
