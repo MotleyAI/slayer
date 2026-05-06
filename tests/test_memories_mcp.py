@@ -588,30 +588,6 @@ class TestRecallMemories:
         assert bodies == {"A", "B"}
         assert payload["warnings"], "expected a warning for empty input"
 
-    async def test_query_with_no_entities_returns_all_with_warning(
-        self,
-        mcp_server,
-        seeded: YAMLStorage,
-    ) -> None:
-        # A query that doesn't reference anything resolvable. We use a
-        # bare query with no source_model + no measures — extraction
-        # yields zero entities, so the recency fallback should fire.
-        await seeded.save_memory(
-            learning="A", entities=["mydb.orders"]
-        )
-        # Empty-ish query payload — we use a model name that doesn't
-        # exist so extraction surfaces no canonical entities. The
-        # call must still succeed with a warning + recency fallback.
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": []},
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        assert payload["warnings"]
-
-
 # ---------------------------------------------------------------------------
 # Tool registration smoke
 # ---------------------------------------------------------------------------
