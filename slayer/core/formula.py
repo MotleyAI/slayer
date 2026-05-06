@@ -591,12 +591,23 @@ def _parse_node(
         inner = _parse_node(node.args[0], original, agg_refs)
 
         # Remaining positional args are transform parameters (offset, granularity, etc.)
+        # The rank family is keyword-only after the measure; reject extra positionals
+        # so calls like `rank(revenue:sum, 2)` or `ntile(revenue:sum, 4, n=2)` fail
+        # fast instead of silently dropping the extra arg downstream.
+        if func_name in RANK_FAMILY_TRANSFORMS and len(node.args) > 1:
+            raise ValueError(
+                f"Transform '{func_name}' does not accept positional arguments "
+                f"beyond the measure; use keyword args (e.g. partition_by=, n=). "
+                f"Formula: {original!r}"
+            )
         extra_args = []
         for arg in node.args[1:]:
-            extra_args.append(_parse_literal(arg, original))
+            extra_args.append(_parse_literal(node=arg, original=original))
 
         # Keyword args, validated per-transform.
-        kwargs = _parse_transform_kwargs(func_name, node.keywords, original)
+        kwargs = _parse_transform_kwargs(
+            transform=func_name, keywords=node.keywords, original=original
+        )
 
         return TransformField(transform=func_name, inner=inner, args=extra_args, kwargs=kwargs)
 
@@ -766,7 +777,7 @@ def _parse_dotted_name(node: ast.AST, original: str) -> str:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
-        return f"{_parse_dotted_name(node.value, original)}.{node.attr}"
+        return f"{_parse_dotted_name(node=node.value, original=original)}.{node.attr}"
     raise ValueError(
         f"Expected a column name or dotted path in formula {original!r}, "
         f"got {ast.dump(node)}"
@@ -806,9 +817,11 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
         if kw.arg == "partition_by":
             value = kw.value
             if isinstance(value, ast.List):
-                cols = [_parse_dotted_name(elt, original) for elt in value.elts]
+                cols = [
+                    _parse_dotted_name(node=elt, original=original) for elt in value.elts
+                ]
             else:
-                cols = [_parse_dotted_name(value, original)]
+                cols = [_parse_dotted_name(node=value, original=original)]
             if not cols:
                 raise ValueError(
                     f"Transform '{transform}': partition_by must reference at "
@@ -816,7 +829,7 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
                 )
             parsed["partition_by"] = cols
         elif kw.arg == "n":
-            n_val = _parse_literal(kw.value, original)
+            n_val = _parse_literal(node=kw.value, original=original)
             if not isinstance(n_val, int) or isinstance(n_val, bool) or n_val <= 0:
                 raise ValueError(
                     f"Transform '{transform}': n must be a positive integer, "
@@ -824,7 +837,7 @@ def _parse_transform_kwargs(  # NOSONAR S3776 — straight-line whitelist + per-
                 )
             parsed["n"] = n_val
         else:  # pragma: no cover — guarded by the whitelist check above
-            parsed[kw.arg] = _parse_literal(kw.value, original)
+            parsed[kw.arg] = _parse_literal(node=kw.value, original=original)
 
     if transform == "ntile" and "n" not in parsed:
         raise ValueError(

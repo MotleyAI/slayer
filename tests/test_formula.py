@@ -166,6 +166,16 @@ class TestFormulaParser:
         with pytest.raises(ValueError, match="partition_by"):
             parse_formula("cumsum(revenue:sum, partition_by=region)")
 
+    def test_rank_rejects_extra_positional_arg(self) -> None:
+        """rank-family is keyword-only after the measure; extra positionals must fail fast."""
+        with pytest.raises(ValueError, match="positional arguments"):
+            parse_formula("rank(revenue:sum, 2)")
+
+    def test_ntile_rejects_extra_positional_n(self) -> None:
+        """ntile(x, 4) is rejected — n must be passed by keyword (n=4)."""
+        with pytest.raises(ValueError, match="positional arguments"):
+            parse_formula("ntile(revenue:sum, 4)")
+
     def test_consecutive_periods_predicate(self) -> None:
         result = parse_formula("consecutive_periods(revenue:sum > 0)")
         assert isinstance(result, TransformField)
