@@ -13,8 +13,9 @@ the existing DuckDB file instead of regenerating.
 import datetime as dt
 import os
 import subprocess
+import sys
 import tempfile
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import IO, TYPE_CHECKING, List, Optional, Tuple
 
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -123,14 +124,25 @@ def resolve_demo_db_path(storage_path: str) -> str:
     return os.path.join(demo_dir, "jaffle_shop.duckdb")
 
 
-def generate_data(output_dir: str, years: int = 1) -> str:
-    """Run ``jafgen`` into ``output_dir``; return the path to the generated CSVs."""
+def generate_data(
+    output_dir: str,
+    years: int = 1,
+    *,
+    stream: Optional[IO[str]] = None,
+) -> str:
+    """Run ``jafgen`` into ``output_dir``; return the path to the generated CSVs.
+
+    jafgen prints Rich progress bars to its own stdout. To keep them visible
+    (and to avoid corrupting stdio-based protocols like MCP), both jafgen's
+    stdout and stderr are routed to ``stream`` (default: this process's
+    stderr). When ``stream`` is a TTY, Rich animates the bars in place.
+    """
     cmd = ["jafgen", str(max(1, years))]
+    out = stream if stream is not None else sys.stderr
     try:
-        subprocess.run(args=cmd, cwd=output_dir, check=True, capture_output=True)
+        subprocess.run(args=cmd, cwd=output_dir, check=True, stdout=out, stderr=out)
     except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        raise RuntimeError(f"jafgen failed: {stderr.strip() or e}") from e
+        raise RuntimeError(f"jafgen failed with exit code {e.returncode}") from e
     return os.path.join(output_dir, "jaffle-data")
 
 
@@ -271,14 +283,21 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
     return results
 
 
-def build_jaffle_shop(db_path: str, *, years: int = 4, force: bool = False) -> bool:
+def build_jaffle_shop(
+    db_path: str,
+    *,
+    years: int = 4,
+    force: bool = False,
+    stream: Optional[IO[str]] = None,
+) -> bool:
     """Generate the Jaffle Shop DuckDB at ``db_path`` if it does not already exist.
 
     Returns ``True`` if the DB was freshly generated, ``False`` if an existing
     file at ``db_path`` was reused. When ``force=True``, any existing file is
     overwritten. On the reuse path, dates are re-shifted so
     ``MAX(orders.ordered_at) == today`` — this keeps the demo feeling current
-    even when the DB was built days or weeks earlier.
+    even when the DB was built days or weeks earlier. ``stream`` is forwarded
+    to ``generate_data`` so jafgen's Rich progress bars stay visible.
     """
     import duckdb
 
@@ -294,7 +313,7 @@ def build_jaffle_shop(db_path: str, *, years: int = 4, force: bool = False) -> b
         os.remove(db_path)
 
     with tempfile.TemporaryDirectory(prefix="jaffle_") as tmpdir:
-        data_dir = generate_data(output_dir=tmpdir, years=years)
+        data_dir = generate_data(output_dir=tmpdir, years=years, stream=stream)
         conn = duckdb.connect(db_path)
         try:
             create_schema(conn)
@@ -312,6 +331,7 @@ def ensure_demo_datasource(
     years: int = 4,
     ingest_models: bool = True,
     assume_yes: bool = True,
+    stream: Optional[IO[str]] = None,
 ) -> Tuple[DatasourceConfig, List[SlayerModel], bool]:
     """Ensure the Jaffle Shop demo is fully set up in ``storage``.
 
@@ -327,7 +347,7 @@ def ensure_demo_datasource(
     freshly generated this call.
     """
     db_path = resolve_demo_db_path(storage_path)
-    db_built = build_jaffle_shop(db_path=db_path, years=years)
+    db_built = build_jaffle_shop(db_path=db_path, years=years, stream=stream)
 
     ds = DatasourceConfig.model_validate(
         {
