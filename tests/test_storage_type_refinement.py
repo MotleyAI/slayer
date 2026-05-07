@@ -312,6 +312,35 @@ class TestYamlStorageRefinementOnLoad:
             await storage_with_v4_model["storage"].get_model("items", data_source="live")
             spy.assert_not_called()
 
+    async def test_missing_datasource_entry_raises_on_v4_load(
+        self, sqlite_with_int_double_text
+    ) -> None:
+        """If the v4 model exists but its referenced datasource entry is gone,
+        ``get_model`` must raise — silently skipping refinement and writing the
+        v5 dict back would freeze base integer columns at ``DOUBLE`` forever
+        (next load short-circuits on the version check).
+        """
+        base = sqlite_with_int_double_text["tmpdir"]
+        # No datasources/ dir → get_datasource("live") returns None.
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {
+                    "version": 4,
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [
+                        {"name": "id", "sql": "id", "type": "number"},
+                    ],
+                },
+                f,
+            )
+        storage = YAMLStorage(base_dir=base)
+        with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
+            await storage.get_model("items", data_source="live")
+
     async def test_unreachable_datasource_propagates_through_get_model(
         self, sqlite_with_int_double_text, monkeypatch
     ) -> None:

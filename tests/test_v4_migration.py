@@ -102,6 +102,21 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     and lives under ``models/<data_source>/<name>.yaml`` after migration.
     """
     base = str(tmp_path)
+    # DEV-1361 storage-driven type refinement requires the datasource entry
+    # to be present when the migrated dict has refineable DOUBLE base columns.
+    # A live SQLite stub satisfies that contract for this layout-migration test.
+    live_db_path = os.path.join(base, "live.db")
+    with sqlite3.connect(live_db_path) as live:
+        live.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY)")
+        live.commit()
+    ds_dir = os.path.join(base, "datasources")
+    os.makedirs(ds_dir, exist_ok=True)
+    with open(os.path.join(ds_dir, "warehouse.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+        yaml.dump(
+            {"name": "warehouse", "type": "sqlite", "database": live_db_path, "version": 1},
+            f,
+        )
+
     legacy_models_dir = os.path.join(base, "models")
     os.makedirs(legacy_models_dir, exist_ok=True)
     with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine

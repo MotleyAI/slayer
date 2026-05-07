@@ -6822,3 +6822,145 @@ class TestCastEmissionMeasure:
         # Outer CAST around the divided expression.
         assert "CAST(" in sql.upper()
         assert "DOUBLE" in sql.upper()
+
+
+class TestCastEmissionNonBasePaths:
+    """DEV-1361 follow-up: ``ModelMeasure.type`` and ``Column.type`` must wrap
+    aggregation expressions in CAST across every emission path — not just the
+    base ``_generate_base()`` path. Covers windowed CTEs, isolated filtered
+    measure CTEs, percentile/median/stat-agg/weighted-avg builders.
+    """
+
+    @pytest.fixture
+    def orders_model_for_window(self) -> SlayerModel:
+        return SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+
+    async def test_windowed_sum_with_measure_type_wraps_in_cast(
+        self, orders_model_for_window: SlayerModel,
+    ) -> None:
+        """Windowed sum CTE was previously emitting ``SUM(_src._w_value) AS alias``
+        with no CAST when the inline measure declared ``type=DataType.DOUBLE``.
+        """
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="orders_for_window",
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+            measures=[
+                ModelMeasure(
+                    formula="revenue:sum(window='90d')",
+                    name="rev_90d",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        orders_model_for_window.name = "orders_for_window"
+        sql = await _generate(gen, query, orders_model_for_window)
+        # The windowed CTE itself must contain the CAST around SUM(_src._w_value).
+        # _wm_ prefix identifies the windowed measure CTE.
+        assert "_wm_orders_for_window__rev_90d" in sql
+        # CAST(SUM(...) AS DOUBLE) shape inside the windowed CTE.
+        norm = _norm(sql).upper()
+        assert "CAST(SUM(" in norm or "CAST (SUM(" in norm
+        assert "DOUBLE" in norm
+
+    async def test_windowed_sum_no_measure_type_skips_cast(
+        self, orders_model_for_window: SlayerModel,
+    ) -> None:
+        """Without a declared measure type, no CAST wrapper is emitted around
+        the windowed aggregation."""
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="orders_for_window2",
+            time_dimensions=[
+                TimeDimension(
+                    dimension=ColumnRef(name="created_at"),
+                    granularity=TimeGranularity.MONTH,
+                ),
+            ],
+            measures=[
+                ModelMeasure(formula="revenue:sum(window='90d')", name="rev_90d"),
+            ],
+        )
+        orders_model_for_window.name = "orders_for_window2"
+        sql = await _generate(gen, query, orders_model_for_window)
+        # Windowed CTE present but no CAST around SUM(_w_value).
+        assert "_wm_orders_for_window2__rev_90d" in sql
+        norm = _norm(sql).upper()
+        assert "CAST(SUM(_SRC._W_VALUE)" not in norm
+
+    async def test_percentile_uses_column_type_for_inner_cast(self) -> None:
+        """``_resolve_value_sql`` must propagate ``column_type`` so that
+        non-bare ``Column.sql`` (e.g. ``json_extract(...)``) feeding percentile
+        gets the inner pre-aggregation CAST applied."""
+        model = SlayerModel(
+            name="events",
+            sql_table="public.events",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="score",
+                    sql="json_extract(payload, '$.score')",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="events",
+            measures=[ModelMeasure(formula="score:percentile(p=0.5)", name="p50")],
+        )
+        sql = await _generate(gen, query, model)
+        # Inner CAST around the json_extract — postgres uses native PERCENTILE_CONT.
+        norm = _norm(sql).upper()
+        assert "CAST(" in norm
+        assert "DOUBLE" in norm
+        assert "PERCENTILE_CONT" in norm
+
+    async def test_weighted_avg_uses_column_type_for_inner_cast(self) -> None:
+        """``weighted_avg`` goes through ``_build_formula_agg`` →
+        ``_resolve_value_sql``. With ``column_type`` propagation, non-bare
+        Column.sql gets CAST'd inside the formula expansion."""
+        model = SlayerModel(
+            name="events",
+            sql_table="public.events",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="score",
+                    sql="json_extract(payload, '$.score')",
+                    type=DataType.DOUBLE,
+                ),
+                Column(name="weight", sql="weight_col", type=DataType.DOUBLE),
+            ],
+        )
+        gen = SQLGenerator(dialect="postgres")
+        query = SlayerQuery(
+            source_model="events",
+            measures=[
+                ModelMeasure(
+                    formula="score:weighted_avg(weight=weight)",
+                    name="wavg",
+                ),
+            ],
+        )
+        sql = await _generate(gen, query, model)
+        # CAST present somewhere — column_type propagated to formula expansion.
+        assert "CAST(" in sql.upper()
+        assert "JSON_EXTRACT" in sql.upper()

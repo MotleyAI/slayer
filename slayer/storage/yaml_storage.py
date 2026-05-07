@@ -86,24 +86,9 @@ class YAMLStorage(StorageBackend):
         # version was below the current SlayerModel version, also run a live
         # DB-introspection refinement to narrow DOUBLE → INT, then write the
         # refined v5 dict back so subsequent loads skip both steps.
-        from slayer.storage import migrations as _mig
-        from slayer.storage.type_refinement import refine_dict_with_live_schema
-
-        pre_version = (
-            int(data.get("version", 1)) if isinstance(data, dict) else _mig.CURRENT_VERSIONS["SlayerModel"]
+        data, write_back = await self._migrate_and_refine_on_load(
+            name=name, data=data, data_source=data_source,
         )
-        write_back = False
-        if isinstance(data, dict) and pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
-            data = _mig.migrate("SlayerModel", data)
-            # Always persist when a migration ran, even if the optional
-            # introspection refinement is a no-op (text-only model,
-            # query-backed model, DOUBLE columns that stay DOUBLE). Without
-            # this, the on-disk file would re-migrate / re-introspect on
-            # every load.
-            write_back = True
-            ds = await self.get_datasource(data_source)
-            if ds is not None:
-                refine_dict_with_live_schema(data, ds)
         model = SlayerModel.model_validate(data)
         if write_back:
             await self.save_model(model)

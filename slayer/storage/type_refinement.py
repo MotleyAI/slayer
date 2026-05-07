@@ -34,6 +34,29 @@ def _column_is_base(sql: Optional[str]) -> bool:
     return all(c.isalnum() or c == "_" for c in s)
 
 
+def has_refineable_columns(d: dict) -> bool:
+    """Return True iff ``d`` is a table-backed model dict with at least one
+    DOUBLE-typed base column — i.e. ``refine_dict_with_live_schema`` would
+    have something to ask the live schema about. Used by storage callers to
+    decide whether the live datasource is actually needed before raising on
+    a missing ``DatasourceConfig``.
+    """
+    if not isinstance(d, dict):
+        return False
+    sql_table = d.get("sql_table")
+    if not isinstance(sql_table, str) or not sql_table:
+        return False
+    columns = d.get("columns")
+    if not isinstance(columns, list) or not columns:
+        return False
+    return any(
+        isinstance(c, dict)
+        and c.get("type") == DataType.DOUBLE.value
+        and _column_is_base(c.get("sql"))
+        for c in columns
+    )
+
+
 def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
     """Mutate ``d`` in place: refine ``DOUBLE`` → ``INT`` for base columns
     whose live SQL type is integer. Returns ``True`` if any refinement was
@@ -47,29 +70,16 @@ def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig) -> bool:
     unreachable. Idempotent: a second call on a refined dict is a no-op
     because no column carries ``DOUBLE`` whose live type is integer.
     """
-    if not isinstance(d, dict):
+    if not has_refineable_columns(d):
         return False
-    sql_table = d.get("sql_table")
-    if not isinstance(sql_table, str) or not sql_table:
-        # Query-backed (source_queries) or SQL-mode (sql set, no sql_table)
-        # — refinement is not meaningful here.
-        return False
-    columns = d.get("columns")
-    if not isinstance(columns, list) or not columns:
-        return False
-
-    # Short-circuit before connecting if nothing in the dict could be
-    # refined. This avoids a DB connect for models with no DOUBLE base
-    # columns (e.g. text-only dimension tables, legacy v1 models that
-    # never had numeric content).
+    sql_table = d["sql_table"]
+    columns = d["columns"]
     refinable: list[dict] = [
         c for c in columns
         if isinstance(c, dict)
         and c.get("type") == DataType.DOUBLE.value
         and _column_is_base(c.get("sql"))
     ]
-    if not refinable:
-        return False
 
     # Local import to avoid circular import at module load time
     # (schema_drift -> storage -> ... can chain).

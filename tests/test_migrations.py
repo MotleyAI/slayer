@@ -557,6 +557,25 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
 async def test_v1_yaml_round_trip_to_v2() -> None:
     """Hand-write a v1 YAML, load via storage, observe v2 shape on disk after save."""
     with tempfile.TemporaryDirectory() as tmpdir:
+        # DEV-1361 storage-driven type refinement on first-load needs the
+        # datasource entry to be present (`StorageBackend._migrate_and_refine_on_load`
+        # raises otherwise), so spin up a minimal SQLite live DB and register
+        # the matching DatasourceConfig — same pattern as the
+        # ``test_v1_sqlite_round_trip_to_v2`` sibling test.
+        live_db_path = os.path.join(tmpdir, "live.db")
+        with sqlite3.connect(live_db_path) as live:
+            live.execute(
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT, amount REAL)"
+            )
+            live.commit()
+        ds_dir = os.path.join(tmpdir, "datasources")
+        os.makedirs(ds_dir, exist_ok=True)
+        with open(os.path.join(ds_dir, "demo.yaml"), "w") as f:
+            yaml.dump(
+                {"name": "demo", "type": "sqlite", "database": live_db_path, "version": 1},
+                f,
+            )
+
         # Drop the v1 file at the legacy flat layout so the v4 layout
         # migrator picks it up at YAMLStorage init time and moves it under
         # models/<data_source>/.

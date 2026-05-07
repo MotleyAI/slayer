@@ -1,6 +1,7 @@
 """FastAPI server for SLayer."""
 
 import logging
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -105,8 +106,15 @@ class RecallMemoriesRequest(BaseModel):
     max_queries: Optional[int] = 2
 
 
+def _slayer_version() -> str:
+    try:
+        return _pkg_version("motley-slayer")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
 def create_app(storage: StorageBackend) -> FastAPI:
-    app = FastAPI(title="SLayer", version="0.1.0")
+    app = FastAPI(title="SLayer", version=_slayer_version())
     engine = SlayerQueryEngine(storage=storage)
 
     # Mount MCP server over SSE at /mcp

@@ -3,12 +3,17 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
+from slayer.storage import migrations as _mig
+from slayer.storage.type_refinement import (
+    has_refineable_columns,
+    refine_dict_with_live_schema,
+)
 
 
 def storage_base_dir(path: str) -> str:
@@ -127,6 +132,50 @@ class StorageBackend(ABC):
         name: str,
         data_source: Optional[str] = None,
     ) -> bool: ...
+
+    # ---- v4→v5 migrate-then-refine on load ---------------------------------
+
+    async def _migrate_and_refine_on_load(
+        self,
+        *,
+        name: str,
+        data: Any,
+        data_source: str,
+    ) -> Tuple[Any, bool]:
+        """DEV-1361 storage-driven type refinement, shared across backends.
+
+        When the on-disk model dict is below the current ``SlayerModel`` version,
+        run the migrator chain to bring it forward, then introspect the live
+        datasource and refine ``DOUBLE → INT`` for base columns whose live SQL
+        type is integer. Returns ``(possibly_mutated_data, write_back)``: the
+        caller is responsible for persisting via its own ``save_model`` when
+        ``write_back`` is true.
+
+        Hard-fails with ``ValueError`` when a migration ran, the dict has
+        refineable DOUBLE base columns, and the named datasource entry is
+        missing — silently skipping refinement and persisting the v5 dict
+        would leave base integer columns stuck at ``DOUBLE`` forever because
+        subsequent loads would short-circuit on the version check. Models
+        with no refineable columns (text-only, query-backed, sql-mode, or
+        already-narrowed) write back without needing a live datasource.
+        """
+        if not isinstance(data, dict):
+            return data, False
+        pre_version = int(data.get("version", 1))
+        if pre_version >= _mig.CURRENT_VERSIONS["SlayerModel"]:
+            return data, False
+        data = _mig.migrate("SlayerModel", data)
+        if has_refineable_columns(data):
+            ds = await self.get_datasource(data_source)
+            if ds is None:
+                raise ValueError(
+                    f"Cannot migrate model {name!r}: datasource "
+                    f"{data_source!r} is unavailable for type refinement. "
+                    f"Restore the datasource entry or remove the stale "
+                    f"model file."
+                )
+            refine_dict_with_live_schema(data, ds)
+        return data, True
 
     # ---- datasource CRUD ---------------------------------------------------
 

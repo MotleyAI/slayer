@@ -456,9 +456,13 @@ def _build_sample_query_args(
             agg = safe if safe else allowed[0]
         else:
             # DEV-1361: numeric columns (INT/DOUBLE) are avg-able; everything
-            # else falls back to count_distinct.
+            # else falls back to count_distinct. ``measure_types`` comes from
+            # ``engine.get_column_types`` whose contract is the lowercase
+            # category set {"number","string","time","boolean"}; normalize
+            # before comparing in case the contract widens later.
             inferred = measure_types.get(c.name)
-            if inferred and inferred not in ("number", "DOUBLE", "INT"):
+            inferred_norm = inferred.strip().lower() if isinstance(inferred, str) else None
+            if inferred_norm and inferred_norm != "number":
                 agg = "count_distinct"
             elif c.type not in (DataType.INT, DataType.DOUBLE):
                 agg = "count_distinct"

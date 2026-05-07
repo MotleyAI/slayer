@@ -546,6 +546,7 @@ class SQLGenerator:
                     rn_suffix_map=rn_suffix_map,
                     default_time_col=enriched.last_agg_time_column,
                 )
+                agg_expr = _wrap_cast_for_type(agg_expr, measure.type)
                 select = select.select(agg_expr.as_(measure.alias))
                 select = select.from_(ranked_from)
                 # WHERE already inside ranked subquery
@@ -564,6 +565,7 @@ class SQLGenerator:
                     group_exprs.append(td_expr)
 
                 agg_expr, _ = self._build_agg(measure=unfiltered)
+                agg_expr = _wrap_cast_for_type(agg_expr, measure.type)
                 select = select.select(agg_expr.as_(measure.alias))
 
                 from_clause = self._build_from_clause(enriched=enriched)
@@ -1041,7 +1043,8 @@ class SQLGenerator:
         outer = exp.Select()
         for a in group_aliases:
             outer = outer.select(exp.Column(this=exp.to_identifier(a), table=exp.to_identifier("_base")))
-        outer = outer.select(agg_cls(this=agg_input).as_(measure.alias))
+        agg_expr = _wrap_cast_for_type(agg_cls(this=agg_input), measure.type)
+        outer = outer.select(agg_expr.as_(measure.alias))
         outer = outer.from_(exp.Table(this=exp.to_identifier("_base")))
         outer = outer.join(src_subq, on=on_expr, join_type="LEFT")
         for a in group_aliases:
@@ -1925,7 +1928,10 @@ class SQLGenerator:
         identifiers.
         """
         return self._resolve_sql(
-            sql=measure.sql, name=measure.name, model_name=measure.model_name,
+            sql=measure.sql,
+            name=measure.name,
+            model_name=measure.model_name,
+            type=measure.column_type,
         ).sql(dialect=self.dialect)
 
     def _resolve_agg_param(

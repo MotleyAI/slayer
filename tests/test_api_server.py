@@ -226,11 +226,13 @@ class TestIngestEndpoint:
     string) used to escape as 500. CodeRabbit thread #103/r3196378592.
     """
 
-    def test_unresolved_env_var_returns_422(self, client: TestClient) -> None:
+    def test_unresolved_env_var_returns_422(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Save a datasource whose database path references an undefined env
         # var. ``DatasourceConfig.resolve_env_vars()`` raises ValueError when
         # the var is missing — that's the path we want to catch.
-        os.environ.pop("DEV1361_NOT_SET", None)
+        monkeypatch.delenv("DEV1361_NOT_SET", raising=False)
         resp = client.post(
             "/datasources",
             json={
