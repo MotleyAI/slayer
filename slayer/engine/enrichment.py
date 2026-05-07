@@ -94,6 +94,8 @@ async def _validate_filter_string(
     named_measures: Mapping[str, str],
     resolve_model,
     named_queries: dict,
+    original_str: Optional[str] = None,
+    extra_allowed_bare_names: Optional[Set[str]] = None,
 ) -> None:
     """Validate every column reference inside ``filter_str`` against the
     join graph and the source model's column / measure surface.
@@ -120,10 +122,15 @@ async def _validate_filter_string(
     parsed = parse_filter(
         filter_str, extra_agg_names=extra_agg_names, named_measures=named_measures,
     )
+    # Use ``original_str`` in user-facing error messages so the agent sees
+    # the filter it actually wrote, not the post-transform-extraction
+    # rewrite with ``_ftN`` placeholders.
+    display_str = original_str if original_str is not None else filter_str
     column_names = {c.name for c in source_model.columns}
     measure_names = {m.name for m in source_model.measures if m.name}
     self_names = {source_model.name, source_alias}
     agg_names = BUILTIN_AGGREGATIONS | (extra_agg_names or frozenset())
+    extra_bare = extra_allowed_bare_names or set()
 
     for col in parsed.columns:
         if "." not in col:
@@ -133,11 +140,12 @@ async def _validate_filter_string(
                 or (extra_agg_names and col in extra_agg_names)
                 or col.lower() in _SQL_KEYWORD_ALLOWLIST
                 or _is_canonical_agg_alias(col, agg_names)
+                or col in extra_bare
             ):
                 continue
             available = sorted(column_names | measure_names)
             raise ValueError(
-                f"Cannot resolve {site} '{filter_str}': bare name '{col}' "
+                f"Cannot resolve {site} '{display_str}': bare name '{col}' "
                 f"is not a column or named measure on '{source_model.name}'. "
                 f"Available columns/measures: "
                 f"{available if available else '(none)'}."
@@ -159,7 +167,7 @@ async def _validate_filter_string(
                 continue
             available = sorted(column_names | measure_names)
             raise ValueError(
-                f"Cannot resolve {site} '{filter_str}': column '{leaf}' "
+                f"Cannot resolve {site} '{display_str}': column '{leaf}' "
                 f"is not a column or named measure on "
                 f"'{source_model.name}'. Available columns/measures: "
                 f"{available if available else '(none)'}."
@@ -177,7 +185,7 @@ async def _validate_filter_string(
             if join is None:
                 available = sorted({j.target_model for j in current_model.joins})
                 raise ValueError(
-                    f"Cannot resolve {site} '{filter_str}': model '{hop}' "
+                    f"Cannot resolve {site} '{display_str}': model '{hop}' "
                     f"is not reachable from '{current_model.name}'. "
                     f"Add a join to '{hop}' on '{current_model.name}', or "
                     f"rewrite the reference. "
@@ -196,7 +204,7 @@ async def _validate_filter_string(
                 # missing storage entry). Surface as the same class of
                 # error so the agent gets a useful message.
                 raise ValueError(
-                    f"Cannot resolve {site} '{filter_str}': model '{hop}' "
+                    f"Cannot resolve {site} '{display_str}': model '{hop}' "
                     f"is referenced in joins but could not be loaded. "
                     f"Check the model definition exists and is reachable."
                 )
@@ -210,7 +218,7 @@ async def _validate_filter_string(
                 | {m.name for m in current_model.measures if m.name}
             )
             raise ValueError(
-                f"Cannot resolve {site} '{filter_str}': column '{leaf}' "
+                f"Cannot resolve {site} '{display_str}': column '{leaf}' "
                 f"does not exist on model '{current_model.name}'. "
                 f"Available columns/measures: "
                 f"{available if available else '(none)'}."
@@ -1018,38 +1026,8 @@ async def enrich_query(
         ]
 
     all_filter_strs = list(model.filters) + query_filters
-
-    # DEV-1367: Validate every column reference in every user-supplied filter
-    # at translate time. Catches bare-name typos, dotted refs to unreachable
-    # models, and dotted refs whose leaf column doesn't exist on the resolved
-    # target — all surfaced as filter-aware ``ValueError``s instead of
-    # cryptic database-runtime errors. Only runs in ``strict_joins`` mode
-    # because re-rooted CTEs legitimately remap filter strings in ways that
-    # would otherwise trip the upfront check.
-    if strict_joins and resolve_model is not None:
-        for mf in model.filters:
-            await _validate_filter_string(
-                filter_str=mf,
-                site="model filter",
-                source_model=model,
-                source_alias=model_name_str,
-                extra_agg_names=custom_agg_names,
-                named_measures=named_measures,
-                resolve_model=resolve_model,
-                named_queries=named_queries,
-            )
-        for qf in query_filters:
-            await _validate_filter_string(
-                filter_str=qf,
-                site="query filter",
-                source_model=model,
-                source_alias=model_name_str,
-                extra_agg_names=custom_agg_names,
-                named_measures=named_measures,
-                resolve_model=resolve_model,
-                named_queries=named_queries,
-            )
     processed_filters = []
+    transform_placeholder_names: Set[str] = set()
     ft_counter = [0]
     for f_str in all_filter_strs:
         rewritten, extra_fields = extract_filter_transforms(
@@ -1057,6 +1035,7 @@ async def enrich_query(
             named_measures=named_measures,
         )
         for name, formula in extra_fields:
+            transform_placeholder_names.add(name)
             spec = parse_formula(
                 formula,
                 extra_agg_names=custom_agg_names,
@@ -1064,6 +1043,53 @@ async def enrich_query(
             )
             await _flatten_spec(spec, name)
         processed_filters.append(rewritten)
+
+    # DEV-1367: Validate every column reference in every user-supplied filter
+    # at translate time. Catches bare-name typos, dotted refs to unreachable
+    # models, and dotted refs whose leaf column doesn't exist on the resolved
+    # target — all surfaced as filter-aware ``ValueError``s instead of
+    # cryptic database-runtime errors.
+    #
+    # Validation runs on the *post-transform-extraction* filter strings so
+    # that ``parse_filter`` (called inside ``_validate_filter_string``)
+    # doesn't hit raw transform calls like ``time_shift(...)`` or
+    # ``last(change(...))`` that it cannot parse — those have already been
+    # rewritten to ``_ftN`` placeholders by ``extract_filter_transforms``.
+    # The placeholders are added to ``extra_allowed_bare_names`` so the
+    # bare-name guard doesn't false-flag them. Error messages reference
+    # the *original* filter string for human-friendly diagnostics.
+    #
+    # Skipped in ``strict_joins=False`` mode because re-rooted CTEs
+    # legitimately remap filter strings in ways that would otherwise trip
+    # the upfront check.
+    if strict_joins and resolve_model is not None:
+        # Bare names that are valid post-aggregation references at the
+        # filter site: transform placeholders (``_ftN``) + every query-
+        # level named measure (computed columns the filter is allowed to
+        # post-filter on, e.g. ``filters=["amount_change < 0"]`` where
+        # ``amount_change`` is the ``name`` of a ``ModelMeasure`` in
+        # ``query.measures``).
+        query_measure_names = {
+            m.name for m in (query.measures or []) if m.name
+        }
+        extra_allowed = transform_placeholder_names | query_measure_names
+        n_model_filters = len(model.filters)
+        for i, (orig, rewritten) in enumerate(
+            zip(all_filter_strs, processed_filters)
+        ):
+            site = "model filter" if i < n_model_filters else "query filter"
+            await _validate_filter_string(
+                filter_str=rewritten,
+                original_str=orig,
+                site=site,
+                source_model=model,
+                source_alias=model_name_str,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+                resolve_model=resolve_model,
+                named_queries=named_queries,
+                extra_allowed_bare_names=extra_allowed,
+            )
 
     has_first_or_last = any(m.aggregation in ("first", "last") for m in measures)
 
