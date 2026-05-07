@@ -49,6 +49,8 @@ clickhouse-sqlalchemy = {version = ">=0.3", optional = true}
 duckdb = ">=0.9"
 duckdb-engine = ">=0.13"
 jafgen = "^0.4.14"
+# rank-bm25 is unmaintained (last release 0.2.2); revisit if supply-chain
+# concerns arise — the actively-maintained alternative is `bm25s`.
 rank-bm25 = ">=0.2.2"
 dbt-core = {version = ">=1.7", optional = true}
 

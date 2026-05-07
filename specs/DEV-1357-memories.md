@@ -1,10 +1,24 @@
 # DEV-1357: Agent memory layer (unified `Memory` surface)
 
-> **Historical note (DEV-1365):** The `RecallHit.match_count: int` field
-> documented in §4.1 below has been replaced by `RecallHit.score: float`,
-> and the ranker switched from raw entity-overlap count to BM25 over
-> canonical entity sets. The rest of the v2 surface in this spec
-> (entities, resolver rules, save/forget/recall semantics) is current.
+> **Historical note (DEV-1365):** This spec captures the v2 surface as
+> originally shipped. Two parts of it have since been superseded — read
+> them as historical context, not current behaviour:
+>
+> - **Recall ranking algorithm.** §2 ("current ranking is plain match
+>   count"), §5.3 ("rank by intersection size between input and stored"),
+>   and any other intersection-count phrasing in this document are
+>   replaced by BM25 over canonical entity sets (`rank_bm25.BM25Plus`,
+>   in `slayer/memories/ranker.py`). The explicit overlap-on-≥1-entity
+>   rule still applies, but it's now a pre-filter, not the rank key.
+> - **`RecallHit` response shape.** §5.4's `RecallHit.match_count: int`
+>   is replaced by `RecallHit.score: float` (BM25 relevance score, higher
+>   is better). The other `RecallHit` / `RecallResponse` fields are
+>   unchanged.
+>
+> Resolver rules, canonical-entity forms, save/forget semantics, the
+> `inspect_model` integration, storage layout, and surface mapping
+> (MCP / REST / CLI / Python client) all remain current as documented
+> below.
 
 ## 1. Goal
 
