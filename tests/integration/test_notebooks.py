@@ -37,15 +37,11 @@ def _ensure_jaffle_db():
     if JAFFLE_DB_PATH.exists():
         return  # Reuse existing DB
 
-    pytest.importorskip("duckdb")
-
-    from slayer.demo.jaffle_shop import DemoDependencyError, build_jaffle_shop
+    from slayer.demo.jaffle_shop import build_jaffle_shop
 
     JAFFLE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         build_jaffle_shop(db_path=str(JAFFLE_DB_PATH), years=3)
-    except DemoDependencyError as e:
-        pytest.skip(f"Jaffle shop prerequisite missing: {e}")
     except (FileNotFoundError, RuntimeError) as e:
         pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 

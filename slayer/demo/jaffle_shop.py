@@ -1,19 +1,17 @@
 """Jaffle Shop demo dataset — bundled, one-command setup.
 
-Generates ~1 year of synthetic coffee-shop data via ``jafgen``, loads it into
+Generates ~4 years of synthetic coffee-shop data via ``jafgen``, loads it into
 a DuckDB file under the storage directory, registers a ``jaffle_shop``
-datasource, and (optionally) auto-ingests SLayer models.
+datasource, and (optionally) auto-ingests SLayer models. The default of 4
+years is chosen so all six jafgen stores have orders — the latest one (Los
+Angeles) opens on simulated day 1107 (~3.03 years).
 
 All operations are idempotent: re-running with the same storage path reuses
 the existing DuckDB file instead of regenerating.
-
-``jafgen`` is a git-only install (not on PyPI) — missing-dependency errors
-surface with a ready-to-copy install command rather than an ImportError.
 """
 
 import datetime as dt
 import os
-import shutil
 import subprocess
 import tempfile
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -39,11 +37,18 @@ CENTS_COLUMNS = {
     "supplies": ["cost"],
 }
 
-LOAD_ORDER = ["customers", "stores", "products", "orders", "order_items", "supplies", "tweets"]
+LOAD_ORDER = ["customers", "stores", "products", "orders", "items", "supplies", "tweets"]
 
 # CSV file stem (jafgen's ``raw_<name>.csv``) → DuckDB table name. Names match
 # 1:1 today, but the mapping keeps the seam open if jafgen renames a file.
 TABLE_NAMES = {name: name for name in LOAD_ORDER}
+
+# Tables whose CSV column names diverge from our schema. Maps CSV name → SQL
+# column name. Loader uses an explicit column-list INSERT for these tables so
+# the rename is applied without depending on column ordering.
+COLUMN_RENAMES = {
+    "orders": {"customer": "customer_id"},
+}
 
 # Date columns per table — used to shift jafgen's hard-coded 2018-09-01 epoch
 # forward so the demo data always ends near "today".
@@ -52,11 +57,6 @@ DATE_COLUMNS = {
     "orders": ["ordered_at"],
     "tweets": ["tweeted_at"],
 }
-
-JAFGEN_GIT_URL = (
-    "git+https://github.com/rossbowen/jaffle-shop-generator.git"
-    "@09557a1118b000071f8171aa97d54d5029bf0f0b"
-)
 
 JAFFLE_SCHEMA_SQL = """\
 CREATE TABLE customers (
@@ -89,11 +89,10 @@ CREATE TABLE orders (
     order_total DOUBLE NOT NULL
 );
 
-CREATE TABLE order_items (
+CREATE TABLE items (
     id VARCHAR PRIMARY KEY,
     order_id VARCHAR NOT NULL REFERENCES orders(id),
-    sku VARCHAR NOT NULL REFERENCES products(sku),
-    quantity INTEGER NOT NULL
+    sku VARCHAR NOT NULL REFERENCES products(sku)
 );
 
 CREATE TABLE supplies (
@@ -114,41 +113,6 @@ CREATE TABLE tweets (
 """
 
 
-class DemoDependencyError(RuntimeError):
-    """Raised when ``duckdb`` or ``jafgen`` is missing.
-
-    The message is pre-formatted with install hints; callers should print it
-    as-is and exit with a non-zero status.
-    """
-
-
-def _missing_deps_message(missing: List[str]) -> str:
-    lines = ["The Jaffle Shop demo requires additional dependencies:"]
-    if "duckdb" in missing:
-        lines.append("  - duckdb: pip install duckdb")
-    if "jafgen" in missing:
-        lines.append(f"  - jafgen:  pip install '{JAFGEN_GIT_URL}'")
-    lines.append("")
-    lines.append("Install the missing packages and re-run the command.")
-    return "\n".join(lines)
-
-
-def check_dependencies() -> None:
-    """Verify that ``duckdb`` and ``jafgen`` are available.
-
-    Raises ``DemoDependencyError`` with a ready-to-print install hint if not.
-    """
-    missing: List[str] = []
-    try:
-        import duckdb  # noqa: F401
-    except ImportError:
-        missing.append("duckdb")
-    if shutil.which("jafgen") is None:
-        missing.append("jafgen")
-    if missing:
-        raise DemoDependencyError(_missing_deps_message(missing))
-
-
 def resolve_demo_db_path(storage_path: str) -> str:
     """Return the path to the Jaffle Shop DuckDB file for a given storage path.
 
@@ -159,11 +123,9 @@ def resolve_demo_db_path(storage_path: str) -> str:
     return os.path.join(demo_dir, "jaffle_shop.duckdb")
 
 
-def generate_data(output_dir: str, years: int = 1, days: int = 0) -> str:
+def generate_data(output_dir: str, years: int = 1) -> str:
     """Run ``jafgen`` into ``output_dir``; return the path to the generated CSVs."""
     cmd = ["jafgen", str(max(1, years))]
-    if days > 0:
-        cmd.extend(["--days", str(days)])
     try:
         subprocess.run(args=cmd, cwd=output_dir, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
@@ -241,25 +203,27 @@ def load_data(
         quoted_csv_path = csv_path.replace("'", "''")
 
         cents_cols = CENTS_COLUMNS.get(csv_name, [])
-        if cents_cols:
-            conn.execute(
-                f"CREATE TEMP VIEW _{table}_raw AS SELECT * FROM read_csv_auto('{quoted_csv_path}')"
-            )
-            columns = [row[0] for row in conn.execute(f"DESCRIBE _{table}_raw").fetchall()]
+        renames = COLUMN_RENAMES.get(csv_name, {})
+        conn.execute(
+            f"CREATE TEMP VIEW _{table}_raw AS SELECT * FROM read_csv_auto('{quoted_csv_path}')"
+        )
+        try:
+            csv_columns = [row[0] for row in conn.execute(f"DESCRIBE _{table}_raw").fetchall()]
             select_parts = []
-            for col in columns:
+            target_columns = []
+            for col in csv_columns:
+                target_col = renames.get(col, col)
+                target_columns.append(target_col)
                 if col in cents_cols:
-                    select_parts.append(f"CAST({col} AS DOUBLE) / 100.0 AS {col}")
+                    select_parts.append(f"CAST({col} AS DOUBLE) / 100.0 AS {target_col}")
                 else:
-                    select_parts.append(col)
+                    select_parts.append(f"{col} AS {target_col}")
             conn.execute(
-                f"INSERT INTO {table} SELECT {', '.join(select_parts)} FROM _{table}_raw"
+                f"INSERT INTO {table} ({', '.join(target_columns)}) "
+                f"SELECT {', '.join(select_parts)} FROM _{table}_raw"
             )
+        finally:
             conn.execute(f"DROP VIEW _{table}_raw")
-        else:
-            conn.execute(
-                f"INSERT INTO {table} SELECT * FROM read_csv_auto('{quoted_csv_path}')"
-            )
 
     shift_dates_to_today(conn)
 
@@ -279,8 +243,8 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
     fk_checks = {
         "orders->customers": "SELECT COUNT(*) FROM orders WHERE customer_id NOT IN (SELECT id FROM customers)",
         "orders->stores": "SELECT COUNT(*) FROM orders WHERE store_id NOT IN (SELECT id FROM stores)",
-        "order_items->orders": "SELECT COUNT(*) FROM order_items WHERE order_id NOT IN (SELECT id FROM orders)",
-        "order_items->products": "SELECT COUNT(*) FROM order_items WHERE sku NOT IN (SELECT sku FROM products)",
+        "items->orders": "SELECT COUNT(*) FROM items WHERE order_id NOT IN (SELECT id FROM orders)",
+        "items->products": "SELECT COUNT(*) FROM items WHERE sku NOT IN (SELECT sku FROM products)",
         "supplies->products": "SELECT COUNT(*) FROM supplies WHERE sku NOT IN (SELECT sku FROM products)",
         "tweets->customers": "SELECT COUNT(*) FROM tweets WHERE user_id NOT IN (SELECT id FROM customers)",
     }
@@ -307,7 +271,7 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
     return results
 
 
-def build_jaffle_shop(db_path: str, *, years: int = 1, force: bool = False) -> bool:
+def build_jaffle_shop(db_path: str, *, years: int = 4, force: bool = False) -> bool:
     """Generate the Jaffle Shop DuckDB at ``db_path`` if it does not already exist.
 
     Returns ``True`` if the DB was freshly generated, ``False`` if an existing
@@ -316,18 +280,15 @@ def build_jaffle_shop(db_path: str, *, years: int = 1, force: bool = False) -> b
     ``MAX(orders.ordered_at) == today`` — this keeps the demo feeling current
     even when the DB was built days or weeks earlier.
     """
-    if os.path.exists(db_path) and not force:
-        import duckdb
+    import duckdb
 
+    if os.path.exists(db_path) and not force:
         conn = duckdb.connect(db_path)
         try:
             shift_dates_to_today(conn)
         finally:
             conn.close()
         return False
-
-    check_dependencies()
-    import duckdb
 
     if force and os.path.exists(db_path):
         os.remove(db_path)
@@ -348,7 +309,7 @@ def ensure_demo_datasource(
     *,
     storage_path: str,
     name: str = DEMO_NAME,
-    years: int = 1,
+    years: int = 4,
     ingest_models: bool = True,
     assume_yes: bool = True,
 ) -> Tuple[DatasourceConfig, List[SlayerModel], bool]:
@@ -364,8 +325,6 @@ def ensure_demo_datasource(
     (whether ingested this call or from a previous run), so callers can report
     the true state of the demo. ``db_built`` is True when the DuckDB file was
     freshly generated this call.
-
-    Raises ``DemoDependencyError`` when duckdb/jafgen is missing.
     """
     db_path = resolve_demo_db_path(storage_path)
     db_built = build_jaffle_shop(db_path=db_path, years=years)

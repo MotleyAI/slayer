@@ -5,9 +5,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("duckdb")
-pytest.importorskip("jafgen")
-
 import duckdb
 
 from slayer.demo.jaffle_shop import (
@@ -68,15 +65,15 @@ class TestJaffleShopDuckDB:
         ).fetchone()[0]
         assert orphans == 0
 
-    def test_fk_order_items_to_orders(self, jaffle_db: duckdb.DuckDBPyConnection) -> None:
+    def test_fk_items_to_orders(self, jaffle_db: duckdb.DuckDBPyConnection) -> None:
         orphans = jaffle_db.execute(
-            "SELECT COUNT(*) FROM order_items WHERE order_id NOT IN (SELECT id FROM orders)"
+            "SELECT COUNT(*) FROM items WHERE order_id NOT IN (SELECT id FROM orders)"
         ).fetchone()[0]
         assert orphans == 0
 
-    def test_fk_order_items_to_products(self, jaffle_db: duckdb.DuckDBPyConnection) -> None:
+    def test_fk_items_to_products(self, jaffle_db: duckdb.DuckDBPyConnection) -> None:
         orphans = jaffle_db.execute(
-            "SELECT COUNT(*) FROM order_items WHERE sku NOT IN (SELECT sku FROM products)"
+            "SELECT COUNT(*) FROM items WHERE sku NOT IN (SELECT sku FROM products)"
         ).fetchone()[0]
         assert orphans == 0
 
@@ -118,17 +115,17 @@ class TestJaffleShopDuckDB:
         assert len(rows) > 0
         assert all(revenue > 0 for _, revenue in rows)
 
-    def test_join_order_items_to_products_and_orders(self, jaffle_db: duckdb.DuckDBPyConnection) -> None:
-        """Three-way join: order_items links orders to products."""
+    def test_join_items_to_products_and_orders(self, jaffle_db: duckdb.DuckDBPyConnection) -> None:
+        """Three-way join: items links orders to products."""
         rows = jaffle_db.execute("""
-            SELECT o.id as order_id, p.name as product_name, oi.quantity
-            FROM order_items oi
+            SELECT o.id as order_id, p.name as product_name, p.price
+            FROM items oi
             JOIN orders o ON oi.order_id = o.id
             JOIN products p ON oi.sku = p.sku
             LIMIT 10
         """).fetchall()
         assert len(rows) > 0
-        assert all(qty > 0 for _, _, qty in rows)
+        assert all(price > 0 for _, _, price in rows)
 
     def test_verify_function(self, jaffle_db: duckdb.DuckDBPyConnection) -> None:
         results = verify(jaffle_db)

@@ -352,8 +352,8 @@ examples:
     datasources_create_parser.add_argument(
         "--years",
         type=int,
-        default=1,
-        help="(demo only) Years of synthetic data to generate (default: 1)",
+        default=4,
+        help="(demo only) Years of synthetic data to generate (default: 4)",
     )
     datasources_create_parser.add_argument(
         "-y",
@@ -605,7 +605,7 @@ def _prepare_demo(args, storage, *, stream=None):
     Writes status messages to ``stream`` (default: stderr) so stdio-based
     transports (``slayer mcp``) remain protocol-safe.
     """
-    from slayer.demo import DemoDependencyError, ensure_demo_datasource
+    from slayer.demo import ensure_demo_datasource
 
     out = stream if stream is not None else sys.stderr
     storage_path = args.storage or args.models_dir or _STORAGE_DEFAULT
@@ -616,9 +616,6 @@ def _prepare_demo(args, storage, *, stream=None):
             ingest_models=True,
             assume_yes=True,
         )
-    except DemoDependencyError as e:
-        print(str(e), file=out)
-        sys.exit(1)
     except Exception as e:
         print(f"Failed to set up the Jaffle Shop demo: {e}", file=out)
         sys.exit(1)
@@ -1132,7 +1129,6 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
     from slayer.demo import (
         DEFAULT_TIME_DIMENSIONS,
         DEMO_NAME,
-        DemoDependencyError,
         build_jaffle_shop,
         resolve_demo_db_path,
     )
@@ -1143,9 +1139,6 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
 
     try:
         db_built = build_jaffle_shop(db_path=db_path, years=max(1, args.years))
-    except DemoDependencyError as e:
-        print(str(e))
-        sys.exit(1)
     except Exception as e:
         print(f"Failed to build Jaffle Shop demo: {e}")
         sys.exit(1)
