@@ -45,31 +45,6 @@ class AmbiguousModelError(SlayerError):
         )
 
 
-class SchemaDriftError(SlayerError):
-    """Raised by ``SlayerQueryEngine.execute()`` when a query fails and the
-    failure was attributed to schema drift via ``validate_models``.
-
-    Carries the touched model names, the structured ``to_delete`` payload
-    (filtered to those models), and the original DBAPI exception (set as
-    ``__cause__`` for tracebacks).
-    """
-
-    def __init__(
-        self,
-        models: List[str],
-        to_delete: List[Any],
-        original: BaseException,
-    ) -> None:
-        self.models = list(models)
-        self.to_delete = list(to_delete)
-        super().__init__(
-            f"Schema drift detected on models {sorted(self.models)}. "
-            f"Run validate_models to inspect the {len(self.to_delete)} "
-            f"pending delete(s)."
-        )
-        self.__cause__ = original
-
-
 class EntityResolutionError(SlayerError):
     """Raised when an entity reference cannot be resolved to a canonical
     ``<datasource>.<model>[.<leaf>]`` form (DEV-1357).
@@ -93,3 +68,28 @@ class MemoryNotFoundError(SlayerError):
     def __init__(self, identifier: int) -> None:
         self.identifier = int(identifier)
         super().__init__(f"No memory with id '{self.identifier}'.")
+
+
+class SchemaDriftError(SlayerError):
+    """Raised by ``SlayerQueryEngine.execute()`` when a query fails and the
+    failure was attributed to schema drift via ``validate_models``.
+
+    Carries the touched model names, the structured ``to_delete`` payload
+    (filtered to those models), and the original DBAPI exception (set as
+    ``__cause__`` for tracebacks).
+    """
+
+    def __init__(
+        self,
+        models: List[str],
+        to_delete: List[Any],
+        original: BaseException,
+    ) -> None:
+        self.models = list(models)
+        self.to_delete = list(to_delete)
+        super().__init__(
+            f"Schema drift detected on models {sorted(self.models)}. "
+            f"Run validate_models to inspect the {len(self.to_delete)} "
+            f"pending delete(s)."
+        )
+        self.__cause__ = original

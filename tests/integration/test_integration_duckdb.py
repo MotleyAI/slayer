@@ -74,14 +74,14 @@ def _duckdb_env_storage(tmp_path_factory):
         sql_table="orders",
         data_source="testduckdb",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
 
-            Column(name="total", sql="amount", type=DataType.NUMBER),
-            Column(name="avg_amount", sql="amount", type=DataType.NUMBER),
+            Column(name="total", sql="amount", type=DataType.DOUBLE),
+            Column(name="avg_amount", sql="amount", type=DataType.DOUBLE),
         ],
     )
     customers_model = SlayerModel(
@@ -89,9 +89,9 @@ def _duckdb_env_storage(tmp_path_factory):
         sql_table="customers",
         data_source="testduckdb",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
-            Column(name="region", sql="region", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="region", sql="region", type=DataType.TEXT),
 
         ],
     )
@@ -590,7 +590,7 @@ class TestDuckDBStatAggregations:
         existing = await duckdb_env.storage.get_model("orders")
         assert existing is not None
         cols = list(existing.columns) + [
-            Column(name="log_amount", sql="log10(amount)", type=DataType.NUMBER),
+            Column(name="log_amount", sql="log10(amount)", type=DataType.DOUBLE),
         ]
         await duckdb_env.save_model(
             SlayerModel(
@@ -672,13 +672,13 @@ async def planets_duckdb_env(tmp_path):
             sql_table="planets",
             data_source="planets_duckdb",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="mass", sql="mass", type=DataType.DOUBLE),
                 Column(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
         )
@@ -734,9 +734,9 @@ async def duckdb_derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="b_tbl",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
-                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
+                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.DOUBLE),
             ],
         )
     )
@@ -746,13 +746,13 @@ async def duckdb_derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="a_tbl",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="bar", sql="bar", type=DataType.NUMBER),
-                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.DOUBLE),
+                Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
                 Column(
                     name="ratio_using_derived",
                     sql="a_tbl.bar / b_tbl.foo_normalized",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
             joins=[ModelJoin(target_model="b_tbl", join_pairs=[["b_id", "id"]])],

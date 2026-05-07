@@ -85,9 +85,9 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 columns=[
                     Column(
-                        name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="region", sql="region", type=DataType.STRING),
+                    Column(name="region", sql="region", type=DataType.TEXT),
                 ],
             )
         )
@@ -100,13 +100,13 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 columns=[
                     Column(
-                        name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="sku", sql="sku", type=DataType.STRING),
+                    Column(name="sku", sql="sku", type=DataType.TEXT),
                     Column(
                         name="description",
                         sql="description",
-                        type=DataType.STRING,
+                        type=DataType.TEXT,
                     ),
                 ],
             )
@@ -120,14 +120,14 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 columns=[
                     Column(
-                        name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="amount", sql="amount", type=DataType.NUMBER),
-                    Column(name="status", sql="status", type=DataType.STRING),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                    Column(name="status", sql="status", type=DataType.TEXT),
                     Column(
                         name="customer_id",
                         sql="customer_id",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                     ),
                 ],
                 joins=[

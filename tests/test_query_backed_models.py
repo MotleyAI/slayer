@@ -22,10 +22,10 @@ def _orders_model() -> SlayerModel:
         sql_table="orders_t",
         data_source="ds",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
-            Column(name="region", sql="region", type=DataType.STRING),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="region", sql="region", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
         ],
     )
 
@@ -306,7 +306,7 @@ class TestSaveModelGuards:
                 name="bad",
                 data_source="ds",
                 source_queries=[SlayerQuery(source_model="orders")],
-                columns=[Column(name="x", sql="x", type=DataType.STRING)],
+                columns=[Column(name="x", sql="x", type=DataType.TEXT)],
             )
             with pytest.raises(ValueError, match="auto-generated and must not be supplied"):
                 await engine.save_model(m)
@@ -561,7 +561,7 @@ class TestQueryBackedColumnTypes:
             await storage.save_model(SlayerModel(
                 name="t_b", sql_table="orders_t", data_source="ds_b",
                 columns=[
-                    Column(name="amount", sql="amount", type=DataType.NUMBER),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 ],
             ))
             engine = SlayerQueryEngine(storage=storage)
@@ -618,7 +618,7 @@ class TestQueryBackedColumnTypes:
             await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=ds_path))
             await storage.save_model(SlayerModel(
                 name="t", sql_table="orders_t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
             import sqlite3
             conn = sqlite3.connect(ds_path)
@@ -743,11 +743,11 @@ class TestBackingQuerySQLCacheHygiene:
             await storage.save_datasource(DatasourceConfig(name="ds_b", type="sqlite", database=":memory:"))
             await storage.save_model(SlayerModel(
                 name="t_a", sql_table="t_a", data_source="ds_a",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
             await storage.save_model(SlayerModel(
                 name="t_b", sql_table="t_b", data_source="ds_b",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
             engine = SlayerQueryEngine(storage=storage)
 
@@ -1063,10 +1063,10 @@ class TestSiblingStageJoins:
             sql_table="orders_t",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-                Column(name="region", sql="region", type=DataType.STRING),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="region", sql="region", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         ))
         await storage.save_model(SlayerModel(
@@ -1074,8 +1074,8 @@ class TestSiblingStageJoins:
             sql_table="customers_t",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
             ],
         ))
         return SlayerQueryEngine(storage=storage), tmp

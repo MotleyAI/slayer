@@ -49,7 +49,8 @@ class TestClickHouseIntTypes:
     )
     def test_int_maps_to_number_not_float(self, sa_type_cls):
         sa_type = sa_type_cls()
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        # DEV-1361: integer family now narrows to DataType.INT.
+        assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
 
@@ -57,7 +58,7 @@ class TestClickHouseFloatTypes:
     @pytest.mark.parametrize("sa_type_cls", [ch_types.Float32, ch_types.Float64])
     def test_float_maps_to_number_and_is_float(self, sa_type_cls):
         sa_type = sa_type_cls()
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
         assert _sa_type_is_float(sa_type) is True
 
 
@@ -71,7 +72,9 @@ class TestClickHouseDecimalScaleAware:
     )
     def test_decimal_scale_decides_float(self, scale, expect_float):
         sa_type = ch_types.Decimal(10, scale)
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        # DEV-1361: scale=0 → INT, scale>0 → DOUBLE.
+        expected = DataType.DOUBLE if expect_float else DataType.INT
+        assert _sa_type_to_data_type(sa_type) is expected
         assert _sa_type_is_float(sa_type) is expect_float
 
 
@@ -92,44 +95,45 @@ class TestClickHouseDateTimeTypes:
 class TestClickHouseNullableUnwrap:
     def test_nullable_int(self):
         sa_type = ch_types.Nullable(ch_types.Int32())
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
     def test_nullable_float(self):
         sa_type = ch_types.Nullable(ch_types.Float64())
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
         assert _sa_type_is_float(sa_type) is True
 
     def test_nullable_decimal_float(self):
         sa_type = ch_types.Nullable(ch_types.Decimal(10, 2))
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
         assert _sa_type_is_float(sa_type) is True
 
     def test_nullable_decimal_integer(self):
         sa_type = ch_types.Nullable(ch_types.Decimal(10, 0))
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        # DEV-1361: scale=0 narrows to INT.
+        assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
 
 class TestClickHouseLowCardinalityUnwrap:
     def test_low_cardinality_string(self):
         sa_type = ch_types.LowCardinality(ch_types.String())
-        assert _sa_type_to_data_type(sa_type) is DataType.STRING
+        assert _sa_type_to_data_type(sa_type) is DataType.TEXT
 
     def test_low_cardinality_int(self):
         sa_type = ch_types.LowCardinality(ch_types.Int32())
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
 
 class TestClickHouseNestedWrappers:
     def test_low_cardinality_nullable_string(self):
         sa_type = ch_types.LowCardinality(ch_types.Nullable(ch_types.String()))
-        assert _sa_type_to_data_type(sa_type) is DataType.STRING
+        assert _sa_type_to_data_type(sa_type) is DataType.TEXT
 
     def test_nullable_low_cardinality_int(self):
         sa_type = ch_types.Nullable(ch_types.LowCardinality(ch_types.Int32()))
-        assert _sa_type_to_data_type(sa_type) is DataType.NUMBER
+        assert _sa_type_to_data_type(sa_type) is DataType.INT
         assert _sa_type_is_float(sa_type) is False
 
 
@@ -175,7 +179,7 @@ class TestUnmappedTypeWarning:
         with caplog.at_level(logging.WARNING, logger="slayer.engine.ingestion"):
             for _ in range(3):
                 result = _sa_type_to_data_type(_FakeUnknownType())
-                assert result is DataType.STRING
+                assert result is DataType.TEXT
 
         relevant = [
             r for r in caplog.records if "FAKEUNKNOWNTYPE" in r.getMessage().upper()

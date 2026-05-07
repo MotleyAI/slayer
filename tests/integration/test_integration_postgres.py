@@ -122,13 +122,13 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
             sql_table="orders",
             data_source="testpg",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
 
-                Column(name="total", sql="amount", type=DataType.NUMBER),
-                Column(name="avg_amount", sql="amount", type=DataType.NUMBER),
+                Column(name="total", sql="amount", type=DataType.DOUBLE),
+                Column(name="avg_amount", sql="amount", type=DataType.DOUBLE),
             ],
         )
         customers_model = SlayerModel(
@@ -136,9 +136,9 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
             sql_table="customers",
             data_source="testpg",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="region", sql="region", type=DataType.TEXT),
 
             ],
         )
@@ -431,23 +431,23 @@ async def pg_cross_model_env(postgresql):
         name="orders", sql_table="orders", data_source="testpg",
         default_time_dimension="created_at",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
 
-            Column(name="total", sql="amount", type=DataType.NUMBER),
+            Column(name="total", sql="amount", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     )))
     run_sync(storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="testpg",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
 
-            Column(name="avg_score", sql="score", type=DataType.NUMBER),
+            Column(name="avg_score", sql="score", type=DataType.DOUBLE),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -983,7 +983,7 @@ class TestPostgresStatAggregations:
         existing = await pg_env.storage.get_model("orders")
         assert existing is not None
         cols = list(existing.columns) + [
-            Column(name="log_amount", sql="log10(amount)", type=DataType.NUMBER),
+            Column(name="log_amount", sql="log10(amount)", type=DataType.DOUBLE),
         ]
         await pg_env.save_model(
             SlayerModel(
@@ -1070,13 +1070,13 @@ async def planets_pg_env(postgresql):
             sql_table="planets",
             data_source="planets_pg",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="mass", sql="mass", type=DataType.DOUBLE),
                 Column(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
         )
@@ -1137,9 +1137,9 @@ async def pg_derived_chain_env(postgresql):
             data_source="testpg",
             sql_table="b_tbl",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
-                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
+                Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.DOUBLE),
             ],
         )
     )
@@ -1149,14 +1149,14 @@ async def pg_derived_chain_env(postgresql):
             data_source="testpg",
             sql_table="a_tbl",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="bar", sql="bar", type=DataType.NUMBER),
-                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
-                Column(name="raw_a", sql="raw_a", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.DOUBLE),
+                Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+                Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
                 Column(
                     name="ratio_using_derived",
                     sql="a_tbl.bar / b_tbl.foo_normalized",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
             joins=[ModelJoin(target_model="b_tbl", join_pairs=[["b_id", "id"]])],

@@ -217,6 +217,43 @@ class TestDatasources:
         assert resp.status_code == 404
 
 
+class TestIngestEndpoint:
+    """``POST /ingest`` translates user-correctable config errors into 422s.
+
+    SQLAlchemy connect/auth/introspection failures already round-trip as
+    422; non-SQLAlchemy ``ValueError``s raised before the driver is involved
+    (e.g. unresolved ``${ENV_VAR}`` placeholder, malformed connection
+    string) used to escape as 500. CodeRabbit thread #103/r3196378592.
+    """
+
+    def test_unresolved_env_var_returns_422(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Save a datasource whose database path references an undefined env
+        # var. ``DatasourceConfig.resolve_env_vars()`` raises ValueError when
+        # the var is missing — that's the path we want to catch.
+        monkeypatch.delenv("DEV1361_NOT_SET", raising=False)
+        resp = client.post(
+            "/datasources",
+            json={
+                "name": "broken_ds",
+                "type": "sqlite",
+                "database": "${DEV1361_NOT_SET}",
+            },
+        )
+        assert resp.status_code == 200
+
+        resp = client.post("/ingest", json={"datasource": "broken_ds"})
+        assert resp.status_code == 422
+        body = resp.json()
+        assert "broken_ds" in body["detail"]
+        assert "DEV1361_NOT_SET" in body["detail"]
+
+    def test_unknown_datasource_returns_404(self, client: TestClient) -> None:
+        resp = client.post("/ingest", json={"datasource": "nope"})
+        assert resp.status_code == 404
+
+
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
         resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "*:count"}]})
@@ -227,7 +264,7 @@ class TestQuery:
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         ))
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "revenue:sum"}]})
         assert resp.status_code == 400
@@ -272,7 +309,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_model(SlayerModel(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
         )
         resp = client.post("/models", json={
@@ -306,7 +343,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_model(SlayerModel(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
             ))
         )
         resp = client.post("/models", json={
@@ -407,7 +444,7 @@ class TestOpenAPI400Documentation:
         ))
         run_sync(storage.save_model(SlayerModel(
             name="upstream", sql_table="t", data_source="ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
         )))
         # Save a query-backed model whose stage does NOT have dry_run set.
         setup_resp = client.post("/models", json={

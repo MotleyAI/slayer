@@ -102,7 +102,7 @@ class TestSlayerModel:
             name="test",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="x", type=DataType.STRING)],
+            columns=[Column(name="x", type=DataType.TEXT)],
         )
         assert model.get_column("x") is not None
         assert model.get_column("y") is None
@@ -128,7 +128,7 @@ class TestSlayerModel:
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[Column(name="revenue", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
                 measures=[ModelMeasure(name="cumsum", formula="revenue:sum")],
             )
 
@@ -202,22 +202,22 @@ class TestSlayerModel:
 
     def test_dimension_sql_multidot_auto_converted(self) -> None:
         """Multi-dot references in dimension sql are auto-converted."""
-        dim = Column(name="region_name", sql="customers.regions.name", type=DataType.NUMBER)
+        dim = Column(name="region_name", sql="customers.regions.name", type=DataType.DOUBLE)
         assert dim.sql == "customers__regions.name"
 
     def test_dimension_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in dimension sql are left as-is."""
-        dim = Column(name="cust_name", sql="customers.name", type=DataType.NUMBER)
+        dim = Column(name="cust_name", sql="customers.name", type=DataType.DOUBLE)
         assert dim.sql == "customers.name"
 
     def test_measure_sql_multidot_auto_converted(self) -> None:
         """Multi-dot references in measure sql are auto-converted."""
-        meas = Column(name="region_count", sql="customers.regions.id", type=DataType.NUMBER)
+        meas = Column(name="region_count", sql="customers.regions.id", type=DataType.DOUBLE)
         assert meas.sql == "customers__regions.id"
 
     def test_measure_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in measure sql are left as-is."""
-        meas = Column(name="total", sql="orders.amount", type=DataType.NUMBER)
+        meas = Column(name="total", sql="orders.amount", type=DataType.DOUBLE)
         assert meas.sql == "orders.amount"
 
     def test_filter_multidot_three_levels_auto_converted(self) -> None:
@@ -239,7 +239,7 @@ class TestSlayerModel:
 
     def test_measure_name_allows_double_underscore(self) -> None:
         """__ is allowed in measure names — used for flattened join paths in virtual models."""
-        meas = Column(name="stores__tax_rate_sum", sql="tax_rate", type=DataType.NUMBER)
+        meas = Column(name="stores__tax_rate_sum", sql="tax_rate", type=DataType.DOUBLE)
         assert meas.name == "stores__tax_rate_sum"
 
     def test_query_name_rejects_double_underscore(self) -> None:
@@ -262,14 +262,14 @@ class TestSlayerModel:
     def test_measure_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in measure names."""
         with pytest.raises(ValueError, match="must not contain '.'"):
-            Column(name="customers.name_sum", sql="name", type=DataType.NUMBER)
+            Column(name="customers.name_sum", sql="name", type=DataType.DOUBLE)
 
     def test_dimension_name_without_dot_allowed(self) -> None:
         dim = Column(name="region_name")
         assert dim.name == "region_name"
 
     def test_measure_name_without_dot_allowed(self) -> None:
-        meas = Column(name="order_total_sum", sql="total", type=DataType.NUMBER)
+        meas = Column(name="order_total_sum", sql="total", type=DataType.DOUBLE)
         assert meas.name == "order_total_sum"
 
 
@@ -288,8 +288,8 @@ class TestWithinListDuplicateNames:
                 sql_table="t",
                 data_source="test",
                 columns=[
-                    Column(name="revenue", sql="amount", type=DataType.NUMBER),
-                    Column(name="revenue", sql="net_amount", type=DataType.NUMBER),
+                    Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                    Column(name="revenue", sql="net_amount", type=DataType.DOUBLE),
                 ],
             )
 
@@ -299,7 +299,7 @@ class TestWithinListDuplicateNames:
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
                 measures=[
                     ModelMeasure(name="aov", formula="amount:sum / *:count"),
                     ModelMeasure(name="aov", formula="amount:avg"),
@@ -319,7 +319,7 @@ class TestWithinListDuplicateNames:
                 name="orders",
                 sql_table="t",
                 data_source="test",
-                columns=[Column(name="amount", sql="amount", type=DataType.NUMBER)],
+                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
                 measures=[ModelMeasure(formula="amount:sum")],
             )
 
@@ -329,8 +329,8 @@ class TestWithinListDuplicateNames:
             sql_table="t",
             data_source="test",
             columns=[
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
             ],
             measures=[
                 ModelMeasure(name="aov", formula="amount:sum / *:count"),
@@ -543,7 +543,7 @@ class TestAllowedAggregationsBuildTimeValidation:
                 columns=[
                     Column(
                         name="id",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                         primary_key=True,
                         allowed_aggregations=["sum"],
                     ),
@@ -558,7 +558,7 @@ class TestAllowedAggregationsBuildTimeValidation:
             columns=[
                 Column(
                     name="id",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     primary_key=True,
                     allowed_aggregations=["count", "count_distinct"],
                 ),
@@ -575,7 +575,7 @@ class TestAllowedAggregationsBuildTimeValidation:
                 columns=[
                     Column(
                         name="status",
-                        type=DataType.STRING,
+                        type=DataType.TEXT,
                         allowed_aggregations=["sum"],
                     ),
                 ],
@@ -590,7 +590,7 @@ class TestAllowedAggregationsBuildTimeValidation:
             columns=[
                 Column(
                     name="status",
-                    type=DataType.STRING,
+                    type=DataType.TEXT,
                     allowed_aggregations=["min", "max", "count"],
                 ),
             ],
@@ -645,7 +645,7 @@ class TestAllowedAggregationsBuildTimeValidation:
             columns=[
                 Column(
                     name="status",
-                    type=DataType.STRING,
+                    type=DataType.TEXT,
                     allowed_aggregations=["custom_concat"],
                 ),
             ],
@@ -662,7 +662,7 @@ class TestAllowedAggregationsBuildTimeValidation:
                 columns=[
                     Column(
                         name="revenue",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                         allowed_aggregations=["bogus_agg"],
                     ),
                 ],
@@ -685,7 +685,7 @@ class TestAllowedAggregationsBuildTimeValidation:
                 columns=[
                     Column(
                         name="status",
-                        type=DataType.STRING,
+                        type=DataType.TEXT,
                         allowed_aggregations=["sum"],
                     ),
                 ],
@@ -706,7 +706,7 @@ class TestAllowedAggregationsBuildTimeValidation:
                 columns=[
                     Column(
                         name="id",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                         primary_key=True,
                         allowed_aggregations=["custom_sum"],
                     ),
@@ -745,13 +745,6 @@ class TestDatasourceConfig:
     def test_sqlite_connection_string(self) -> None:
         ds = DatasourceConfig(name="test", type="sqlite", database="/tmp/test.db")
         assert ds.get_connection_string() == "sqlite:////tmp/test.db"
-
-
-class TestDataType:
-    def test_python_type(self) -> None:
-        assert DataType.STRING.python_type is str
-        assert DataType.COUNT.python_type is int
-        assert DataType.SUM.python_type is float
 
 
 class TestTimeGranularity:
@@ -947,11 +940,11 @@ class TestAggregationValidation:
 
 class TestDimensionLabel:
     def test_label_optional(self) -> None:
-        d = Column(name="status", sql="status", type=DataType.NUMBER)
+        d = Column(name="status", sql="status", type=DataType.DOUBLE)
         assert d.label is None
 
     def test_label_set(self) -> None:
-        d = Column(name="status", sql="status", label="Order Status", type=DataType.NUMBER)
+        d = Column(name="status", sql="status", label="Order Status", type=DataType.DOUBLE)
         assert d.label == "Order Status"
 
     def test_label_in_model_dump(self) -> None:
@@ -967,34 +960,34 @@ class TestDimensionLabel:
 
 class TestMeasureLabel:
     def test_label_optional(self) -> None:
-        m = Column(name="revenue", sql="amount", type=DataType.NUMBER)
+        m = Column(name="revenue", sql="amount", type=DataType.DOUBLE)
         assert m.label is None
 
     def test_label_set(self) -> None:
-        m = Column(name="revenue", sql="amount", label="Total Revenue", type=DataType.NUMBER)
+        m = Column(name="revenue", sql="amount", label="Total Revenue", type=DataType.DOUBLE)
         assert m.label == "Total Revenue"
 
 
 class TestMeasureFilter:
     def test_filter_optional(self) -> None:
-        m = Column(name="revenue", sql="amount", type=DataType.NUMBER)
+        m = Column(name="revenue", sql="amount", type=DataType.DOUBLE)
         assert m.filter is None
 
     def test_filter_set(self) -> None:
-        m = Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+        m = Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         assert m.filter == "status = 'active'"
 
     def test_filter_multidot_autoconvert(self) -> None:
-        m = Column(name="x", sql="amount", filter="a.b.c = 1", type=DataType.NUMBER)
+        m = Column(name="x", sql="amount", filter="a.b.c = 1", type=DataType.DOUBLE)
         assert "a__b.c" in m.filter
 
     def test_filter_in_model_dump(self) -> None:
-        m = Column(name="x", sql="amount", filter="status = 'active'", type=DataType.NUMBER)
+        m = Column(name="x", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         data = m.model_dump(exclude_none=True)
         assert data["filter"] == "status = 'active'"
 
     def test_filter_excluded_when_none(self) -> None:
-        m = Column(name="x", sql="amount", type=DataType.NUMBER)
+        m = Column(name="x", sql="amount", type=DataType.DOUBLE)
         data = m.model_dump(exclude_none=True)
         assert "filter" not in data
 
@@ -1426,3 +1419,89 @@ class TestStripSourceModelPrefix:
         )
         stripped = q.strip_source_model_prefix()
         assert stripped.measures[0].formula == "reorders.revenue:sum"
+
+
+class TestColumnTypeLenientValidator:
+    """DEV-1361: a Pydantic ``before``-validator absorbs legacy lowercase type
+    spellings on ``Column.type`` so old MCP/REST input keeps working after
+    the sqlglot-aligned enum rename. No deprecation warning."""
+
+    def test_legacy_string_maps_to_text(self) -> None:
+        col = Column(name="x", type="string")
+        assert col.type == DataType.TEXT
+
+    def test_legacy_number_maps_to_double(self) -> None:
+        col = Column(name="x", type="number")
+        assert col.type == DataType.DOUBLE
+
+    def test_legacy_integer_maps_to_int(self) -> None:
+        col = Column(name="x", type="integer")
+        assert col.type == DataType.INT
+
+    def test_legacy_time_maps_to_timestamp(self) -> None:
+        col = Column(name="x", type="time")
+        assert col.type == DataType.TIMESTAMP
+
+    def test_legacy_date_maps_to_date(self) -> None:
+        col = Column(name="x", type="date")
+        assert col.type == DataType.DATE
+
+    def test_legacy_boolean_maps_to_boolean(self) -> None:
+        col = Column(name="x", type="boolean")
+        assert col.type == DataType.BOOLEAN
+
+    def test_pseudo_type_count_drops_to_default(self) -> None:
+        # Aggregation pseudo-types are gone; the lenient validator drops them
+        # and the field falls through to its default.
+        col = Column(name="x", type="count")
+        assert col.type == DataType.TEXT  # current default
+
+    @pytest.mark.parametrize("legacy", ["sum", "avg", "min", "max", "last", "count_distinct"])
+    def test_other_pseudo_types_drop_to_default(self, legacy: str) -> None:
+        col = Column(name="x", type=legacy)
+        assert col.type == DataType.TEXT
+
+    def test_uppercase_passes_through(self) -> None:
+        # Already-canonical strings round-trip unchanged (validator no-op).
+        col = Column(name="x", type="DOUBLE")
+        assert col.type == DataType.DOUBLE
+
+    def test_enum_value_passes_through(self) -> None:
+        col = Column(name="x", type=DataType.INT)
+        assert col.type == DataType.INT
+
+
+class TestModelMeasureType:
+    """DEV-1361: ModelMeasure gains an optional ``type`` declaring the formula's
+    result type. None (default) → no cast. Set value → outer CAST on the
+    aggregation expression. Surfaces transparently on
+    ``SlayerQuery.measures[i]`` since query measures use the same shape."""
+
+    def test_default_is_none(self) -> None:
+        m = ModelMeasure(formula="*:count")
+        assert m.type is None
+
+    def test_explicit_double(self) -> None:
+        m = ModelMeasure(formula="*:count / orders:count", type=DataType.DOUBLE)
+        assert m.type == DataType.DOUBLE
+
+    def test_explicit_int(self) -> None:
+        m = ModelMeasure(formula="*:count", type=DataType.INT)
+        assert m.type == DataType.INT
+
+    def test_legacy_string_value_absorbed(self) -> None:
+        # Lenient validator on ModelMeasure.type mirrors Column.type.
+        m = ModelMeasure(formula="*:count", type="number")
+        assert m.type == DataType.DOUBLE
+
+    def test_pseudo_type_drops_to_none(self) -> None:
+        m = ModelMeasure(formula="*:count", type="count")
+        assert m.type is None  # default
+
+    def test_query_inline_measure_accepts_type(self) -> None:
+        # SlayerQuery.measures[i] is a ModelMeasure — same shape, same field.
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "*:count / orders:count", "name": "ratio", "type": "DOUBLE"}],
+        )
+        assert q.measures[0].type == DataType.DOUBLE

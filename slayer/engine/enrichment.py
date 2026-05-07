@@ -350,6 +350,14 @@ async def enrich_query(
             filter_sql = resolved[0].sql
             filter_columns = list(resolved[0].columns)
 
+        # DEV-1361: pull through the source Column's declared type so the
+        # generator can wrap the pre-aggregation expression in CAST when the
+        # column's sql is non-bare (e.g. json_extract).
+        column_type = (
+            measure_def.type
+            if measure_def is not None and isinstance(measure_def.type, DataType)
+            else None
+        )
         measures.append(
             EnrichedMeasure(
                 name=canonical_name,
@@ -366,6 +374,7 @@ async def enrich_query(
                 source_measure_name=measure_name,
                 filter_sql=filter_sql,
                 filter_columns=filter_columns,
+                column_type=column_type,
             )
         )
         known_aliases[alias_key] = alias
@@ -704,6 +713,10 @@ async def enrich_query(
                     aggregation_name=spec.aggregation_name,
                     agg_kwargs=spec.agg_kwargs,
                 )
+                # DEV-1361: propagate declared result type into the inner
+                # EnrichedMeasure so _build_combined wraps the agg in CAST.
+                if qfield.type is not None:
+                    cm.measure.type = qfield.type
                 cross_model_measures.append(cm)
                 continue
 
@@ -744,6 +757,12 @@ async def enrich_query(
                 for m in measures:
                     if m.name == target_name:
                         m.label = qfield.label
+            # DEV-1361: declared result type → wrap aggregation in CAST.
+            if qfield.type is not None:
+                target_name = qfield.name if (qfield.name and qfield.name != canonical_name) else canonical_name
+                for m in measures:
+                    if m.name == target_name:
+                        m.type = qfield.type
 
         else:
             await _flatten_spec(spec, field_name)
@@ -755,6 +774,20 @@ async def enrich_query(
                 for t in enriched_transforms:
                     if t.alias == alias:
                         t.label = qfield.label
+            # DEV-1361: declared result type → wrap arithmetic / transform
+            # expression in CAST at the outer SELECT.
+            if qfield.type is not None:
+                alias = f"{model_name_str}.{field_name}"
+                for e in enriched_expressions:
+                    if e.alias == alias:
+                        e.type = qfield.type
+                # Pure-transform measures (lag/lead/cumsum/...) end up in
+                # ``enriched_transforms``, not ``enriched_expressions``;
+                # propagate the declared type there too so the window-layer
+                # emitter can wrap in CAST.
+                for t in enriched_transforms:
+                    if t.alias == alias:
+                        t.type = qfield.type
 
     # --- Enrich ORDER BY formulas as hidden fields ---
     for item in query.order or []:
@@ -998,7 +1031,7 @@ async def _resolve_dimensions(
             EnrichedDimension(
                 name=dim_ref.name,
                 sql=expanded_sql,
-                type=dim_def.type if dim_def else DataType.STRING,
+                type=dim_def.type if dim_def else DataType.TEXT,
                 alias=f"{model_name_str}.{dim_ref.full_name}",
                 model_name=effective_model,
                 label=dim_ref.label or (dim_def.label if dim_def else None),

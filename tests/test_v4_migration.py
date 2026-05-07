@@ -36,18 +36,18 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 def test_current_slayer_model_version_is_v4() -> None:
     """The bump itself: storage writes v4, period."""
-    assert mig.CURRENT_VERSIONS["SlayerModel"] == 4
+    assert mig.CURRENT_VERSIONS["SlayerModel"] == 5
 
 
 def test_slayer_model_default_version_is_v4() -> None:
     """A freshly-constructed SlayerModel carries the bumped version."""
     m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-    assert m.version == 4
+    assert m.version == 5
 
 
 def test_slayer_model_dump_writes_v4() -> None:
     m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-    assert m.model_dump(mode="json", exclude_none=True)["version"] == 4
+    assert m.model_dump(mode="json", exclude_none=True)["version"] == 5
 
 
 # --- Pure dict converter ----------------------------------------------------
@@ -60,7 +60,7 @@ def test_v3_to_v4_converter_passes_through_when_data_source_set() -> None:
         "sql_table": "orders",
         "data_source": "warehouse",
     })
-    assert out["version"] == 4
+    assert out["version"] == 5
     assert out["data_source"] == "warehouse"
 
 
@@ -102,6 +102,21 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     and lives under ``models/<data_source>/<name>.yaml`` after migration.
     """
     base = str(tmp_path)
+    # DEV-1361 storage-driven type refinement requires the datasource entry
+    # to be present when the migrated dict has refineable DOUBLE base columns.
+    # A live SQLite stub satisfies that contract for this layout-migration test.
+    live_db_path = os.path.join(base, "live.db")
+    with sqlite3.connect(live_db_path) as live:
+        live.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY)")
+        live.commit()
+    ds_dir = os.path.join(base, "datasources")
+    os.makedirs(ds_dir, exist_ok=True)
+    with open(os.path.join(ds_dir, "warehouse.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+        yaml.dump(
+            {"name": "warehouse", "type": "sqlite", "database": live_db_path, "version": 1},
+            f,
+        )
+
     legacy_models_dir = os.path.join(base, "models")
     os.makedirs(legacy_models_dir, exist_ok=True)
     with open(os.path.join(legacy_models_dir, "orders.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
@@ -118,7 +133,7 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     loaded = await storage.get_model("orders", data_source="warehouse")
     assert loaded is not None
     assert loaded.data_source == "warehouse"
-    assert loaded.version == 4
+    assert loaded.version == 5
 
     # Old flat file is gone; new namespaced file exists.
     assert not os.path.exists(os.path.join(legacy_models_dir, "orders.yaml"))
@@ -275,7 +290,7 @@ async def test_sqlite_legacy_schema_migrates_to_composite_pk(tmp_path) -> None:
     loaded = await storage.get_model("orders", data_source="warehouse")
     assert loaded is not None
     assert loaded.data_source == "warehouse"
-    assert loaded.version == 4
+    assert loaded.version == 5
 
     # New schema: composite PK on (data_source, name).
     with sqlite3.connect(db_path) as conn:

@@ -67,8 +67,8 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="customers",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
             ],
         )
     )
@@ -78,10 +78,10 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="orders",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 Column(
-                    name="customer_id", sql="customer_id", type=DataType.NUMBER
+                    name="customer_id", sql="customer_id", type=DataType.DOUBLE
                 ),
             ],
             joins=[
@@ -142,8 +142,8 @@ class TestSchemaDriftErrorWrap:
             sql="SELECT id, this_col_does_not_exist AS amount FROM orders",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         )
         await engine.storage.save_model(broken_model)

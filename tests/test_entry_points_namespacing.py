@@ -59,7 +59,7 @@ def _model(name: str, data_source: str) -> SlayerModel:
         name=name,
         sql_table=name,
         data_source=data_source,
-        columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
     )
 
 

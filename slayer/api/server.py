@@ -1,6 +1,7 @@
 """FastAPI server for SLayer."""
 
 import logging
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -105,8 +106,15 @@ class RecallMemoriesRequest(BaseModel):
     max_queries: Optional[int] = 2
 
 
+def _slayer_version() -> str:
+    try:
+        return _pkg_version("motley-slayer")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"
+
+
 def create_app(storage: StorageBackend) -> FastAPI:
-    app = FastAPI(title="SLayer", version="0.1.0")
+    app = FastAPI(title="SLayer", version=_slayer_version())
     engine = SlayerQueryEngine(storage=storage)
 
     # Mount MCP server over SSE at /mcp
@@ -440,14 +448,33 @@ def create_app(storage: StorageBackend) -> FastAPI:
             422: {
                 "description": (
                     "Datasource configuration error — connection refused, "
-                    "authentication failed, or schema introspection failed. "
-                    "Original DB error message in ``detail``."
+                    "authentication failed, schema introspection failed, or "
+                    "the datasource config itself is invalid (unresolved "
+                    "``${ENV_VAR}`` placeholder, malformed connection string, "
+                    "etc.). Original error message in ``detail``."
                 ),
             },
         },
     )
     async def ingest(request: IngestRequest) -> Dict[str, Any]:
-        ds = await storage.get_datasource(request.datasource)
+        # Strip newlines from the user-controlled datasource name before it
+        # reaches the log or the response detail (S5145 — log-injection
+        # surface). The ds value already round-tripped through Pydantic so
+        # this is purely defence-in-depth.
+        safe_ds_name = request.datasource.replace("\r", "").replace("\n", "")
+        try:
+            ds = await storage.get_datasource(request.datasource)
+        except ValueError as exc:
+            # ``storage.get_datasource`` calls ``resolve_env_vars()`` which
+            # raises ValueError for unresolved ``${ENV_VAR}`` placeholders.
+            # User-correctable, so 422 not 500.
+            logger.exception(
+                "Ingest config error for datasource %r", safe_ds_name
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"Ingest failed for datasource '{safe_ds_name}': {exc}",
+            )
         if ds is None:
             raise HTTPException(
                 status_code=404, detail=f"Datasource '{request.datasource}' not found"
@@ -455,11 +482,6 @@ def create_app(storage: StorageBackend) -> FastAPI:
         from sqlalchemy.exc import SQLAlchemyError
         from slayer.engine.ingestion import ingest_datasource_idempotent
 
-        # Strip newlines from the user-controlled datasource name before it
-        # reaches the log or the response detail (S5145 — log-injection
-        # surface). The ds value already round-tripped through Pydantic so
-        # this is purely defence-in-depth.
-        safe_ds_name = request.datasource.replace("\r", "").replace("\n", "")
         try:
             result = await ingest_datasource_idempotent(
                 datasource=ds,
@@ -477,6 +499,17 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 detail=(
                     f"Ingest failed for datasource '{safe_ds_name}': {exc}"
                 ),
+            )
+        except ValueError as exc:
+            # Non-SQLAlchemy config errors raised inside the introspection
+            # path (e.g. malformed connection string, missing required
+            # field) — user-correctable.
+            logger.exception(
+                "Ingest config error for datasource %r", safe_ds_name
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"Ingest failed for datasource '{safe_ds_name}': {exc}",
             )
         if result.errors:
             # Partial failure — at least one model failed to persist.

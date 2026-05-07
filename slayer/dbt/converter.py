@@ -99,7 +99,7 @@ def _convert_dimension(dim: DbtDimension) -> Column:
     if dim.type == "time":
         data_type = DataType.TIMESTAMP
     else:
-        data_type = DataType.STRING
+        data_type = DataType.TEXT
 
     sql = dim.expr if dim.expr and dim.expr != dim.name else None
 
@@ -167,7 +167,7 @@ def _convert_measures(
         columns.append(Column(
             name=col_name,
             sql=sql,
-            type=DataType.NUMBER,
+            type=DataType.DOUBLE,
             format=_FLOAT_FORMAT,
         ))
 
@@ -383,7 +383,7 @@ class DbtToSlayerConverter:
                 if col_name not in entity_col_names:
                     cols.append(Column(
                         name=col_name,
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                         primary_key=True,
                         description=entity.description,
                     ))
@@ -403,7 +403,7 @@ class DbtToSlayerConverter:
             if pe_expr not in entity_col_names:
                 cols.append(Column(
                     name=pe_expr,
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     primary_key=True,
                 ))
                 entity_col_names.add(pe_expr)
@@ -576,7 +576,7 @@ class DbtToSlayerConverter:
         slayer_model.columns.append(Column(
             name=col_name,
             sql=underlying_sql,
-            type=DataType.NUMBER,
+            type=DataType.DOUBLE,
             format=_FLOAT_FORMAT,
             filter=slayer_filter,
         ))

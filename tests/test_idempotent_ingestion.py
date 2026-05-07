@@ -176,9 +176,9 @@ class TestAdditive:
                 data_source="ds",
                 columns=[
                     Column(
-                        name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="region", sql="region", type=DataType.STRING),
+                    Column(name="region", sql="region", type=DataType.TEXT),
                 ],
             )
         )
@@ -189,13 +189,13 @@ class TestAdditive:
                 data_source="ds",
                 columns=[
                     Column(
-                        name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="amount", sql="amount", type=DataType.NUMBER),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
                     Column(
                         name="customer_id",
                         sql="customer_id",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                     ),
                 ],
                 joins=[],
@@ -272,9 +272,9 @@ class TestSkipNonSqlTableModes:
                 data_source="ds",
                 columns=[
                     Column(
-                        name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="amount", sql="amount", type=DataType.NUMBER),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 ],
             )
         )

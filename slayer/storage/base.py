@@ -3,12 +3,17 @@
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
+from slayer.storage import migrations as _mig
+from slayer.storage.type_refinement import (
+    has_refineable_columns,
+    refine_dict_with_live_schema,
+)
 
 
 def storage_base_dir(path: str) -> str:
@@ -127,6 +132,76 @@ class StorageBackend(ABC):
         name: str,
         data_source: Optional[str] = None,
     ) -> bool: ...
+
+    # ---- shared model lookup / load helpers --------------------------------
+
+    async def _resolve_target_or_none(
+        self,
+        name: str,
+        *,
+        data_source: Optional[str],
+    ) -> Optional[Tuple[str, str]]:
+        """Sanitize inputs and resolve a bare ``name`` to its
+        ``(data_source, name)`` identity via the priority list.
+
+        Returns ``None`` when ``data_source`` was omitted and no model with
+        that bare name exists in storage. Both ``get_model`` and
+        ``delete_model`` consume this; backends only need to handle the
+        case where the resolved record was deleted out from under them
+        between the lookup and the I/O.
+        """
+        _validate_path_component(name, kind="model name")
+        if data_source is not None:
+            _validate_path_component(data_source, kind="data_source")
+            return (data_source, name)
+        identity = await self.resolve_model_identity(name)
+        if identity is None:
+            return None
+        return identity
+
+    async def _migrate_and_refine_on_load(
+        self,
+        *,
+        name: str,
+        data: Any,
+        data_source: str,
+    ) -> SlayerModel:
+        """DEV-1361 storage-driven type refinement, shared across backends.
+
+        When the on-disk model dict is below the current ``SlayerModel`` version,
+        run the migrator chain to bring it forward, then introspect the live
+        datasource and refine ``DOUBLE → INT`` for base columns whose live SQL
+        type is integer. Validates the resulting dict into a ``SlayerModel``
+        and persists it back via ``save_model`` when a migration ran, so
+        subsequent loads short-circuit on the version check.
+
+        Hard-fails with ``ValueError`` when a migration ran, the dict has
+        refineable DOUBLE base columns, and the named datasource entry is
+        missing — silently skipping refinement and persisting the v5 dict
+        would leave base integer columns stuck at ``DOUBLE`` forever. Models
+        with no refineable columns (text-only, query-backed, sql-mode, or
+        already-narrowed) load without needing a live datasource.
+        """
+        write_back = False
+        if isinstance(data, dict):
+            pre_version = int(data.get("version", 1))
+            if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
+                data = _mig.migrate("SlayerModel", data)
+                write_back = True
+                if has_refineable_columns(data):
+                    ds = await self.get_datasource(data_source)
+                    if ds is None:
+                        raise ValueError(
+                            f"Cannot migrate model {name!r}: datasource "
+                            f"{data_source!r} is unavailable for type "
+                            f"refinement. Restore the datasource entry or "
+                            f"remove the stale model file."
+                        )
+                    refine_dict_with_live_schema(data, ds)
+        model = SlayerModel.model_validate(data)
+        if write_back:
+            await self.save_model(model)
+        return model
 
     # ---- datasource CRUD ---------------------------------------------------
 

@@ -23,20 +23,20 @@ class TestInferAggregatedFormat:
             sql_table="orders",
             data_source="test_ds",
             columns=[
-                Column(name="status", sql="status", type=DataType.STRING),
+                Column(name="status", sql="status", type=DataType.TEXT),
                 Column(
                     name="revenue",
                     sql="amount",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
                 ),
                 Column(
                     name="margin",
                     sql="margin",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                     format=NumberFormat(type=NumberFormatType.PERCENT),
                 ),
-                Column(name="quantity", sql="quantity", type=DataType.NUMBER),
+                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
             ],
         )
 

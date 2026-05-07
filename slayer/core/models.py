@@ -7,7 +7,12 @@ from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import BaseModel, BeforeValidator, Field, field_validator, model_validator
 
-from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType, JoinType
+from slayer.core.enums import (
+    BUILTIN_AGGREGATIONS,
+    DataType,
+    JoinType,
+    _coerce_legacy_datatype,
+)
 from slayer.core.format import NumberFormat
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
@@ -101,7 +106,7 @@ class Column(BaseModel):
     """
     name: str
     sql: Optional[str] = None
-    type: DataType = DataType.STRING
+    type: DataType = DataType.TEXT
     primary_key: bool = False
     description: Optional[str] = None
     label: Optional[str] = None
@@ -110,6 +115,20 @@ class Column(BaseModel):
     allowed_aggregations: Optional[List[str]] = None
     filter: Optional[str] = None  # Applied inside CASE WHEN at aggregation time only
     meta: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_type(cls, data: Any) -> Any:
+        # DEV-1361: absorb legacy lowercase ``type`` strings ("string",
+        # "number", "integer", "time", "date", "boolean") and drop pseudo-
+        # type values ("count"/"sum"/...) so older agent input keeps working.
+        if isinstance(data, dict) and "type" in data:
+            mapped = _coerce_legacy_datatype(data["type"])
+            if mapped is None:
+                data = {k: v for k, v in data.items() if k != "type"}
+            elif mapped is not data["type"]:
+                data = {**data, "type": mapped}
+        return data
 
     @field_validator("name")
     @classmethod
@@ -148,7 +167,22 @@ class ModelMeasure(BaseModel):
     name: Optional[str] = None
     label: Optional[str] = None
     description: Optional[str] = None
+    type: Optional[DataType] = None
     meta: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_type(cls, data: Any) -> Any:
+        # DEV-1361: ``type`` declares the formula's result data type for outer
+        # CAST emission at aggregation time. Legacy lowercase strings get
+        # mapped to canonical values; pseudo-types drop to None.
+        if isinstance(data, dict) and "type" in data:
+            mapped = _coerce_legacy_datatype(data["type"])
+            if mapped is None:
+                data = {k: v for k, v in data.items() if k != "type"}
+            elif mapped is not data["type"]:
+                data = {**data, "type": mapped}
+        return data
 
     @field_validator("name")
     @classmethod

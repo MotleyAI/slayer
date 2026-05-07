@@ -24,10 +24,10 @@ def _orders_model(measures=None) -> SlayerModel:
         sql_table="public.orders",
         data_source="test",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
-            Column(name="revenue", sql="amount", type=DataType.NUMBER),
-            Column(name="tax", sql="tax_amount", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            Column(name="tax", sql="tax_amount", type=DataType.DOUBLE),
         ],
         measures=measures or [],
     )

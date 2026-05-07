@@ -62,9 +62,9 @@ async def _save_a_b(storage: YAMLStorage, *, a_columns: list[Column]) -> SlayerM
         data_source="test",
         sql_table="B",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
-            Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
+            Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.DOUBLE),
         ],
     )
     await storage.save_model(model_b)
@@ -73,9 +73,9 @@ async def _save_a_b(storage: YAMLStorage, *, a_columns: list[Column]) -> SlayerM
         data_source="test",
         sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="bar", sql="bar", type=DataType.NUMBER),
-            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="bar", sql="bar", type=DataType.DOUBLE),
+            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
             *a_columns,
         ],
         joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
@@ -115,7 +115,7 @@ async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None
         Column(
             name="ratio_using_derived",
             sql="A.bar / B.foo_normalized",
-            type=DataType.NUMBER,
+            type=DataType.DOUBLE,
         ),
     ])
     query = SlayerQuery(
@@ -138,7 +138,7 @@ async def test_cross_model_base_column_still_works(tmp_path) -> None:
     """Sanity: columns that reference a *base* joined column still work."""
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
-        Column(name="ratio_using_base", sql="A.bar / B.foo_raw", type=DataType.NUMBER),
+        Column(name="ratio_using_base", sql="A.bar / B.foo_raw", type=DataType.DOUBLE),
     ])
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="ratio_using_base")])
     sql = await _gen_sql(engine, query, model_a)
@@ -157,10 +157,10 @@ async def test_local_columnsql_references_local_derived(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="raw_a", sql="raw_a", type=DataType.NUMBER),
-            Column(name="c1", sql="raw_a + 1", type=DataType.NUMBER),
-            Column(name="c2", sql="A.c1 * 2", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="c1", sql="raw_a + 1", type=DataType.DOUBLE),
+            Column(name="c2", sql="A.c1 * 2", type=DataType.DOUBLE),
         ],
     )
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="c2")])
@@ -186,11 +186,11 @@ async def test_chain_of_three_derived_columns(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="raw_a", sql="raw_a", type=DataType.NUMBER),
-            Column(name="c1", sql="raw_a + 1", type=DataType.NUMBER),
-            Column(name="c2", sql="A.c1 + 10", type=DataType.NUMBER),
-            Column(name="c3", sql="A.c2 + 100", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="c1", sql="raw_a + 1", type=DataType.DOUBLE),
+            Column(name="c2", sql="A.c1 + 10", type=DataType.DOUBLE),
+            Column(name="c3", sql="A.c2 + 100", type=DataType.DOUBLE),
         ],
     )
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="c3")])
@@ -220,18 +220,18 @@ async def test_joined_model_derived_referencing_further_joined(tmp_path) -> None
     model_c = SlayerModel(
         name="C", data_source="test", sql_table="C",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
         ],
     )
     await storage.save_model(model_c)
     model_b = SlayerModel(
         name="B", data_source="test", sql_table="B",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="c_id", sql="c_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c_id", sql="c_id", type=DataType.DOUBLE),
             # Derived on B referencing C (B joins C).
-            Column(name="b_display", sql="C.name", type=DataType.STRING),
+            Column(name="b_display", sql="C.name", type=DataType.TEXT),
         ],
         joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
     )
@@ -239,8 +239,8 @@ async def test_joined_model_derived_referencing_further_joined(tmp_path) -> None
     model_a = SlayerModel(
         name="A", data_source="test", sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
     )
@@ -270,9 +270,9 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         data_source="test",
         sql_table="C",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="raw_c", sql="raw_c", type=DataType.NUMBER),
-            Column(name="x_derived", sql="raw_c * 2", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_c", sql="raw_c", type=DataType.DOUBLE),
+            Column(name="x_derived", sql="raw_c * 2", type=DataType.DOUBLE),
         ],
     )
     await storage.save_model(model_c)
@@ -281,8 +281,8 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         data_source="test",
         sql_table="B",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="c_id", sql="c_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c_id", sql="c_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
     )
@@ -292,15 +292,15 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
-            Column(name="bar", sql="bar", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+            Column(name="bar", sql="bar", type=DataType.DOUBLE),
             # Use the path-style ref (B.C.x_derived) — A's column's sql can use
             # either dot or __ form.
             Column(
                 name="ratio_multihop",
                 sql="A.bar / B__C.x_derived",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             ),
         ],
         joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
@@ -329,9 +329,9 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="regions",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name_raw", sql="name_raw", type=DataType.STRING),
-            Column(name="name_upper", sql="UPPER(name_raw)", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name_raw", sql="name_raw", type=DataType.TEXT),
+            Column(name="name_upper", sql="UPPER(name_raw)", type=DataType.TEXT),
         ],
     )
     await storage.save_model(regions)
@@ -340,8 +340,8 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="customers",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
     )
@@ -351,8 +351,8 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="warehouses",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
     )
@@ -362,13 +362,13 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="orders",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="warehouse_id", sql="warehouse_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="warehouse_id", sql="warehouse_id", type=DataType.DOUBLE),
             Column(
                 name="diamond_concat",
                 sql="customers__regions.name_upper || '/' || warehouses__regions.name_upper",
-                type=DataType.STRING,
+                type=DataType.TEXT,
             ),
         ],
         joins=[
@@ -398,9 +398,9 @@ async def test_cycle_detection(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="c1", sql="A.c2 + 1", type=DataType.NUMBER),
-            Column(name="c2", sql="A.c1 - 1", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c1", sql="A.c2 + 1", type=DataType.DOUBLE),
+            Column(name="c2", sql="A.c1 - 1", type=DataType.DOUBLE),
         ],
     )
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="c1")])
@@ -428,8 +428,8 @@ async def test_self_reference_terminates(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="bar", sql="bar", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="bar", sql="bar", type=DataType.DOUBLE),
         ],
     )
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="bar")])
@@ -448,7 +448,7 @@ async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
         Column(
             name="mixed",
             sql="A.bar / B.foo_raw + B.foo_normalized",
-            type=DataType.NUMBER,
+            type=DataType.DOUBLE,
         ),
     ])
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="mixed")])
@@ -474,7 +474,12 @@ async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "B", "foo_normalized")
-    assert "SUM(B.foo_raw / 100.0)" in norm or "SUM(B.foo_raw/100.0)" in norm
+    # DEV-1361: a non-bare ``Column.sql`` ("foo_raw / 100.0") may be wrapped
+    # in CAST when its type is set, e.g. ``SUM(CAST(B.foo_raw / 100.0 AS …))``.
+    # Either form is acceptable — the assertion only pins the inlining
+    # behavior, not exact CAST-vs-no-CAST shape.
+    assert "B.foo_raw / 100.0" in norm or "B.foo_raw/100.0" in norm
+    assert "SUM(" in norm
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +494,7 @@ async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_p
         Column(
             name="ratio_using_derived",
             sql="A.bar / B.foo_normalized",
-            type=DataType.NUMBER,
+            type=DataType.DOUBLE,
         ),
     ])
     query = SlayerQuery(
@@ -544,12 +549,12 @@ async def test_columnsql_references_unrelated_table_alias_left_alone(tmp_path) -
             "JOIN totally_external t ON a.id = t.a_id"
         ),
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="bar", sql="bar", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="bar", sql="bar", type=DataType.DOUBLE),
             # References the unrelated alias from inside the inline sql.
             # Wait — actually this is a same-model column so the expander
             # has no business touching it. Use a literal external reference:
-            Column(name="passthrough", sql="bar + 1", type=DataType.NUMBER),
+            Column(name="passthrough", sql="bar + 1", type=DataType.DOUBLE),
         ],
     )
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="passthrough")])
@@ -575,9 +580,9 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
         data_source="test",
         sql_table="B",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
-            Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
+            Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.DOUBLE),
         ],
     )
     await storage.save_model(model_b)
@@ -586,10 +591,10 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
         data_source="test",
         sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="bar", sql="bar", type=DataType.NUMBER),
-            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
-            Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),  # same name on A!
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="bar", sql="bar", type=DataType.DOUBLE),
+            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+            Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),  # same name on A!
         ],
         joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
     )
@@ -615,9 +620,9 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
 
 
 _DEFAULT_C_COLUMNS: list[Column] = [
-    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-    Column(name="raw_c", sql="raw_c", type=DataType.NUMBER),
-    Column(name="x_derived", sql="raw_c * 2", type=DataType.NUMBER),
+    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+    Column(name="raw_c", sql="raw_c", type=DataType.DOUBLE),
+    Column(name="x_derived", sql="raw_c * 2", type=DataType.DOUBLE),
 ]
 
 
@@ -634,8 +639,8 @@ async def _save_a_b_c(
     model_b = SlayerModel(
         name="B", data_source="test", sql_table="B",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="c_id", sql="c_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c_id", sql="c_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
     )
@@ -643,9 +648,9 @@ async def _save_a_b_c(
     model_a = SlayerModel(
         name="A", data_source="test", sql_table="A",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.NUMBER),
-            Column(name="bar", sql="bar", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+            Column(name="bar", sql="bar", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
     )
@@ -739,7 +744,7 @@ async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     path through ``_maybe_expand`` from regular dims; pin it."""
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b_c(storage, c_columns=[
-        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
         Column(name="raw_ts", sql="raw_ts", type=DataType.TIMESTAMP),
         # Derived passthrough — we just want it derived-shaped (sql != name).
         Column(name="shifted_ts", sql="raw_ts + 0", type=DataType.TIMESTAMP),
@@ -775,22 +780,22 @@ async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
     panels = SlayerModel(
         name="solar_panels", data_source="test", sql_table="solar_panels",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="energy_out", sql="energy_out", type=DataType.NUMBER),
-            Column(name="energy_in", sql="energy_in", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="energy_out", sql="energy_out", type=DataType.DOUBLE),
+            Column(name="energy_in", sql="energy_in", type=DataType.DOUBLE),
             # The derived column from the issue's repro.
             Column(name="panel_efficiency",
                    sql="energy_out / energy_in",
-                   type=DataType.NUMBER),
+                   type=DataType.DOUBLE),
         ],
     )
     await storage.save_model(panels)
     arrays = SlayerModel(
         name="solar_arrays", data_source="test", sql_table="solar_arrays",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="primary_panel_id", sql="primary_panel_id", type=DataType.NUMBER),
-            Column(name="area", sql="area", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="primary_panel_id", sql="primary_panel_id", type=DataType.DOUBLE),
+            Column(name="area", sql="area", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="solar_panels",
                          join_pairs=[["primary_panel_id", "id"]])],
@@ -829,17 +834,17 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
     regions = SlayerModel(
         name="regions", data_source="test", sql_table="regions",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name_raw", sql="name_raw", type=DataType.STRING),
-            Column(name="name_upper", sql="UPPER(name_raw)", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name_raw", sql="name_raw", type=DataType.TEXT),
+            Column(name="name_upper", sql="UPPER(name_raw)", type=DataType.TEXT),
         ],
     )
     await storage.save_model(regions)
     customers = SlayerModel(
         name="customers", data_source="test", sql_table="customers",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
     )
@@ -847,8 +852,8 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
     warehouses = SlayerModel(
         name="warehouses", data_source="test", sql_table="warehouses",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
     )
@@ -856,9 +861,9 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
     orders = SlayerModel(
         name="orders", data_source="test", sql_table="orders",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-            Column(name="warehouse_id", sql="warehouse_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+            Column(name="warehouse_id", sql="warehouse_id", type=DataType.DOUBLE),
         ],
         joins=[
             ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
@@ -901,8 +906,8 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
 async def test_generated_sql_parses(tmp_path, scenario) -> None:
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
-        Column(name="ratio_using_base", sql="A.bar / B.foo_raw", type=DataType.NUMBER),
-        Column(name="ratio_using_derived", sql="A.bar / B.foo_normalized", type=DataType.NUMBER),
+        Column(name="ratio_using_base", sql="A.bar / B.foo_raw", type=DataType.DOUBLE),
+        Column(name="ratio_using_derived", sql="A.bar / B.foo_normalized", type=DataType.DOUBLE),
     ])
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name=scenario)])
     sql = await _gen_sql(engine, query, model_a)
@@ -935,9 +940,9 @@ async def _orders_customers_storage(tmp_path) -> YAMLStorage:
     await storage.save_model(SlayerModel(
         name="customers", data_source="test", sql_table="customers",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region", sql="region", type=DataType.STRING),
-            Column(name="tier", sql="tier", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region", sql="region", type=DataType.TEXT),
+            Column(name="tier", sql="tier", type=DataType.TEXT),
         ],
     ))
     return storage
@@ -957,15 +962,15 @@ async def _save_orders_with_is_eu(
     test-specific columns / joins / filters via the keyword args.
     """
     base_cols: list[Column] = [
-        Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-        Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
     ]
     if include_amount:
-        base_cols.append(Column(name="amount", sql="amount", type=DataType.NUMBER))
+        base_cols.append(Column(name="amount", sql="amount", type=DataType.DOUBLE))
     base_cols.append(Column(
         name="is_eu",
         sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-        type=DataType.NUMBER,
+        type=DataType.DOUBLE,
     ))
     orders = SlayerModel(
         name="orders", data_source="test", sql_table="orders",
@@ -1020,12 +1025,12 @@ async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
         storage,
         include_amount=False,
         extra_columns=[
-            Column(name="tier", sql="tier", type=DataType.STRING),
+            Column(name="tier", sql="tier", type=DataType.TEXT),
             # Chains through is_eu.
             Column(
                 name="is_premium_eu",
                 sql="CASE WHEN is_eu = 1 AND tier = 'gold' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             ),
         ],
     )
@@ -1053,27 +1058,27 @@ async def test_dev1334_query_filter_on_multi_hop_derived_col_adds_all_prefixes(
     await storage.save_model(SlayerModel(
         name="regions", data_source="test", sql_table="regions",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
         ],
     ))
     await storage.save_model(SlayerModel(
         name="customers", data_source="test", sql_table="customers",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
     ))
     orders = SlayerModel(
         name="orders", data_source="test", sql_table="orders",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(
                 name="region_label",
                 sql="customers__regions.name",
-                type=DataType.STRING,
+                type=DataType.TEXT,
             ),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -1128,7 +1133,7 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
                 name="eu_amount",
                 sql="amount",
                 filter="is_eu = 1",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             ),
         ],
     )
@@ -1156,14 +1161,14 @@ async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) 
     await storage.save_model(SlayerModel(
         name="warehouses", data_source="test", sql_table="warehouses",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
         ],
     ))
     orders = await _save_orders_with_is_eu(
         storage,
         include_amount=False,
-        extra_columns=[Column(name="warehouse_id", sql="warehouse_id", type=DataType.NUMBER)],
+        extra_columns=[Column(name="warehouse_id", sql="warehouse_id", type=DataType.DOUBLE)],
         extra_joins=[ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]])],
     )
     engine = SlayerQueryEngine(storage=storage)
@@ -1224,9 +1229,9 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
     orders = SlayerModel(
         name="orders", data_source="test", sql_table="orders",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="a", sql="orders.b + 1", type=DataType.NUMBER),
-            Column(name="b", sql="orders.a - 1", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="a", sql="orders.b + 1", type=DataType.DOUBLE),
+            Column(name="b", sql="orders.a - 1", type=DataType.DOUBLE),
         ],
     )
     await storage.save_model(orders)
@@ -1267,7 +1272,7 @@ async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
             Column(
                 name="bracket_eu",
                 sql="CASE WHEN [customers].[region] = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             ),
         ],
     )

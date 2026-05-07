@@ -40,13 +40,13 @@ async def storage() -> AsyncIterator[YAMLStorage]:
                     Column(
                         name="id",
                         sql="id",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                         primary_key=True,
                     ),
                     Column(
                         name="amount",
                         sql="amount",
-                        type=DataType.NUMBER,
+                        type=DataType.DOUBLE,
                     ),
                 ],
                 measures=[ModelMeasure(formula="amount:sum", name="rev")],

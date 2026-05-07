@@ -1,7 +1,8 @@
 """Core enums for SLayer."""
 
-import datetime
+import datetime  # noqa: F401  (kept for downstream imports of TimeGranularity)
 from enum import Enum
+from typing import Any, Optional
 
 
 class StrEnum(str, Enum):
@@ -10,47 +11,54 @@ class StrEnum(str, Enum):
 
 
 class DataType(StrEnum):
-    STRING = "string"
-    TIMESTAMP = "time"
-    DATE = "date"
-    BOOLEAN = "boolean"
-    NUMBER = "number"
-    COUNT = "count"
-    COUNT_DISTINCT = "count_distinct"
-    SUM = "sum"
-    AVERAGE = "avg"
-    MIN = "min"
-    MAX = "max"
-    LAST = "last"
+    """SLayer data types — values match sqlglot's ``exp.DataType.Type``
+    byte-for-byte so SQL generation can ``CAST`` to the declared type without
+    a translation map. (DEV-1361.)"""
 
-    @property
-    def is_aggregation(self) -> bool:
-        return self in (
-            DataType.COUNT,
-            DataType.COUNT_DISTINCT,
-            DataType.SUM,
-            DataType.AVERAGE,
-            DataType.MIN,
-            DataType.MAX,
-            DataType.LAST,
-        )
+    TEXT = "TEXT"
+    INT = "INT"
+    DOUBLE = "DOUBLE"
+    BOOLEAN = "BOOLEAN"
+    DATE = "DATE"
+    TIMESTAMP = "TIMESTAMP"
 
-    @property
-    def python_type(self) -> type:
-        return {
-            DataType.STRING: str,
-            DataType.TIMESTAMP: datetime.datetime,
-            DataType.DATE: datetime.date,
-            DataType.BOOLEAN: bool,
-            DataType.NUMBER: float,
-            DataType.COUNT: int,
-            DataType.COUNT_DISTINCT: int,
-            DataType.SUM: float,
-            DataType.AVERAGE: float,
-            DataType.MIN: float,
-            DataType.MAX: float,
-            DataType.LAST: float,
-        }[self]
+
+# DEV-1361: lenient before-validator absorbs legacy lowercase type spellings
+# from older agent input (MCP/REST/CLI), pseudo-types (count/sum/...) drop to
+# None so the field falls through to its default. Used by both Column and
+# ModelMeasure validators in slayer/core/models.py.
+_LEGACY_DATATYPE_ALIASES: dict[str, Optional[str]] = {
+    # Pre-rename canonical values.
+    "string": "TEXT",
+    "number": "DOUBLE",
+    "integer": "INT",
+    "time": "TIMESTAMP",
+    "date": "DATE",
+    "boolean": "BOOLEAN",
+    # Aggregation pseudo-types — dropped in v5 because they were unused.
+    "count": None,
+    "count_distinct": None,
+    "sum": None,
+    "avg": None,
+    "min": None,
+    "max": None,
+    "last": None,
+}
+
+
+def _coerce_legacy_datatype(v: Any) -> Any:
+    """Map legacy lowercase ``DataType`` strings to current canonical values.
+
+    Pseudo-types resolve to ``None`` so the calling validator can drop them
+    and let the field default fire. Already-canonical values, enum instances,
+    and unknown strings pass through untouched (Pydantic's enum coercion will
+    raise on unknown).
+    """
+    if isinstance(v, str):
+        mapped = _LEGACY_DATATYPE_ALIASES.get(v)
+        if v in _LEGACY_DATATYPE_ALIASES:
+            return mapped
+    return v
 
 
 
@@ -162,14 +170,19 @@ NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
 # column has no explicit ``allowed_aggregations`` whitelist. Used by the engine
 # to gate ``column:agg`` expressions (e.g., ``revenue:sum`` requires ``sum`` to
 # be eligible for the ``revenue`` column's data type).
+_NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
+    "sum", "avg", "min", "max", "count", "count_distinct",
+    "median", "weighted_avg", "percentile", "first", "last",
+    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    "corr", "covar_samp", "covar_pop",
+})
+
 DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
-    DataType.NUMBER: frozenset({
-        "sum", "avg", "min", "max", "count", "count_distinct",
-        "median", "weighted_avg", "percentile", "first", "last",
-        "stddev_samp", "stddev_pop", "var_samp", "var_pop",
-        "corr", "covar_samp", "covar_pop",
-    }),
-    DataType.STRING: frozenset({
+    # INT and DOUBLE share the same numeric aggregation set — the type
+    # narrowing is for CAST emission, not for what's aggregable. (DEV-1361.)
+    DataType.INT: _NUMERIC_AGGREGATIONS,
+    DataType.DOUBLE: _NUMERIC_AGGREGATIONS,
+    DataType.TEXT: frozenset({
         "count", "count_distinct", "first", "last", "min", "max",
     }),
     DataType.BOOLEAN: frozenset({

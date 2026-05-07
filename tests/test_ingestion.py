@@ -1,9 +1,13 @@
 """Unit tests for ingestion fallback functions (SQL injection prevention)."""
 
+import os
+import tempfile
 from unittest.mock import MagicMock, patch
 
+import pytest
 import sqlalchemy as sa
 
+from slayer.core.enums import DataType
 from slayer.engine.ingestion import (
     _generate_joins,
     _get_columns_fallback,
@@ -11,6 +15,7 @@ from slayer.engine.ingestion import (
     _parse_info_schema_is_float,
     _safe_get_pk_constraint,
     _sa_type_is_float,
+    _sa_type_to_data_type,
 )
 
 
@@ -276,3 +281,89 @@ class TestSqliteSafeGetters:
             inspector=insp, sa_engine=engine, table_name="u", schema=None
         )
         assert result.get("constrained_columns") == ["id"]
+
+
+# ---------------------------------------------------------------------------
+# DEV-1361: auto-ingestion INT vs DOUBLE distinction.
+# ---------------------------------------------------------------------------
+
+
+class TestSaTypeToDataTypeIntDouble:
+    """``_sa_type_to_data_type`` distinguishes INT from DOUBLE so the ingested
+    ``Column.type`` carries the precise type instead of a coarse ``NUMBER``."""
+
+    @pytest.mark.parametrize("sa_type", [
+        sa.Integer(),
+        sa.BigInteger(),
+        sa.SmallInteger(),
+    ])
+    def test_integer_family_maps_to_int(self, sa_type) -> None:
+        assert _sa_type_to_data_type(sa_type) is DataType.INT
+
+    @pytest.mark.parametrize("sa_type", [
+        sa.Float(),
+        sa.types.REAL(),
+        sa.Float(precision=53),
+    ])
+    def test_float_family_maps_to_double(self, sa_type) -> None:
+        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
+
+    def test_numeric_with_scale_zero_maps_to_int(self) -> None:
+        # NUMERIC(10, 0) is integer-shaped — should land on INT, mirroring
+        # the existing _sa_type_is_float scale-aware logic.
+        assert _sa_type_to_data_type(sa.Numeric(precision=10, scale=0)) is DataType.INT
+
+    def test_numeric_with_positive_scale_maps_to_double(self) -> None:
+        assert _sa_type_to_data_type(sa.Numeric(precision=10, scale=2)) is DataType.DOUBLE
+
+    def test_decimal_with_scale_zero_maps_to_int(self) -> None:
+        assert _sa_type_to_data_type(sa.DECIMAL(precision=18, scale=0)) is DataType.INT
+
+    def test_decimal_with_positive_scale_maps_to_double(self) -> None:
+        assert _sa_type_to_data_type(sa.DECIMAL(precision=18, scale=4)) is DataType.DOUBLE
+
+    def test_varchar_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(sa.VARCHAR(255)) is DataType.TEXT
+
+    def test_text_maps_to_text(self) -> None:
+        assert _sa_type_to_data_type(sa.Text()) is DataType.TEXT
+
+    def test_boolean_maps_to_boolean(self) -> None:
+        assert _sa_type_to_data_type(sa.Boolean()) is DataType.BOOLEAN
+
+    def test_date_maps_to_date(self) -> None:
+        assert _sa_type_to_data_type(sa.Date()) is DataType.DATE
+
+    def test_timestamp_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(sa.TIMESTAMP()) is DataType.TIMESTAMP
+
+    def test_datetime_maps_to_timestamp(self) -> None:
+        assert _sa_type_to_data_type(sa.DateTime()) is DataType.TIMESTAMP
+
+
+class TestSqliteIngestionRoundTrip:
+    """End-to-end: introspect a real SQLite table and confirm narrow types."""
+
+    def test_int_double_text_distinction_via_inspector(self) -> None:
+        from slayer.core.models import DatasourceConfig
+        from slayer.engine.schema_drift import _live_schema_for_datasource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "live.db")
+            conn = sa.create_engine(f"sqlite:///{db_path}")
+            with conn.connect() as c:
+                c.execute(sa.text(
+                    "CREATE TABLE t (id INTEGER PRIMARY KEY, amt REAL, "
+                    "n VARCHAR(64), q INTEGER, ts TIMESTAMP, d DATE, b BOOLEAN)"
+                ))
+                c.commit()
+            ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
+            schema = _live_schema_for_datasource(datasource=ds)
+            cols = schema["t"].columns
+            assert cols["id"] is DataType.INT
+            assert cols["q"] is DataType.INT
+            assert cols["amt"] is DataType.DOUBLE
+            assert cols["n"] is DataType.TEXT
+            assert cols["ts"] is DataType.TIMESTAMP
+            assert cols["d"] is DataType.DATE
+            assert cols["b"] is DataType.BOOLEAN

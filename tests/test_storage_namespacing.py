@@ -58,7 +58,7 @@ def _model(name: str, data_source: str, *, sql_table: str | None = None) -> Slay
         name=name,
         sql_table=sql_table or name,
         data_source=data_source,
-        columns=[Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True)],
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
     )
 
 

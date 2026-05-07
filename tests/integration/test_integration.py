@@ -100,14 +100,14 @@ async def integration_env(tmp_path):
         data_source="test_sqlite",
         default_time_dimension="created_at",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="status", sql="status", type=DataType.STRING),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
 
-            Column(name="total_amount", sql="amount", type=DataType.NUMBER),
-            Column(name="latest_amount", sql="amount", type=DataType.NUMBER),
+            Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="latest_amount", sql="amount", type=DataType.DOUBLE),
         ],
     )
     await storage.save_model(orders_model)
@@ -118,9 +118,9 @@ async def integration_env(tmp_path):
         sql_table="customers",
         data_source="test_sqlite",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
-            Column(name="region", sql="region", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="region", sql="region", type=DataType.TEXT),
 
         ],
     )
@@ -985,8 +985,8 @@ async def joined_time_env(tmp_path):
     await storage.save_model(SlayerModel(
         name="stores", sql_table="stores", data_source="db",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
             Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
 
         ],
@@ -995,25 +995,25 @@ async def joined_time_env(tmp_path):
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="store_id", sql="store_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="store_id", sql="store_id", type=DataType.DOUBLE),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
 
-            Column(name="total_amount", sql="amount", type=DataType.NUMBER),
-            Column(name="latest_amount", sql="amount", type=DataType.NUMBER),
+            Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="latest_amount", sql="amount", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
     ))
     await storage.save_model(SlayerModel(
         name="order_items", sql_table="order_items", data_source="db",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="order_id", sql="order_id", type=DataType.NUMBER),
-            Column(name="qty", sql="qty", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="order_id", sql="order_id", type=DataType.DOUBLE),
+            Column(name="qty", sql="qty", type=DataType.DOUBLE),
 
-            Column(name="qty_sum", sql="qty", type=DataType.NUMBER),
-            Column(name="latest_qty", sql="qty", type=DataType.NUMBER),
+            Column(name="qty_sum", sql="qty", type=DataType.DOUBLE),
+            Column(name="latest_qty", sql="qty", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])],
     ))
@@ -1112,22 +1112,22 @@ async def cross_model_env(tmp_path):
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
 
-            Column(name="total_amount", sql="amount", type=DataType.NUMBER),
+            Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
     ))
     await storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="name", sql="name", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
 
-            Column(name="avg_score", sql="score", type=DataType.NUMBER),
-            Column(name="max_score", sql="score", type=DataType.NUMBER),
+            Column(name="avg_score", sql="score", type=DataType.DOUBLE),
+            Column(name="max_score", sql="score", type=DataType.DOUBLE),
         ],
     ))
 
@@ -1222,8 +1222,8 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     await storage.save_model(SlayerModel(
         name="policy", sql_table="policy", data_source="db",
         columns=[
-            Column(name="policy_identifier", type=DataType.NUMBER, primary_key=True),
-            Column(name="policy_number", type=DataType.STRING),
+            Column(name="policy_identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="policy_number", type=DataType.TEXT),
 
         ],
         joins=[
@@ -1234,8 +1234,8 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     await storage.save_model(SlayerModel(
         name="policy_amount", sql_table="policy_amount", data_source="db",
         columns=[
-            Column(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
-Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)
+            Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
+Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
         ],
         joins=[
             ModelJoin(target_model="policy", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
@@ -1246,15 +1246,15 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.NUMBER)
     await storage.save_model(SlayerModel(
         name="premium", sql_table="premium", data_source="db",
         columns=[
-            Column(name="policy_amount_identifier", type=DataType.NUMBER, primary_key=True),
-            Column(name="has_premium", sql="1", type=DataType.STRING),
+            Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="has_premium", sql="1", type=DataType.TEXT),
         ],
     ))
     await storage.save_model(SlayerModel(
         name="agreement_party_role", sql_table="agreement_party_role", data_source="db",
         columns=[
-            Column(name="agreement_identifier", type=DataType.NUMBER, primary_key=True),
-            Column(name="party_role_code", type=DataType.STRING),
+            Column(name="agreement_identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="party_role_code", type=DataType.TEXT),
         ],
     ))
 
@@ -1643,17 +1643,17 @@ async def test_circular_join_graph_raises(tmp_path):
     # Circular joins: a → b → a
     await storage.save_model(SlayerModel(
         name="a", sql_table="a", data_source="db",
-        columns=[Column(name="id", sql="id", type=DataType.NUMBER),
-                    Column(name="b_id", sql="b_id", type=DataType.NUMBER),
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
+                    Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
 
         ],
         joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
     ))
     await storage.save_model(SlayerModel(
         name="b", sql_table="b", data_source="db",
-        columns=[Column(name="id", sql="id", type=DataType.NUMBER),
-                    Column(name="a_id", sql="a_id", type=DataType.NUMBER),
-                    Column(name="unique_b_field", sql="id", type=DataType.NUMBER),
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
+                    Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
+                    Column(name="unique_b_field", sql="id", type=DataType.DOUBLE),
 
         ],
         joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]])],
@@ -1696,17 +1696,17 @@ async def test_model_filter_on_joined_column(tmp_path):
     await storage.save_model(SlayerModel(
         name="orders", sql_table="orders", data_source="db",
         columns=[
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
-Column(name="total", sql="amount", type=DataType.NUMBER)
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+Column(name="total", sql="amount", type=DataType.DOUBLE)
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         filters=["customers.region == 'US'"],
     ))
     await storage.save_model(SlayerModel(
         name="customers", sql_table="customers", data_source="db",
-        columns=[Column(name="id", sql="id", type=DataType.NUMBER),
-                    Column(name="name", sql="name", type=DataType.STRING),
-                    Column(name="region", sql="region", type=DataType.STRING),
+        columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
+                    Column(name="name", sql="name", type=DataType.TEXT),
+                    Column(name="region", sql="region", type=DataType.TEXT),
 
         ],
     ))
@@ -1865,7 +1865,7 @@ async def test_filtered_measure_sum(integration_env):
     # Add a filtered measure: only sum completed orders' amounts
     orders = await storage.get_model("orders")
     orders.columns.append(
-        Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
+        Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
     )
     await storage.save_model(orders)
 
@@ -1891,7 +1891,7 @@ async def test_filtered_measure_count(integration_env):
 
     orders = await storage.get_model("orders")
     orders.columns.append(
-        Column(name="completed_count", sql="id", filter="status = 'completed'", type=DataType.NUMBER)
+        Column(name="completed_count", sql="id", filter="status = 'completed'", type=DataType.DOUBLE)
     )
     await storage.save_model(orders)
 
@@ -1916,7 +1916,7 @@ async def test_filtered_measure_with_dimensions(integration_env):
 
     orders = await storage.get_model("orders")
     orders.columns.append(
-        Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
+        Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
     )
     await storage.save_model(orders)
 
@@ -1947,7 +1947,7 @@ async def test_filtered_last_picks_correct_row(integration_env):
 
     orders = await storage.get_model("orders")
     orders.columns.append(
-        Column(name="completed_latest", sql="amount", filter="status = 'completed'", type=DataType.NUMBER)
+        Column(name="completed_latest", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
     )
     await storage.save_model(orders)
 
@@ -2021,7 +2021,7 @@ async def test_label_propagation_enrichment(integration_env):
         if d.name == "status":
             d.label = "Order Status"
     orders.columns.append(
-        Column(name="labeled_rev", sql="amount", label="Total Revenue", type=DataType.NUMBER)
+        Column(name="labeled_rev", sql="amount", label="Total Revenue", type=DataType.DOUBLE)
     )
     await storage.save_model(orders)
 
@@ -2178,14 +2178,14 @@ async def stat_env(tmp_path):
             sql_table="samples",
             data_source="stat_sqlite",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="x", sql="x", type=DataType.NUMBER),
-                Column(name="y", sql="y", type=DataType.NUMBER),
-                Column(name="bucket", sql="bucket", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="x", sql="x", type=DataType.DOUBLE),
+                Column(name="y", sql="y", type=DataType.DOUBLE),
+                Column(name="bucket", sql="bucket", type=DataType.TEXT),
                 # Column.sql exercising scalar math UDFs
-                Column(name="ln_x", sql="ln(x)", type=DataType.NUMBER),
-                Column(name="sqrt_x", sql="sqrt(x)", type=DataType.NUMBER),
-                Column(name="x_squared", sql="pow(x, 2)", type=DataType.NUMBER),
+                Column(name="ln_x", sql="ln(x)", type=DataType.DOUBLE),
+                Column(name="sqrt_x", sql="sqrt(x)", type=DataType.DOUBLE),
+                Column(name="x_squared", sql="pow(x, 2)", type=DataType.DOUBLE),
             ],
         )
     )
@@ -2392,8 +2392,8 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
             sql_table="one",
             data_source="one_sqlite",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="x", sql="x", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="x", sql="x", type=DataType.DOUBLE),
             ],
         )
     )
@@ -2469,13 +2469,13 @@ async def planets_env(tmp_path):
             sql_table="planets",
             data_source="planets_db",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="name", sql="name", type=DataType.STRING),
-                Column(name="mass", sql="mass", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+                Column(name="mass", sql="mass", type=DataType.DOUBLE),
                 Column(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
         )
@@ -2542,15 +2542,15 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
             sql_table="households",
             data_source="hh_sqlite",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="socioeconomic", sql="socioeconomic", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="socioeconomic", sql="socioeconomic", type=DataType.TEXT),
                 Column(
                     name="is_owner",
                     sql=(
                         "CASE LOWER(TRIM(json_extract(socioeconomic, '$.Tenure_Type'))) "
                         "WHEN 'owned' THEN 1 ELSE 0 END"
                     ),
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
         )
@@ -2606,12 +2606,12 @@ async def derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="B",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="foo_raw", sql="foo_raw", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
                 Column(
                     name="foo_normalized",
                     sql="foo_raw / 100.0",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
             ],
         )
@@ -2622,23 +2622,23 @@ async def derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="A",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="bar", sql="bar", type=DataType.NUMBER),
-                Column(name="b_id", sql="b_id", type=DataType.NUMBER),
-                Column(name="raw_a", sql="raw_a", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="bar", sql="bar", type=DataType.DOUBLE),
+                Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+                Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
                 Column(
                     name="ratio_using_base",
                     sql="A.bar / B.foo_raw",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
                 Column(
                     name="ratio_using_derived",
                     sql="A.bar / B.foo_normalized",
-                    type=DataType.NUMBER,
+                    type=DataType.DOUBLE,
                 ),
                 # Local derived chain: c1 derived; c2 references c1.
-                Column(name="c1", sql="raw_a + 1", type=DataType.NUMBER),
-                Column(name="c2", sql="A.c1 * 2", type=DataType.NUMBER),
+                Column(name="c1", sql="raw_a + 1", type=DataType.DOUBLE),
+                Column(name="c2", sql="A.c1 * 2", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
         )
@@ -2720,19 +2720,19 @@ async def orders_customers_env(tmp_path):
     await storage.save_model(SlayerModel(
         name="customers", data_source="ds", sql_table="customers",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="region", sql="region", type=DataType.STRING),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="region", sql="region", type=DataType.TEXT),
         ],
     ))
     await storage.save_model(SlayerModel(
         name="orders", data_source="ds", sql_table="orders",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
             Column(
                 name="is_eu",
                 sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.NUMBER,
+                type=DataType.DOUBLE,
             ),
         ],
         joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
@@ -2798,10 +2798,10 @@ async def test_log10_round_trip_sqlite(tmp_path):
             sql_table="players",
             data_source="log_sqlite",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="raw_score", sql="raw_score", type=DataType.NUMBER),
-                Column(name="log_score", sql="log10(raw_score)", type=DataType.NUMBER),
-                Column(name="log2_score", sql="log2(raw_score)", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="raw_score", sql="raw_score", type=DataType.DOUBLE),
+                Column(name="log_score", sql="log10(raw_score)", type=DataType.DOUBLE),
+                Column(name="log2_score", sql="log2(raw_score)", type=DataType.DOUBLE),
             ],
         )
     )
@@ -2884,6 +2884,92 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
     assert row["filtered._count"] == 3
     assert row["filtered.amount_max"] == pytest.approx(300.0)
     assert row["filtered.violation_rate"] == pytest.approx(3.0 / 300.0)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1361: type-aware CAST emission — json_extract over JSON-stored numeric
+# data must produce REAL result tuples (matching a hand-written gold using
+# CAST AS REAL), not the TEXT that SQLite's json_extract returns by default.
+# ---------------------------------------------------------------------------
+
+
+async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
+    """A ``Column(sql="json_extract(...)", type=DataType.DOUBLE)`` over JSON-
+    encoded numeric data must produce native float result tuples on SQLite.
+    Without the DEV-1361 cast emission, json_extract returns TEXT and the
+    benchmark's tuple comparison fails (TEXT '"1.5"' != REAL 1.5).
+    """
+    db_path = tmp_path / "blobs.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE blobs (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
+    )
+    cur.executemany(
+        "INSERT INTO blobs VALUES (?, ?)",
+        [
+            (1, '{"score": 1.5}'),
+            (2, '{"score": 2.5}'),
+            (3, '{"score": 3.0}'),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(
+        DatasourceConfig(name="blob_sqlite", type="sqlite", database=str(db_path))
+    )
+    await storage.save_model(
+        SlayerModel(
+            name="blobs",
+            sql_table="blobs",
+            data_source="blob_sqlite",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="score",
+                    sql="json_extract(payload, '$.score')",
+                    type=DataType.DOUBLE,
+                ),
+            ],
+        )
+    )
+    engine = SlayerQueryEngine(storage=storage)
+
+    query = SlayerQuery(
+        source_model="blobs",
+        measures=[ModelMeasure(formula="score:sum")],
+    )
+    response = await engine.execute(query)
+    total = response.data[0]["blobs.score_sum"]
+    # With CAST AS REAL the SUM is a native float; without it, json_extract
+    # returns TEXT and SUM coerces but emits a different type that breaks
+    # the BIRD-Interact tuple comparator.
+    assert isinstance(total, float)
+    assert total == pytest.approx(7.0)
+
+    # Pin CAST emission directly: a dry-run round-trip through the SQL
+    # generator must produce a CAST(... AS REAL). SQLite's json_extract
+    # already returns numerics on this fixture, so the runtime assertions
+    # above pass with or without the CAST — the dry-run check is what
+    # actually fails if DEV-1361 emission regresses.
+    dry = await engine.execute(query, dry_run=True)
+    sql_lower = dry.sql.lower() if dry.sql else ""
+    assert "cast(" in sql_lower
+    assert "real" in sql_lower
+
+    # Hand-written gold using CAST AS REAL produces the same value.
+    gold_conn = sqlite3.connect(str(db_path))
+    try:
+        gold = gold_conn.execute(
+            "SELECT SUM(CAST(json_extract(payload, '$.score') AS REAL)) FROM blobs"
+        ).fetchone()[0]
+        assert total == pytest.approx(gold)
+    finally:
+        gold_conn.close()
 
 
 async def test_dense_rank_partition_by_customer_executes(integration_env):

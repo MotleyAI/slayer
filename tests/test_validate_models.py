@@ -66,10 +66,10 @@ def _orders_model(
         data_source=data_source,
         columns=columns
         or [
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
-            Column(name="status", sql="status", type=DataType.STRING),
-            Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
         ],
         joins=joins or [],
         measures=measures or [],
@@ -85,10 +85,10 @@ def _live_orders(
     return LiveTable(
         columns=columns
         or {
-            "id": DataType.NUMBER,
-            "amount": DataType.NUMBER,
-            "status": DataType.STRING,
-            "customer_id": DataType.NUMBER,
+            "id": DataType.DOUBLE,
+            "amount": DataType.DOUBLE,
+            "status": DataType.TEXT,
+            "customer_id": DataType.DOUBLE,
         },
         pk_columns=pk_columns or {"id"},
     )
@@ -108,15 +108,24 @@ def _entry_for(model_name: str, entries: List) -> Optional[object]:
 
 class TestDataTypeBucket:
     def test_number_string_boolean_temporal(self) -> None:
-        assert data_type_bucket(DataType.NUMBER) == "number"
-        assert data_type_bucket(DataType.STRING) == "string"
+        # DEV-1361: DataType.DOUBLE → DOUBLE, DataType.TEXT → TEXT.
+        assert data_type_bucket(DataType.DOUBLE) == "number"
+        assert data_type_bucket(DataType.TEXT) == "string"
         assert data_type_bucket(DataType.BOOLEAN) == "boolean"
         # DATE and TIMESTAMP collapse to "temporal"
         assert data_type_bucket(DataType.DATE) == data_type_bucket(DataType.TIMESTAMP)
         assert data_type_bucket(DataType.DATE) == "temporal"
 
     def test_number_and_string_are_different_buckets(self) -> None:
-        assert data_type_bucket(DataType.NUMBER) != data_type_bucket(DataType.STRING)
+        assert data_type_bucket(DataType.DOUBLE) != data_type_bucket(DataType.TEXT)
+
+    def test_int_and_double_share_number_bucket(self) -> None:
+        # DEV-1361: critical invariance — drift detection must NOT flag a
+        # persisted DOUBLE column against an INT live column (or vice versa)
+        # even though they're now distinct enum members.
+        assert data_type_bucket(DataType.INT) == "number"
+        assert data_type_bucket(DataType.DOUBLE) == "number"
+        assert data_type_bucket(DataType.INT) == data_type_bucket(DataType.DOUBLE)
 
 
 # ---------------------------------------------------------------------------
@@ -138,10 +147,10 @@ class TestDiffSqlTableModel:
         model = _orders_model()
         live = _live_orders(
             columns={
-                "id": DataType.NUMBER,
-                "amount": DataType.NUMBER,
+                "id": DataType.DOUBLE,
+                "amount": DataType.DOUBLE,
                 # status missing
-                "customer_id": DataType.NUMBER,
+                "customer_id": DataType.DOUBLE,
             }
         )
         entry, dropped = diff_sql_table_model(
@@ -169,10 +178,10 @@ class TestDiffSqlTableModel:
         model = _orders_model()
         live = _live_orders(
             columns={
-                "id": DataType.NUMBER,
-                "amount": DataType.STRING,  # bucket flip
-                "status": DataType.STRING,
-                "customer_id": DataType.NUMBER,
+                "id": DataType.DOUBLE,
+                "amount": DataType.TEXT,  # bucket flip
+                "status": DataType.TEXT,
+                "customer_id": DataType.DOUBLE,
             }
         )
         entry, dropped = diff_sql_table_model(
@@ -183,11 +192,20 @@ class TestDiffSqlTableModel:
         assert dropped == {"amount"}
 
     def test_integer_vs_float_same_bucket(self) -> None:
-        # In SLayer, INTEGER and FLOAT both collapse to DataType.NUMBER, so
-        # comparisons stay within bucket. This test pins the contract.
+        # DEV-1361: INT and DOUBLE are now distinct enum members but share
+        # the ``"number"`` bucket so drift detection does not false-positive
+        # when a persisted DOUBLE column is reported as INT by live
+        # introspection (the v5 refinement step reconciles these without
+        # raising drift).
         model = _orders_model()
-        # All columns NUMBER on both sides — no drift
-        live = _live_orders()
+        live = _live_orders(
+            columns={
+                "id": DataType.INT,
+                "amount": DataType.DOUBLE,
+                "status": DataType.TEXT,
+                "customer_id": DataType.INT,
+            }
+        )
         entry, _ = diff_sql_table_model(
             model=model, live_table=live, available_models_in_ds={"orders"}
         )
@@ -199,13 +217,13 @@ class TestDiffSqlTableModel:
             sql_table="events",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
                 Column(name="happened_at", sql="happened_at", type=DataType.DATE),
             ],
         )
         # Live reports TIMESTAMP — same bucket as DATE.
         live = LiveTable(
-            columns={"id": DataType.NUMBER, "happened_at": DataType.TIMESTAMP},
+            columns={"id": DataType.DOUBLE, "happened_at": DataType.TIMESTAMP},
             pk_columns={"id"},
         )
         entry, _ = diff_sql_table_model(
@@ -225,9 +243,9 @@ class TestDiffSqlTableModel:
         # Live drops customer_id
         live = _live_orders(
             columns={
-                "id": DataType.NUMBER,
-                "amount": DataType.NUMBER,
-                "status": DataType.STRING,
+                "id": DataType.DOUBLE,
+                "amount": DataType.DOUBLE,
+                "status": DataType.TEXT,
             }
         )
         entry, _ = diff_sql_table_model(
@@ -254,6 +272,43 @@ class TestDiffSqlTableModel:
         assert isinstance(entry, EditModelDelete)
         assert "warehouses" in entry.remove.joins
 
+    def test_join_local_column_resolves_through_column_sql(self) -> None:
+        """``join.join_pairs[*][0]`` is a semantic column name; resolve to
+        the physical column via ``Column.sql`` before checking against the
+        live table. CodeRabbit thread #103/r3196378686.
+        """
+        # Model: ``customer_id`` semantic name maps to physical ``customer_fk``.
+        model = _orders_model(
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_fk", type=DataType.DOUBLE),
+            ],
+            joins=[
+                ModelJoin(
+                    target_model="customers",
+                    join_pairs=[["customer_id", "id"]],  # semantic
+                ),
+            ],
+        )
+        live = _live_orders(
+            columns={
+                "id": DataType.DOUBLE,
+                "amount": DataType.DOUBLE,
+                "status": DataType.TEXT,
+                "customer_fk": DataType.DOUBLE,  # physical name in the live DB
+            }
+        )
+        entry, _ = diff_sql_table_model(
+            model=model, live_table=live,
+            available_models_in_ds={"orders", "customers"},
+        )
+        # No drift — the join's local column resolves to ``customer_fk`` which
+        # is present in the live table. Without the fix, ``customer_id`` would
+        # be flagged as missing and the join wrongly dropped.
+        assert entry is None
+
 
 # ---------------------------------------------------------------------------
 # diff_sql_model — sql mode
@@ -267,11 +322,11 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders WHERE archived = true",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         )
-        live = {"id": DataType.NUMBER, "amount": DataType.NUMBER}
+        live = {"id": DataType.DOUBLE, "amount": DataType.DOUBLE}
         entry, dropped = diff_sql_model(model=model, live_columns=live)
         assert entry is None
         assert dropped == set()
@@ -282,8 +337,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         )
         # live_columns=None signals trial-execute failed
@@ -298,11 +353,11 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         )
-        live = {"id": DataType.NUMBER, "amount": DataType.STRING}
+        live = {"id": DataType.DOUBLE, "amount": DataType.TEXT}
         entry, dropped = diff_sql_model(model=model, live_columns=live)
         assert isinstance(entry, EditModelDelete)
         assert "amount" in entry.remove.columns
@@ -314,11 +369,11 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
             ],
         )
-        live = {"id": DataType.NUMBER, "amount": DataType.NUMBER, "extra": DataType.STRING}
+        live = {"id": DataType.DOUBLE, "amount": DataType.DOUBLE, "extra": DataType.TEXT}
         entry, _ = diff_sql_model(model=model, live_columns=live)
         # validate_models reports deletes only — additions are out of scope
         assert entry is None
@@ -336,14 +391,14 @@ class TestCascadeRules:
         """
         model = _orders_model(
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 # derived column referencing 'amount'
-                Column(name="amount_x2", sql="amount * 2", type=DataType.NUMBER),
+                Column(name="amount_x2", sql="amount * 2", type=DataType.DOUBLE),
                 # transitively-derived: refs another derived column
-                Column(name="amount_x4", sql="amount_x2 * 2", type=DataType.NUMBER),
+                Column(name="amount_x4", sql="amount_x2 * 2", type=DataType.DOUBLE),
             ],
         )
         # Base diff: 'amount' dropped from live
@@ -431,7 +486,7 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             columns=[
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="region", sql="region", type=DataType.TEXT),
             ],
         )
         # customers.id was dropped
@@ -475,14 +530,14 @@ class TestCascadeRules:
         """
         orders = _orders_model(
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 # derived cross-model ref
                 Column(
                     name="customer_region",
                     sql="customers.region",
-                    type=DataType.STRING,
+                    type=DataType.TEXT,
                 ),
             ],
             joins=[
@@ -497,8 +552,8 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
             ],
         )
         edit = EditModelDelete(
@@ -582,13 +637,13 @@ class TestCascadeRules:
         """PK drops don't cascade into derived columns / measures / filters."""
         model = _orders_model(
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.NUMBER),
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 # Derived column that *would* reference 'id' — but PK drops
                 # don't trigger cascade, so this column survives.
-                Column(name="id_doubled", sql="id * 2", type=DataType.NUMBER),
+                Column(name="id_doubled", sql="id * 2", type=DataType.DOUBLE),
             ],
             measures=[ModelMeasure(formula="id:count_distinct", name="unique_ids")],
         )
@@ -644,8 +699,8 @@ class TestCrossDatasourceBoundary:
             sql_table="customers",
             data_source="ds_b",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="region", sql="region", type=DataType.STRING),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="region", sql="region", type=DataType.TEXT),
             ],
         )
         # Drop region in ds_b
@@ -731,8 +786,8 @@ class TestValidateModelsEndToEnd:
                 sql_table="customers",
                 data_source="ds",
                 columns=[
-                    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                    Column(name="region", sql="region", type=DataType.STRING),
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="region", sql="region", type=DataType.TEXT),
                 ],
             )
         )
@@ -742,10 +797,10 @@ class TestValidateModelsEndToEnd:
                 sql_table="orders",
                 data_source="ds",
                 columns=[
-                    Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                    Column(name="amount", sql="amount", type=DataType.NUMBER),
-                    Column(name="status", sql="status", type=DataType.STRING),
-                    Column(name="customer_id", sql="customer_id", type=DataType.NUMBER),
+                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                    Column(name="status", sql="status", type=DataType.TEXT),
+                    Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 ],
                 joins=[
                     ModelJoin(
@@ -835,9 +890,9 @@ class TestValidateModelsEndToEnd:
                 data_source="ds_b",
                 columns=[
                     Column(
-                        name="id", sql="id", type=DataType.NUMBER, primary_key=True
+                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="sku", sql="sku", type=DataType.STRING),
+                    Column(name="sku", sql="sku", type=DataType.TEXT),
                 ],
             )
         )

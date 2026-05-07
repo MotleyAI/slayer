@@ -923,8 +923,8 @@ class TestCollectNeededPathsExtraAggNames:
             sql_table="orders",
             data_source="ds",
             columns=[
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         )
         # Filter uses a custom aggregation in function style: custom_total(revenue) > 100
@@ -948,8 +948,8 @@ class TestCollectNeededPathsExtraAggNames:
             sql_table="orders",
             data_source="ds",
             columns=[
-                Column(name="status", sql="status", type=DataType.STRING),
-                Column(name="revenue", sql="amount", type=DataType.NUMBER),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         )
         paths = _collect_needed_paths(

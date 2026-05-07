@@ -1626,18 +1626,18 @@ class SlayerQueryEngine:
                 measure_name=src_name,
                 aggregation=m.aggregation,
             )
-            column_map.append((m.alias, m.name, DataType.NUMBER, label, desc, fmt))
+            column_map.append((m.alias, m.name, DataType.DOUBLE, label, desc, fmt))
         for t in enriched.transforms:
             column_map.append(
-                (t.alias, t.name, DataType.NUMBER, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (t.alias, t.name, DataType.DOUBLE, t.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for e in enriched.expressions:
             column_map.append(
-                (e.alias, e.name, DataType.NUMBER, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
+                (e.alias, e.name, DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for cm in enriched.cross_model_measures:
             short = _alias_to_short(cm.alias)
-            column_map.append((cm.alias, short, DataType.NUMBER, cm.label, None, cm.format))
+            column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
         rename_parts = [f'"{alias}" AS {short}' for alias, short, _, _, _, _ in column_map]

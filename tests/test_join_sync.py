@@ -22,8 +22,8 @@ def _model(name: str, *, joins: list[ModelJoin] | None = None) -> SlayerModel:
         sql_table=name,
         data_source="test",
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
         ],
         joins=joins or [],
     )
@@ -84,8 +84,8 @@ class TestMirrorInnerJoins:
             sql_table="employees",
             data_source="test",
             columns=[
-                Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-                Column(name="manager_id", sql="manager_id", type=DataType.NUMBER),
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="manager_id", sql="manager_id", type=DataType.DOUBLE),
             ],
             joins=[ModelJoin(target_model="employees", join_pairs=[["manager_id", "id"]], join_type=JoinType.INNER)],
         )
@@ -341,8 +341,8 @@ def _model_in(name: str, data_source: str, *, joins: list[ModelJoin] | None = No
         sql_table=name,
         data_source=data_source,
         columns=[
-            Column(name="id", sql="id", type=DataType.NUMBER, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.NUMBER),
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
         ],
         joins=joins or [],
     )
