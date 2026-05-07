@@ -69,7 +69,7 @@ Models can have always-applied WHERE filters: `filters: ["deleted_at IS NULL"]`.
 
 ## Window functions in `Column.sql`
 
-A column's `sql` may contain a window function (e.g. `row_number() over (order by mass desc)`). The column behaves like any other column when SELECTed; when used in a query `filters` entry, SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`. Use the `Column.sql`-with-window pattern for non-standard window expressions; for ranking prefer the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) inline in measures or filters — dialect-portable and simpler. Pass `partition_by=col` (or a list of cols) on a rank-family transform to rank within partitions instead of across the whole result set. Raw `OVER (...)` SQL inside a `ModelMeasure.formula` is rejected at construction time with an actionable error.
+A column's `sql` may contain a window function (e.g. `row_number() over (order by mass desc)`). The column behaves like any other column when SELECTed; when used in a query `filters` entry, SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`. Use the `Column.sql`-with-window pattern for non-standard window expressions; for top-N filtering prefer the inline `rank(<measure>) <= N` transform — dialect-portable and simpler. Raw `OVER (...)` SQL inside a `ModelMeasure.formula` is rejected at construction time with an actionable error.
 
 ## Source modes
 
@@ -112,11 +112,11 @@ password: ${DB_PASSWORD}
 
 ## Auto-Ingestion
 
-Connect to a DB and generate / additively update models automatically:
+Connect to a DB and generate models automatically:
 
 ```python
-from slayer.engine.ingestion import ingest_datasource_idempotent
-result = await ingest_datasource_idempotent(datasource=ds, storage=storage, schema="public")
+from slayer.engine.ingestion import ingest_datasource
+models = ingest_datasource(datasource=ds, schema="public")
 ```
 
 Generates:
@@ -124,12 +124,6 @@ Generates:
 - `*:count` is always available without an explicit definition; aggregation is picked per query via colon syntax (e.g., `amount:sum`).
 - **Dynamic joins**: detects FK relationships and emits explicit join metadata (LEFT JOINs built at query time).
 - FK columns are excluded from joinable models; ID-like columns (`*_id`, `*_key`) are usable as group-by columns only via the `primary_key` flag.
-
-**Idempotent re-runs** (DEV-1356): re-ingestion is additive — new columns / joins / tables are appended; existing column metadata (`description`, `label`, `format`, `meta`, `allowed_aggregations`) is **never** overwritten. `sql`-mode and query-backed models are skipped silently. The return shape is `IdempotentIngestResult(additions, to_delete, errors)` where `to_delete` carries `validate_models` output (so type-bucket drift on existing columns surfaces in the same call). Apply via `slayer validate-models --force-clean` or manually through `edit_model` / `delete_model`.
-
-## Schema Drift
-
-When the live database changes, use `await engine.validate_models(data_source=...)` (or the `validate_models` MCP tool / `POST /validate-models` REST endpoint / `slayer validate-models` CLI command) to get a structured list of pending deletes. Query-time DBAPI errors get attributed automatically and surface as `SchemaDriftError` with the same payload. See [docs/concepts/schema-drift.md](../../docs/concepts/schema-drift.md) for the full diff / cascade contract.
 
 ## MCP Incremental Editing
 
