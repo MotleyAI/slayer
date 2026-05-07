@@ -1,5 +1,11 @@
 # DEV-1357: Agent memory layer (unified `Memory` surface)
 
+> **Historical note (DEV-1365):** The `RecallHit.match_count: int` field
+> documented in §4.1 below has been replaced by `RecallHit.score: float`,
+> and the ranker switched from raw entity-overlap count to BM25 over
+> canonical entity sets. The rest of the v2 surface in this spec
+> (entities, resolver rules, save/forget/recall semantics) is current.
+
 ## 1. Goal
 
 Add an "agent memory" layer on top of SLayer:

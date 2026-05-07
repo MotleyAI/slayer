@@ -242,6 +242,38 @@ class TestRecallEndpoint:
         learnings = [hit["learning"] for hit in body["learnings"]]
         assert "amount-related" in learnings
 
+    async def test_recall_bm25_outranks_overbroad_memory(
+        self, client: TestClient, seeded: YAMLStorage
+    ) -> None:
+        # DEV-1365: BM25 ranking must place a precisely-tagged memory
+        # above an over-broad one; the response must carry score (not
+        # match_count) per the new RecallHit shape.
+        await seeded.save_memory(
+            learning="precise", entities=["mydb.orders.amount"]
+        )
+        await seeded.save_memory(
+            learning="broad",
+            entities=[
+                "mydb.orders.amount",
+                "mydb.orders.id",
+                "mydb.orders.status",
+                "mydb.orders",
+                "mydb",
+            ],
+        )
+        resp = client.post(
+            "/memories/recall",
+            json={"about": ["mydb.orders.amount"]},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        learnings = body["learnings"]
+        assert learnings[0]["learning"] == "precise", (
+            f"precise memory must rank first; got {learnings}"
+        )
+        assert "score" in learnings[0]
+        assert isinstance(learnings[0]["score"], (int, float))
+
     async def test_recall_max_caps(
         self, client: TestClient, seeded: YAMLStorage
     ) -> None:
