@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
 
-**SLayer** is a semantic layer that lets AI agents query your database correctly.
+**SLayer** is a semantic layer that lets AI agents query your database, manage data models, and learn from the data.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
 
@@ -16,27 +16,43 @@
 
 ## How it works
 
-SLayer sits between your database and whatever consumes the data – AI agents, internal tools, dashboards, or scripts. You define your data models (or let SLayer auto-generate them from the schema), and query using a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters instead of writing SQL directly.
+SLayer sits between your database and AI agents (or internal tools, dashboards, scripts). It allows to:
 
-SLayer compiles these queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences so that consumers don't have to.
+- Auto-create data models from the database schema (warm start)
+- Query using a [structured API](https://motley-slayer.readthedocs.io/en/latest/concepts/queries/) of measures, dimensions, and filters
+- Edit models at runtime or create new ones and use them immediately
+- Specify the desired aggregations [at query time, not in the models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
+- Save and retrieve natural-language memories about the data and queries
+- Run itself in-process, as a Python module or serverless via CLI
 
-### SLayer is
+SLayer naturally evolves when the agent uses it. For example, if a query requires a new measure, the agent will update the models and will use it in other contexts.
 
-1. **dynamic**: models can be updated at any time and used immediately; aggregations are [defined in queries, not models](https://motley-slayer.readthedocs.io/en/latest/examples/07_aggregations/aggregations/)
-2. **simple**: query structure is intuitive and easily understood by LLMs and humans
-3. **expressive**: [supports](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_
-4. **embeddable**: can be used as a standalone service or imported as a Python module with no extra server
-5. **flexible**: exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client) interfaces; [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases
+SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/) and much more.
 
-See also: [automatic model ingestion](https://motley-slayer.readthedocs.io/en/latest/concepts/ingestion/), [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/), [auto-applied filters](https://motley-slayer.readthedocs.io/en/latest/concepts/models/#model-filters), and [more](https://motley-slayer.readthedocs.io/en/latest/).
+SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
 
-> Why not just let agents write SQL? Because they get it wrong often enough to matter – see our [blog post](https://motley.ai/blog-posts/why-generating-raw-sql-by-agents-is-hard) and dbt's [benchmark analysis](https://docs.getdbt.com/blog/semantic-layer-vs-text-to-sql-2026?version=1.12).
+### Example
+
+Question (run on the built-in demo Jaffle Shop database): **"show monthly revenue by store, with month-over-month % change"**
+
+Side by side, here's LLM-generated SQL and the equivalent SLayer query.
+
+![Example SQL vs SLayer query](https://github.com/user-attachments/assets/a8c73688-e760-402e-9f87-a05591d6cbee)
+
 
 ## Quickstart
 
 We recommend using [uv](https://docs.astral.sh/uv/), especially if you don't work in a Python project.
 
-To run the server:
+To install:
+
+```bash
+uv tool install motley-slayer
+
+slayer
+```
+
+Try out without installing:
 
 ```bash
 # Instant demo — spins up the bundled Jaffle Shop DuckDB and ingests it
@@ -46,21 +62,28 @@ uvx --from 'motley-slayer[all]' slayer serve --demo
 uvx --from 'motley-slayer[all]' slayer serve
 ```
 
-Or to add the MCP server:
+Or using Claude Code with an in-process MCP server:
 
 ```bash
 # With the Jaffle Shop demo preloaded (zero-config quickstart)
-claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp --demo
+claude mcp add slayer -- uvx --from motley-slayer slayer mcp --demo
 
 # Or without the demo
-claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp
+claude mcp add slayer -- uvx --from motley-slayer slayer mcp
 ```
 
-The `--demo` flag additionally requires [`jafgen`](https://github.com/rossbowen/jaffle-shop-generator) — install hints are printed if it's missing.
+The `--demo` flag will preload the Jaffle Shop demo on startup – this takes a few seconds.
 
 Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#datasource-setup) or ask your agent to help you do it.
 
 Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
+
+
+### Known limitations
+
+SLayer currently has no caching or pre-aggregation engine. This could affect performance for high-concurrency use cases or with large datasets.
+Adding a caching layer is on the [roadmap](https://github.com/MotleyAI/slayer?tab=readme-ov-file#roadmap).
+
 
 ## Interfaces
 
@@ -83,7 +106,7 @@ See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/
 
 ### MCP Server
 
-SLayer supports two MCP transports, **HTTP** (served alongside the API) and **stdio** (serverless, spawned by the agent).
+SLayer supports two MCP transports, **HTTP** (served alongside the API) and **stdio** (serverless, spawned by the agent). Using Claude Code:
 
 ```bash
 # 1. stdio-based, does not require a running server
@@ -128,7 +151,12 @@ print(df)
 
 ### CLI
 
+Slayer exposes a rich CLI:
+
 ```bash
+# Show help
+slayer
+
 # Run a query directly from the terminal
 slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
 
@@ -289,10 +317,13 @@ See the [documentation page for storage backends](https://motley-slayer.readthed
 |   3   | Cross-model measures                            |   ✅    |
 |   4   | Aggregation at query time                       |   ✅    |
 |   5   | Smart output formatting (currency, percentages) |   ✅    |
-|   6   | Unpivoting                                      |   ❌    |
-|   7   | Auto-propagating filters                        |   ❌    |
-|   8   | Asof joins                                      |   ❌    |
-|   9   | Chart generation (eCharts)                      |   ❌    |
+|   6   | Saving memories & queries                       |   ✅    |
+|   7   | Schema drift detection                          |   ✅    |
+|   8   | Unpivoting                                      |   ❌    |
+|   9   | Asof joins                                      |   ❌    |
+|   10  | Caching / pre-aggregations                      |   ❌    |
+|   11  | Access controls & governance                    |   ❌    |
+|   12  | Chart generation (eCharts)                      |   ❌    |
 
 ## Examples
 
@@ -318,18 +349,6 @@ The `docs/examples/` directory contains Jupyter notebooks that walk through SLay
 | [Joined Measures](docs/examples/05_joined_measures/)       | Cross-model measures with sub-query isolation                                            |
 | [Multistage Queries](docs/examples/06_multistage_queries/) | Query chaining, queries-as-models, `ModelExtension`                                      |
 
-## Claude Code Skills
-
-SLayer includes Claude Code skills in `.claude/skills/` to help Claude understand the codebase:
-
-- **slayer-overview** — architecture, package structure, MCP tools list
-- **slayer-query** — how to construct queries with measures, dimensions, filters, time dimensions
-- **slayer-models** — model definitions, datasource configs, auto-ingestion, incremental editing
-
-## Known limitations
-
-SLayer currently has no caching or pre-aggregation engine.
-If you need to process lots of requests to large databases at sub-second latency, consider adding a caching layer or pre-aggregation engine.
 
 ## License
 
