@@ -101,7 +101,7 @@ def storage_with_v4_model(sqlite_with_int_double_text):
                     {"name": "qty", "sql": "qty", "type": "number"},
                     # Derived (non-base) numeric column: refinement must leave
                     # this alone because its sql isn't a bare identifier.
-                    {"name": "double_amount", "sql": "amount * 2", "type": "number"},
+                    {"name": "double_amount", "sql": "items.amount * 2", "type": "number"},
                 ],
             },
             f,
@@ -439,6 +439,60 @@ class TestCliMigrateTypes:
         types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
         assert types_by_name["id"] == "INT"
         assert types_by_name["qty"] == "INT"
+
+    async def test_missing_datasource_raises_for_refineable_model(self, tmp_path) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
+        """Mirror of the ABC's raise: the CLI must fail loudly rather than
+        silently report 'nothing to refine' for a v4 model whose datasource
+        entry has been removed."""
+        from slayer.cli import _refine_one_model_for_cli
+
+        base = str(tmp_path)
+        # Lay down a v4 YAML model with a refineable DOUBLE base column but
+        # no datasources/<name>.yaml file alongside it.
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        with open(os.path.join(models_dir, "items.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {
+                    "version": 4,
+                    "name": "items",
+                    "sql_table": "items",
+                    "data_source": "live",
+                    "columns": [{"name": "id", "sql": "id", "type": "number"}],
+                },
+                f,
+            )
+        storage = YAMLStorage(base_dir=base)
+        with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
+            _refine_one_model_for_cli(
+                inner=storage, ds_name="live", model_name="items", dry_run=True,
+            )
+
+    async def test_missing_datasource_silent_for_text_only_model(self, tmp_path) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
+        """Models with no refineable DOUBLE base columns (text-only here) must
+        load through the CLI without requiring a live datasource entry."""
+        from slayer.cli import _refine_one_model_for_cli
+
+        base = str(tmp_path)
+        models_dir = os.path.join(base, "models", "live")
+        os.makedirs(models_dir, exist_ok=True)
+        with open(os.path.join(models_dir, "events.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
+            yaml.dump(
+                {
+                    "version": 4,
+                    "name": "events",
+                    "sql_table": "events",
+                    "data_source": "live",
+                    "columns": [{"name": "tag", "sql": "tag", "type": "string"}],
+                },
+                f,
+            )
+        storage = YAMLStorage(base_dir=base)
+        # No raise — returns False because nothing needed refinement.
+        result = _refine_one_model_for_cli(
+            inner=storage, ds_name="live", model_name="events", dry_run=True,
+        )
+        assert result is False
 
 
 def _build_args(**kw):

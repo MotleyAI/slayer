@@ -18,7 +18,7 @@ from pydantic import ValidationError
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
-from slayer.storage.base import StorageBackend, _validate_path_component
+from slayer.storage.base import StorageBackend
 from slayer.storage.v4_migration import migrate_yaml_layout
 
 
@@ -68,45 +68,28 @@ class YAMLStorage(StorageBackend):
         name: str,
         data_source: Optional[str] = None,
     ) -> Optional[SlayerModel]:
-        _validate_path_component(name, kind="model name")
-        if data_source is not None:
-            _validate_path_component(data_source, kind="data_source")
-        if data_source is None:
-            identity = await self.resolve_model_identity(name)
-            if identity is None:
-                return None
-            data_source, name = identity
+        target = await self._resolve_target_or_none(name, data_source=data_source)
+        if target is None:
+            return None
+        data_source, name = target
         path = self._model_path(data_source, name)
-        if not os.path.exists(path):  # NOSONAR(S6549) — name/data_source are sanitized by _validate_path_component above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
+        if not os.path.exists(path):  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
             return None
         with open(path) as f:
             data = yaml.safe_load(f)
-        # DEV-1361: storage-driven type refinement. The dict migrator chain
-        # is invoked by SlayerModel.model_validate(...). When the on-disk
-        # version was below the current SlayerModel version, also run a live
-        # DB-introspection refinement to narrow DOUBLE → INT, then write the
-        # refined v5 dict back so subsequent loads skip both steps.
-        data, write_back = await self._migrate_and_refine_on_load(
+        return await self._migrate_and_refine_on_load(
             name=name, data=data, data_source=data_source,
         )
-        model = SlayerModel.model_validate(data)
-        if write_back:
-            await self.save_model(model)
-        return model
 
     async def delete_model(
         self,
         name: str,
         data_source: Optional[str] = None,
     ) -> bool:
-        _validate_path_component(name, kind="model name")
-        if data_source is not None:
-            _validate_path_component(data_source, kind="data_source")
-        if data_source is None:
-            identity = await self.resolve_model_identity(name)
-            if identity is None:
-                return False
-            data_source, name = identity
+        target = await self._resolve_target_or_none(name, data_source=data_source)
+        if target is None:
+            return False
+        data_source, name = target
         path = self._model_path(data_source, name)
         if os.path.exists(path):
             os.remove(path)

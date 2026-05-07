@@ -570,7 +570,7 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
             live.commit()
         ds_dir = os.path.join(tmpdir, "datasources")
         os.makedirs(ds_dir, exist_ok=True)
-        with open(os.path.join(ds_dir, "demo.yaml"), "w") as f:
+        with open(os.path.join(ds_dir, "demo.yaml"), "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump(
                 {"name": "demo", "type": "sqlite", "database": live_db_path, "version": 1},
                 f,
@@ -582,7 +582,7 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
         models_dir = os.path.join(tmpdir, "models")
         os.makedirs(models_dir, exist_ok=True)
         legacy_path = os.path.join(models_dir, "orders.yaml")
-        with open(legacy_path, "w") as f:
+        with open(legacy_path, "w") as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             yaml.dump({
                 "version": 1,
                 "name": "orders",

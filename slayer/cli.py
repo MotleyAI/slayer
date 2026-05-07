@@ -1,13 +1,20 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import copy
 import json
 import os
 import sys
 from typing import List, Optional
 
 from slayer.async_utils import run_sync
+from slayer.core.models import SlayerModel
+from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
+from slayer.storage.type_refinement import (
+    has_refineable_columns,
+    refine_dict_with_live_schema,
+)
 
 _STORAGE_DEFAULT = default_storage_path()
 _STORAGE_HELP = (
@@ -584,18 +591,15 @@ def _refine_one_model_for_cli(
 
     Returns True iff the model needed refinement. Reads the raw on-disk
     dict, runs the v5 migrator chain, applies live-schema refinement, and
-    optionally persists. Skipped silently when the datasource record is
-    missing or the on-disk dict can't be read.
+    optionally persists.
+
+    Mirrors ``StorageBackend._migrate_and_refine_on_load``: if the migrated
+    dict has refineable DOUBLE base columns AND the datasource entry is
+    missing, raises ``ValueError`` rather than silently reporting "nothing
+    to refine" for a model the CLI never had enough information to inspect.
+    Models with no refineable columns (text-only, query-backed, sql-mode,
+    already-narrowed) skip silently and don't require a live datasource.
     """
-    import copy as _copy
-
-    from slayer.core.models import SlayerModel as _SM
-    from slayer.storage import migrations as _mig
-    from slayer.storage.type_refinement import refine_dict_with_live_schema
-
-    ds = run_sync(inner.get_datasource(ds_name))
-    if ds is None:
-        return False
     raw = run_sync(_load_raw_model_dict(inner, ds_name, model_name))
     if raw is None:
         return False
@@ -606,7 +610,16 @@ def _refine_one_model_for_cli(
         for c in raw.get("columns", []) or []
         if isinstance(c, dict)
     }
-    upgraded = _mig.migrate("SlayerModel", _copy.deepcopy(raw))
+    upgraded = _mig.migrate("SlayerModel", copy.deepcopy(raw))
+    if not has_refineable_columns(upgraded):
+        return False
+    ds = run_sync(inner.get_datasource(ds_name))
+    if ds is None:
+        raise ValueError(
+            f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
+            f"{ds_name!r} is unavailable for type refinement. Restore the "
+            f"datasource entry or remove the stale model file."
+        )
     if not refine_dict_with_live_schema(upgraded, ds):
         return False
     print(f"refined {ds_name}.{model_name}:")
@@ -617,7 +630,7 @@ def _refine_one_model_for_cli(
         if before != "INT":
             print(f"  - {col['name']}: {before or '?'} → INT")
     if not dry_run:
-        model = _SM.model_validate(upgraded)
+        model = SlayerModel.model_validate(upgraded)
         # Save through inner so we don't re-trigger the load-time
         # refinement / join-sync mirror loop.
         run_sync(inner.save_model(model))
