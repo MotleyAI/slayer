@@ -193,7 +193,17 @@ class CrossModelMeasure(BaseModel):
 
     name: str
     alias: str = Field(description="Result column name, e.g. 'orders.customers__avg_score'")
-    target_model_name: str = Field(description="The joined model name")
+    target_model_name: str = Field(description="The joined model name (terminal)")
+    hop_names: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Full chain of model names from the source's first hop to the "
+            "terminal target. For ``customers.revenue:sum`` (single-hop) "
+            "this is ``['customers']``; for "
+            "``claim_coverage.claim_amount.total_claim_amount:sum`` "
+            "(multi-hop) it is ``['claim_coverage', 'claim_amount']``."
+        ),
+    )
     target_model_sql_table: Optional[str]
     target_model_sql: Optional[str]
     measure: EnrichedMeasure = Field(description="The measure to aggregate")

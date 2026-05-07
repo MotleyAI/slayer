@@ -929,7 +929,7 @@ class TestCollectNeededPathsExtraAggNames:
         )
         # Filter uses a custom aggregation in function style: custom_total(revenue) > 100
         # Without extra_agg_names, parse_filter won't rewrite it → potential misparse
-        paths = _collect_needed_paths(
+        paths, _origins = _collect_needed_paths(
             model=model,
             dimensions=[],
             time_dimensions=[],
@@ -952,7 +952,7 @@ class TestCollectNeededPathsExtraAggNames:
                 Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         )
-        paths = _collect_needed_paths(
+        paths, _origins = _collect_needed_paths(
             model=model,
             dimensions=[],
             time_dimensions=[],

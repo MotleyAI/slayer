@@ -50,6 +50,171 @@ from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
 _TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
+
+# DEV-1367: bare names appearing inside ``parse_filter`` output that should
+# never trigger the unknown-name guard. ``parse_filter`` upper-cases SQL
+# keywords during its preprocessing pass, but a few lowercase tokens (most
+# notably ``true`` / ``false``) survive as ``ast.Name`` nodes and end up
+# in ``ParsedFilter.columns``. The set is built from ``sqlglot``'s
+# tokenizer keyword table once at import time and frozen.
+_SQL_KEYWORD_ALLOWLIST: frozenset = frozenset(
+    kw.lower()
+    for kw in sqlglot.tokens.Tokenizer.KEYWORDS.keys()
+    if kw.replace("_", "").isalnum()
+)
+
+
+def _is_canonical_agg_alias(name: str, agg_names: frozenset) -> bool:
+    """``*:count`` collapses to ``_count``; other aggregations land as
+    ``<col>_<agg>`` (``revenue_sum``, ``temperature_c_max``). When such
+    an alias is used as a bare reference inside a filter (e.g.
+    ``filters=["_count > 0"]`` or after named-measure inlining produces
+    ``amount_sum``) the planner must not flag it as an unknown column.
+
+    ``agg_names`` is the union of built-in aggregations and any custom
+    aggregation names in scope on the source / joined models.
+    """
+    if name.startswith("_") and len(name) > 1 and name[1:] in agg_names:
+        return True
+    for agg in agg_names:
+        # Match ``<col>_<agg>`` shape where ``<col>`` is a non-empty prefix.
+        suffix = f"_{agg}"
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return True
+    return False
+
+
+async def _validate_filter_string(
+    *,
+    filter_str: str,
+    site: str,
+    source_model: SlayerModel,
+    source_alias: str,
+    extra_agg_names: frozenset,
+    named_measures: Mapping[str, str],
+    resolve_model,
+    named_queries: dict,
+) -> None:
+    """Validate every column reference inside ``filter_str`` against the
+    join graph and the source model's column / measure surface.
+
+    Raises ``ValueError`` for:
+
+    * **Bare name typos** — names that aren't a column on the source
+      model, a saved measure, a custom-aggregation alias, a SQL keyword,
+      or a canonical aggregation alias (``_count``, ``revenue_sum``).
+    * **Dotted refs to unreachable models** — ``foo.bar`` where ``foo``
+      is not a join target on the source model (or any intermediate hop).
+    * **Dotted refs whose leaf column does not exist** on the resolved
+      terminal model — e.g. ``B.nonexistent`` when ``B`` is joined.
+
+    Self-references (``<source>.<col>`` and ``<source_alias>.<col>``) are
+    treated as bare names for the purpose of column existence; the
+    ``<source>.`` prefix is stripped before the check.
+
+    SQL fragments (the third shape produced by ``parse_filter``) are
+    skipped — they only arise during engine-internal expansion of
+    derived columns and shouldn't be subjected to user-facing
+    validation.
+    """
+    parsed = parse_filter(
+        filter_str, extra_agg_names=extra_agg_names, named_measures=named_measures,
+    )
+    column_names = {c.name for c in source_model.columns}
+    measure_names = {m.name for m in source_model.measures if m.name}
+    self_names = {source_model.name, source_alias}
+    agg_names = BUILTIN_AGGREGATIONS | (extra_agg_names or frozenset())
+
+    for col in parsed.columns:
+        if "." not in col:
+            if (
+                col in column_names
+                or col in measure_names
+                or (extra_agg_names and col in extra_agg_names)
+                or col.lower() in _SQL_KEYWORD_ALLOWLIST
+                or _is_canonical_agg_alias(col, agg_names)
+            ):
+                continue
+            available = sorted(column_names | measure_names)
+            raise ValueError(
+                f"Cannot resolve {site} '{filter_str}': bare name '{col}' "
+                f"is not a column or named measure on '{source_model.name}'. "
+                f"Available columns/measures: "
+                f"{available if available else '(none)'}."
+            )
+        # Dotted reference. Strip a self-prefix (model.name or source alias)
+        # so ``orders.amount`` on source ``orders`` is treated as a bare
+        # column lookup rather than a cross-model walk.
+        if not _looks_like_dotted_identifier_ref(col):
+            continue  # SQL fragment from internal expansion — skip.
+        parts = col.split(".")
+        if parts[0] in self_names and len(parts) == 2:
+            leaf = parts[1]
+            if (
+                leaf in column_names
+                or leaf in measure_names
+                or (extra_agg_names and leaf in extra_agg_names)
+                or _is_canonical_agg_alias(leaf, agg_names)
+            ):
+                continue
+            available = sorted(column_names | measure_names)
+            raise ValueError(
+                f"Cannot resolve {site} '{filter_str}': column '{leaf}' "
+                f"is not a column or named measure on "
+                f"'{source_model.name}'. Available columns/measures: "
+                f"{available if available else '(none)'}."
+            )
+        # Walk the join chain hop-by-hop, raising at the first unresolvable
+        # hop with a filter-aware message. Mirrors the logic of
+        # ``SlayerQueryEngine._resolve_dimension_with_terminal`` but
+        # surfaces a different shape of error.
+        current_model = source_model
+        for hop in parts[:-1]:
+            join = next(
+                (j for j in current_model.joins if j.target_model == hop),
+                None,
+            )
+            if join is None:
+                available = sorted({j.target_model for j in current_model.joins})
+                raise ValueError(
+                    f"Cannot resolve {site} '{filter_str}': model '{hop}' "
+                    f"is not reachable from '{current_model.name}'. "
+                    f"Add a join to '{hop}' on '{current_model.name}', or "
+                    f"rewrite the reference. "
+                    f"Direct joins on '{current_model.name}': "
+                    f"{available if available else '(none)'}."
+                )
+            try:
+                current_model = await resolve_model(
+                    model_name=hop,
+                    named_queries=named_queries or {},
+                )
+            except Exception:  # noqa: BLE001 — opaque alias is a same-class failure
+                current_model = None
+            if current_model is None:
+                # Resolver couldn't load the joined model definition (e.g.
+                # missing storage entry). Surface as the same class of
+                # error so the agent gets a useful message.
+                raise ValueError(
+                    f"Cannot resolve {site} '{filter_str}': model '{hop}' "
+                    f"is referenced in joins but could not be loaded. "
+                    f"Check the model definition exists and is reachable."
+                )
+        leaf = parts[-1]
+        if (
+            current_model.get_column(leaf) is None
+            and current_model.get_measure(leaf) is None
+        ):
+            available = sorted(
+                {c.name for c in current_model.columns}
+                | {m.name for m in current_model.measures if m.name}
+            )
+            raise ValueError(
+                f"Cannot resolve {site} '{filter_str}': column '{leaf}' "
+                f"does not exist on model '{current_model.name}'. "
+                f"Available columns/measures: "
+                f"{available if available else '(none)'}."
+            )
 def _strip_string_literal(value: str) -> str:
     """Strip one layer of single/double quotes from a query parameter value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
@@ -109,6 +274,7 @@ async def enrich_query(
     resolve_join_target,
     resolve_model=None,
     dialect: str = "postgres",
+    strict_joins: bool = True,
 ) -> EnrichedQuery:
     """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -333,6 +499,21 @@ async def enrich_query(
         filter_sql = None
         filter_columns: List[str] = []
         if measure_def and measure_def.filter:
+            # DEV-1367: validate Column.filter dotted refs / bare names
+            # against the source model's join graph and column surface
+            # before parsing. Catches bad refs at translate time with a
+            # filter-aware error.
+            if strict_joins and resolve_model is not None:
+                await _validate_filter_string(
+                    filter_str=measure_def.filter,
+                    site=f"column filter on '{measure_name}'",
+                    source_model=model,
+                    source_alias=model_name_str,
+                    extra_agg_names=custom_agg_names,
+                    named_measures=named_measures,
+                    resolve_model=resolve_model,
+                    named_queries=named_queries,
+                )
             parsed = parse_filter(
                 measure_def.filter,
                 extra_agg_names=custom_agg_names,
@@ -837,6 +1018,37 @@ async def enrich_query(
         ]
 
     all_filter_strs = list(model.filters) + query_filters
+
+    # DEV-1367: Validate every column reference in every user-supplied filter
+    # at translate time. Catches bare-name typos, dotted refs to unreachable
+    # models, and dotted refs whose leaf column doesn't exist on the resolved
+    # target — all surfaced as filter-aware ``ValueError``s instead of
+    # cryptic database-runtime errors. Only runs in ``strict_joins`` mode
+    # because re-rooted CTEs legitimately remap filter strings in ways that
+    # would otherwise trip the upfront check.
+    if strict_joins and resolve_model is not None:
+        for mf in model.filters:
+            await _validate_filter_string(
+                filter_str=mf,
+                site="model filter",
+                source_model=model,
+                source_alias=model_name_str,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+                resolve_model=resolve_model,
+                named_queries=named_queries,
+            )
+        for qf in query_filters:
+            await _validate_filter_string(
+                filter_str=qf,
+                site="query filter",
+                source_model=model,
+                source_alias=model_name_str,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+                resolve_model=resolve_model,
+                named_queries=named_queries,
+            )
     processed_filters = []
     ft_counter = [0]
     for f_str in all_filter_strs:
@@ -876,6 +1088,7 @@ async def enrich_query(
         resolve_join_target=resolve_join_target,
         extra_agg_names=custom_agg_names,
         dialect=dialect,
+        strict=strict_joins,
     )
 
     parsed_filters = await resolve_filter_columns(
@@ -1000,6 +1213,14 @@ async def _resolve_dimensions(
     resolve_model=None,
     dialect: str = "postgres",
 ) -> List[EnrichedDimension]:
+    # DEV-1367 note: ``dim_def`` may be ``None`` here when the cross-model
+    # path can't be walked, in which case the resulting
+    # ``EnrichedDimension`` carries an unresolved ``model_name``. The path
+    # is then surfaced to ``_resolve_joins``, which raises a clear
+    # ``ValueError`` tied to ``"dimension '<alias>'"`` provenance. We do
+    # NOT raise here because many legacy tests use ``_noop_async`` as
+    # ``resolve_dimension_via_joins``, and the silent build is what
+    # keeps those tests passing.
     dimensions = []
     for dim_ref in query.dimensions or []:
         terminal_model: Optional[SlayerModel] = None
@@ -1050,6 +1271,9 @@ async def _resolve_time_dimensions(
     resolve_model=None,
     dialect: str = "postgres",
 ) -> List[EnrichedTimeDimension]:
+    # See ``_resolve_dimensions`` for why we don't raise locally on
+    # ``dim_def is None`` (DEV-1367 — ``_resolve_joins`` raises with
+    # provenance instead).
     time_dimensions = []
     for td in query.time_dimensions or []:
         terminal_model: Optional[SlayerModel] = None
@@ -1153,10 +1377,25 @@ def _resolve_last_agg_time(
 # ---------------------------------------------------------------------------
 
 
-def _add_with_prefixes(segments: List[str], paths: Set[Tuple[str, ...]]) -> None:
-    """Add ``segments[:1], segments[:2], …, segments`` to ``paths``."""
+def _add_with_prefixes(
+    segments: List[str],
+    paths: Set[Tuple[str, ...]],
+    origins: Optional[Dict[Tuple[str, ...], str]] = None,
+    origin: Optional[str] = None,
+) -> None:
+    """Add ``segments[:1], segments[:2], …, segments`` to ``paths``.
+
+    ``origins`` records — for each newly-added path tuple — a human-readable
+    description of what introduced it (a filter string, a dimension alias,
+    a derived column name). Prior origins win: this function never
+    overwrites an existing entry, so the first source to require a path
+    "owns" it for error-message purposes.
+    """
     for i in range(1, len(segments) + 1):
-        paths.add(tuple(segments[:i]))
+        path = tuple(segments[:i])
+        paths.add(path)
+        if origins is not None and origin is not None and path not in origins:
+            origins[path] = origin
 
 
 def _raise_column_cycle(
@@ -1171,14 +1410,21 @@ def _raise_column_cycle(
     raise ValueError(f"Circular column reference detected: {chain}")
 
 
-def _scan_sql_table_refs(*, sql: str, model_name: str, paths: Set[Tuple[str, ...]]) -> None:
+def _scan_sql_table_refs(
+    *,
+    sql: str,
+    model_name: str,
+    paths: Set[Tuple[str, ...]],
+    origins: Optional[Dict[Tuple[str, ...], str]] = None,
+    origin: Optional[str] = None,
+) -> None:
     """Regex-fallback scan: pick out ``<table>.<col>`` shapes and add the
     table prefix paths (skipping references to ``model_name`` itself).
     """
     for match in _TABLE_COL_RE.finditer(sql):
         segments = match.group(1).split("__")
         if segments and segments[0] != model_name:
-            _add_with_prefixes(segments, paths)
+            _add_with_prefixes(segments, paths, origins=origins, origin=origin)
 
 
 def _process_node_for_paths(
@@ -1188,6 +1434,8 @@ def _process_node_for_paths(
     paths: Set[Tuple[str, ...]],
     visited: Tuple[Tuple[str, str], ...],
     dialect: Optional[str] = None,
+    origins: Optional[Dict[Tuple[str, ...], str]] = None,
+    origin: Optional[str] = None,
 ) -> None:
     """Resolve one ``exp.Column`` node into either a recursion into a
     local derived column or a join-path-prefix add.
@@ -1205,6 +1453,7 @@ def _process_node_for_paths(
         _collect_paths_from_local_column_chain(
             model=model, col_name=node.name, paths=paths,
             visited=visited, dialect=dialect,
+            origins=origins, origin=origin,
         )
         return
     segments = table_id.name.split("__")
@@ -1214,9 +1463,10 @@ def _process_node_for_paths(
         _collect_paths_from_local_column_chain(
             model=model, col_name=node.name, paths=paths,
             visited=visited, dialect=dialect,
+            origins=origins, origin=origin,
         )
         return
-    _add_with_prefixes(segments, paths)
+    _add_with_prefixes(segments, paths, origins=origins, origin=origin)
 
 
 def _collect_paths_from_local_column_chain(
@@ -1226,6 +1476,8 @@ def _collect_paths_from_local_column_chain(
     paths: Set[Tuple[str, ...]],
     visited: Tuple[Tuple[str, str], ...] = (),
     dialect: Optional[str] = None,
+    origins: Optional[Dict[Tuple[str, ...], str]] = None,
+    origin: Optional[str] = None,
 ) -> None:
     """Walk the SQL of a *local* derived column on ``model`` to discover
     the join paths its expression implies — recursing through references
@@ -1254,16 +1506,22 @@ def _collect_paths_from_local_column_chain(
         _raise_column_cycle(visited, key)
     next_visited = (*visited, key)
 
+    chain_origin = origin or f"derived column '{model.name}.{col_name}'"
+
     try:
         parsed = sqlglot.parse_one(sql, dialect=dialect)
     except Exception:
-        _scan_sql_table_refs(sql=sql, model_name=model.name, paths=paths)
+        _scan_sql_table_refs(
+            sql=sql, model_name=model.name, paths=paths,
+            origins=origins, origin=chain_origin,
+        )
         return
 
     for node in parsed.find_all(exp.Column):
         _process_node_for_paths(
             node=node, model=model, paths=paths,
             visited=next_visited, dialect=dialect,
+            origins=origins, origin=chain_origin,
         )
 
 
@@ -1276,25 +1534,72 @@ def _collect_needed_paths(
     processed_filters: List[str],
     extra_agg_names: Optional[frozenset] = None,
     dialect: Optional[str] = None,
-) -> Set[Tuple[str, ...]]:
-    """Extract ordered join-path tuples the query needs (including all prefixes)."""
+    source_alias: Optional[str] = None,
+) -> Tuple[Set[Tuple[str, ...]], Dict[Tuple[str, ...], str]]:
+    """Extract ordered join-path tuples the query needs (including all prefixes).
+
+    Returns ``(paths, path_origins)``. ``path_origins`` maps each path
+    tuple to a human-readable description of what introduced it (a query
+    filter string, a dimension alias, a derived column name). Used by
+    ``_resolve_joins`` to build precise error messages when a path
+    cannot be walked.
+    """
     paths: Set[Tuple[str, ...]] = set()
+    origins: Dict[Tuple[str, ...], str] = {}
 
     for d in dimensions:
         if d.model_name != model.name:
-            _add_with_prefixes(d.model_name.split("__"), paths)
+            _add_with_prefixes(
+                d.model_name.split("__"), paths,
+                origins=origins,
+                origin=f"dimension '{d.alias}'",
+            )
     for td in time_dimensions:
         if td.model_name != model.name:
-            _add_with_prefixes(td.model_name.split("__"), paths)
+            _add_with_prefixes(
+                td.model_name.split("__"), paths,
+                origins=origins,
+                origin=f"time dimension '{td.alias}'",
+            )
+    # Cross-model measures need the full source → target hop chain in
+    # ``needed_paths`` so the outer query has every intermediate JOIN
+    # available (used by sibling windowed measures and filter qualifiers
+    # that touch the chain). Use ``cm.hop_names`` — the resolver
+    # ``_resolve_cross_model_measure`` walks the chain hop-by-hop and
+    # captures it. Older code added only ``(cm.target_model_name,)`` and
+    # relied on the silent ``break`` to ignore broken multi-hop paths;
+    # strict resolution exposes that and ``hop_names`` gives the
+    # correct full path.
     for cm in cross_model_measures:
-        paths.add((cm.target_model_name,))
+        chain = list(cm.hop_names) if cm.hop_names else [cm.target_model_name]
+        _add_with_prefixes(
+            chain, paths,
+            origins=origins,
+            origin=f"cross-model measure on '{'.'.join(chain)}'",
+        )
 
-    # Scan SQL expressions for __-delimited table references
-    sql_refs = [d.sql for d in dimensions] + [td.sql for td in time_dimensions] + [m.sql for m in measures]
-    for sql_expr in sql_refs:
+    # Scan SQL expressions for __-delimited table references. Skip
+    # references whose first segment is the source model itself —
+    # ``A.id`` from a qualified-base-column expansion is a self-reference,
+    # not a join requirement. ``source_alias`` covers aliased-source
+    # cases where ``query.source_model`` differs from ``model.name``.
+    self_names = {model.name}
+    if source_alias is not None:
+        self_names.add(source_alias)
+    sql_origin_pairs = (
+        [(d.sql, f"dimension '{d.alias}'") for d in dimensions]
+        + [(td.sql, f"time dimension '{td.alias}'") for td in time_dimensions]
+        + [(m.sql, f"measure '{m.alias}'") for m in measures]
+    )
+    for sql_expr, origin in sql_origin_pairs:
         if sql_expr and "." in sql_expr:
             for match in _TABLE_COL_RE.finditer(sql_expr):
-                _add_with_prefixes(match.group(1).split("__"), paths)
+                segments = match.group(1).split("__")
+                if segments and segments[0] not in self_names:
+                    _add_with_prefixes(
+                        segments, paths,
+                        origins=origins, origin=origin,
+                    )
 
     # Scan filters for column references — dotted refs add their join
     # path directly; bare-name refs to derived local columns trigger a
@@ -1302,7 +1607,11 @@ def _collect_needed_paths(
     for f_str in processed_filters:
         parsed_f = parse_filter(f_str, extra_agg_names=extra_agg_names)
         for col in parsed_f.columns:
-            _scan_filter_column_ref(model=model, col=col, paths=paths, dialect=dialect)
+            _scan_filter_column_ref(
+                model=model, col=col, paths=paths, dialect=dialect,
+                origins=origins, origin=f"filter '{f_str}'",
+                source_alias=source_alias,
+            )
 
     # Scan measure filter columns. For column-level ``filter=`` attributes
     # ``resolve_filter_columns`` may store the fully-expanded SQL fragment
@@ -1312,9 +1621,13 @@ def _collect_needed_paths(
     # dotted ref, expanded SQL) and routes each accordingly.
     for m in measures:
         for col in m.filter_columns:
-            _scan_filter_column_ref(model=model, col=col, paths=paths, dialect=dialect)
+            _scan_filter_column_ref(
+                model=model, col=col, paths=paths, dialect=dialect,
+                origins=origins, origin=f"column filter on measure '{m.alias}'",
+                source_alias=source_alias,
+            )
 
-    return paths
+    return paths, origins
 
 
 def _scan_filter_column_ref(
@@ -1323,6 +1636,9 @@ def _scan_filter_column_ref(
     col: str,
     paths: Set[Tuple[str, ...]],
     dialect: Optional[str] = None,
+    origins: Optional[Dict[Tuple[str, ...], str]] = None,
+    origin: Optional[str] = None,
+    source_alias: Optional[str] = None,
 ) -> None:
     """Route one entry from a parsed filter's column list to the right
     path-discovery branch.
@@ -1341,23 +1657,33 @@ def _scan_filter_column_ref(
     if "." not in col:
         _collect_paths_from_local_column_chain(
             model=model, col_name=col, paths=paths, dialect=dialect,
+            origins=origins, origin=origin,
         )
         return
+    self_names = {model.name}
+    if source_alias is not None:
+        self_names.add(source_alias)
+
     if _looks_like_dotted_identifier_ref(col):
         parts = col.split(".")
         expanded: List[str] = []
         for part in parts[:-1]:
             # Model filters convert dots to __; expand both forms.
             expanded.extend(part.split("__"))
-        if expanded:
-            _add_with_prefixes(expanded, paths)
+        # Self-references like ``orders.amount`` on source ``orders`` are
+        # local refs, not join requirements — drop them here so the
+        # resolver doesn't try to walk from orders → orders. ``source_alias``
+        # covers the case where the query targets an aliased source whose
+        # name differs from ``model.name`` (e.g. named-query stages).
+        if expanded and expanded[0] not in self_names:
+            _add_with_prefixes(expanded, paths, origins=origins, origin=origin)
         return
     # Expanded SQL fragment.
     for match in _TABLE_COL_RE.finditer(col):
         table_alias = match.group(1)
         segments = table_alias.split("__")
-        if segments and segments[0] != model.name:
-            _add_with_prefixes(segments, paths)
+        if segments and segments[0] not in self_names:
+            _add_with_prefixes(segments, paths, origins=origins, origin=origin)
 
 
 _DOTTED_IDENT_REF_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
@@ -1383,6 +1709,7 @@ async def _resolve_joins(
     resolve_join_target,
     extra_agg_names: Optional[frozenset] = None,
     dialect: Optional[str] = None,
+    strict: bool = True,
 ) -> List[tuple]:
     """Resolve only the JOINs the query actually needs by walking the join graph.
 
@@ -1392,7 +1719,7 @@ async def _resolve_joins(
     ``dialect`` is the active sqlglot dialect; it propagates into the
     derived-column SQL parser used to discover join paths (PR #96 review).
     """
-    needed_paths = _collect_needed_paths(
+    needed_paths, path_origins = _collect_needed_paths(
         model=model,
         dimensions=dimensions,
         time_dimensions=time_dimensions,
@@ -1401,6 +1728,7 @@ async def _resolve_joins(
         processed_filters=processed_filters,
         extra_agg_names=extra_agg_names,
         dialect=dialect,
+        source_alias=model_name_str,
     )
     if not needed_paths:
         return []
@@ -1436,7 +1764,25 @@ async def _resolve_joins(
                     break
 
             if join is None:
-                break  # No join found — remaining hops unresolvable
+                if not strict:
+                    # Re-rooted CTEs and other engine-internal callers
+                    # legitimately encounter unreachable references that
+                    # should be silently dropped (the unreachable dim/filter
+                    # is filtered out of the rebuilt query).
+                    break
+                # Walk back from the longest path containing this hop to
+                # find the most specific origin recorded for it.
+                origin = path_origins.get(tuple(path[: i + 1])) or path_origins.get(path)
+                origin_clause = f" (needed by {origin})" if origin else ""
+                available = sorted({j.target_model for j in current_model.joins})
+                raise ValueError(
+                    f"Cannot resolve join from '{current_model.name}' to "
+                    f"'{segment}' while building path '{'.'.join(path)}'"
+                    f"{origin_clause}. Add a join to '{segment}' on "
+                    f"'{current_model.name}', or remove the reference. "
+                    f"Direct joins on '{current_model.name}': "
+                    f"{available if available else '(none)'}."
+                )
 
             # Resolve the target model
             target_info = await resolve_join_target(

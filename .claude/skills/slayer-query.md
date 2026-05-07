@@ -70,6 +70,8 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Variable substitution**: `{var}` placeholders in filter strings are substituted from the query's `variables` dict (or per-model defaults). Use `{{`/`}}` for literal braces.
 
+**Unresolvable refs raise at translate time** (DEV-1367). A filter that names a model not reachable from `source_model` via the join graph — `"transportation_assets.total_vehicles >= 3"` when `transportation_assets` isn't in `joins` — raises `ValueError` with a filter-aware message naming the offending filter, the missing model / column, the source model, and the available direct joins. Same for filters referencing missing columns on joined models (`"customers.does_not_exist > 0"`) and bare-name typos (`"nonexistent_col > 100"`). On the failure, either add the missing join, fix the column name, or rewrite the filter to use a column that is reachable.
+
 ## Executing
 
 `SlayerQueryEngine.execute(...)` is **async**. Use `await` from async code, or call `execute_sync(...)` from CLIs / notebooks / scripts.

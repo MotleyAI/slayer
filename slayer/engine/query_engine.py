@@ -1310,6 +1310,7 @@ class SlayerQueryEngine:
         model: SlayerModel,
         named_queries: dict[str, SlayerQuery] = None,
         dialect: Optional[str] = None,
+        strict_joins: bool = True,
     ) -> EnrichedQuery:
         """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -1421,6 +1422,7 @@ class SlayerQueryEngine:
             resolve_join_target=_resolve_join_target,
             resolve_model=_resolve_model_for_expansion,
             dialect=dialect,
+            strict_joins=strict_joins,
         )
 
         # Post-process: build re-rooted enriched queries for cross-model measures
@@ -1935,6 +1937,7 @@ class SlayerQueryEngine:
             name=field_name,
             alias=alias,
             target_model_name=target_model_name,
+            hop_names=list(hop_names),
             target_model_sql_table=target_model.sql_table,
             target_model_sql=target_model.sql,
             measure=EnrichedMeasure(
@@ -2074,6 +2077,7 @@ class SlayerQueryEngine:
             query=rerooted_query,
             model=target_model,
             named_queries=named_queries,
+            strict_joins=False,
         )
 
         # --- Fix aliases to match main query's expectations ---

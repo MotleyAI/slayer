@@ -167,6 +167,16 @@ Filters can reference columns from joined models, and the planner adds the impli
 
 The same auto-join logic applies to model-level `filters` (always-applied WHERE) and to column-level `filter=` attributes (CASE-WHEN at aggregation time).
 
+### Unresolvable references are rejected at translate time
+
+A filter (query-, model-, or column-level) that names a column or model the planner can't bind raises `ValueError` at translate time, not at SQL execution. Three failure shapes — all surfaced with a filter-aware message naming the offending filter, the missing piece, and the source model:
+
+- **Dotted ref to an unjoined model**: `"transportation_assets.total_vehicles >= 3"` when `transportation_assets` is not in the source model's `joins` (and not reachable via any chain of direct joins).
+- **Dotted ref to a missing column on a joined model**: `"customers.does_not_exist > 0"` where `customers` IS joined.
+- **Bare-name typo**: `"nonexistent_col > 100"` — the name isn't a column, a saved measure, a custom-aggregation alias, or a SQL keyword on the source model.
+
+The same checks run for `dimensions` and `time_dimensions` whose dotted model path is unreachable. Cross-model measures whose target isn't reachable raise via the same path. In every case the error message lists the source model's available direct joins (or columns/measures, for bare-name failures), so the agent can fix the query on retry.
+
 ### Window functions in filters
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. SLayer handles this in two ways.
