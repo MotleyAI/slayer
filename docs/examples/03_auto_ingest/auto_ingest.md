@@ -18,14 +18,14 @@ The first step is building a directed graph from FK constraints: each edge means
 
 ## Join generation
 
-Each table's own FK relationships become `ModelJoin` objects — one per FK. For example, `order_items` gets these joins:
+Each table's own FK relationships become `ModelJoin` objects — one per FK. For example, `items` gets these joins:
 
 | Target | Source column | Target column |
 |--------|--------------|---------------|
 | orders | `order_id` | `id` |
 | products | `sku` | `sku` |
 
-That's it — only the table's own FKs. Tables reachable via multiple hops (e.g. `order_items → orders → customers`) are **not** stored in the joins list. Instead, SLayer walks the join graph at query time: each intermediate model declares its own direct joins, so the path `orders → customers → regions` is resolved by following `orders.joins` to `customers`, then `customers.joins` to `regions`.
+That's it — only the table's own FKs. Tables reachable via multiple hops (e.g. `items → orders → customers`) are **not** stored in the joins list. Instead, SLayer walks the join graph at query time: each intermediate model declares its own direct joins, so the path `orders → customers → regions` is resolved by following `orders.joins` to `customers`, then `customers.joins` to `regions`.
 
 Diamond joins — where the same table is reachable via multiple FK paths — are disambiguated by the path notation in the query. `customers.regions.name` and `warehouses.regions.name` each walk a different chain and produce distinct table aliases (`customers__regions` vs `warehouses__regions`). See the [joins post](../05_joins/joins.md) for details on diamond joins and how to recombine them.
 
@@ -50,15 +50,15 @@ Once ingested, models are queried like any other. Joined dimensions use dot synt
 
 ```json
 {
-  "source_model": "order_items",
-  "measures": ["*:count", "quantity:sum"],
+  "source_model": "items",
+  "measures": ["*:count"],
   "dimensions": ["orders.customers.name"],
-  "order": [{"column": "quantity:sum", "direction": "desc"}],
+  "order": [{"column": "_count", "direction": "desc"}],
   "limit": 5
 }
 ```
 
-Result keys include the full path from the source model: `order_items.orders.customers.name`, `order_items.count`, `order_items.quantity_sum`.
+Result keys include the full path from the source model: `items.orders.customers.name`, `items._count`.
 
 ---
 

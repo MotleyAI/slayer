@@ -10,14 +10,14 @@ A model defines columns as bare expressions:
 
 ```yaml
 columns:
-  - name: revenue
-    sql: amount
+  - name: subtotal
+    sql: subtotal
     type: number
-  - name: price
-    sql: unit_price
+  - name: tax_paid
+    sql: tax_paid
     type: number
-  - name: quantity
-    sql: qty
+  - name: order_total
+    sql: order_total
     type: number
 ```
 
@@ -28,12 +28,12 @@ At query time, you pick the aggregation with colon syntax:
 ```json
 {
   "source_model": "orders",
-  "measures": ["revenue:sum", "revenue:avg", "price:min", "price:max"],
-  "dimensions": ["status"]
+  "measures": ["subtotal:sum", "subtotal:avg", "order_total:min", "order_total:max"],
+  "dimensions": ["stores.name"]
 }
 ```
 
-`revenue:sum` means "take the `revenue` column (which is the `amount` value) and SUM it." `price:min` means "take the `price` column and find the MIN." One column definition, as many aggregations as you need.
+`subtotal:sum` means "take the `subtotal` column and SUM it." `order_total:min` means "take the `order_total` column and find the MIN." One column definition, as many aggregations as you need.
 
 ## COUNT(*) and the star measure
 
@@ -127,10 +127,10 @@ aggregations:
   - name: weighted_avg
     params:
       - name: weight
-        sql: quantity
+        sql: subtotal
 ```
 
-Now `price:weighted_avg` uses `quantity` as the weight without you specifying it every time. But you can still override: `price:weighted_avg(weight=revenue)`.
+Now `tax_rate:weighted_avg` uses `subtotal` as the weight without you specifying it every time. But you can still override: `tax_rate:weighted_avg(weight=order_total)`.
 
 ## Controlling which aggregations apply
 

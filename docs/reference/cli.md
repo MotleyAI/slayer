@@ -36,7 +36,7 @@ slayer serve --demo            # auto-ingest the bundled Jaffle Shop demo first
 | `--host` | `0.0.0.0` | Bind address |
 | `--port` | `5143` | Port number |
 | `--storage` | `./slayer_data` | Storage path (directory for YAML, .db file for SQLite) |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). Requires `duckdb` + `jafgen`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 
 ### `slayer mcp`
 
@@ -55,7 +55,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | `./slayer_data` | Storage path |
-| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). Requires `duckdb` + `jafgen`. |
+| `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
 
 ### `slayer query`
 
@@ -162,10 +162,10 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
-| `--years` | No | (demo only) Years of synthetic data to generate (default: 1) |
+| `--years` | No | (demo only) Years of synthetic data to generate (default: 4) |
 | `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
 | `--storage` | No | Storage path |
 
-The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. Requires `duckdb` (install with the `[duckdb]` or `[all]` extra) and [`jafgen`](https://github.com/rossbowen/jaffle-shop-generator) (git-only install); missing-dependency errors surface with a ready-to-copy install command.
+The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
 
 If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
