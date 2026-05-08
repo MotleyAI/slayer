@@ -21,7 +21,7 @@ from typing import List, Optional, Tuple
 
 # A bare SQL identifier (no dots, no double underscores constraint at this
 # level — the dunder restriction is applied selectively at user-input time).
-IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
 # An identifier or a dotted path of identifiers, e.g. ``revenue``,
 # ``customers.revenue``, ``a.b.c.d``. Used to scan formula text for

@@ -77,8 +77,8 @@ def _normalize_operators(formula: str) -> str:
     for i, part in enumerate(parts):
         # `==` → `=`. Negative lookbehind/ahead avoids touching `>=` / `<=` / `!=`.
         part = re.sub(r"(?<![<>=!])==(?!=)", "=", part)
-        # `!=` → `<>`. SQL standard inequality.
-        part = re.sub(r"!=", "<>", part)
+        # `!=` → `<>`. SQL standard inequality. Plain literal — no regex needed.
+        part = part.replace("!=", "<>")
         rewritten.append(part)
         if i < len(literals):
             literal = literals[i]

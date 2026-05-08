@@ -3418,7 +3418,7 @@ class TestMeasureFilterInjection:
     # Rejected at parse time
     # ------------------------------------------------------------------
 
-    async def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
+    def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
         """Classic ``'; DROP TABLE ...`` payload is rejected at Column
         construction (DEV-1369: SQL-mode validation moved up to fail-fast)."""
         with pytest.raises(ValueError, match="Invalid filter syntax"):
@@ -3429,7 +3429,7 @@ class TestMeasureFilterInjection:
                 type=DataType.DOUBLE,
             )
 
-    async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
+    def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
         """UNION SELECT payload is rejected at Column construction
         (DEV-1369: SQL-mode validation moved up to fail-fast)."""
         with pytest.raises(ValueError, match="Invalid filter syntax"):
@@ -3440,7 +3440,7 @@ class TestMeasureFilterInjection:
                 type=DataType.DOUBLE,
             )
 
-    async def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
+    def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
         """``/* ... */`` block comments are valid SQL and round-trip through
         sqlglot harmlessly. DEV-1369 (SQL-mode parser) lets them through —
         the prior Python-AST parser rejected them as a side effect of not

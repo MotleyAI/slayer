@@ -1007,6 +1007,107 @@ def _reject_dsl_constructs_in_sql(formula: str) -> None:
         )
 
 
+_BINOP_OP_MAP: Dict[type, str] = {
+    ast.Add: "+", ast.Sub: "-", ast.Mult: "*",
+    ast.Div: "/", ast.Mod: "%", ast.Pow: "**",
+}
+
+
+def _resolve_dotted_attribute(node: ast.expr) -> str:
+    """Render an ``ast.Attribute`` (or ``ast.Name`` leaf) as a dotted string."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_resolve_dotted_attribute(node.value)}.{node.attr}"
+    raise ValueError(f"Unsupported node in dotted reference: {ast.dump(node)}")
+
+
+def _compare_to_sql(node: ast.Compare, recur) -> str:
+    parts = [recur(node.left)]
+    for op, comparator in zip(node.ops, node.comparators):
+        sql_op = _compare_op_to_sql(op, comparator)
+        right = recur(comparator)
+        if isinstance(op, (ast.Is, ast.IsNot)):
+            parts.append(sql_op)  # "IS NULL" / "IS NOT NULL" already complete
+        else:
+            # Both regular comparisons and IN / NOT IN take "<op> <right>";
+            # for IN/NotIn the right is already "(val1, val2, ...)".
+            parts.append(f"{sql_op} {right}")
+    return " ".join(parts)
+
+
+def _boolop_to_sql(node: ast.BoolOp, recur) -> str:
+    op_str = "AND" if isinstance(node.op, ast.And) else "OR"
+    parts = [recur(v) for v in node.values]
+    joined = f" {op_str} ".join(parts)
+    return f"({joined})" if len(parts) > 1 else joined
+
+
+def _unaryop_to_sql(node: ast.UnaryOp, recur) -> str:
+    if isinstance(node.op, ast.Not):
+        return f"NOT ({recur(node.operand)})"
+    if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
+        return str(-node.operand.value)
+    raise ValueError(f"Unsupported unary operator: {ast.dump(node)}")
+
+
+def _attribute_to_sql(node: ast.Attribute, columns: list[str]) -> str:
+    dotted = f"{_resolve_dotted_attribute(node.value)}.{node.attr}"
+    columns.append(dotted)
+    return dotted
+
+
+def _name_to_sql(node: ast.Name, columns: list[str]) -> str:
+    if node.id != "None":
+        columns.append(node.id)
+    return node.id
+
+
+def _constant_to_sql(node: ast.Constant) -> str:
+    if node.value is None:
+        return "NULL"
+    if isinstance(node.value, str):
+        return _escape_sql_string(node.value)
+    return str(node.value)
+
+
+def _seq_to_sql(node, recur) -> str:
+    elts = [recur(e) for e in node.elts]
+    return f"({', '.join(elts)})"
+
+
+def _binop_to_sql(node: ast.BinOp, original: str, recur) -> str:
+    op_str = _BINOP_OP_MAP.get(type(node.op))
+    if op_str is None:
+        raise ValueError(f"Unsupported arithmetic operator in filter: {original!r}")
+    return f"{recur(node.left)} {op_str} {recur(node.right)}"
+
+
+def _call_to_sql(
+    node: ast.Call,
+    original: str,
+    recur,
+    allow_arbitrary_functions: bool,
+) -> str:
+    if not isinstance(node.func, ast.Name):
+        raise ValueError(f"Unsupported call expression: {ast.dump(node)}")
+    func_name = node.func.id
+    if func_name == "__like__" and len(node.args) >= 2:
+        return f"{recur(node.args[0])} LIKE '{_get_string_arg(node.args[1], original)}'"
+    if func_name == "__notlike__" and len(node.args) >= 2:
+        return f"{recur(node.args[0])} NOT LIKE '{_get_string_arg(node.args[1], original)}'"
+    if not allow_arbitrary_functions:
+        raise ValueError(f"Unknown filter function '{func_name}' in: {original!r}")
+    arg_sqls = [recur(a) for a in node.args]
+    for kw in node.keywords:
+        if kw.arg is None:
+            raise ValueError(
+                f"Star-args / **kwargs are not supported in SQL filter: {original!r}"
+            )
+        arg_sqls.append(f"{kw.arg} => {recur(kw.value)}")
+    return f"{func_name}({', '.join(arg_sqls)})"
+
+
 def _filter_node_to_sql(
     node: ast.AST,
     original: str,
@@ -1016,10 +1117,10 @@ def _filter_node_to_sql(
 ) -> str:
     """Recursively convert an AST node to a SQL filter expression.
 
-    When ``allow_arbitrary_functions`` is True (Mode A — SQL filters),
-    unknown function calls are emitted through as SQL. When False
-    (Mode B — DSL), only the internal ``__like__``/``__notlike__``
-    helpers are accepted.
+    Thin dispatch over per-node-type handlers (DEV-1369). When
+    ``allow_arbitrary_functions`` is True (Mode A — SQL filters), unknown
+    function calls are emitted through as SQL; when False (Mode B — DSL),
+    only the internal ``__like__`` / ``__notlike__`` helpers are accepted.
     """
 
     def recur(child: ast.AST) -> str:
@@ -1028,107 +1129,24 @@ def _filter_node_to_sql(
             allow_arbitrary_functions=allow_arbitrary_functions,
         )
 
-    # Comparison: status == 'completed', amount > 100
     if isinstance(node, ast.Compare):
-        left = recur(node.left)
-        parts = [left]
-        for op, comparator in zip(node.ops, node.comparators):
-            sql_op = _compare_op_to_sql(op, comparator)
-            right = recur(comparator)
-            if isinstance(op, (ast.Is, ast.IsNot)):
-                parts.append(sql_op)  # "IS NULL" / "IS NOT NULL" already complete
-            elif isinstance(op, (ast.In, ast.NotIn)):
-                # right is already formatted as "(val1, val2, ...)"
-                parts.append(f"{sql_op} {right}")
-            else:
-                parts.append(f"{sql_op} {right}")
-        return " ".join(parts)
-
-    # Boolean: and, or
+        return _compare_to_sql(node, recur)
     if isinstance(node, ast.BoolOp):
-        op_str = "AND" if isinstance(node.op, ast.And) else "OR"
-        parts = [recur(v) for v in node.values]
-        joined = f" {op_str} ".join(parts)
-        if len(parts) > 1:
-            return f"({joined})"
-        return joined
-
-    # Not
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        inner = recur(node.operand)
-        return f"NOT ({inner})"
-
-    # Dotted name → joined column reference (e.g., customers.name, customers.regions.name)
+        return _boolop_to_sql(node, recur)
+    if isinstance(node, ast.UnaryOp):
+        return _unaryop_to_sql(node, recur)
     if isinstance(node, ast.Attribute):
-        def _resolve_dotted(n: ast.expr) -> str:
-            if isinstance(n, ast.Name):
-                return n.id
-            if isinstance(n, ast.Attribute):
-                return f"{_resolve_dotted(n.value)}.{n.attr}"
-            raise ValueError(f"Unsupported node in dotted reference: {ast.dump(n)}")
-        dotted = f"{_resolve_dotted(node.value)}.{node.attr}"
-        columns.append(dotted)
-        return dotted
-
-    # Name → column reference
+        return _attribute_to_sql(node, columns)
     if isinstance(node, ast.Name):
-        if node.id != "None":
-            columns.append(node.id)
-        return node.id
-
-    # Constant → literal
+        return _name_to_sql(node, columns)
     if isinstance(node, ast.Constant):
-        if node.value is None:
-            return "NULL"
-        if isinstance(node.value, str):
-            return _escape_sql_string(node.value)
-        return str(node.value)
-
-    # Negative number
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
-        return str(-node.operand.value)
-
-    # Tuple/List → for IN expressions: (val1, val2, ...)
+        return _constant_to_sql(node)
     if isinstance(node, (ast.Tuple, ast.List)):
-        elts = [recur(e) for e in node.elts]
-        return f"({', '.join(elts)})"
-
-    # Arithmetic expression (e.g., change / revenue in a filter LHS)
+        return _seq_to_sql(node, recur)
     if isinstance(node, ast.BinOp):
-        op_map = {
-            ast.Add: "+", ast.Sub: "-", ast.Mult: "*",
-            ast.Div: "/", ast.Mod: "%", ast.Pow: "**",
-        }
-        op_str = op_map.get(type(node.op))
-        if op_str is None:
-            raise ValueError(f"Unsupported arithmetic operator in filter: {original!r}")
-        left = recur(node.left)
-        right = recur(node.right)
-        return f"{left} {op_str} {right}"
-
-    # Function calls — internal __like__/__notlike__ helpers in any mode,
-    # and arbitrary SQL functions in SQL mode.
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        func_name = node.func.id
-        if func_name == "__like__" and len(node.args) >= 2:
-            col = recur(node.args[0])
-            val = _get_string_arg(node.args[1], original)
-            return f"{col} LIKE '{val}'"
-        if func_name == "__notlike__" and len(node.args) >= 2:
-            col = recur(node.args[0])
-            val = _get_string_arg(node.args[1], original)
-            return f"{col} NOT LIKE '{val}'"
-        if allow_arbitrary_functions:
-            arg_sqls = [recur(a) for a in node.args]
-            for kw in node.keywords:
-                if kw.arg is None:
-                    raise ValueError(
-                        f"Star-args / **kwargs are not supported in SQL filter: {original!r}"
-                    )
-                arg_sqls.append(f"{kw.arg} => {recur(kw.value)}")
-            return f"{func_name}({', '.join(arg_sqls)})"
-        raise ValueError(f"Unknown filter function '{func_name}' in: {original!r}")
-
+        return _binop_to_sql(node, original, recur)
+    if isinstance(node, ast.Call):
+        return _call_to_sql(node, original, recur, allow_arbitrary_functions)
     raise ValueError(f"Unsupported filter syntax: {original!r}")
 
 
