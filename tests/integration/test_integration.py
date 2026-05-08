@@ -2483,25 +2483,21 @@ async def planets_env(tmp_path):
     return SlayerQueryEngine(storage=storage)
 
 
-async def test_filter_on_windowed_column_sqlite_top_n(planets_env):
-    """End-to-end: filter on a `Column.sql` containing `row_number() over (...)`
-    must execute and return exactly the top-3 rows by mass.
-
-    Pre-fix this generated `WHERE ROW_NUMBER() OVER (ORDER BY mass DESC) <= 3`
-    which SQLite rejects with `near "OVER": syntax error`.
-    """
+async def test_filter_on_windowed_column_sqlite_raises(planets_env):
+    """End-to-end: filtering on a `Column.sql` with a window function used to
+    auto-promote to a post-aggregation outer WHERE (DEV-1336). DEV-1369
+    removes that escape hatch — users must use rank-family transforms
+    (`rank(<measure>) <= 3`) or factor the windowed column into a
+    multi-stage `source_queries` model instead. The engine raises a
+    clear error with that suggestion."""
     engine = planets_env
     query = SlayerQuery(
         source_model="planets",
         dimensions=["name"],
         filters=["rn <= 3"],
-        order=[OrderItem(column=ColumnRef(name="rn"), direction="asc")],
     )
-    response = await engine.execute(query)
-    names = [row["planets.name"] for row in response.data]
-    assert names == ["Jupiter", "Saturn", "Neptune"], (
-        f"Expected top-3 by mass desc, got {names}"
-    )
+    with pytest.raises(ValueError, match="(?i)window function|rank"):
+        await engine.execute(query)
 
 
 async def test_json_extract_case_when_matches_in_sqlite(tmp_path):

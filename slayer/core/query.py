@@ -15,12 +15,27 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, mo
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.models import ModelMeasure
+from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
 logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _VAR_PATTERN = re.compile(r"\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_]*)\}|\{([^}]*)\}")
+
+
+def _validate_query_filter_string(formula: str) -> None:
+    """Apply DEV-1369 DSL-mode construction-time rules to a single
+    ``SlayerQuery.filters`` entry: reject raw ``OVER (...)`` window-function
+    syntax.
+
+    Raw SQL function calls (``json_extract``, ``coalesce``, …) and
+    unknown bare names are rejected at enrichment time by
+    :func:`slayer.core.formula.parse_filter` and the strict-resolution
+    pass in :func:`slayer.engine.enrichment.resolve_filter_columns`.
+    """
+    if has_window_function(formula):
+        raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
 
 
 def substitute_variables(filter_str: str, variables: Dict[str, Any]) -> str:
@@ -320,6 +335,27 @@ class SlayerQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     whole_periods_only: bool = False
+
+    @model_validator(mode="after")
+    def _validate_dsl_user_input(self) -> "SlayerQuery":
+        """DEV-1369: enforce DSL-mode rules on every user-input string field.
+
+        Filter strings are pre-parsed in DSL mode so raw ``OVER (...)``
+        is caught at construction time with an actionable error message.
+        Bare-name strict resolution and raw-SQL-function rejection happen
+        at enrichment, where the parser has full custom-aggregation and
+        named-measure context.
+
+        Note: ``__`` is **not** rejected here. Virtual-model columns
+        produced by ``_query_as_model`` flatten join paths into single
+        identifiers like ``kpis__total_amount_sum``, which downstream
+        stages reference directly. Strict resolution at enrichment
+        catches typos that don't resolve to any column / measure.
+        """
+        if self.filters:
+            for f in self.filters:
+                _validate_query_filter_string(f)
+        return self
 
     def snap_to_whole_periods(self) -> "SlayerQuery":
         """Adjust date filters to align with period boundaries when whole_periods_only=True.

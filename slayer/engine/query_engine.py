@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field as PydanticField, model_validator
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import (
     ColumnRef,
     SlayerQuery,
@@ -53,6 +53,16 @@ _join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
 _forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
     "_forbidden_sibling_refs", default=None
 )
+
+
+class _NoJoinError(Exception):
+    """Internal sentinel raised by ``_walk_join_chain`` when
+    ``strict_missing_join=False`` and a hop has no matching join. Lets
+    callers like ``_resolve_dimension_with_terminal`` map a missing
+    join to a ``None`` return without re-walking the path."""
+    def __init__(self, hop_name: str) -> None:
+        super().__init__(f"no join target named {hop_name!r}")
+        self.hop_name = hop_name
 
 
 _EXPLAIN_PREFIX = {
@@ -1045,7 +1055,7 @@ class SlayerQueryEngine:
                 prefer_data_source=prefer_data_source,
             )
             # Extend the base model with extra columns/measures/joins
-            from slayer.core.models import ModelJoin
+            # ModelJoin already imported at the top of the file.
 
             extra_cols = [
                 Column.model_validate(c) if isinstance(c, dict) else c for c in (query_model.columns or [])
@@ -1683,33 +1693,77 @@ class SlayerQueryEngine:
         terminal model so callers (column-SQL expansion) can recurse into
         the resolved column's own ``sql``.
         """
-        current_model = model
-        visited = {model.name}
-        for hop_name in parts[:-1]:
+        try:
+            terminal_model, _first_join = await self._walk_join_chain(
+                source_model=model,
+                hop_names=parts[:-1],
+                named_queries=named_queries,
+                strict_missing_join=False,
+            )
+        except _NoJoinError:
+            return None
+
+        col = terminal_model.get_column(parts[-1])
+        if col is None:
+            return None
+        return col, terminal_model
+
+    async def _walk_join_chain(
+        self,
+        *,
+        source_model: SlayerModel,
+        hop_names: list[str],
+        named_queries: dict = None,
+        strict_missing_join: bool = True,
+    ) -> "tuple[SlayerModel, ModelJoin | None]":
+        """Walk the join graph from ``source_model`` through ``hop_names``,
+        returning ``(terminal_model, first_join)``. Single source of
+        truth for both dimension and cross-model-measure resolution
+        (DEV-1369 — consolidates two prior near-duplicate walkers).
+
+        Cycle detection: a hop name that already appears on the visited
+        stack (including ``source_model.name``) raises ``ValueError`` with
+        the offending path.
+
+        Missing-join behaviour:
+
+        * ``strict_missing_join=True`` (cross-model-measure callers) —
+          raise ``ValueError`` listing the available joins.
+        * ``strict_missing_join=False`` (dimension callers) — raise the
+          internal :class:`_NoJoinError` sentinel so the caller can map
+          to a ``None`` return.
+        """
+        current_model = source_model
+        visited = {source_model.name}
+        first_join: "ModelJoin | None" = None
+        for i, hop_name in enumerate(hop_names):
             if hop_name in visited:
                 raise ValueError(
-                    f"Circular join detected while resolving '{'.'.join(parts)}': "
-                    f"'{hop_name}' already visited ({' → '.join(visited)} → {hop_name})"
+                    f"Circular join detected while resolving "
+                    f"'{'.'.join(hop_names)}': '{hop_name}' already visited "
+                    f"({' → '.join(visited)} → {hop_name})"
                 )
-            join = None
-            for j in current_model.joins:
-                if j.target_model == hop_name:
-                    join = j
-                    break
+            join = next(
+                (j for j in current_model.joins if j.target_model == hop_name),
+                None,
+            )
             if join is None:
-                return None
-            target = await self._resolve_model(
+                if strict_missing_join:
+                    raise ValueError(
+                        f"Model '{current_model.name}' has no join to "
+                        f"'{hop_name}'. Available joins: "
+                        f"{[j.target_model for j in current_model.joins]}"
+                    )
+                raise _NoJoinError(hop_name)
+            if i == 0:
+                first_join = join
+            current_model = await self._resolve_model(
                 model_name=hop_name,
                 named_queries=named_queries or {},
                 prefer_data_source=current_model.data_source or None,
             )
             visited.add(hop_name)
-            current_model = target
-
-        col = current_model.get_column(parts[-1])
-        if col is None:
-            return None
-        return col, current_model
+        return current_model, first_join
 
     async def _auto_move_fields_to_dimensions(
         self,
@@ -1814,35 +1868,18 @@ class SlayerQueryEngine:
         measure_name = parts[-1]
         hop_names = parts[:-1]  # e.g. ["claim_coverage", "claim_amount"]
 
-        # Walk the join chain to find the final target model
-        current_model = model
-        first_join = None
-        for i, hop_name in enumerate(hop_names):
-            join = None
-            for j in current_model.joins:
-                if j.target_model == hop_name:
-                    join = j
-                    break
-            if join is None:
-                raise ValueError(
-                    f"Model '{current_model.name}' has no join to '{hop_name}'. "
-                    f"Available joins: {[j.target_model for j in current_model.joins]}"
-                )
-            if i == 0:
-                first_join = join
-            # v4 (DEV-1330): keep cross-model-measure hop resolution scoped
-            # to the same datasource as the source model — without this
-            # ``customers.revenue:sum`` against ``orders@db_a`` could
-            # silently pull ``customers@db_b`` (or raise
-            # ``AmbiguousModelError`` when both exist).
-            current_model = await self._resolve_model(
-                model_name=hop_name,
-                named_queries=named_queries or {},
-                prefer_data_source=current_model.data_source or None,
-            )
+        # Walk the join chain to find the final target model. v4 (DEV-1330):
+        # ``_walk_join_chain`` keeps each hop scoped to the source model's
+        # datasource, so ``customers.revenue:sum`` against ``orders@db_a``
+        # never silently pulls ``customers@db_b``.
+        target_model, first_join = await self._walk_join_chain(
+            source_model=model,
+            hop_names=hop_names,
+            named_queries=named_queries,
+            strict_missing_join=True,
+        )
 
         target_model_name = hop_names[-1]
-        target_model = current_model
         join = first_join  # For join_pairs: source model → first hop
 
         # Find the column in the target model

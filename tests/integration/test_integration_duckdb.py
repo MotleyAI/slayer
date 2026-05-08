@@ -687,21 +687,17 @@ async def planets_duckdb_env(tmp_path):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_duckdb_top_n(planets_duckdb_env):
-    """DuckDB parity for DEV-1336: filtering on a `Column.sql` window expression
-    must execute and return the top-3 rows by mass."""
+async def test_filter_on_windowed_column_duckdb_raises(planets_duckdb_env):
+    """DuckDB parity for DEV-1369: filtering a windowed Column.sql raises
+    (use rank-family transforms instead)."""
     engine = planets_duckdb_env
     query = SlayerQuery(
         source_model="planets",
         dimensions=["name"],
         filters=["rn <= 3"],
-        order=[OrderItem(column=ColumnRef(name="rn"), direction="asc")],
     )
-    response = await engine.execute(query)
-    names = [row["planets.name"] for row in response.data]
-    assert names == ["Jupiter", "Saturn", "Neptune"], (
-        f"Expected top-3 by mass desc, got {names}"
-    )
+    with pytest.raises(ValueError, match="(?i)window function|rank"):
+        await engine.execute(query)
 
 
 # ---------------------------------------------------------------------------

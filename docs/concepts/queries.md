@@ -169,26 +169,16 @@ The same auto-join logic applies to model-level `filters` (always-applied WHERE)
 
 ### Window functions in filters
 
-Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. SLayer handles this in two ways.
+Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
 
-**Auto-promotion of windowed columns.** A model `Column` whose `sql` contains a window function (e.g., `row_number() over (order by mass desc)`) can be filtered on directly. SLayer materializes the column in the base CTE under its alias and applies the predicate as a post-aggregation outer `WHERE` — no manual subquery or multi-stage model needed:
+* **Raw `OVER (...)` in filter strings is rejected at SlayerQuery construction.** Inline window-function SQL inside a query filter or `ModelMeasure.formula` is not parseable by SLayer's formula grammar.
+* **Filtering on a `Column` whose `sql` contains a window function is rejected at enrichment** (DEV-1369; reverses the DEV-1336 auto-promotion). A query filter `"rn <= 3"` against a column whose `sql` is `row_number() over (...)` raises with a suggestion to use a rank-family transform.
 
-```json
-{
-  "source_model": "planets",
-  "dimensions": ["name"],
-  "filters": ["rn <= 3"]
-}
-```
+Use one of:
 
-against a model with `Column(name="rn", sql="row_number() over (order by mass desc)", type=NUMBER)` produces SQL with `row_number() OVER (...)` aliased in the inner SELECT and `WHERE "planets.rn" <= 3` in the outer wrap.
-
-**Raw `OVER (...)` in filter strings is rejected.** Inline window-function SQL inside a filter or `ModelMeasure.formula` is not parseable by SLayer's formula grammar. Use one of:
-
-- `rank(<measure>) <= N` (or `dense_rank` / `percent_rank` / `ntile(<measure>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
-- `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
-- A `Column` with the window expression in its `sql` (auto-promotion path above).
-- A multi-stage model where the window computation lives in an earlier stage.
+* `rank(<measure>) <= N` (or `dense_rank` / `percent_rank` / `ntile(<measure>, n=N)`) for ranking — simpler and dialect-portable. Pass `partition_by=` to rank within groups.
+* `first(x)` / `last(x)` / `lag(x, n)` / `lead(x, n)` for time-based window transforms.
+* A multi-stage `source_queries` model where the window computation lives in an earlier stage.
 
 ### Filter Variables
 

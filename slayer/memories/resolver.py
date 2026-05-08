@@ -45,6 +45,7 @@ from slayer.core.formula import (
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.refs import strip_agg_suffix as _strip_agg_suffix
 from slayer.storage.base import StorageBackend
 
 
@@ -72,30 +73,6 @@ class EntityResolution(BaseModel):
 
     canonical_forms: List[str]
     warnings: List[str] = []
-
-
-def _strip_agg_suffix(raw: str) -> Tuple[str, Optional[str]]:
-    """Return ``(prefix, agg_name)`` after stripping a trailing ``:agg``
-    or ``:agg(...)``.
-
-    ``agg`` may be parametric: ``revenue:weighted_avg(weight=qty)`` →
-    ``("revenue", "weighted_avg")``. The args themselves are discarded
-    since the aggregation is not an independent entity (§3.2).
-    """
-    # Find a colon that is NOT inside parentheses.
-    depth = 0
-    for i, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == ":" and depth == 0:
-            prefix = raw[:i]
-            tail = raw[i + 1 :]
-            # Strip parametric args: weighted_avg(weight=qty) → weighted_avg.
-            agg = tail.split("(", 1)[0]
-            return prefix, agg
-    return raw, None
 
 
 def _model_has_leaf(model: SlayerModel, leaf: str) -> bool:

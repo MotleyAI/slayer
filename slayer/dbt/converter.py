@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from slayer.core.enums import DataType, JoinType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.filters import convert_dbt_filter
 from slayer.dbt.models import (
@@ -54,7 +55,6 @@ _AGG_MAP: Dict[str, str] = {
     "sum_boolean": "sum",
 }
 
-_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _FLOAT_FORMAT = NumberFormat(type=NumberFormatType.FLOAT)
 
 

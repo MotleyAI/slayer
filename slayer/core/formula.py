@@ -22,6 +22,11 @@ from typing import Any, Dict, List, Mapping, Optional, Union
 from pydantic import BaseModel, Field
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
+from slayer.core.refs import (
+    AGG_REF_RE as _AGG_REF_RE,
+    IDENT_OR_PATH_RE as _IDENT_OR_PATH_RE,
+    canonical_agg_name,
+)
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 # Transforms that require a time dimension for ORDER BY
@@ -46,59 +51,6 @@ TIMELESS_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 RANK_FAMILY_TRANSFORMS = {"rank", "percent_rank", "dense_rank", "ntile"}
 
 ALL_TRANSFORMS = TIME_TRANSFORMS | TIMELESS_TRANSFORMS
-
-
-_NON_IDENT_RE = re.compile(r"\W+")
-
-
-def _agg_signature_suffix(
-    agg_args: Optional[list],
-    agg_kwargs: Optional[dict],
-) -> str:
-    """Build a deterministic identifier suffix from aggregation args/kwargs.
-
-    Returns the empty string when both are empty so unparameterized aggregations
-    keep their existing canonical names. For parameterized variants (e.g.
-    ``last(created_at)`` vs ``last(updated_at)``, ``percentile(p=0.5)`` vs
-    ``percentile(p=0.95)``, ``sum(window='90d')`` vs ``sum(window='30d')``)
-    the suffix differentiates them so they don't collapse onto a single
-    hidden alias.
-    """
-    args = agg_args or []
-    kwargs = agg_kwargs or {}
-    if not args and not kwargs:
-        return ""
-    parts: List[str] = []
-    for a in args:
-        sanitized = _NON_IDENT_RE.sub("_", str(a)).strip("_")
-        if sanitized:
-            parts.append(sanitized)
-    for k in sorted(kwargs.keys()):
-        sk = _NON_IDENT_RE.sub("_", str(k)).strip("_")
-        sv = _NON_IDENT_RE.sub("_", str(kwargs[k])).strip("_")
-        if sk:
-            parts.append(sk)
-        if sv:
-            parts.append(sv)
-    return "_" + "_".join(parts) if parts else ""
-
-
-def canonical_agg_name(
-    measure_name: str,
-    aggregation_name: str,
-    agg_args: Optional[list] = None,
-    agg_kwargs: Optional[dict] = None,
-) -> str:
-    """Canonical hidden-column name for an aggregated measure ref.
-
-    ``revenue:sum`` → ``revenue_sum``; ``*:count`` → ``_count``;
-    ``revenue:percentile(p=0.5)`` → ``revenue_percentile_p_0_5``;
-    ``revenue:sum(window='90d')`` → ``revenue_sum_window_90d``.
-    """
-    suffix = _agg_signature_suffix(agg_args, agg_kwargs)
-    if measure_name == "*":
-        return f"_{aggregation_name}{suffix}"
-    return f"{measure_name}_{aggregation_name}{suffix}"
 
 
 class AggregatedMeasureRef(BaseModel):
@@ -174,9 +126,6 @@ TransformField.model_rebuild()
 # ---------------------------------------------------------------------------
 # Function-style aggregation rewrite
 # ---------------------------------------------------------------------------
-
-# Pattern for an identifier or dotted path (e.g., "revenue", "customers.revenue", "a.b.c.d")
-_IDENT_OR_PATH_RE = re.compile(r'[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*')
 
 # Aggregation names that are also transform names — ambiguous, need special handling
 _AMBIGUOUS_AGG_TRANSFORMS = BUILTIN_AGGREGATIONS & ALL_TRANSFORMS  # {"first", "last"}
@@ -353,19 +302,8 @@ def _split_args(s: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Colon-syntax preprocessing
+# Colon-syntax preprocessing (regex source-of-truth lives in slayer.core.refs)
 # ---------------------------------------------------------------------------
-
-# Matches: measure_name:agg_name or measure_name:agg_name(args)
-# measure_name = * | identifier(.identifier)* | identifier(.identifier)*.* (cross-model star)
-# agg_name = identifier
-# args = anything inside balanced parens (simple, no nesting)
-_AGG_REF_RE = re.compile(
-    r'(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)'  # group 1: measure name, *, or path.*
-    r':'                                                  # colon separator
-    r'([a-zA-Z_]\w*)'                                    # group 2: aggregation name
-    r'(\([^)]*\))?'                                      # group 3: optional (args)
-)
 
 
 def _preprocess_agg_refs(formula: str) -> tuple[str, Dict[str, AggregatedMeasureRef]]:
@@ -935,32 +873,49 @@ def parse_filter(
     formula: str,
     extra_agg_names: Optional[frozenset[str]] = None,
     named_measures: Optional[Mapping[str, str]] = None,
+    *,
+    mode: str = "dsl",
 ) -> ParsedFilter:
     """Parse a filter formula string into a ParsedFilter.
 
-    Accepts both SQL and Python operator syntax:
-        "status = 'completed'"            → WHERE status = 'completed'
-        "amount > 100"                    → WHERE amount > 100
-        "status <> 'cancelled'"           → WHERE status != 'cancelled'
-        "amount >= 50 and amount <= 200"  → WHERE amount >= 50 AND amount <= 200
-        "status = 'a' or status = 'b'"   → WHERE status = 'a' OR status = 'b'
-        "status in ('a', 'b', 'c')"      → WHERE status IN ('a', 'b', 'c')
-        "status IS NULL"                 → WHERE status IS NULL
-        "status IS NOT NULL"             → WHERE status IS NOT NULL
-        "name like '%acme%'"             → WHERE name LIKE '%acme%'
-        "name not like '%test%'"         → WHERE name NOT LIKE '%test%'
+    Two modes (DEV-1369):
 
-    Also handles colon syntax for aggregated measure refs in filters
-    (e.g., "total_amount:sum > 100"). These are converted to canonical
-    names (total_amount_sum) for the parsed output.
+    * ``mode="dsl"`` (default) — Mode B parser, used by query-side filters
+      (``SlayerQuery.filters``) and ``ModelMeasure.formula``. Accepts:
+
+        - aggregation colon syntax (``revenue:sum > 100``) → canonical names
+        - function-style aggregations (``sum(revenue) > 100``) → rewritten
+        - transform calls inside predicates (``change(revenue:sum) > 0``)
+        - Python or SQL operator spellings (``=``/``==``, ``<>``/``!=``)
+        - ``LIKE`` / ``NOT LIKE``, ``IS NULL`` / ``IS NOT NULL``
+
+      Rejects unknown function calls (the Python AST walker raises on any
+      call other than the internal ``__like__``/``__notlike__`` helpers).
+
+    * ``mode="sql"`` — Mode A parser, used by model-side filters
+      (``Column.filter`` and ``SlayerModel.filters``). Accepts arbitrary
+      SQL function calls (``json_extract``, ``coalesce``, ``nullif``, …)
+      and emits them through to the WHERE clause. Aggregation colon
+      syntax and SLayer transform calls are pre-rejected with an
+      actionable error.
+
+    Both modes pre-reject raw ``OVER (...)`` window-function syntax via
+    :func:`has_window_function` (the rank-family transforms cover the
+    ergonomic top-N case).
 
     Args:
         formula: The filter string to parse.
-        extra_agg_names: Additional aggregation names for function-style rewriting.
+        extra_agg_names: Additional aggregation names for function-style
+            rewriting (DSL mode only).
         named_measures: Mapping of saved-measure name → its formula. Bare
             references to these names in filter expressions (e.g.
-            ``cumsum(aov) > 0``) are inline-expanded before parsing.
+            ``cumsum(aov) > 0``) are inline-expanded before parsing
+            (DSL mode only).
+        mode: ``"dsl"`` (default) or ``"sql"``.
     """
+    if mode not in ("dsl", "sql"):
+        raise ValueError(f"parse_filter: unsupported mode {mode!r} (use 'dsl' or 'sql')")
+
     if named_measures:
         formula = _expand_named_measures(formula, named_measures)
     # DEV-1336: reject raw window-function syntax (`OVER (...)`) before AST parsing.
@@ -969,30 +924,44 @@ def parse_filter(
     # below points at SLayer's transforms / Column.sql / multi-stage models.
     if has_window_function(formula):
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
-    # Rewrite function-style aggregations (e.g., sum(revenue) > 100 → revenue:sum > 100)
-    processed = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
-    # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing
+
+    if mode == "sql":
+        # SQL mode: reject DSL-only constructs early so users get a clear
+        # message pointing them at the right place to put DSL constructs.
+        _reject_dsl_constructs_in_sql(formula)
+
+    if mode == "dsl":
+        # Rewrite function-style aggregations (e.g., sum(revenue) > 100 → revenue:sum > 100)
+        processed = _rewrite_funcstyle_aggregations(formula, extra_agg_names)
+    else:
+        # SQL mode: arbitrary function calls are legitimate. Don't rewrite.
+        processed = formula
+    # Pre-process SQL operators (=, <>, NULL) to Python equivalents for AST parsing.
+    # SQL mode keeps this rewrite for backward compat — existing user data uses
+    # ``==`` widely and migrating every fixture is out of scope.
     processed = _preprocess_sql_operators(processed)
     # Pre-process `like` / `not like` operators into internal function calls
     processed = _preprocess_like(processed)
-    # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names
-    processed, agg_refs = _preprocess_agg_refs(processed)
-    # Build reverse map: placeholder → canonical name (measure_aggregation[_args])
-    # Include agg args/kwargs in the canonical name so e.g.
-    # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
-    # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
-    agg_canonical = {
-        ph: canonical_agg_name(
-            measure_name=ref.measure_name,
-            aggregation_name=ref.aggregation_name,
-            agg_args=ref.agg_args,
-            agg_kwargs=ref.agg_kwargs,
-        )
-        for ph, ref in agg_refs.items()
-    }
-    # Replace placeholders with canonical names in the formula
-    for ph, canonical in agg_canonical.items():
-        processed = processed.replace(ph, canonical)
+
+    if mode == "dsl":
+        # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names
+        processed, agg_refs = _preprocess_agg_refs(processed)
+        # Build reverse map: placeholder → canonical name (measure_aggregation[_args])
+        # Include agg args/kwargs in the canonical name so e.g.
+        # ``revenue:sum(window='90d') > 100`` matches the windowed measure's alias
+        # ``orders.revenue_sum_window_90d`` and not the bare ``orders.revenue_sum``.
+        agg_canonical = {
+            ph: canonical_agg_name(
+                measure_name=ref.measure_name,
+                aggregation_name=ref.aggregation_name,
+                agg_args=ref.agg_args,
+                agg_kwargs=ref.agg_kwargs,
+            )
+            for ph, ref in agg_refs.items()
+        }
+        # Replace placeholders with canonical names in the formula
+        for ph, canonical in agg_canonical.items():
+            processed = processed.replace(ph, canonical)
     try:
         tree = ast.parse(processed, mode="eval")
     except SyntaxError as e:
@@ -1000,20 +969,72 @@ def parse_filter(
 
     columns: list[str] = []
 
-    sql = _filter_node_to_sql(tree.body, formula, columns)
+    allow_arbitrary = (mode == "sql")
+    sql = _filter_node_to_sql(
+        tree.body, formula, columns, allow_arbitrary_functions=allow_arbitrary,
+    )
     return ParsedFilter(sql=sql, columns=columns)
 
 
-def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str:
-    """Recursively convert an AST node to a SQL filter expression."""
+_DSL_TRANSFORM_CALL_RE = re.compile(
+    r"\b(" + "|".join(sorted(ALL_TRANSFORMS, key=len, reverse=True)) + r")\s*\("
+)
+
+
+def _reject_dsl_constructs_in_sql(formula: str) -> None:
+    """Raise if a SQL-mode filter contains DSL aggregation or transform syntax.
+
+    Matches outside string literals to avoid false positives on a literal
+    like ``'cumsum-of-something'``.
+    """
+    # Strip string literals so we don't false-match inside them.
+    stripped = _STRING_LITERAL_RE.sub("''", formula)
+    agg_match = _AGG_REF_RE.search(stripped)
+    if agg_match is not None:
+        raise ValueError(
+            f"SQL-mode filter cannot contain SLayer aggregation colon syntax "
+            f"({agg_match.group(0)!r}). Aggregations are a DSL construct — "
+            f"put them in a query filter (`SlayerQuery.filters`) or in a "
+            f"`ModelMeasure.formula`. The filter was: {formula!r}"
+        )
+    tx_match = _DSL_TRANSFORM_CALL_RE.search(stripped)
+    if tx_match is not None:
+        raise ValueError(
+            f"SQL-mode filter cannot contain SLayer transform calls "
+            f"({tx_match.group(1)!r}). Transforms are a DSL construct — "
+            f"put them in a query filter (`SlayerQuery.filters`) or in a "
+            f"`ModelMeasure.formula`. The filter was: {formula!r}"
+        )
+
+
+def _filter_node_to_sql(
+    node: ast.AST,
+    original: str,
+    columns: list[str],
+    *,
+    allow_arbitrary_functions: bool = False,
+) -> str:
+    """Recursively convert an AST node to a SQL filter expression.
+
+    When ``allow_arbitrary_functions`` is True (Mode A — SQL filters),
+    unknown function calls are emitted through as SQL. When False
+    (Mode B — DSL), only the internal ``__like__``/``__notlike__``
+    helpers are accepted.
+    """
+
+    def recur(child: ast.AST) -> str:
+        return _filter_node_to_sql(
+            child, original, columns,
+            allow_arbitrary_functions=allow_arbitrary_functions,
+        )
 
     # Comparison: status == 'completed', amount > 100
     if isinstance(node, ast.Compare):
-        left = _filter_node_to_sql(node.left, original, columns)
+        left = recur(node.left)
         parts = [left]
         for op, comparator in zip(node.ops, node.comparators):
             sql_op = _compare_op_to_sql(op, comparator)
-            right = _filter_node_to_sql(comparator, original, columns)
+            right = recur(comparator)
             if isinstance(op, (ast.Is, ast.IsNot)):
                 parts.append(sql_op)  # "IS NULL" / "IS NOT NULL" already complete
             elif isinstance(op, (ast.In, ast.NotIn)):
@@ -1026,7 +1047,7 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
     # Boolean: and, or
     if isinstance(node, ast.BoolOp):
         op_str = "AND" if isinstance(node.op, ast.And) else "OR"
-        parts = [_filter_node_to_sql(v, original, columns) for v in node.values]
+        parts = [recur(v) for v in node.values]
         joined = f" {op_str} ".join(parts)
         if len(parts) > 1:
             return f"({joined})"
@@ -1034,7 +1055,7 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
 
     # Not
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        inner = _filter_node_to_sql(node.operand, original, columns)
+        inner = recur(node.operand)
         return f"NOT ({inner})"
 
     # Dotted name → joined column reference (e.g., customers.name, customers.regions.name)
@@ -1069,7 +1090,7 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
 
     # Tuple/List → for IN expressions: (val1, val2, ...)
     if isinstance(node, (ast.Tuple, ast.List)):
-        elts = [_filter_node_to_sql(e, original, columns) for e in node.elts]
+        elts = [recur(e) for e in node.elts]
         return f"({', '.join(elts)})"
 
     # Arithmetic expression (e.g., change / revenue in a filter LHS)
@@ -1081,21 +1102,31 @@ def _filter_node_to_sql(node: ast.AST, original: str, columns: list[str]) -> str
         op_str = op_map.get(type(node.op))
         if op_str is None:
             raise ValueError(f"Unsupported arithmetic operator in filter: {original!r}")
-        left = _filter_node_to_sql(node.left, original, columns)
-        right = _filter_node_to_sql(node.right, original, columns)
+        left = recur(node.left)
+        right = recur(node.right)
         return f"{left} {op_str} {right}"
 
-    # Internal function calls for like/not like operators
+    # Function calls — internal __like__/__notlike__ helpers in any mode,
+    # and arbitrary SQL functions in SQL mode.
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         func_name = node.func.id
         if func_name == "__like__" and len(node.args) >= 2:
-            col = _filter_node_to_sql(node.args[0], original, columns)
+            col = recur(node.args[0])
             val = _get_string_arg(node.args[1], original)
             return f"{col} LIKE '{val}'"
-        elif func_name == "__notlike__" and len(node.args) >= 2:
-            col = _filter_node_to_sql(node.args[0], original, columns)
+        if func_name == "__notlike__" and len(node.args) >= 2:
+            col = recur(node.args[0])
             val = _get_string_arg(node.args[1], original)
             return f"{col} NOT LIKE '{val}'"
+        if allow_arbitrary_functions:
+            arg_sqls = [recur(a) for a in node.args]
+            for kw in node.keywords:
+                if kw.arg is None:
+                    raise ValueError(
+                        f"Star-args / **kwargs are not supported in SQL filter: {original!r}"
+                    )
+                arg_sqls.append(f"{kw.arg} => {recur(kw.value)}")
+            return f"{func_name}({', '.join(arg_sqls)})"
         raise ValueError(f"Unknown filter function '{func_name}' in: {original!r}")
 
     raise ValueError(f"Unsupported filter syntax: {original!r}")

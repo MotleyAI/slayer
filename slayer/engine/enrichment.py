@@ -36,6 +36,7 @@ from slayer.core.formula import (
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
 from slayer.engine.column_expansion import _is_trivial_base, expand_derived_refs
 from slayer.engine.enriched import (
     CrossModelMeasure,
@@ -855,13 +856,26 @@ async def enrich_query(
 
     has_first_or_last = any(m.aggregation in ("first", "last") for m in measures)
 
-    # --- DEV-1336: detect filters that resolve to a model column whose `sql`
-    # contains a window function. Such columns must be materialized in the base
-    # SELECT (not inlined into WHERE) and the predicate applied as a post-filter
-    # on the alias.
-    windowed_column_names: Set[str] = {
-        c.name for c in model.columns if c.sql and has_window_function(c.sql)
+    # DEV-1369: a query filter that names a Column whose `sql` contains a
+    # window function used to auto-promote to a post-aggregation outer
+    # WHERE. The escape hatch is removed — the rank-family transforms
+    # (`rank` / `percent_rank` / `dense_rank` / `ntile`) cover top-N
+    # filtering in pure DSL.
+    _windowed_columns: Dict[str, str] = {
+        c.name: c.sql for c in model.columns if c.sql and has_window_function(c.sql)
     }
+    if _windowed_columns:
+        for f in processed_filters:
+            for col_name in _windowed_columns:
+                if re.search(rf"(?<!\w)\b{re.escape(col_name)}\b(?!\w)", f):
+                    raise ValueError(
+                        f"Filter references column '{col_name}' whose SQL "
+                        f"contains a window function. Use a rank-family "
+                        f"transform (e.g. `rank(<measure>) <= N`, "
+                        f"`percent_rank(...)`, `dense_rank(...)`, `ntile(n=4, ...)`) "
+                        f"or factor the column into a multi-stage source_queries "
+                        f"model. The filter was: {f!r}"
+                    )
 
     # --- Resolve JOINs ---
     resolved_joins = await _resolve_joins(
@@ -878,37 +892,24 @@ async def enrich_query(
         dialect=dialect,
     )
 
+    # Names that resolve at the query level (named measures, transforms,
+    # expressions) — pass through as legitimate filter targets even though
+    # they are not Columns / ModelMeasures on the source model.
+    _query_aliases: Set[str] = set()
+    _query_aliases.update(m.name for m in measures if m.name)
+    _query_aliases.update(t.name for t in enriched_transforms if t.name)
+    _query_aliases.update(e.name for e in enriched_expressions if e.name)
     parsed_filters = await resolve_filter_columns(
         parsed_filters=[parse_filter(f, extra_agg_names=custom_agg_names) for f in processed_filters],
         model=model,
         model_name=model_name_str,
         resolve_join_target=resolve_join_target,
         named_queries=named_queries,
-        windowed_column_names=windowed_column_names,
         resolve_model=resolve_model,
         dialect=dialect,
+        strict=True,
+        query_aliases=_query_aliases,
     )
-
-    # Materialize each windowed Column referenced by any filter. Each becomes a
-    # SELECT-only entry in the base CTE that the post-filter wrap targets.
-    referenced_windowed: Dict[str, EnrichedDimension] = {}
-    for pf in parsed_filters:
-        for col_name in pf.columns:
-            short = col_name.split(".")[-1]
-            if short in windowed_column_names and short not in referenced_windowed:
-                col_def = model.get_column(short)
-                if col_def is None or col_def.sql is None:
-                    continue
-                referenced_windowed[short] = EnrichedDimension(
-                    name=short,
-                    sql=col_def.sql,
-                    type=col_def.type,
-                    alias=f"{model_name_str}.{short}",
-                    model_name=model_name_str,
-                    label=col_def.label,
-                    format=col_def.format,
-                )
-    windowed_filter_columns = list(referenced_windowed.values())
 
     return EnrichedQuery(
         model_name=model_name_str,
@@ -920,7 +921,6 @@ async def enrich_query(
         time_dimensions=time_dimensions,
         expressions=enriched_expressions,
         transforms=enriched_transforms,
-        windowed_filter_columns=windowed_filter_columns,
         cross_model_measures=cross_model_measures,
         last_agg_time_column=last_agg_time_column if has_first_or_last else None,
         filters=classify_filters(
@@ -929,7 +929,6 @@ async def enrich_query(
             computed_names=(
                 {t.name for t in enriched_transforms}
                 | {e.name for e in enriched_expressions}
-                | {c.name for c in windowed_filter_columns}
             ),
             groupby_names={d.name for d in dimensions} | {td.name for td in time_dimensions},
             windowed_measure_names={m.name for m in measures if m.window},
@@ -1360,9 +1359,6 @@ def _scan_filter_column_ref(
             _add_with_prefixes(segments, paths)
 
 
-_DOTTED_IDENT_REF_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)+$")
-
-
 def _looks_like_dotted_identifier_ref(value: str) -> bool:
     """True iff ``value`` is a chain of ``.``-joined identifiers — e.g.
     ``customers.region``, ``customers.regions.name``. False for SQL
@@ -1563,24 +1559,26 @@ async def resolve_filter_columns(
     model_name: str,
     resolve_join_target=None,
     named_queries: dict = None,
-    windowed_column_names: Optional[Set[str]] = None,
     resolve_model=None,
     dialect: str = "postgres",
+    *,
+    strict: bool = False,
+    query_aliases: Optional[Set[str]] = None,
 ) -> list:
     """Resolve filter column references through model dimensions/measures.
-
-    For ``Column`` entries whose ``sql`` contains a window function
-    (``windowed_column_names``), do NOT inline the SQL. Instead emit the
-    canonical ``{model}.{name}`` alias so the filter can be applied as a
-    post-filter on the materialized base-CTE alias (DEV-1336).
 
     When ``resolve_model`` is supplied, derived ``Column.sql`` expressions
     are recursively expanded so chained derivations (cross-model or local)
     yield fully-qualified physical-table SQL inside WHERE clauses.
+
+    With ``strict=True`` (DSL-mode callers — query-level filters) any
+    bare name that doesn't resolve to a Column / ModelMeasure / custom
+    aggregation / canonical agg alias / query-level alias raises
+    ``ValueError``. With ``strict=False`` (SQL-mode callers —
+    ``Column.filter``, model-level filters) unknown bare names pass
+    through as references to underlying-table columns.
     """
     import re as _re
-
-    windowed_column_names = windowed_column_names or set()
 
     async def _expanded_sql_expr(*, sql_expr: str, owning_model: SlayerModel,
                                  alias_path: str, is_root: bool) -> str:
@@ -1603,15 +1601,6 @@ async def resolve_filter_columns(
         resolved_columns = []
         for col_name in dict.fromkeys(f.columns):
             if "." not in col_name:
-                if col_name in windowed_column_names:
-                    qualified = f"{model_name}.{col_name}"
-                    resolved_sql = _re.sub(
-                        rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
-                        qualified,
-                        resolved_sql,
-                    )
-                    resolved_columns.append(col_name)
-                    continue
                 dim = model.get_column(col_name)
                 if dim:
                     sql_expr = dim.sql or col_name
@@ -1631,6 +1620,41 @@ async def resolve_filter_columns(
                     )
                     resolved_columns.append(qualified)
                 else:
+                    # DEV-1369: strict resolution. Only fires for DSL-mode
+                    # callers (``strict=True`` — query-level filters). For
+                    # SQL-mode callers (``Column.filter``, model-level
+                    # filters) bare names are valid references to columns
+                    # on the underlying table even when not declared as
+                    # SLayer ``Column`` entries.
+                    if strict:
+                        is_measure = model.get_measure(col_name) is not None
+                        is_custom_agg = model.get_aggregation(col_name) is not None
+                        is_canonical_agg = bool(
+                            _re.match(
+                                r"^_?[a-zA-Z_]\w*?_(?:"
+                                + "|".join(_re.escape(a) for a in BUILTIN_AGGREGATIONS)
+                                + r")(?:_.+)?$",
+                                col_name,
+                            )
+                        )
+                        is_query_alias = (
+                            query_aliases is not None
+                            and col_name in query_aliases
+                        )
+                        if not (
+                            is_measure
+                            or is_custom_agg
+                            or is_canonical_agg
+                            or is_query_alias
+                        ):
+                            raise ValueError(
+                                f"Filter references unknown name '{col_name}' "
+                                f"on model '{model.name}'. It is not a Column, "
+                                f"a ModelMeasure, a custom aggregation, or a "
+                                f"named measure / transform alias in this "
+                                f"query. Define it on the model first or "
+                                f"check spelling."
+                            )
                     resolved_columns.append(col_name)
             else:
                 parts = col_name.split(".")

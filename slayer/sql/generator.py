@@ -1121,17 +1121,6 @@ class SQLGenerator:
             if is_agg:
                 has_aggregation = True
 
-        # DEV-1336: window-function `Column.sql` referenced in a filter is
-        # materialized as a SELECT-only column on the base CTE. Window functions
-        # are evaluated post-aggregation by SQL semantics, so this is safe even
-        # when the query has GROUP BY (the window expression operates over the
-        # aggregated rows). They are NOT added to GROUP BY.
-        for wcol in enriched.windowed_filter_columns:
-            if wcol.sql is None:
-                continue
-            wcol_expr = self._parse(wcol.sql)
-            select_columns.append(wcol_expr.as_(wcol.alias))
-
         # When all measures are isolated/cross-model and there are no dimensions,
         # the base SELECT would be empty. Add a placeholder to produce valid SQL.
         if not select_columns and skip_isolated:
@@ -1193,22 +1182,6 @@ class SQLGenerator:
                             parts = col.split(".")
                             for i in range(1, len(parts)):
                                 dim_only_aliases.add("__".join(parts[:i]))
-            # DEV-1336: also include joins referenced by windowed-filter
-            # columns. Their `sql` may reference joined tables via `__`
-            # aliases (e.g. `customers__regions.population`) or direct join
-            # aliases (e.g. `systems.galaxy_id`); pruning those joins would
-            # render the `_base` CTE with missing tables.
-            for wcol in enriched.windowed_filter_columns:
-                if wcol.sql is None:
-                    continue
-                wcol_ast = self._parse(wcol.sql)
-                for col_node in wcol_ast.find_all(exp.Column):
-                    table = col_node.table
-                    if not table or table == enriched.model_name:
-                        continue
-                    parts = table.split("__")
-                    for i in range(1, len(parts) + 1):
-                        dim_only_aliases.add("__".join(parts[:i]))
         resolved_joins = enriched.resolved_joins
         if dim_only_aliases is not None:
             resolved_joins = [(t, a, c, j) for t, a, c, j in resolved_joins if a in dim_only_aliases]
@@ -1253,12 +1226,6 @@ class SQLGenerator:
             base_aliases.append(m.alias)
         for cm in enriched.cross_model_measures:
             base_aliases.append(cm.alias)
-        # DEV-1336: windowed `Column.sql` filter columns are emitted as SELECT-
-        # only columns inside the base CTE, so they're available to the outer
-        # SELECT and post-filter wrap.
-        for wcol in enriched.windowed_filter_columns:
-            base_aliases.append(wcol.alias)
-
         # Build stacked CTEs. Each layer can reference aliases from previous layers.
         if prefix_ctes is not None:
             ctes = list(prefix_ctes)

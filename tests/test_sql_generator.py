@@ -3419,40 +3419,44 @@ class TestMeasureFilterInjection:
     # ------------------------------------------------------------------
 
     async def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
-        """Classic ``'; DROP TABLE ...`` payload is rejected before generation."""
-        orders_model.columns.append(
+        """Classic ``'; DROP TABLE ...`` payload is rejected at Column
+        construction (DEV-1369: SQL-mode validation moved up to fail-fast)."""
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
             Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a'; DROP TABLE orders; --'", type=DataType.DOUBLE)
-        )
-        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+                filter="status = 'a'; DROP TABLE orders; --'",
+                type=DataType.DOUBLE,
+            )
 
     async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
-        """UNION SELECT payload is rejected before generation."""
-        orders_model.columns.append(
+        """UNION SELECT payload is rejected at Column construction
+        (DEV-1369: SQL-mode validation moved up to fail-fast)."""
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
             Column(
                 name="evil",
                 sql="amount",
-                filter="status = 'a' UNION SELECT * FROM users --'", type=DataType.DOUBLE)
-        )
-        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+                filter="status = 'a' UNION SELECT * FROM users --'",
+                type=DataType.DOUBLE,
+            )
 
-    async def test_block_comment_rejected(self, orders_model: SlayerModel) -> None:
-        """``/* ... */`` comment injection is rejected before generation."""
-        orders_model.columns.append(
-            Column(
-                name="evil",
-                sql="amount",
-                filter="status = 'a' /* x */ OR 1=1", type=DataType.DOUBLE)
+    async def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
+        """``/* ... */`` block comments are valid SQL and round-trip through
+        sqlglot harmlessly. DEV-1369 (SQL-mode parser) lets them through —
+        the prior Python-AST parser rejected them as a side effect of not
+        understanding SQL comment syntax. The injection risk that the
+        rejection guarded against (string-concat-based injection) is
+        eliminated by sqlglot AST parsing: any payload that re-emits
+        through ``parsed.sql()`` is a valid sqlglot expression.
+        """
+        col = Column(
+            name="benign",
+            sql="amount",
+            filter="status = 'a' /* x */ OR 1=1",
+            type=DataType.DOUBLE,
         )
-        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
-            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+        # The filter survives construction and round-trips cleanly.
+        assert col.filter is not None
 
     # ------------------------------------------------------------------
     # Accepted and neutralised in emitted SQL — tested across dialects
@@ -6299,326 +6303,49 @@ def planets_model() -> SlayerModel:
 
 
 class TestWindowFunctionInFilter:
-    """DEV-1336: a filter that resolves to SQL containing a window function
-    (`OVER (...)`) must not be inlined into the inner WHERE — SQLite and most
-    dialects reject window functions there.
+    """DEV-1369 (reverses DEV-1336): a query filter that references a
+    ``Column`` whose ``sql`` contains a window function (``OVER (...)``)
+    no longer auto-promotes to a post-aggregation outer WHERE. The
+    rank-family transforms (``rank`` / ``percent_rank`` / ``dense_rank``
+    / ``ntile``) cover top-N filtering in pure DSL, so the escape hatch
+    is redundant. The engine raises a clear error directing the user to
+    those transforms or to a multi-stage source_queries model.
 
-    For a model `Column.sql` containing a window expression, the generator
-    must (a) materialize the column in the inner SELECT under its alias, and
-    (b) move the predicate to the outer post-filter WHERE.
-
-    For raw `OVER (...)` text in query filters or measure formulas, the
-    parser must raise a clear actionable error pointing at SLayer's transforms.
+    Raw ``OVER (...)`` text in query filters or measure formulas still
+    raises (preserved from DEV-1336).
     """
 
-    async def test_filter_on_windowed_column_sql_uses_post_filter_wrap(
+    async def test_filter_on_windowed_column_raises(
         self, generator: SQLGenerator, planets_model: SlayerModel,
     ) -> None:
+        """Filtering on a Column whose sql contains a window function
+        raises with an actionable message at enrichment time."""
         query = SlayerQuery(
             source_model="planets",
             dimensions=["name"],
             filters=["rn <= 3"],
         )
-        sql = await _generate(generator=generator, query=query, model=planets_model)
-        norm = _norm(sql)
-
-        # Window expression must be materialized in the inner SELECT under its alias…
-        assert 'AS "planets.rn"' in sql, (
-            f"Expected windowed column to be aliased in inner SELECT.\nsql:\n{sql}"
+        with pytest.raises(ValueError) as excinfo:
+            await _generate(generator=generator, query=query, model=planets_model)
+        msg = str(excinfo.value).lower()
+        assert "window function" in msg or "rank" in msg, (
+            f"Expected the message to mention 'window function' and/or "
+            f"'rank' suggestion. Got: {excinfo.value}"
         )
-        # …and the outer post-filter wrap must reference the alias, not inline the SQL.
-        assert "AS _filtered" in sql, (
-            f"Expected outer `_filtered` post-filter wrap.\nsql:\n{sql}"
-        )
-        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm, (
-            f"Expected outer WHERE to reference the alias.\nsql:\n{sql}"
-        )
-        # Critically: no top-level `WHERE ROW_NUMBER ... OVER` in the inner SELECT.
-        # The pre-fix SQL was: `WHERE ROW_NUMBER() OVER (ORDER BY mass DESC) <= 3`
-        # We allow ROW_NUMBER inside the inner SELECT list (after AS), but not in
-        # any WHERE clause.
-        upper = norm.upper()
-        # Find every "WHERE" position and confirm none is followed by ROW_NUMBER...OVER
-        # before the next clause boundary.
-        for match in _re.finditer(r"\bWHERE\b", upper):
-            tail = upper[match.end(): match.end() + 200]
-            assert "ROW_NUMBER" not in tail.split(") AS ")[0], (
-                f"WHERE clause must not contain a window function.\nsql:\n{sql}"
-            )
-
-    async def test_filter_on_windowed_column_combined_with_base_filter(
-        self, generator: SQLGenerator, planets_model: SlayerModel,
-    ) -> None:
-        """A non-window filter should stay in inner WHERE; the window filter
-        moves to the outer post-filter wrap."""
-        query = SlayerQuery(
-            source_model="planets",
-            dimensions=["name"],
-            filters=["rn <= 3", "name <> 'Pluto'"],
-        )
-        sql = await _generate(generator=generator, query=query, model=planets_model)
-        norm = _norm(sql)
-
-        # Outer wrap is present (window predicate promoted).
-        assert "AS _filtered" in sql
-
-        # The base filter (`name <> 'Pluto'`) must stay in the INNER WHERE,
-        # not get promoted to the outer `_filtered` wrap.
-        inner_sql, outer_sql = sql.split("AS _filtered", 1)
-        assert "Pluto" in inner_sql, (
-            f"Base filter must live in inner SELECT, not outer wrap.\nsql:\n{sql}"
-        )
-        assert "Pluto" not in outer_sql, (
-            f"Base filter must not appear in outer wrap.\nsql:\n{sql}"
-        )
-        # The window predicate is in the outer WHERE on the alias.
-        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm
 
     async def test_select_only_on_windowed_column_unchanged(
         self, generator: SQLGenerator, planets_model: SlayerModel,
     ) -> None:
-        """Control test: selecting a windowed-Column without filtering on it
-        should not introduce the post-filter wrap (no behavior change)."""
+        """A windowed Column.sql is still legal as a *projection* — only
+        as a filter target does it now error."""
         query = SlayerQuery(
             source_model="planets",
             dimensions=["name", "rn"],
         )
         sql = await _generate(generator=generator, query=query, model=planets_model)
         assert "AS _filtered" not in sql, (
-            f"No post-filter wrap should be introduced when there is no window "
-            f"filter.\nsql:\n{sql}"
-        )
-
-    async def test_inline_window_function_in_query_filter_raises(
-        self, generator: SQLGenerator, planets_model: SlayerModel,
-    ) -> None:
-        """Raw `OVER (...)` text in a query filter must raise an actionable
-        error pointing the user at SLayer transforms or `Column.sql`."""
-        query = SlayerQuery(
-            source_model="planets",
-            dimensions=["name"],
-            filters=["row_number() over (order by mass desc) <= 3"],
-        )
-        with pytest.raises(ValueError) as excinfo:
-            await _generate(generator=generator, query=query, model=planets_model)
-        msg = str(excinfo.value)
-        assert "window function" in msg.lower(), (
-            f"Error message should mention 'window function'.\nmsg: {msg}"
-        )
-        # Must point at at least one of the recommended escape hatches.
-        assert any(
-            keyword in msg
-            for keyword in ("rank(", "first(", "last(", "lag(", "lead(", "Column.sql", "multi-stage")
-        ), f"Error must suggest a SLayer transform or Column.sql or multi-stage.\nmsg: {msg}"
-        # And must NOT be the misleading Python-AST fallback message.
-        assert "Perhaps you forgot a comma" not in msg
-
-    def test_window_function_in_named_measure_used_as_filter_raises(self) -> None:
-        """A `ModelMeasure` formula containing raw `OVER` must be rejected at
-        construction time with an actionable error."""
-        with pytest.raises(ValueError) as excinfo:
-            SlayerModel(
-                name="planets",
-                sql_table="planets",
-                data_source="test",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                    Column(name="name", sql="name", type=DataType.TEXT),
-                    Column(name="mass", sql="mass", type=DataType.DOUBLE),
-                ],
-                measures=[
-                    ModelMeasure(
-                        name="top_3_largest",
-                        formula="row_number() over (order by mass desc) <= 3",
-                    )
-                ],
-            )
-        msg = str(excinfo.value)
-        assert "window function" in msg.lower(), (
-            f"Error message should mention 'window function'.\nmsg: {msg}"
-        )
-        assert "Perhaps you forgot a comma" not in msg
-
-    async def test_post_filter_pagination_applied_after_filter(
-        self, generator: SQLGenerator, planets_model: SlayerModel,
-    ) -> None:
-        """CR Thread 1: when the only reason for the post-filter wrap is a
-        windowed `Column.sql` filter (no expressions, transforms, or measure
-        CTEs), pagination must be applied AFTER the `_filtered` wrap, not
-        inside the base SELECT. Otherwise the engine paginates the unfiltered
-        base and then filters the wrong page (and applies LIMIT twice).
-        """
-        query = SlayerQuery(
-            source_model="planets",
-            dimensions=["name"],
-            filters=["rn <= 3"],
-            order=[OrderItem(column=ColumnRef(name="name"), direction="asc")],
-            limit=2,
-        )
-        sql = await _generate(generator=generator, query=query, model=planets_model)
-        # Post-filter wrap must be present.
-        assert "AS _filtered" in sql, (
-            f"Expected `_filtered` post-filter wrap.\nsql:\n{sql}"
-        )
-        # Pagination must not be applied twice.
-        assert sql.upper().count("LIMIT ") == 1, (
-            f"LIMIT must appear exactly once — currently the base SELECT and "
-            f"the outer wrap both apply it.\nsql:\n{sql}"
-        )
-        assert sql.upper().count("\nORDER BY ") == 1, (
-            f"ORDER BY must appear exactly once — currently the base SELECT and "
-            f"the outer wrap both apply it.\nsql:\n{sql}"
-        )
-        # The single LIMIT must come AFTER the `_filtered` wrap so pagination
-        # operates on the post-filtered result.
-        filtered_pos = sql.find("AS _filtered")
-        limit_pos = sql.upper().rfind("LIMIT ")
-        assert limit_pos > filtered_pos, (
-            f"LIMIT must follow the `_filtered` wrap so we paginate the "
-            f"filtered result, not the unfiltered base.\n"
-            f"filtered_pos={filtered_pos}, limit_pos={limit_pos}\nsql:\n{sql}"
-        )
-
-    async def test_windowed_filter_column_with_last_measure(
-        self, generator: SQLGenerator,
-    ) -> None:
-        """CR Thread 2 (has_first_or_last branch): when the base SELECT switches
-        to a ranked subquery for a `last`/`first` measure, the windowed-filter
-        column projection must still render and the post-filter wrap must
-        reference its alias. The current code adds the projection but parses
-        `wcol.sql` against an unaware scope.
-        """
-
-        planets_with_time = SlayerModel(
-            name="planets",
-            sql_table="planets",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
-                Column(name="mass", sql="mass", type=DataType.DOUBLE),
-                Column(name="observed_at", sql="observed_at", type=DataType.TIMESTAMP),
-                Column(
-                    name="rn",
-                    sql="row_number() over (order by mass desc)",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-            default_time_dimension="observed_at",
-        )
-        query = SlayerQuery(
-            source_model="planets",
-            dimensions=["name"],
-            measures=[ModelMeasure(formula="mass:last")],
-            filters=["rn <= 3"],
-        )
-        enriched = await enrich_query(
-            query=query,
-            model=planets_with_time,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-        )
-        sql = generator.generate(enriched=enriched)
-        norm = _norm(sql)
-
-        # Windowed column projection survives in the base SELECT.
-        assert 'AS "planets.rn"' in sql, (
-            f"Windowed-filter column must be projected with its alias even "
-            f"when the base FROM is the ranked subquery.\nsql:\n{sql}"
-        )
-        # Post-filter wrap is present and references the alias.
-        assert "AS _filtered" in sql
-        assert '"planets.rn" <= 3' in norm or '"planets"."rn" <= 3' in norm, (
-            f"Post-filter must reference the windowed column alias.\nsql:\n{sql}"
-        )
-
-    async def test_windowed_filter_column_referencing_join_with_cross_model_measure(
-        self, generator: SQLGenerator,
-    ) -> None:
-        """CR Thread 2 (skip_isolated branch): when measure CTEs trigger
-        `skip_isolated=True`, joins are pruned to those needed by dimensions
-        and base filters. A windowed `Column.sql` that references a
-        `__`-aliased joined table must keep that join in scope, otherwise
-        the `_base` CTE renders with a missing table.
-        """
-
-        systems = SlayerModel(
-            name="systems",
-            sql_table="public.systems",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="galaxy_id", sql="galaxy_id", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-            ],
-        )
-        planets = SlayerModel(
-            name="planets",
-            sql_table="public.planets",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
-                Column(name="mass", sql="mass", type=DataType.DOUBLE),
-                Column(name="system_id", sql="system_id", type=DataType.DOUBLE),
-                # Window expression partitions on a JOINED column via the
-                # direct join alias.
-                Column(
-                    name="rn_in_system",
-                    sql="row_number() over (partition by systems.galaxy_id order by mass desc)",
-                    type=DataType.DOUBLE,
-                ),
-                # A measure with a cross-model filter forces skip_isolated=True.
-                Column(
-                    name="active_mass",
-                    sql="mass",
-                    filter="systems.status = 'active'",
-                    type=DataType.DOUBLE,
-                ),
-            ],
-            joins=[ModelJoin(target_model="systems", join_pairs=[["system_id", "id"]])],
-        )
-
-        async def resolve_join_target(*, target_model_name, named_queries):  # NOSONAR(S7503) — async required by enrich_query callback contract
-            if target_model_name == "systems":
-                return ("public.systems", systems)
-            return None
-
-        query = SlayerQuery(
-            source_model="planets",
-            dimensions=["name"],
-            measures=[ModelMeasure(formula="active_mass:sum")],
-            filters=["rn_in_system <= 3"],
-        )
-        enriched = await enrich_query(
-            query=query,
-            model=planets,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=resolve_join_target,
-        )
-        sql = generator.generate(enriched=enriched)
-
-        # The base CTE must keep the systems join because the windowed column
-        # references planets__systems.galaxy_id.
-        base_marker = "_base AS ("
-        base_start = sql.find(base_marker)
-        assert base_start != -1, f"Expected `_base` CTE.\nsql:\n{sql}"
-        # Find the matching close paren for _base.
-        depth = 1
-        pos = base_start + len(base_marker)
-        while pos < len(sql) and depth > 0:
-            if sql[pos] == "(":
-                depth += 1
-            elif sql[pos] == ")":
-                depth -= 1
-            pos += 1
-        base_chunk = sql[base_start:pos]
-        assert "public.systems" in base_chunk, (
-            f"Expected the systems LEFT JOIN inside the `_base` CTE because the "
-            f"windowed column references planets__systems.galaxy_id.\n"
-            f"_base CTE:\n{base_chunk}\n\nfull sql:\n{sql}"
+            f"No post-filter wrap should be introduced when there is no "
+            f"window filter.\nsql:\n{sql}"
         )
 
 
