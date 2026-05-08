@@ -149,3 +149,29 @@ class TestRecallMemories:
             about=["mydb.orders"], max_learnings=1
         )
         assert len(resp.learnings) == 1
+
+    async def test_recall_bm25_outranks_overbroad_memory(
+        self, client: SlayerClient, storage: YAMLStorage
+    ) -> None:
+        # DEV-1365: the precisely-tagged memory must rank above one
+        # whose entity list incidentally includes the queried entity.
+        await storage.save_memory(
+            learning="precise", entities=["mydb.orders.amount"]
+        )
+        await storage.save_memory(
+            learning="broad",
+            entities=[
+                "mydb.orders.amount",
+                "mydb.orders.id",
+                "mydb.orders.rev",
+                "mydb.orders",
+                "mydb",
+                "extra.unrelated.col",
+            ],
+        )
+        resp = await client.recall_memories(about=["mydb.orders.amount"])
+        learnings = [hit.learning for hit in resp.learnings]
+        assert learnings[0] == "precise", (
+            f"precise memory must rank first; got order {learnings}"
+        )
+        assert all(isinstance(hit.score, float) for hit in resp.learnings)

@@ -28,6 +28,7 @@ from slayer.memories.models import (
     RecallResponse,
     SaveMemoryResponse,
 )
+from slayer.memories.ranker import bm25_rank
 from slayer.memories.resolver import (
     extract_entities_from_query,
     resolve_entity,
@@ -97,10 +98,10 @@ def _dedup(items: List[str]) -> List[str]:
     return out
 
 
-def _to_hit(memory: Memory, matched: List[str]) -> RecallHit:
+def _to_hit(memory: Memory, matched: List[str], score: float) -> RecallHit:
     return RecallHit(
         id=memory.id,
-        match_count=len(matched),
+        score=score,
         matched_entities=matched,
         learning=memory.learning,
         query=memory.query,
@@ -225,64 +226,85 @@ class MemoryService:
                 "recency (newest first)."
             )
             candidates = await self._storage.list_memories(entities=None)
-            return self._build_response(
+            return self._build_recency_response(
                 candidates=candidates,
-                wanted=set(),
                 resolved=[],
                 warnings=warnings,
                 max_learnings=max_learnings,
                 max_queries=max_queries,
             )
 
-        wanted = set(canonical)
-        candidates = await self._storage.list_memories(entities=canonical)
-        return self._build_response(
+        # BM25 needs the full corpus to compute correct IDF / avgdl.
+        candidates = await self._storage.list_memories(entities=None)
+        if not candidates:
+            return RecallResponse(
+                learnings=[],
+                queries=[],
+                resolved_input_entities=canonical,
+                warnings=warnings,
+            )
+        return self._build_bm25_response(
             candidates=candidates,
-            wanted=wanted,
+            wanted=set(canonical),
+            query_entities=canonical,
             resolved=canonical,
             warnings=warnings,
             max_learnings=max_learnings,
             max_queries=max_queries,
         )
 
-    def _build_response(
+    def _build_recency_response(
         self,
         *,
         candidates: List[Memory],
-        wanted: set[str],
         resolved: List[str],
         warnings: List[str],
         max_learnings: Optional[int],
         max_queries: Optional[int],
     ) -> RecallResponse:
-        # When ``wanted`` is empty (recency fallback) every candidate
-        # has match_count=0; we still include them in insertion order
-        # with the most recent first.
-        scored: List[tuple] = []
-        for memory in candidates:
-            if not memory.entities and wanted:
-                # Filter out rows with empty stored entity sets when the
-                # caller supplied entities — they cannot match anything.
-                continue
-            matched = sorted(wanted & set(memory.entities)) if wanted else []
-            scored.append((memory.created_at, _to_hit(memory, matched), memory))
-
-        scored.sort(
-            key=lambda t: (t[1].match_count, t[0]),
-            reverse=True,
-        )
-
-        learnings: List[RecallHit] = [
-            hit for _, hit, m in scored if m.query is None
-        ]
-        queries: List[RecallHit] = [
-            hit for _, hit, m in scored if m.query is not None
-        ]
+        # No query → no BM25. Score is a placeholder (0.0); the
+        # accompanying warning makes the meaning explicit. Sort by
+        # ``created_at`` desc.
+        scored = sorted(candidates, key=lambda m: m.created_at, reverse=True)
+        learnings = [_to_hit(m, [], 0.0) for m in scored if m.query is None]
+        queries = [_to_hit(m, [], 0.0) for m in scored if m.query is not None]
         if max_learnings is not None:
             learnings = learnings[:max_learnings]
         if max_queries is not None:
             queries = queries[:max_queries]
+        return RecallResponse(
+            learnings=learnings,
+            queries=queries,
+            resolved_input_entities=resolved,
+            warnings=warnings,
+        )
 
+    def _build_bm25_response(
+        self,
+        *,
+        candidates: List[Memory],
+        wanted: set[str],
+        query_entities: List[str],
+        resolved: List[str],
+        warnings: List[str],
+        max_learnings: Optional[int],
+        max_queries: Optional[int],
+    ) -> RecallResponse:
+        # Stable secondary sort: pre-sort the corpus by ``created_at``
+        # desc so that ``bm25_rank``'s stable score-desc sort yields
+        # (score desc, created_at desc) overall.
+        ordered = sorted(candidates, key=lambda m: m.created_at, reverse=True)
+        ranked = bm25_rank(ordered, query_entities)
+        hits = [
+            _to_hit(memory, sorted(wanted & set(memory.entities)), score)
+            for memory, score in ranked
+        ]
+        learnings = [hit for hit in hits if hit.query is None]
+        queries = [hit for hit in hits if hit.query is not None]
+        if max_learnings is not None:
+            learnings = learnings[:max_learnings]
+        if max_queries is not None:
+            queries = queries[:max_queries]
         return RecallResponse(
             learnings=learnings,
             queries=queries,

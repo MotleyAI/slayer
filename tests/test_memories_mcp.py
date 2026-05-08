@@ -419,6 +419,40 @@ class TestRecallMemories:
         learnings = [hit["learning"] for hit in payload["learnings"]]
         assert learnings[:2] == ["strong", "weak"]
 
+    async def test_bm25_outranks_overbroad_memory(
+        self, mcp_server, seeded: YAMLStorage
+    ) -> None:
+        # DEV-1365: precise tagging beats incidental tagging on a long
+        # entity list. Both memories overlap the query on the same
+        # single entity, but the broad memory drowns it among five
+        # unrelated entries — under raw overlap-count ranking they
+        # tied; BM25 length normalisation breaks the tie correctly.
+        await seeded.save_memory(
+            learning="precise", entities=["mydb.orders.amount"]
+        )
+        await seeded.save_memory(
+            learning="broad",
+            entities=[
+                "mydb.orders.amount",
+                "mydb.orders.id",
+                "mydb.orders.rev",
+                "mydb.orders",
+                "mydb",
+            ],
+        )
+        result = await _call(
+            mcp_server,
+            name="recall_memories",
+            arguments={"about": ["mydb.orders.amount"]},
+        )
+        payload = _try_parse_json(result)
+        assert payload is not None, result
+        learnings = payload["learnings"]
+        assert learnings[0]["learning"] == "precise", (
+            f"precise memory must rank first; got {learnings}"
+        )
+        assert all(isinstance(hit["score"], (int, float)) for hit in learnings)
+
     async def test_max_queries_default_is_two(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:

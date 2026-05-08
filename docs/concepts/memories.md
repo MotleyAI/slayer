@@ -101,6 +101,12 @@ Look up memories by entity overlap. `about` accepts the same union as
 all memories ranked by recency (newest first) with an explanatory
 warning.
 
+Memories are ranked by BM25 over their canonical entity sets, so a
+memory tagged precisely against the query entities outranks one with
+a long entity list that overlaps incidentally. Memories with zero
+overlap are dropped. Each `RecallHit` carries the BM25 `score: float`
+(higher is better) for inspection or downstream re-ranking.
+
 The result splits memories without an attached query (`learnings`)
 from those with one (`queries`). Each list is capped independently by
 `max_learnings` / `max_queries`.

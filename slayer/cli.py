@@ -1458,7 +1458,7 @@ def _print_recall_section(title, hits):
     print(f"{title} ({len(hits)}):")
     for hit in hits:
         tags = ", ".join(hit.matched_entities) or "—"
-        print(f"  M{hit.id} [{tags}]: {hit.learning}")
+        print(f"  M{hit.id} [{tags}] (score={hit.score:.3f}): {hit.learning}")
 
 
 _MEMORY_DISPATCH = {

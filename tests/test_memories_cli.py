@@ -224,6 +224,50 @@ class TestMemoryRecallSubcommand:
         out = capsys.readouterr().out
         assert "amount-note" in out
 
+    def test_recall_bm25_outranks_overbroad_memory(
+        self, seeded_storage_path, capsys
+    ):
+        # DEV-1365: precise memory must appear above the over-broad
+        # one in the rendered output, and the score field must be
+        # part of the new line format.
+        _run_memory(
+            _args(
+                storage_path=seeded_storage_path,
+                memory_command="save",
+                learning="precise",
+                entities="mydb.orders.amount",
+            )
+        )
+        _run_memory(
+            _args(
+                storage_path=seeded_storage_path,
+                memory_command="save",
+                learning="broad",
+                entities=(
+                    "mydb.orders.amount,mydb.orders.id,"
+                    "mydb.orders.rev,mydb.orders"
+                ),
+            )
+        )
+        capsys.readouterr()
+        _run_memory(
+            _args(
+                storage_path=seeded_storage_path,
+                memory_command="recall",
+                about="mydb.orders.amount",
+            )
+        )
+        out = capsys.readouterr().out
+        assert "score=" in out, (
+            "CLI must print BM25 score in the recall line"
+        )
+        precise_idx = out.find("precise")
+        broad_idx = out.find("broad")
+        assert precise_idx >= 0 and broad_idx >= 0, out
+        assert precise_idx < broad_idx, (
+            "precise memory must rank before broad memory; got:\n" + out
+        )
+
     def test_recall_with_query(
         self,
         seeded_storage_path,

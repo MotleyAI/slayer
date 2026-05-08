@@ -2623,7 +2623,7 @@ def create_mcp_server(storage: StorageBackend):
         max_learnings: Optional[int] = None,
         max_queries: Optional[int] = 2,
     ) -> str:
-        """Look up agent memories by entity overlap.
+        """Look up agent memories by BM25 over canonical entity sets.
 
         Call this BEFORE ``query`` to surface any notes or example
         queries previously saved against the entities you're
@@ -2640,11 +2640,12 @@ def create_mcp_server(storage: StorageBackend):
         entities) returns all memories ranked by recency (newest first)
         with an explanatory warning.
 
-        Stored memories are ranked by the size of the intersection
-        between their stored entity set and the input set. Ties break
-        by recency (newest first). The result splits memories without
-        an attached query (``learnings``) from those with one
-        (``queries``); each list is capped independently.
+        Stored memories are ranked by BM25 over their canonical entity
+        sets, so a memory tagged precisely against the query entities
+        outranks one with a long entity list that overlaps incidentally.
+        Memories with zero overlap are dropped. The result splits
+        memories without an attached query (``learnings``) from those
+        with one (``queries``); each list is capped independently.
 
         Args:
             about: List of entity reference strings, or an inline

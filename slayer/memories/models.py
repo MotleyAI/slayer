@@ -62,14 +62,15 @@ class ForgetMemoryResponse(BaseModel):
 class RecallHit(BaseModel):
     """A single result from ``recall_memories``.
 
-    ``learning`` is the body text. ``query`` is populated only when the
-    memory was saved with an attached query — query-less memories carry
-    ``None`` here, matching the split that ``RecallResponse.learnings``
-    vs ``.queries`` exposes.
+    ``learning`` is the body text. ``score`` is the BM25 relevance
+    score (DEV-1365); higher is better. ``query`` is populated only
+    when the memory was saved with an attached query — query-less
+    memories carry ``None`` here, matching the split that
+    ``RecallResponse.learnings`` vs ``.queries`` exposes.
     """
 
     id: int
-    match_count: int
+    score: float
     matched_entities: List[str]
     learning: str
     query: Optional[SlayerQuery] = None
