@@ -110,6 +110,7 @@ async def enrich_query(
     resolve_join_target,
     resolve_model=None,
     dialect: str = "postgres",
+    drop_unreachable_filters: bool = False,
 ) -> EnrichedQuery:
     """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -907,7 +908,15 @@ async def enrich_query(
         named_queries=named_queries,
         resolve_model=resolve_model,
         dialect=dialect,
-        strict=True,
+        # Outer-query path: strict (DEV-1367 — raise on unresolved dotted
+        # paths so agents see a translation-time error). Re-rooting path
+        # passes ``drop_unreachable_filters=True`` so the strict raise is
+        # disabled and unreachable filters are dropped from the result
+        # instead — matches the cross-model CTE semantics where the
+        # outer filter list is inherited but only the subset reachable
+        # from the rerooted source applies.
+        strict=not drop_unreachable_filters,
+        drop_if_unresolved=drop_unreachable_filters,
         query_aliases=_query_aliases,
     )
 
@@ -1563,6 +1572,7 @@ async def resolve_filter_columns(
     dialect: str = "postgres",
     *,
     strict: bool = False,
+    drop_if_unresolved: bool = False,
     query_aliases: Optional[Set[str]] = None,
 ) -> list:
     """Resolve filter column references through model dimensions/measures.
@@ -1596,6 +1606,7 @@ async def resolve_filter_columns(
         )
         return expanded if expanded is not None else sql_expr
 
+    out_filters: list = []
     for f in parsed_filters:
         resolved_sql = f.sql
         resolved_columns = []
@@ -1605,6 +1616,7 @@ async def resolve_filter_columns(
         # set, replacing the prior permissive regex that matched any
         # ``*_sum``-shaped name and let typos like ``made_up_sum`` through.
         filter_synthesized_aliases = set(getattr(f, "synthesized_aliases", []))
+        drop_this_filter = False
         for col_name in dict.fromkeys(f.columns):
             if "." not in col_name:
                 dim = model.get_column(col_name)
@@ -1708,12 +1720,49 @@ async def resolve_filter_columns(
                         resolved_columns.append(col_name)
                         continue
 
+                # DEV-1367: a dotted reference that doesn't resolve through
+                # the join graph used to silently pass through, producing
+                # SQL with an unbound table reference (``transportation_assets``
+                # in WHERE but never in FROM/JOIN).
+                #
+                # * ``strict=True`` (DSL-mode outer-query path): raise so
+                #   agents get a translation-time error rather than a
+                #   cryptic "no such column" at execution.
+                # * ``drop_if_unresolved=True`` (re-rooted CTE path): mark
+                #   the entire filter for dropping; the cross-model
+                #   re-rooting machinery inherits the outer filter list and
+                #   asks us to skip whatever doesn't reach from the new
+                #   source.
+                # * Otherwise (SQL-mode model-side filters): silently pass
+                #   through — bare table references inside ``__``-aliased
+                #   paths are valid SQL even when sqlglot's join walker
+                #   doesn't know about them.
+                if strict:
+                    head = path_parts[0]
+                    if not resolved and not any(j.target_model == head for j in model.joins):
+                        raise ValueError(
+                            f"Filter '{col_name}' references model '{head}' "
+                            f"but it is not in joins for source model "
+                            f"'{model.name}'. Add it to source_model.joins "
+                            f"or rewrite the filter to use a local derived "
+                            f"column."
+                        )
+                    raise ValueError(
+                        f"Filter '{col_name}' references column '{dim_name}' "
+                        f"on '{'.'.join(path_parts)}', which doesn't resolve "
+                        f"to a known column on the joined model. Check the "
+                        f"path or define the column on the model."
+                    )
+                if drop_if_unresolved:
+                    drop_this_filter = True
                 resolved_columns.append(col_name)
 
         f.sql = resolved_sql
         f.columns = resolved_columns
+        if not drop_this_filter:
+            out_filters.append(f)
 
-    return parsed_filters
+    return out_filters
 
 
 def _classify_one_filter(

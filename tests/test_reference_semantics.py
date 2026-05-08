@@ -417,6 +417,40 @@ class TestStrictResolution:
                     resolve_join_target=_noop_async,
                 )
 
+    async def test_filter_referencing_unjoined_model_raises(self) -> None:
+        """DEV-1367: a filter like ``transportation_assets.total_vehicles >= 3``
+        where ``transportation_assets`` is **not** in the source model's
+        ``joins`` used to silently render SQL with an unbound table reference
+        in the WHERE clause and fail at execution with a cryptic database
+        error. The strict-resolution check now raises at enrichment with
+        a clear "not in joins" message so agents can recover on retry.
+        """
+        households = SlayerModel(
+            name="households",
+            sql_table="households",
+            data_source="test",
+            columns=[
+                Column(name="housenum", sql="housenum", type=DataType.INT, primary_key=True),
+            ],
+            # Note: NO join to ``transportation_assets``.
+        )
+        query = SlayerQuery(
+            source_model="households",
+            dimensions=["housenum"],
+            filters=["transportation_assets.total_vehicles >= 3"],
+        )
+        with pytest.raises(
+            ValueError,
+            match=r"transportation_assets.*not in joins",
+        ):
+            await enrich_query(
+                query=query,
+                model=households,
+                resolve_dimension_via_joins=_noop_async,
+                resolve_cross_model_measure=_noop_async,
+                resolve_join_target=_noop_async,
+            )
+
     async def test_known_filter_name_passes(self) -> None:
         """Control: a filter naming a defined Column enriches without error."""
         model = SlayerModel(
