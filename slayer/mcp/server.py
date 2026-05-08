@@ -1053,7 +1053,7 @@ def create_mcp_server(storage: StorageBackend):
                 target = await storage.get_model(model_name)
                 if target is not None and target.source_queries:
                     result = await engine.execute(
-                        model_name,
+                        query=model_name,
                         variables=variables or {},
                         dry_run=dry_run,
                         explain=explain,
