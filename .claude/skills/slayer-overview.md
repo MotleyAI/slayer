@@ -28,8 +28,10 @@ Query-backed models support two access patterns: **run by name** (`engine.execut
 Discovery: `list_datasources`, `models_summary`, `inspect_model` (with sample data)
 Querying: `query`
 Model editing: `create_model`, `edit_model`, `delete_model`
-Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`
+Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`, `set_datasource_priority`
 Ingestion: `ingest_datasource_models`
+Schema drift: `validate_models` (read-only diff against live schema; surfaces `SchemaDriftError` cleanups)
+Memory: `save_memory`, `forget_memory`, `recall_memories` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
 
 ## Package Structure
 

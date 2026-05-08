@@ -1,24 +1,25 @@
-"""SQL-mode predicate parser for model-side filters (DEV-1369).
+"""SQL-mode predicate validator for model-side filters (DEV-1369).
 
 ``Column.filter`` and each entry of ``SlayerModel.filters`` are SQL-mode
 expressions: arbitrary SQL function calls and operators are accepted
-(``json_extract``, ``coalesce``, ``CASE WHEN``, …); SLayer DSL
+(``json_extract``, ``coalesce``, ``CASE WHEN``, dialect-specific operators
+like Postgres ``@>`` / ``ILIKE ANY``, MySQL ``<=>``); SLayer DSL
 constructs (aggregation colon syntax, transform calls, raw ``OVER (...)``)
 are rejected with a clear actionable error.
 
-The parser is sqlglot-based so the full SQL grammar (including ``CASE
-WHEN``, ``BETWEEN``, ``EXISTS``, every dialect's function library) is
-available without us re-implementing it. Python-style operator
-spellings ``==`` / ``!=`` are pre-rewritten to ``=`` / ``<>`` for
-backward compat with existing fixtures.
+DEV-1369 round 2: this validator does **not** invoke sqlglot. It only
+checks that no DSL construct is present. Full sqlglot parsing — with
+the appropriate ``read=<dialect>`` — happens at SQL generation time
+where the model's datasource (and therefore its dialect) is known.
+This avoids the false-rejection failure mode where a Postgres-specific
+operator like ``payload @> '{"k":1}'`` fails sqlglot's generic grammar
+at construction time even though it's perfectly valid against the
+model's actual backend.
 """
 from __future__ import annotations
 
 import re
 from typing import List
-
-import sqlglot
-from sqlglot import exp
 
 from slayer.core.formula import ALL_TRANSFORMS, ParsedFilter
 from slayer.core.refs import AGG_REF_RE
@@ -59,71 +60,48 @@ def _reject_dsl_constructs(formula: str) -> None:
         )
 
 
-def _normalize_operators(formula: str) -> str:
-    """Rewrite Python-style operators and string-literal escapes outside
-    string literals (operators) and inside (escapes) so sqlglot's
-    SQL-standard tokenizer accepts the result.
-
-    Outside literals: ``==`` → ``=`` and ``!=`` → ``<>`` (backward compat
-    for existing fixtures that use Python operator spellings).
-
-    Inside literals: ``\\'`` → ``''`` and ``\\\\`` → ``\\`` (backward
-    compat for fixtures that authored string contents with Python-style
-    backslash escapes; the canonical SQL spelling is ``''``).
+def _bare_column_refs(formula: str) -> List[str]:
+    """Best-effort extraction of column-like identifiers from a SQL-mode
+    predicate, used so downstream join-detection sees the same shape it
+    saw before DEV-1369 round 2 dropped sqlglot from this path. Skips
+    string literals, then walks tokens that look like identifiers
+    (``customers__regions.name`` → ``customers__regions.name``,
+    ``status`` → ``status``) and excludes function-call heads.
     """
-    parts = _STRING_LITERAL_RE.split(formula)
-    literals = _STRING_LITERAL_RE.findall(formula)
-    rewritten = []
-    for i, part in enumerate(parts):
-        # `==` → `=`. Negative lookbehind/ahead avoids touching `>=` / `<=` / `!=`.
-        part = re.sub(r"(?<![<>=!])==(?!=)", "=", part)
-        # `!=` → `<>`. SQL standard inequality. Plain literal — no regex needed.
-        part = part.replace("!=", "<>")
-        rewritten.append(part)
-        if i < len(literals):
-            literal = literals[i]
-            # Convert Python-style escapes in the literal body to SQL-standard.
-            inner = literal[1:-1]
-            inner = inner.replace("\\\\", "\x00").replace("\\'", "''").replace("\x00", "\\")
-            rewritten.append(f"'{inner}'")
-    return "".join(rewritten)
+    stripped = _strip_string_literals(formula)
+    refs: List[str] = []
+    for match in re.finditer(r"\b[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*\b", stripped):
+        token = match.group(0)
+        # Skip if immediately followed by `(` (function call)
+        end = match.end()
+        if end < len(stripped) and stripped[end] == "(":
+            continue
+        # Skip SQL keywords that aren't column references
+        if token.upper() in _SQL_KEYWORDS:
+            continue
+        refs.append(token)
+    return refs
 
 
-def _collect_columns(expression: exp.Expression) -> List[str]:
-    """Walk a sqlglot AST and return every column reference in source order.
-
-    A column with a table qualifier (``customers__regions.name``) is
-    returned as the dotted form so downstream join-detection can pick
-    it up; bare names (``status``) are returned as-is.
-    """
-    cols: List[str] = []
-    for node in expression.walk():
-        if isinstance(node, exp.Column):
-            table_alias = node.table
-            col_name = node.name
-            if table_alias:
-                cols.append(f"{table_alias}.{col_name}")
-            else:
-                cols.append(col_name)
-    return cols
+_SQL_KEYWORDS = frozenset({
+    "AND", "OR", "NOT", "IS", "NULL", "IN", "LIKE", "ILIKE",
+    "BETWEEN", "CASE", "WHEN", "THEN", "ELSE", "END", "AS", "ANY", "ALL",
+    "TRUE", "FALSE", "ARRAY",
+})
 
 
 def parse_sql_predicate(formula: str) -> ParsedFilter:
-    """Parse a SQL-mode predicate string into a :class:`ParsedFilter`.
+    """Validate a SQL-mode predicate string and return a :class:`ParsedFilter`.
 
     Pre-rejects DSL constructs (aggregation colon, transform calls) and
-    raw ``OVER (...)`` window-function syntax, then parses with sqlglot.
-    Returns a :class:`ParsedFilter` whose ``sql`` is the canonicalised
-    predicate (sqlglot-emitted) and whose ``columns`` is the list of
-    referenced column identifiers.
+    raw ``OVER (...)`` window-function syntax. Does NOT invoke sqlglot —
+    full dialect-aware SQL parsing happens at generation time.
+
+    The ``ParsedFilter.sql`` field is the original ``formula`` unchanged;
+    ``columns`` is a best-effort regex extraction of column-shaped
+    identifiers (used by downstream join-detection on the strict path).
     """
     if has_window_function(formula):
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
     _reject_dsl_constructs(formula)
-    normalized = _normalize_operators(formula)
-    try:
-        parsed = sqlglot.parse_one(normalized, into=exp.Condition)
-    except sqlglot.errors.ParseError as e:  # type: ignore[attr-defined]
-        raise ValueError(f"Invalid filter syntax: {formula!r} — {e}")
-    columns = _collect_columns(parsed)
-    return ParsedFilter(sql=parsed.sql(), columns=columns)
+    return ParsedFilter(sql=formula, columns=_bare_column_refs(formula))

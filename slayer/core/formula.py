@@ -804,6 +804,16 @@ class ParsedFilter(BaseModel):
     columns: List[str] = Field(description="Column names referenced in the filter")
     is_having: bool = Field(default=False, description="True if this is a HAVING filter (aggregate condition)")
     is_post_filter: bool = Field(default=False, description="True if this references a computed column (transform/expression)")
+    synthesized_aliases: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Canonical aggregation aliases this filter introduced from "
+            "colon syntax (e.g. ``revenue:sum`` → ``revenue_sum``, "
+            "``*:count`` → ``_count``). DEV-1369: strict-resolution uses "
+            "this exact set to validate bare names instead of a permissive "
+            "regex that would let typos like ``made_up_sum`` through."
+        ),
+    )
 
 
 def _preprocess_like(formula: str) -> str:
@@ -943,6 +953,7 @@ def parse_filter(
     # Pre-process `like` / `not like` operators into internal function calls
     processed = _preprocess_like(processed)
 
+    synthesized_aliases: List[str] = []
     if mode == "dsl":
         # Pre-process colon syntax (e.g., "total_amount:sum") into canonical names
         processed, agg_refs = _preprocess_agg_refs(processed)
@@ -962,6 +973,7 @@ def parse_filter(
         # Replace placeholders with canonical names in the formula
         for ph, canonical in agg_canonical.items():
             processed = processed.replace(ph, canonical)
+        synthesized_aliases = list(dict.fromkeys(agg_canonical.values()))
     try:
         tree = ast.parse(processed, mode="eval")
     except SyntaxError as e:
@@ -973,7 +985,7 @@ def parse_filter(
     sql = _filter_node_to_sql(
         tree.body, formula, columns, allow_arbitrary_functions=allow_arbitrary,
     )
-    return ParsedFilter(sql=sql, columns=columns)
+    return ParsedFilter(sql=sql, columns=columns, synthesized_aliases=synthesized_aliases)
 
 
 _DSL_TRANSFORM_CALL_RE = re.compile(

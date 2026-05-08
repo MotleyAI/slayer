@@ -1599,6 +1599,12 @@ async def resolve_filter_columns(
     for f in parsed_filters:
         resolved_sql = f.sql
         resolved_columns = []
+        # DEV-1369: precise allowlist of synthesised aliases this filter
+        # introduced via colon syntax (e.g. ``revenue:sum`` → ``revenue_sum``,
+        # ``*:count`` → ``_count``). Strict-resolution checks against this
+        # set, replacing the prior permissive regex that matched any
+        # ``*_sum``-shaped name and let typos like ``made_up_sum`` through.
+        filter_synthesized_aliases = set(getattr(f, "synthesized_aliases", []))
         for col_name in dict.fromkeys(f.columns):
             if "." not in col_name:
                 dim = model.get_column(col_name)
@@ -1629,14 +1635,7 @@ async def resolve_filter_columns(
                     if strict:
                         is_measure = model.get_measure(col_name) is not None
                         is_custom_agg = model.get_aggregation(col_name) is not None
-                        is_canonical_agg = bool(
-                            _re.match(
-                                r"^_?[a-zA-Z_]\w*?_(?:"
-                                + "|".join(_re.escape(a) for a in BUILTIN_AGGREGATIONS)
-                                + r")(?:_.+)?$",
-                                col_name,
-                            )
-                        )
+                        is_synthesized_alias = col_name in filter_synthesized_aliases
                         is_query_alias = (
                             query_aliases is not None
                             and col_name in query_aliases
@@ -1644,7 +1643,7 @@ async def resolve_filter_columns(
                         if not (
                             is_measure
                             or is_custom_agg
-                            or is_canonical_agg
+                            or is_synthesized_alias
                             or is_query_alias
                         ):
                             raise ValueError(

@@ -262,8 +262,13 @@ class TestDslModeAcceptance:
 
 
 class TestDslModeRejection:
-    """Raw SQL functions, __ in user input, and OVER (...) are rejected at
-    SlayerQuery / ModelMeasure construction time."""
+    """DSL-mode rejection rules. Raw ``OVER (...)`` is rejected at
+    SlayerQuery / ModelMeasure construction (Python AST cannot parse it).
+    Raw SQL function calls and unresolved bare names — including
+    ``__``-prefixed tokens that don't resolve to a virtual-model column
+    — are rejected at enrichment time, where the parser has full
+    custom-aggregation and named-measure context.
+    """
 
     async def test_query_filter_rejects_raw_sql_function_at_enrichment(self) -> None:
         """If a user needs json_extract/coalesce/etc. they must define a Column
@@ -384,6 +389,33 @@ class TestStrictResolution:
                 resolve_cross_model_measure=_noop_async,
                 resolve_join_target=_noop_async,
             )
+
+    async def test_unknown_canonical_agg_shaped_typo_raises_at_enrichment(self) -> None:
+        """Regression for round-2 review: a name that *looks* like a canonical
+        agg alias (``made_up_sum``, ``typo_count_distinct``, ``foo_avg``) but
+        was never synthesised by the parser must NOT pass the strict-resolution
+        check. The prior implementation used a permissive regex over
+        BUILTIN_AGGREGATIONS that let these typos through."""
+        model = SlayerModel(
+            name="m",
+            sql_table="t",
+            data_source="test",
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        )
+        for typo in ("made_up_sum", "typo_count_distinct", "foo_avg"):
+            query = SlayerQuery(
+                source_model="m",
+                dimensions=["id"],
+                filters=[f"{typo} > 0"],
+            )
+            with pytest.raises(Exception, match=f"(?i){typo}|unknown|not a Column"):
+                await enrich_query(
+                    query=query,
+                    model=model,
+                    resolve_dimension_via_joins=_noop_async,
+                    resolve_cross_model_measure=_noop_async,
+                    resolve_join_target=_noop_async,
+                )
 
     async def test_known_filter_name_passes(self) -> None:
         """Control: a filter naming a defined Column enriches without error."""

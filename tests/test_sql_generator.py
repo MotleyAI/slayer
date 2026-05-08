@@ -3418,36 +3418,51 @@ class TestMeasureFilterInjection:
     # Rejected at parse time
     # ------------------------------------------------------------------
 
-    def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
-        """Classic ``'; DROP TABLE ...`` payload is rejected at Column
-        construction (DEV-1369: SQL-mode validation moved up to fail-fast)."""
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
+    async def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
+        """Classic ``'; DROP TABLE ...`` payload is rejected at SQL-generation
+        time (the formula parser refuses the multi-statement payload).
+
+        DEV-1369 round 2: SQL-mode validators no longer invoke sqlglot, so
+        Column construction itself now passes. Dialect-aware rejection
+        happens at generation time via the formula parser used inside
+        ``resolve_filter_columns``.
+        """
+        orders_model.columns.append(
             Column(
                 name="evil",
                 sql="amount",
                 filter="status = 'a'; DROP TABLE orders; --'",
                 type=DataType.DOUBLE,
             )
-
-    def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
-        """UNION SELECT payload is rejected at Column construction
-        (DEV-1369: SQL-mode validation moved up to fail-fast)."""
+        )
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
         with pytest.raises(ValueError, match="Invalid filter syntax"):
+            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+
+    async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
+        """UNION SELECT payload is rejected at SQL-generation time."""
+        orders_model.columns.append(
             Column(
                 name="evil",
                 sql="amount",
                 filter="status = 'a' UNION SELECT * FROM users --'",
                 type=DataType.DOUBLE,
             )
+        )
+        query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
+        with pytest.raises(ValueError, match="Invalid filter syntax"):
+            await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
 
     def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
-        """``/* ... */`` block comments are valid SQL and round-trip through
-        sqlglot harmlessly. DEV-1369 (SQL-mode parser) lets them through —
-        the prior Python-AST parser rejected them as a side effect of not
-        understanding SQL comment syntax. The injection risk that the
-        rejection guarded against (string-concat-based injection) is
-        eliminated by sqlglot AST parsing: any payload that re-emits
-        through ``parsed.sql()`` is a valid sqlglot expression.
+        """``/* ... */`` block comments survive ``Column`` construction —
+        DEV-1369's SQL-mode validator does not parse them, only checks for
+        DSL constructs (aggregation colon syntax, transform calls, ``OVER``).
+
+        End-to-end round-trip via enrichment + generation isn't validated
+        here because the enrichment-side filter parser is still the DSL
+        parser; threading dialect-aware sqlglot into enrichment is tracked
+        separately. The current contract is: construction accepts the
+        filter; generation-time SQL parsing is the dialect-specific gate.
         """
         col = Column(
             name="benign",
@@ -3455,8 +3470,8 @@ class TestMeasureFilterInjection:
             filter="status = 'a' /* x */ OR 1=1",
             type=DataType.DOUBLE,
         )
-        # The filter survives construction and round-trips cleanly.
         assert col.filter is not None
+        assert "/*" in col.filter
 
     # ------------------------------------------------------------------
     # Accepted and neutralised in emitted SQL — tested across dialects

@@ -30,9 +30,11 @@ SLayer has two distinct expression layers and the rules for what each one accept
 
 ## The internal `__` carve-out
 
-The `Column._validate_name` validator allows `__` inside `Column.name`. This is required by `_query_as_model`, which flattens joined-model columns into virtual-model column names like `stores__name` or `customers__regions__name`. This is the **only** place in SLayer where `__` connects all the way through to the leaf — because in a virtual model, the entire dotted path becomes one SQL identifier on the synthetic table.
+The `Column._validate_name` validator allows `__` inside `Column.name`. This is required by `_query_as_model`, which flattens joined-model columns into virtual-model column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table.
 
-User-authored input (queries, ModelMeasure formulas) cannot use `__`. The user-input validator (`reject_user_dunder` in `slayer/core/refs.py`) fires at SlayerQuery / ModelMeasure construction time. Virtual-model construction in `_query_as_model` bypasses the user-input check by routing through the internal factory.
+`__` is **not** rejected at SlayerQuery / ModelMeasure construction. A user-authored DSL formula or filter that references such a virtual column by name (e.g. a downstream stage filtering on `kpis__total_amount_sum`) needs to remain constructible. Instead, **strict resolution at enrichment time** catches the cases that are actually wrong: any bare name in a query measure / filter / dimension that doesn't resolve to a `Column` / `ModelMeasure` / custom aggregation / canonical agg alias / query-level alias on the source model raises `ReferenceError`. Typos like `customers__region` (against a model that has `customers` joined to `region`, but no virtual column with that flattened name) are surfaced at execution time, not at construction.
+
+`reject_user_dunder` in `slayer/core/refs.py` is retained as a helper for narrow contexts where `__` is unambiguously wrong (e.g. `SlayerQuery.name`, where `__` would clash with the SQL alias namespace) — it is not applied to free-form formula / filter strings.
 
 ## What changed in DEV-1369
 
@@ -52,48 +54,67 @@ A sibling issue DEV-1370 will further unify the DSL formula parser and filter pa
 
 ### `Column.filter` (SQL mode)
 
-```python
-# Accepted
-Column(name="active_amount", sql="amount", filter="json_extract(metadata, '$.active') = 1")
-Column(name="amt", sql="amount", filter="CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1")
-Column(name="amt", sql="amount", filter="customers__regions.name = 'US'")
+Accepted at `Column` construction:
 
-# Rejected at Column construction
-Column(name="x", sql="amount", filter="revenue:sum > 100")        # DSL agg colon syntax
-Column(name="x", sql="amount", filter="cumsum(amount) > 0")        # DSL transform call
-Column(name="x", sql="amount", filter="row_number() over (...)")   # raw OVER
+```json
+{"name": "active_amount", "sql": "amount", "filter": "json_extract(metadata, '$.active') = 1", "type": "DOUBLE"}
+{"name": "amt", "sql": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "type": "DOUBLE"}
+{"name": "amt", "sql": "amount", "filter": "customers__regions.name = 'US'", "type": "DOUBLE"}
+```
+
+Rejected at `Column` construction:
+
+```json
+{"name": "x", "sql": "amount", "filter": "revenue:sum > 100"}        // DSL agg colon syntax
+{"name": "x", "sql": "amount", "filter": "cumsum(amount) > 0"}       // DSL transform call
+{"name": "x", "sql": "amount", "filter": "row_number() over (...)"}  // raw OVER
 ```
 
 ### `SlayerQuery.filters` (DSL mode)
 
-```python
-# Accepted
-SlayerQuery(source_model="orders", filters=["revenue:sum > 100"])
-SlayerQuery(source_model="orders", filters=["change(revenue:sum) > 0"])
-SlayerQuery(source_model="orders", filters=["customers.region == 'EU'"])
-SlayerQuery(source_model="orders", filters=["status = '{val}'"], variables={"val": "active"})
+Accepted at `SlayerQuery` construction:
 
-# Rejected at SlayerQuery construction
-SlayerQuery(source_model="orders", filters=["json_extract(data, '$.x') > 5"])  # raw SQL fn (caught at enrichment)
-SlayerQuery(source_model="orders", filters=["customers__region == 'EU'"])       # __ in user input
-SlayerQuery(source_model="orders", filters=["row_number() over (...)"])         # raw OVER
+```json
+{"source_model": "orders", "filters": ["revenue:sum > 100"]}
+{"source_model": "orders", "filters": ["change(revenue:sum) > 0"]}
+{"source_model": "orders", "filters": ["customers.region == 'EU'"]}
+{"source_model": "orders", "filters": ["status = '{val}'"], "variables": {"val": "active"}}
+```
 
-# Rejected at enrichment
-query = SlayerQuery(source_model="orders", dimensions=["id"], filters=["unknown_col > 0"])
-await engine.execute(query)  # ReferenceError: 'unknown_col' is not a Column or ModelMeasure on 'orders'
+Rejected at `SlayerQuery` construction:
+
+```json
+{"source_model": "orders", "filters": ["row_number() over (...)"]}    // raw OVER
+```
+
+Rejected at enrichment:
+
+```json
+{"source_model": "orders", "dimensions": ["id"], "filters": ["json_extract(data, '$.x') > 5"]}
+// ↑ ReferenceError: raw SQL function calls in DSL mode
+
+{"source_model": "orders", "dimensions": ["id"], "filters": ["unknown_col > 0"]}
+// ↑ ReferenceError: 'unknown_col' is not a Column / ModelMeasure on 'orders'
+
+{"source_model": "orders", "dimensions": ["id"], "filters": ["customers__region = 'EU'"]}
+// ↑ ReferenceError: 'customers__region' doesn't resolve to any virtual-model column
+//   (use single-dot DSL: 'customers.region')
 ```
 
 ### `ModelMeasure.formula` (DSL mode)
 
-```python
-# Accepted
-ModelMeasure(name="aov", formula="revenue:sum / *:count")
-ModelMeasure(name="cust_rev", formula="customers.revenue:sum")        # cross-model dotted path
-ModelMeasure(name="growth", formula="change(revenue:sum)")             # transform on agg ref
+Accepted at construction:
 
-# Rejected at construction
-ModelMeasure(name="bad", formula="customers__revenue:sum")             # __ in user input
-ModelMeasure(name="bad", formula="json_extract(data, '$.x')")          # raw SQL fn (caught at enrichment)
+```json
+{"name": "aov", "formula": "revenue:sum / *:count"}
+{"name": "cust_rev", "formula": "customers.revenue:sum"}     // cross-model dotted path
+{"name": "growth", "formula": "change(revenue:sum)"}         // transform on agg ref
+```
+
+Rejected at enrichment (when the formula is evaluated against a model):
+
+```json
+{"name": "bad", "formula": "json_extract(data, '$.x')"}      // raw SQL fn
 ```
 
 ## See also
