@@ -1583,9 +1583,21 @@ async def resolve_filter_columns(
     With ``strict=True`` (DSL-mode callers — query-level filters) any
     bare name that doesn't resolve to a Column / ModelMeasure / custom
     aggregation / canonical agg alias / query-level alias raises
-    ``ValueError``. With ``strict=False`` (SQL-mode callers —
-    ``Column.filter``, model-level filters) unknown bare names pass
-    through as references to underlying-table columns.
+    ``ValueError``; the same applies on the dotted-path branch when the
+    head segment names no join target on the source model. With
+    ``strict=False`` (SQL-mode callers — ``Column.filter``, model-level
+    filters) unknown bare names pass through as references to
+    underlying-table columns.
+
+    With ``strict=True`` and ``drop_if_unresolved=True`` (DEV-1367 —
+    used by the cross-model-measure rerooting path in
+    ``query_engine._build_rerooted_enriched``), unresolved bare names and
+    dotted paths cause the **entire filter** to be dropped from the
+    output rather than raising. The rerooting machinery inherits the
+    outer query's filter list; only the subset reachable from the
+    rerooted source applies, so this turns the would-raise into a clean
+    drop. With ``drop_if_unresolved=False`` (the default), unresolved
+    strict-mode references raise ``ValueError`` as documented above.
     """
     import re as _re
 
