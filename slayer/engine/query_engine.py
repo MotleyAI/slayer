@@ -1320,6 +1320,8 @@ class SlayerQueryEngine:
         model: SlayerModel,
         named_queries: dict[str, SlayerQuery] = None,
         dialect: Optional[str] = None,
+        *,
+        drop_unreachable_filters: bool = False,
     ) -> EnrichedQuery:
         """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -1431,6 +1433,7 @@ class SlayerQueryEngine:
             resolve_join_target=_resolve_join_target,
             resolve_model=_resolve_model_for_expansion,
             dialect=dialect,
+            drop_unreachable_filters=drop_unreachable_filters,
         )
 
         # Post-process: build re-rooted enriched queries for cross-model measures
@@ -2107,10 +2110,16 @@ class SlayerQueryEngine:
             filters=rerooted_filters or None,
         )
 
+        # Re-rooted enrichment intentionally inherits the outer query's
+        # filter list; some filters reference models reachable from the
+        # outer source but not from ``target_model``. ``drop_unreachable_filters``
+        # tells the resolver to drop those entries from the result instead
+        # of raising the DEV-1367 strict-resolution error.
         rerooted_enriched = await self._enrich(
             query=rerooted_query,
             model=target_model,
             named_queries=named_queries,
+            drop_unreachable_filters=True,
         )
 
         # --- Fix aliases to match main query's expectations ---

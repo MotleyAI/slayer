@@ -110,6 +110,7 @@ async def enrich_query(
     resolve_join_target,
     resolve_model=None,
     dialect: str = "postgres",
+    drop_unreachable_filters: bool = False,
 ) -> EnrichedQuery:
     """Resolve a SlayerQuery against model definitions into an EnrichedQuery.
 
@@ -907,7 +908,14 @@ async def enrich_query(
         named_queries=named_queries,
         resolve_model=resolve_model,
         dialect=dialect,
+        # Both paths run strict resolution — bare names AND dotted paths
+        # must resolve. The difference is what to do when they don't:
+        # outer query raises (DEV-1367 — agents see translation-time
+        # error); the rerooted CTE drops the inherited unreachable filter
+        # so the cross-model post-process stays consistent with the new
+        # source's join graph.
         strict=True,
+        drop_if_unresolved=drop_unreachable_filters,
         query_aliases=_query_aliases,
     )
 
@@ -1563,6 +1571,7 @@ async def resolve_filter_columns(
     dialect: str = "postgres",
     *,
     strict: bool = False,
+    drop_if_unresolved: bool = False,
     query_aliases: Optional[Set[str]] = None,
 ) -> list:
     """Resolve filter column references through model dimensions/measures.
@@ -1574,9 +1583,21 @@ async def resolve_filter_columns(
     With ``strict=True`` (DSL-mode callers — query-level filters) any
     bare name that doesn't resolve to a Column / ModelMeasure / custom
     aggregation / canonical agg alias / query-level alias raises
-    ``ValueError``. With ``strict=False`` (SQL-mode callers —
-    ``Column.filter``, model-level filters) unknown bare names pass
-    through as references to underlying-table columns.
+    ``ValueError``; the same applies on the dotted-path branch when the
+    head segment names no join target on the source model. With
+    ``strict=False`` (SQL-mode callers — ``Column.filter``, model-level
+    filters) unknown bare names pass through as references to
+    underlying-table columns.
+
+    With ``strict=True`` and ``drop_if_unresolved=True`` (DEV-1367 —
+    used by the cross-model-measure rerooting path in
+    ``query_engine._build_rerooted_enriched``), unresolved bare names and
+    dotted paths cause the **entire filter** to be dropped from the
+    output rather than raising. The rerooting machinery inherits the
+    outer query's filter list; only the subset reachable from the
+    rerooted source applies, so this turns the would-raise into a clean
+    drop. With ``drop_if_unresolved=False`` (the default), unresolved
+    strict-mode references raise ``ValueError`` as documented above.
     """
     import re as _re
 
@@ -1596,6 +1617,7 @@ async def resolve_filter_columns(
         )
         return expanded if expanded is not None else sql_expr
 
+    out_filters: list = []
     for f in parsed_filters:
         resolved_sql = f.sql
         resolved_columns = []
@@ -1605,6 +1627,7 @@ async def resolve_filter_columns(
         # set, replacing the prior permissive regex that matched any
         # ``*_sum``-shaped name and let typos like ``made_up_sum`` through.
         filter_synthesized_aliases = set(getattr(f, "synthesized_aliases", []))
+        drop_this_filter = False
         for col_name in dict.fromkeys(f.columns):
             if "." not in col_name:
                 dim = model.get_column(col_name)
@@ -1646,14 +1669,25 @@ async def resolve_filter_columns(
                             or is_synthesized_alias
                             or is_query_alias
                         ):
-                            raise ValueError(
-                                f"Filter references unknown name '{col_name}' "
-                                f"on model '{model.name}'. It is not a Column, "
-                                f"a ModelMeasure, a custom aggregation, or a "
-                                f"named measure / transform alias in this "
-                                f"query. Define it on the model first or "
-                                f"check spelling."
-                            )
+                            # ``drop_if_unresolved`` (rerooted CTE path):
+                            # turn the would-raise into a drop so the
+                            # inherited filter is excluded from the
+                            # rerooted enrichment. Bare names that don't
+                            # resolve there must NOT silently pass through
+                            # — that would put a raw column reference in
+                            # the inner SQL.
+                            if drop_if_unresolved:
+                                drop_this_filter = True
+                            else:
+                                raise ValueError(
+                                    f"Filter references unknown name "
+                                    f"'{col_name}' on model '{model.name}'. "
+                                    f"It is not a Column, a ModelMeasure, a "
+                                    f"custom aggregation, or a named measure "
+                                    f"/ transform alias in this query. "
+                                    f"Define it on the model first or check "
+                                    f"spelling."
+                                )
                     resolved_columns.append(col_name)
             else:
                 parts = col_name.split(".")
@@ -1708,12 +1742,55 @@ async def resolve_filter_columns(
                         resolved_columns.append(col_name)
                         continue
 
+                # DEV-1367: a dotted reference that doesn't resolve through
+                # the join graph used to silently pass through, producing
+                # SQL with an unbound table reference (``transportation_assets``
+                # in WHERE but never in FROM/JOIN).
+                #
+                # * ``strict=True`` (DSL-mode outer-query path): raise so
+                #   agents get a translation-time error rather than a
+                #   cryptic "no such column" at execution.
+                # * ``drop_if_unresolved=True`` (re-rooted CTE path): mark
+                #   the entire filter for dropping; the cross-model
+                #   re-rooting machinery inherits the outer filter list and
+                #   asks us to skip whatever doesn't reach from the new
+                #   source.
+                # * Otherwise (SQL-mode model-side filters): silently pass
+                #   through — bare table references inside ``__``-aliased
+                #   paths are valid SQL even when sqlglot's join walker
+                #   doesn't know about them.
+                if strict:
+                    if drop_if_unresolved:
+                        # Re-rooted CTE path: drop the filter rather than
+                        # raise. The cross-model machinery inherits the
+                        # outer query's filter list and only the subset
+                        # reachable from the rerooted source applies.
+                        drop_this_filter = True
+                    else:
+                        head = path_parts[0]
+                        if not resolved and not any(j.target_model == head for j in model.joins):
+                            raise ValueError(
+                                f"Filter '{col_name}' references model "
+                                f"'{head}' but it is not in joins for source "
+                                f"model '{model.name}'. Add it to "
+                                f"source_model.joins or rewrite the filter "
+                                f"to use a local derived column."
+                            )
+                        raise ValueError(
+                            f"Filter '{col_name}' references column "
+                            f"'{dim_name}' on '{'.'.join(path_parts)}', "
+                            f"which doesn't resolve to a known column on "
+                            f"the joined model. Check the path or define "
+                            f"the column on the model."
+                        )
                 resolved_columns.append(col_name)
 
         f.sql = resolved_sql
         f.columns = resolved_columns
+        if not drop_this_filter:
+            out_filters.append(f)
 
-    return parsed_filters
+    return out_filters
 
 
 def _classify_one_filter(
