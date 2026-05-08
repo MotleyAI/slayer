@@ -123,24 +123,9 @@ When `allowed_aggregations` is set, it intersects with the type-default set: eve
 
 ### Window functions in `Column.sql`
 
-A column's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The column behaves like any other column when used in `dimensions` / SELECT. When used in a query `filters` entry, SLayer auto-promotes the predicate: it materializes the column under its alias in the base CTE and applies the predicate as a post-aggregation outer `WHERE`. No multi-stage model is needed for the common top-N case:
+A column's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The column behaves like any other column when used in `dimensions` / SELECT.
 
-```yaml
-columns:
-  - name: rn
-    sql: row_number() over (order by mass desc)
-    type: number
-```
-
-```json
-{
-  "source_model": "planets",
-  "dimensions": ["name"],
-  "filters": ["rn <= 3"]
-}
-```
-
-For dialect-portable top-N filtering, prefer the `rank()` transform inline (`"filters": ["rank(<measure>) <= 3"]`) — see [formulas.md](formulas.md#rank). The `Column.sql`-with-window pattern is the right choice when you need a window expression that doesn't fit one of SLayer's built-in transforms.
+> **DEV-1369:** filtering directly on a window-function `Column.sql` from a query (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) used to auto-promote to a post-aggregation outer `WHERE`. That escape hatch is removed — the rank-family transforms cover the top-N case in pure DSL, and a query filter naming a windowed column now raises with a clear message. Use `{"filters": ["rank(<measure>) <= 3"]}` (see [formulas.md](formulas.md#rank)) or factor the column into a multi-stage `source_queries` model.
 
 ## Measures (Named Formulas)
 
@@ -331,9 +316,9 @@ filters:
   - "status <> 'test'"
 ```
 
-Model filters only support conditions on underlying table columns (WHERE). For measure-based conditions, use query-level filters instead.
+Model filters are SQL-mode expressions (DEV-1369): any valid SQL expression for the underlying dialect is accepted, including function calls (`json_extract`, `coalesce`, `lower`, …), `CASE WHEN`, and joined-column references via the `__` alias syntax. Aggregation colon syntax (`revenue:sum`) and SLayer transform calls (`cumsum`, `change`, …) are rejected — those are DSL constructs and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table.
 
-Since model filters are SQL snippets, multi-hop joined column references should use the `__` alias syntax (e.g., `customers__regions.name`), not dots. Single-dot references like `customers.name` (table.column) are fine. Multi-dot references like `customers.regions.name` are auto-converted to `customers__regions.name` with a warning. The same auto-conversion applies to dimension and measure `sql` fields.
+Multi-hop joined column references use the `__` alias syntax (e.g., `customers__regions.name`); single-dot `table.column` references are left as-is, and multi-dot input (`customers.regions.name`) is auto-converted to `customers__regions.name` with a warning. The same auto-conversion applies to `Column.sql` and `Column.filter`.
 
 ## Source modes
 

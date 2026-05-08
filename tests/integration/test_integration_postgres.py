@@ -203,7 +203,10 @@ class TestPostgresQueries:
         query = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "*:count"}],
-            filters=["amount > 100"],
+            # DEV-1369: filter references must resolve to a defined Column;
+            # use ``total`` (the SLayer Column whose sql is ``amount``)
+            # rather than the bare underlying-table column name.
+            filters=["total > 100"],
         )
         result = await pg_env.execute(query=query)
         assert result.data[0]["orders._count"] == 3  # 200, 150, 300
@@ -1085,20 +1088,17 @@ async def planets_pg_env(postgresql):
 
 
 @pytest.mark.integration
-async def test_filter_on_windowed_column_postgres_top_n(planets_pg_env):
-    """Postgres parity for DEV-1336."""
+async def test_filter_on_windowed_column_postgres_raises(planets_pg_env):
+    """Postgres parity for DEV-1369: filtering a windowed Column.sql
+    raises (use rank-family transforms instead)."""
     engine = planets_pg_env
     query = SlayerQuery(
         source_model="planets",
         dimensions=["name"],
         filters=["rn <= 3"],
-        order=[OrderItem(column=ColumnRef(name="rn"), direction="asc")],
     )
-    response = await engine.execute(query)
-    names = [row["planets.name"] for row in response.data]
-    assert names == ["Jupiter", "Saturn", "Neptune"], (
-        f"Expected top-3 by mass desc, got {names}"
-    )
+    with pytest.raises(ValueError, match="(?i)window function|rank"):
+        await engine.execute(query)
 
 # ---------------------------------------------------------------------------
 # DEV-1333: cross-model derived ``Column.sql`` chaining (Postgres)

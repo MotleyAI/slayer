@@ -14,6 +14,8 @@ from slayer.core.enums import (
     _coerce_legacy_datatype,
 )
 from slayer.core.format import NumberFormat
+from slayer.core.formula import ALL_TRANSFORMS
+from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import migrate as _migrate_schema
 
@@ -147,6 +149,11 @@ class Column(BaseModel):
     def _fix_multidot_filter(cls, v: Optional[str]) -> Optional[str]:
         if v is not None:
             v = _fix_multidot_sql(v, context="Column filter")
+            # DEV-1369: Column.filter is SQL-mode — validate at construction
+            # time so DSL constructs (aggregation colon, transform calls) are
+            # caught early. Result is discarded; we only care about the
+            # side effect of raising on a violation.
+            parse_sql_predicate(v)
         return v
 
 
@@ -203,7 +210,6 @@ class ModelMeasure(BaseModel):
         """
         if v is None:
             return v
-        from slayer.core.formula import ALL_TRANSFORMS
         if v in ALL_TRANSFORMS:
             raise ValueError(
                 f"ModelMeasure name '{v}' is a reserved transform name. "
@@ -222,6 +228,13 @@ class ModelMeasure(BaseModel):
         if has_window_function(v):
             raise ValueError(f"ModelMeasure formula '{v}' {WINDOW_IN_FILTER_ERROR}")
         return v
+
+    # DEV-1369: ModelMeasure formulas may legitimately contain ``__`` —
+    # virtual-model columns produced by ``_query_as_model`` flatten join
+    # paths into names like ``kpis__total_amount_sum``, which downstream
+    # stages reference directly. Strict resolution at enrichment time
+    # catches typos like ``customers__region`` that don't resolve to any
+    # Column on the model.
 
 
 class AggregationParam(BaseModel):
@@ -382,14 +395,22 @@ class SlayerModel(BaseModel):
     @field_validator("filters")
     @classmethod
     def _fix_multidot_filters(cls, v: List[str]) -> List[str]:
-        """Auto-convert multi-dot column references in model filters.
+        """Auto-convert multi-dot column references in model filters and
+        validate each entry as a SQL-mode predicate (DEV-1369).
 
-        Model filters are SQL snippets, so joined column references must use
-        the __ alias syntax (e.g., ``customers__regions.name``), not the
-        multi-dot query syntax (``customers.regions.name``).  Single-dot
+        Model filters are SQL snippets: joined column references use the
+        ``__`` alias syntax (``customers__regions.name``), not the
+        multi-dot query syntax (``customers.regions.name``). Single-dot
         references like ``customers.name`` (table.column) are left as-is.
+
+        After the multi-dot rewrite each entry is parsed with
+        :func:`parse_sql_predicate` so DSL constructs (aggregation colon,
+        transform calls, raw OVER) are caught at construction time.
         """
-        return [_fix_multidot_sql(f, context="Model filter") for f in v]
+        rewritten = [_fix_multidot_sql(f, context="Model filter") for f in v]
+        for f in rewritten:
+            parse_sql_predicate(f)
+        return rewritten
 
     @model_validator(mode="after")
     def _validate_column_measure_disjoint(self) -> "SlayerModel":
