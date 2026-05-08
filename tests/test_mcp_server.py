@@ -2807,6 +2807,82 @@ class TestRunByNamePlanFlagsMCP:
         assert execute_calls == 0, "dry_run=True must not execute SQL"
 
 
+class TestQueryAcceptsInlineSourceModel:
+    """DEV-1372: the MCP ``query`` tool must accept ``source_model`` as a
+    string (model name), an inline ``ModelExtension`` dict, or an inline
+    ``SlayerModel`` dict — matching ``SlayerQuery.source_model``'s native
+    polymorphism. Previously typed ``str``, which forced agents to JSON-
+    encode dicts and tripped name validation.
+    """
+
+    async def _setup_orders(self, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+            ],
+        ))
+
+    async def test_string_source_model_still_works(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        await self._setup_orders(storage)
+        result = await _call(mcp_server, name="query", arguments={
+            "source_model": "orders",
+            "measures": [{"formula": "*:count"}],
+            "dry_run": True,
+        })
+        assert "Invalid model name" not in result
+        assert "SQL:" in result
+        assert "orders" in result.lower()
+
+    async def test_inline_model_extension_dict(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        await self._setup_orders(storage)
+        result = await _call(mcp_server, name="query", arguments={
+            "source_model": {
+                "source_name": "orders",
+                "columns": [
+                    {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
+                ],
+            },
+            "measures": [{"formula": "double_amount:sum"}],
+            "dry_run": True,
+        })
+        assert "Invalid model name" not in result
+        assert "SQL:" in result
+        # The inline column's SQL expression must surface in the generated SQL.
+        assert "amount * 2" in result.lower() or "amount*2" in result.lower()
+
+    async def test_inline_slayer_model_dict(
+        self, mcp_server, storage: YAMLStorage
+    ) -> None:
+        # Datasource must exist for SQL-client routing, but the table need not.
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        result = await _call(mcp_server, name="query", arguments={
+            "source_model": {
+                "name": "ad_hoc",
+                "sql_table": "things",
+                "data_source": "test",
+                "columns": [
+                    {"name": "x", "sql": "x", "type": "DOUBLE"},
+                ],
+            },
+            "measures": [{"formula": "x:sum"}],
+            "dry_run": True,
+        })
+        assert "Invalid model name" not in result
+        assert "SQL:" in result
+        assert "things" in result.lower()
+
+
 class TestDatasources:
     async def test_list_empty(self, mcp_server) -> None:
         result = await _call(mcp_server, name="list_datasources")
