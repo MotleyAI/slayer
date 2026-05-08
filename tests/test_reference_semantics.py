@@ -451,6 +451,72 @@ class TestStrictResolution:
                 resolve_join_target=_noop_async,
             )
 
+    async def test_filter_referencing_unjoined_model_dropped_when_lenient(self) -> None:
+        """The cross-model-measure rerooting path inherits the outer query's
+        filter list and asks the resolver to drop entries unreachable from
+        the rerooted source via ``drop_unreachable_filters=True``. With that
+        flag, the same unresolved-dotted-path that would raise on the outer
+        path becomes a silent drop — the filter is excluded from the
+        resulting ``EnrichedQuery.filters``.
+        """
+        households = SlayerModel(
+            name="households",
+            sql_table="households",
+            data_source="test",
+            columns=[
+                Column(name="housenum", sql="housenum", type=DataType.INT, primary_key=True),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="households",
+            dimensions=["housenum"],
+            filters=["transportation_assets.total_vehicles >= 3"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=households,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+            drop_unreachable_filters=True,
+        )
+        # The unreachable filter is dropped, not left in the SQL.
+        assert all(
+            "transportation_assets" not in f.sql for f in enriched.filters
+        ), f"Expected the unreachable filter to be dropped; got {[f.sql for f in enriched.filters]}"
+
+    async def test_unknown_bare_name_dropped_when_lenient(self) -> None:
+        """Same drop-vs-raise behavior for bare names — an inherited filter
+        ``profit_margin > 0`` against a rerooted source that doesn't define
+        ``profit_margin`` would have silently emitted a raw column reference
+        before this fix; with strict-mode kept on (and ``drop_if_unresolved``
+        controlling raise-vs-drop), the filter is dropped instead.
+        """
+        households = SlayerModel(
+            name="households",
+            sql_table="households",
+            data_source="test",
+            columns=[
+                Column(name="housenum", sql="housenum", type=DataType.INT, primary_key=True),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="households",
+            dimensions=["housenum"],
+            filters=["profit_margin > 0"],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=households,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+            drop_unreachable_filters=True,
+        )
+        assert all(
+            "profit_margin" not in f.sql for f in enriched.filters
+        ), f"Expected the unresolved bare-name filter to be dropped; got {[f.sql for f in enriched.filters]}"
+
     async def test_known_filter_name_passes(self) -> None:
         """Control: a filter naming a defined Column enriches without error."""
         model = SlayerModel(
