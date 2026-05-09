@@ -556,6 +556,55 @@ class TestParseFilterInjection:
             return
         assert result.sql.count("OR") >= 100
 
+    # --- DEV-1376: path-qualified LIKE / NOT LIKE ---------------------------
+
+    def test_like_path_qualified_simple_literal(self) -> None:
+        """``<joined_model>.<col> like '...'`` must parse — agents reach for
+        this shape because dotted refs work in dimensions/measures."""
+        result = parse_filter("infrastructure.wateraccess like '%yes%'")
+        assert "infrastructure.wateraccess LIKE '%yes%'" in result.sql
+
+    def test_like_path_qualified_messy_literal(self) -> None:
+        """Literal content (commas, spaces, mixed case) must not affect
+        whether path-qualified LIKE parses. Reproduces the original
+        benchmark failure (households_14)."""
+        result = parse_filter(
+            "infrastructure.wateraccess like '%Yes, available at least in one room%'"
+        )
+        assert (
+            "infrastructure.wateraccess LIKE "
+            "'%Yes, available at least in one room%'"
+        ) in result.sql
+
+    def test_not_like_path_qualified(self) -> None:
+        """NOT LIKE on a dotted path mirrors the LIKE fix."""
+        result = parse_filter("customers.email not like '%spam.com'")
+        assert "customers.email NOT LIKE '%spam.com'" in result.sql
+
+    # --- DEV-1376: subquery-in-filter helpful error -------------------------
+
+    def test_filter_subquery_in_clause_raises(self) -> None:
+        """``IN (SELECT ...)`` should surface the targeted error instead of
+        Python's misleading "Perhaps you forgot a comma" advice."""
+        with pytest.raises(ValueError, match="Subqueries are not allowed"):
+            parse_filter("housenum in (select houselink from properties)")
+
+    def test_filter_subquery_not_in_clause_raises(self) -> None:
+        """``NOT IN (SELECT ...)`` is also a subquery shape."""
+        with pytest.raises(ValueError, match="Subqueries are not allowed"):
+            parse_filter("id not in (select id from t)")
+
+    def test_filter_exists_subquery_raises(self) -> None:
+        """``EXISTS (SELECT ...)`` is also a subquery shape."""
+        with pytest.raises(ValueError, match="Subqueries are not allowed"):
+            parse_filter("exists (select 1 from t)")
+
+    def test_filter_subquery_shape_inside_string_literal_does_not_raise(self) -> None:
+        """The subquery sniff must ignore SQL-shaped text that lives inside a
+        string-literal RHS of a comparison — it's data, not syntax."""
+        result = parse_filter("note = 'in (select 1 from t)'")
+        assert "note = 'in (select 1 from t)'" in result.sql
+
 
 # ---------------------------------------------------------------------------
 # Function-style aggregation rewrite
