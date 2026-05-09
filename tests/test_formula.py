@@ -599,6 +599,12 @@ class TestParseFilterInjection:
         with pytest.raises(ValueError, match="Subqueries are not allowed"):
             parse_filter("exists (select 1 from t)")
 
+    def test_filter_subquery_shape_inside_string_literal_does_not_raise(self) -> None:
+        """The subquery sniff must ignore SQL-shaped text that lives inside a
+        string-literal RHS of a comparison — it's data, not syntax."""
+        result = parse_filter("note = 'in (select 1 from t)'")
+        assert "note = 'in (select 1 from t)'" in result.sql
+
 
 # ---------------------------------------------------------------------------
 # Function-style aggregation rewrite

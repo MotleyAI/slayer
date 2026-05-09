@@ -818,12 +818,12 @@ class ParsedFilter(BaseModel):
 
 _LIKE_RE = re.compile(
     r"\b((?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
-    re.IGNORECASE,
+    flags=re.IGNORECASE,
 )
 
 _SUBQUERY_IN_FILTER_RE = re.compile(
     r"\b(?:not\s+in|in|exists)\s*\(\s*select\b",
-    re.IGNORECASE,
+    flags=re.IGNORECASE,
 )
 
 
@@ -939,8 +939,10 @@ def parse_filter(
     # DEV-1376: detect SQL-style subqueries before ast.parse, so the agent
     # gets a pointer at `source_queries` / `Column.sql` / joins instead of
     # Python's "Perhaps you forgot a comma?" advice (which sends agents
-    # off on a nonsense recovery path).
-    if _SUBQUERY_IN_FILTER_RE.search(formula):
+    # off on a nonsense recovery path). Strip string literals first so the
+    # sniff doesn't false-positive on subquery-shaped text inside a
+    # comparison literal like ``note = 'in (select …)'``.
+    if _SUBQUERY_IN_FILTER_RE.search(_STRING_LITERAL_RE.sub("''", formula)):
         raise ValueError(
             f"Subqueries are not allowed in DSL filters: {formula!r}. "
             "Express the inner relation via `source_queries`, a derived "
