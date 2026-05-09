@@ -20,7 +20,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
 from slayer.memories.service import MemoryService
@@ -956,7 +956,7 @@ def create_mcp_server(storage: StorageBackend):
 
     @mcp.tool()
     async def query(  # NOSONAR S107 — FastMCP introspects this signature to expose each query option as a typed MCP tool argument; collapsing into a dict would degrade the agent-facing schema
-        source_model: str,
+        source_model: str | ModelExtension | SlayerModel,
         measures: Optional[List[Dict[str, str]]] = None,
         dimensions: Optional[List[str]] = None,
         filters: Optional[List[str]] = None,
@@ -974,7 +974,13 @@ def create_mcp_server(storage: StorageBackend):
         """Query data from a semantic model. Call inspect_model first to see available columns and measures.
 
         Args:
-            source_model: Name of the model to query (from models_summary).
+            source_model: One of three forms:
+                - **Model name** (string) — name of a saved model from models_summary, e.g. ``"orders"``.
+                - **Inline ModelExtension** (dict) — extend an existing model with extra columns/joins/measures
+                  for this one query: ``{"source_name": "orders", "columns": [{"name": "double_amount",
+                  "sql": "amount * 2", "type": "DOUBLE"}]}``.
+                - **Inline SlayerModel** (dict) — define a model ad-hoc:
+                  ``{"name": "ad_hoc", "sql_table": "things", "data_source": "test", "columns": [...]}``.
             measures: Aggregated values to return. Each is a formula: {"formula": "*:count"},
                 {"formula": "revenue:sum / *:count", "name": "aov"} (arithmetic),
                 {"formula": "cumsum(revenue:sum)"} (cumulative sum), {"formula": "change(revenue:sum)"} (diff from previous row),
@@ -1026,22 +1032,28 @@ def create_mcp_server(storage: StorageBackend):
             fmt = format.lower().strip()
             if fmt not in ("json", "csv", "markdown"):
                 raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
-            # Run-by-name shortcut: when only source_model is given (no
-            # measures / dimensions / filters / time_dimensions / order /
-            # limit / offset), dispatch through ``engine.execute(str)`` so
-            # the model's stored backing query runs directly. Variables flow
-            # through with the documented run-by-name precedence.
+            # Run-by-name shortcut: when ``source_model`` is a stored model
+            # name (string) and no overrides are given, dispatch through
+            # ``engine.execute(str)`` so the model's stored backing query
+            # runs directly with run-by-name variable precedence
+            # (``runtime_kwarg > stage > model.query_variables``). Inline
+            # ``ModelExtension`` / ``SlayerModel`` values fall through to
+            # the regular ``SlayerQuery`` path below — they have no stored
+            # backing query and the run-by-name semantics don't apply.
+            # See DEV-1373 for the variable-precedence asymmetry between
+            # the two paths.
             no_overrides = (
                 not measures and not dimensions and not filters
                 and not time_dimensions and not order
                 and limit is None and offset is None
                 and not whole_periods_only
             )
-            if no_overrides:
-                target = await storage.get_model(source_model)
+            if isinstance(source_model, str) and no_overrides:
+                model_name = source_model
+                target = await storage.get_model(model_name)
                 if target is not None and target.source_queries:
                     result = await engine.execute(
-                        source_model,
+                        query=model_name,
                         variables=variables or {},
                         dry_run=dry_run,
                         explain=explain,
