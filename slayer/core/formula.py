@@ -816,37 +816,39 @@ class ParsedFilter(BaseModel):
     )
 
 
-def _preprocess_like(formula: str) -> str:
-    """Convert `like` and `not like` operators to internal function calls for AST parsing.
+_LIKE_RE = re.compile(
+    r"\b((?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
+    re.IGNORECASE,
+)
 
-    "name like '%acme%'"       → "__like__(name, '%acme%')"
-    "name not like '%acme%'"   → "__notlike__(name, '%acme%')"
+_SUBQUERY_IN_FILTER_RE = re.compile(
+    r"\b(?:not\s+in|in|exists)\s*\(\s*select\b",
+    re.IGNORECASE,
+)
+
+
+def _preprocess_like(formula: str) -> str:
+    """Convert SQL ``LIKE`` / ``NOT LIKE`` operators to internal function calls.
+
+    Examples::
+
+        "name like '%acme%'"            → "__like__(name, '%acme%')"
+        "name not like '%acme%'"        → "__notlike__(name, '%acme%')"
+        "customers.email like '%@x.io'" → "__like__(customers.email, '%@x.io')"
+
+    The LHS may be a bare identifier or a dotted path through joined
+    models — the same shape the rest of the DSL accepts in
+    ``dimensions`` / ``measures`` references.
     """
-    # Skip if already preprocessed (contains __like__ or __notlike__)
     if "__like__" in formula or "__notlike__" in formula:
         return formula
-    formula = re.sub(
-        r'\b(\w+)\s+not\s+like\s+',
-        r'__notlike__(\1, ',
-        formula, flags=re.IGNORECASE,
-    )
-    # Close the parenthesis: find the string argument and close after it
-    formula = re.sub(
-        r'(__notlike__\([^,]+,\s*\'[^\']*\')',
-        r'\1)',
-        formula,
-    )
-    formula = re.sub(
-        r'\b(\w+)\s+like\s+',
-        r'__like__(\1, ',
-        formula, flags=re.IGNORECASE,
-    )
-    formula = re.sub(
-        r'(__like__\([^,]+,\s*\'[^\']*\')',
-        r'\1)',
-        formula,
-    )
-    return formula
+
+    def _sub(m: "re.Match[str]") -> str:
+        lhs, neg, pat = m.group(1), m.group(2), m.group(3)
+        fn = "__notlike__" if neg else "__like__"
+        return f"{fn}({lhs}, {pat})"
+
+    return _LIKE_RE.sub(_sub, formula)
 
 
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
@@ -934,6 +936,17 @@ def parse_filter(
     # below points at SLayer's transforms / Column.sql / multi-stage models.
     if has_window_function(formula):
         raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
+    # DEV-1376: detect SQL-style subqueries before ast.parse, so the agent
+    # gets a pointer at `source_queries` / `Column.sql` / joins instead of
+    # Python's "Perhaps you forgot a comma?" advice (which sends agents
+    # off on a nonsense recovery path).
+    if _SUBQUERY_IN_FILTER_RE.search(formula):
+        raise ValueError(
+            f"Subqueries are not allowed in DSL filters: {formula!r}. "
+            "Express the inner relation via `source_queries`, a derived "
+            "`Column.sql`, or by adding the related table to "
+            "`source_model.joins`."
+        )
 
     if mode == "sql":
         # SQL mode: reject DSL-only constructs early so users get a clear
