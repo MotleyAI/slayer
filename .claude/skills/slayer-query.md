@@ -64,6 +64,8 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 
 **Boolean logic**: `AND`, `OR`, `NOT`
 
+**String-hygiene scalars** (DEV-1378, lowercase only): `lower`, `upper`, `trim`, `replace`, `substr`, `instr`, `length`, `concat`. Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"length(replace(x, ',', '')) > 0"`, `"substr(s, 1, instr(s, ',') - 1) = 'first'"`, `"first || ' ' || last = 'jane doe'"`. Calls outside this allowlist (`json_extract`, `coalesce`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
+
 **Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
 
 **Top-N filtering**: use `"rank(<measure>) <= N"` (e.g. `"rank(revenue:sum) <= 10"`) — dialect-portable and auto-promoted to a post-filter on the outer query. Raw `OVER (...)` SQL inside a filter or `ModelMeasure.formula` is rejected with an actionable error. Filtering on a `Column` whose `sql` contains a window function is also rejected (DEV-1369): use `rank()` / `dense_rank()` / `percent_rank()` / `ntile(n=<N>)` for top-N, or factor the windowed expression into an earlier stage of a multi-stage `source_queries` model.

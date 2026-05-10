@@ -984,7 +984,7 @@ class TestCollectNeededPathsExtraAggNames:
             time_dimensions=[],
             measures=[],
             cross_model_measures=[],
-            processed_filters=["custom_total(revenue) > 100"],
+            processed_filters=[("custom_total(revenue) > 100", "dsl")],
             extra_agg_names=frozenset({"custom_total"}),
         )
         # No cross-model references → empty paths
@@ -1007,7 +1007,7 @@ class TestCollectNeededPathsExtraAggNames:
             time_dimensions=[],
             measures=[],
             cross_model_measures=[],
-            processed_filters=["customers.total:custom_total > 100"],
+            processed_filters=[("customers.total:custom_total > 100", "dsl")],
             extra_agg_names=frozenset({"custom_total"}),
         )
         # Should detect the "customers" join path from the dotted column reference
@@ -1088,3 +1088,89 @@ class TestPlaceholderLeakRegression:
         names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
         assert ("*", "count") in names
         assert ("temperature_c", "max") in names
+
+
+class TestStringHygieneFilters:
+    """DEV-1378: lowercase string-hygiene scalar functions accepted inline
+    in Mode B (DSL) filters: ``lower``, ``upper``, ``trim``, ``replace``,
+    ``substr``, ``instr``, ``length``, ``concat``. The SQL ``||``
+    operator is rewritten to ``concat(...)`` by ``_preprocess_concat``.
+    """
+
+    @pytest.mark.parametrize("op", ["lower", "upper", "trim", "length"])
+    def test_unary_op_round_trips(self, op: str) -> None:
+        pf = parse_filter(f"{op}(name) = 'eu'")
+        assert pf.sql == f"{op}(name) = 'eu'"
+        assert "name" in pf.columns
+
+    def test_replace_three_arg(self) -> None:
+        pf = parse_filter("replace(x, ',', '') = 'foo'")
+        assert pf.sql == "replace(x, ',', '') = 'foo'"
+        assert "x" in pf.columns
+
+    def test_substr_three_arg(self) -> None:
+        pf = parse_filter("substr(s, 1, 5) = 'abcde'")
+        assert pf.sql == "substr(s, 1, 5) = 'abcde'"
+        assert "s" in pf.columns
+
+    def test_substr_two_arg(self) -> None:
+        pf = parse_filter("substr(s, 3) = 'abc'")
+        assert pf.sql == "substr(s, 3) = 'abc'"
+
+    def test_instr_with_string_literal(self) -> None:
+        pf = parse_filter("instr(s, ',') > 0")
+        assert pf.sql == "instr(s, ',') > 0"
+        assert "s" in pf.columns
+
+    def test_concat_explicit_call(self) -> None:
+        pf = parse_filter("concat(a, b, c) = 'abc'")
+        assert pf.sql == "concat(a, b, c) = 'abc'"
+        assert {"a", "b", "c"}.issubset(set(pf.columns))
+
+    def test_nested_length_replace(self) -> None:
+        pf = parse_filter("length(replace(x, ',', '')) > 0")
+        assert pf.sql == "length(replace(x, ',', '')) > 0"
+        assert "x" in pf.columns
+
+    def test_substr_instr_pairing(self) -> None:
+        # Canonical "first delimited token" pattern from the issue.
+        pf = parse_filter("substr(s, 1, instr(s, ',') - 1) = 'first'")
+        assert pf.sql == "substr(s, 1, instr(s, ',') - 1) = 'first'"
+
+    def test_pipe_pipe_two_operands(self) -> None:
+        pf = parse_filter("a || b = 'foo'")
+        assert pf.sql == "concat(a, b) = 'foo'"
+        assert {"a", "b"}.issubset(set(pf.columns))
+
+    def test_pipe_pipe_chain_three_operands(self) -> None:
+        # Chained `||` folds into a flat n-ary concat.
+        pf = parse_filter("a || b || c = 'foo'")
+        assert pf.sql == "concat(a, b, c) = 'foo'"
+
+    def test_pipe_pipe_no_spaces(self) -> None:
+        pf = parse_filter("a||b = 'foo'")
+        assert pf.sql == "concat(a, b) = 'foo'"
+
+    def test_pipe_pipe_with_function_call_operands(self) -> None:
+        pf = parse_filter("lower(name) || ' ' || trim(addr) = 'eu london'")
+        assert pf.sql == "concat(lower(name), ' ', trim(addr)) = 'eu london'"
+
+    def test_pipe_pipe_preserves_string_literal(self) -> None:
+        # `||` inside a string literal must NOT be rewritten.
+        pf = parse_filter("note = 'a||b'")
+        assert pf.sql == "note = 'a||b'"
+
+    def test_function_name_preserved_in_string_literal(self) -> None:
+        pf = parse_filter("note = 'lower(x)'")
+        assert pf.sql == "note = 'lower(x)'"
+
+    def test_uppercase_function_name_rejected(self) -> None:
+        # Casing is lowercase-only — consistent with existing transform names.
+        with pytest.raises(ValueError, match="Unknown filter function 'LOWER'"):
+            parse_filter("LOWER(name) = 'eu'")
+
+    def test_substring_synonym_rejected(self) -> None:
+        # The canonical name is ``substr`` (SQLite spelling); ``substring``
+        # is an unknown DSL function.
+        with pytest.raises(ValueError, match="Unknown filter function 'substring'"):
+            parse_filter("substring(s, 1, 5) = 'abcde'")

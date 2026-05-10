@@ -142,6 +142,107 @@ class TestSqlModeAcceptance:
         assert "IS NULL" in model.filters[0].upper()
 
 
+class TestSqlModeRuntime:
+    """DEV-1378: Mode A SQL filters (``Column.filter`` /
+    ``SlayerModel.filters``) must not just construct cleanly — they
+    have to flow through enrichment without the DSL parser rejecting
+    arbitrary SQL function calls. Before DEV-1378 the construction
+    tests passed but the engine failed at first query against any
+    such model.
+    """
+
+    async def test_model_filter_with_json_extract_enriches(self) -> None:
+        model = SlayerModel(
+            name="m",
+            sql_table="t",
+            data_source="test",
+            filters=["json_extract(metadata, '$.active') = 1"],
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="amount:sum")],
+        )
+        # Bug under DEV-1378: this raised "Unknown filter function
+        # 'json_extract'" at enrichment time. Post-fix, it enriches.
+        enriched = await enrich_query(
+            query=query,
+            model=model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        # The model filter is preserved on the enriched query.
+        filter_sqls = [f.sql for f in enriched.filters]
+        assert any("json_extract" in fs.lower() for fs in filter_sqls)
+
+    async def test_column_filter_with_lower_enriches(self) -> None:
+        model = SlayerModel(
+            name="m",
+            sql_table="t",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(
+                    name="active_amount",
+                    sql="amount",
+                    filter="lower(status) = 'active'",
+                    type=DataType.DOUBLE,
+                ),
+                Column(name="status", sql="status", type=DataType.TEXT),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="active_amount:sum")],
+        )
+        enriched = await enrich_query(
+            query=query,
+            model=model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        # The filter goes onto the measure (CASE WHEN wrapper).
+        amt_measure = next(m for m in enriched.measures if m.alias.endswith("active_amount_sum"))
+        assert amt_measure.filter_sql is not None
+        assert "lower" in amt_measure.filter_sql.lower()
+
+    async def test_model_filter_with_double_underscore_join_path_enriches(self) -> None:
+        # ``customers__regions.name`` is a ``__``-delimited join path —
+        # parse_sql_predicate must preserve it as one column ref so the
+        # downstream join detection in _scan_filter_column_ref still
+        # recognises the path. This test exercises only the parse +
+        # enrichment path; the actual join resolution requires a richer
+        # fixture covered by the integration tier.
+        model = SlayerModel(
+            name="m",
+            sql_table="t",
+            data_source="test",
+            filters=["customers__regions.name = 'EU'"],
+            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+        )
+        query = SlayerQuery(
+            source_model="m",
+            measures=[ModelMeasure(formula="*:count")],
+        )
+        # No real join target on this minimal fixture, so the join
+        # walker resolves nothing — we just need the filter parse to
+        # not raise.
+        enriched = await enrich_query(
+            query=query,
+            model=model,
+            resolve_dimension_via_joins=_noop_async,
+            resolve_cross_model_measure=_noop_async,
+            resolve_join_target=_noop_async,
+        )
+        filter_sqls = [f.sql for f in enriched.filters]
+        assert any("customers__regions.name" in fs for fs in filter_sqls)
+
+
 class TestSqlModeRejection:
     """DSL constructs (aggregation colon, transforms, OVER) are rejected on
     the model side. SQL is free, but it cannot reach into the DSL."""

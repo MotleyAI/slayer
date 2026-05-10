@@ -38,7 +38,6 @@ from slayer.core.formula import (
     ArithmeticField,
     MixedArithmeticField,
     TransformField,
-    parse_filter,
     parse_formula,
 )
 from slayer.core.models import (
@@ -47,6 +46,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
+from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.ingestion import (
     _safe_get_columns,
     _safe_get_pk_constraint,
@@ -548,12 +548,13 @@ def _measure_formula_refs(
 
 
 def _filter_refs(filter_str: str) -> List[str]:
-    """Best-effort: return list of column references in a filter string.
+    """Best-effort: return list of column references in a SQL-mode filter.
 
-    Returns ``[]`` on parse failure.
+    Used to scan ``Column.filter`` / ``SlayerModel.filters`` strings (Mode A
+    SQL — DEV-1369). Returns ``[]`` on parse failure.
     """
     try:
-        pf = parse_filter(filter_str)
+        pf = parse_sql_predicate(filter_str)
     except Exception:
         return []
     return list(pf.columns)

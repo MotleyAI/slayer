@@ -26,6 +26,7 @@ from slayer.core.formula import (
     AggregatedMeasureRef,
     ArithmeticField,
     MixedArithmeticField,
+    ParsedFilter,
     RANK_FAMILY_TRANSFORMS,
     TIME_TRANSFORMS,
     TransformField,
@@ -47,6 +48,7 @@ from slayer.engine.enriched import (
     EnrichedTimeDimension,
     EnrichedTransform,
 )
+from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
@@ -331,15 +333,16 @@ async def enrich_query(
             if "." not in explicit_time_col:
                 explicit_time_col = f"{model.name}.{explicit_time_col}"
 
-        # Resolve measure-level filter
+        # Resolve measure-level filter. ``Column.filter`` is Mode A SQL
+        # (DEV-1369 / DEV-1378): arbitrary SQL function calls
+        # (``json_extract``, ``coalesce``, ``CASE WHEN``, dialect-specific
+        # operators) flow through; DSL constructs (aggregation colon
+        # syntax, transform calls, ``OVER``) were rejected at construction
+        # by ``parse_sql_predicate``.
         filter_sql = None
         filter_columns: List[str] = []
         if measure_def and measure_def.filter:
-            parsed = parse_filter(
-                measure_def.filter,
-                extra_agg_names=custom_agg_names,
-                named_measures=named_measures,
-            )
+            parsed = parse_sql_predicate(measure_def.filter)
             resolved = await resolve_filter_columns(
                 parsed_filters=[parsed],
                 model=model,
@@ -348,6 +351,7 @@ async def enrich_query(
                 named_queries=named_queries,
                 resolve_model=resolve_model,
                 dialect=dialect,
+                strict=False,
             )
             filter_sql = resolved[0].sql
             filter_columns = list(resolved[0].columns)
@@ -817,9 +821,15 @@ async def enrich_query(
         item.column.name = canonical
 
     # --- Validate model filters ---
+    # DEV-1378: Mode A model filters get parsed via ``parse_sql_predicate``
+    # (the SQL-mode validator) so arbitrary SQL function calls
+    # (``json_extract``, ``coalesce``, ``CASE WHEN``, dialect-specific
+    # operators) flow through unchanged. The construction-time validator
+    # at ``slayer/core/models.py:412`` already rejected DSL constructs.
     measure_names_set = {m.name for m in measures}
+    parsed_model_filters: List[ParsedFilter] = []
     for mf in model.filters:
-        parsed_mf = parse_filter(mf, extra_agg_names=custom_agg_names)
+        parsed_mf = parse_sql_predicate(mf)
         for col in parsed_mf.columns:
             if col in measure_names_set:
                 raise ValueError(
@@ -827,9 +837,12 @@ async def enrich_query(
                     f"Model filters can only reference table columns (WHERE). "
                     f"Use query-level filters for measure conditions."
                 )
+        parsed_model_filters.append(parsed_mf)
 
     # --- Process filters ---
-    # Apply variable substitution to query-level filters (not model-level)
+    # Apply variable substitution to query-level filters (not model-level —
+    # SQL-mode filters are constructed before the query runs and don't see
+    # query-time variable substitution).
     query_filters = list(query.filters or [])
     if query.variables and query_filters:
         from slayer.core.query import substitute_variables
@@ -838,10 +851,13 @@ async def enrich_query(
             substitute_variables(filter_str=f, variables=query.variables) for f in query_filters
         ]
 
-    all_filter_strs = list(model.filters) + query_filters
-    processed_filters = []
+    # Transform extraction runs only on Mode B (DSL) query filters. Model
+    # filters are SQL mode — they don't carry SLayer transforms (rejected
+    # at construction by ``parse_sql_predicate``) and don't go through
+    # ``_preprocess_like`` / ``_preprocess_agg_refs``.
+    processed_query_filters: List[str] = []
     ft_counter = [0]
-    for f_str in all_filter_strs:
+    for f_str in query_filters:
         rewritten, extra_fields = extract_filter_transforms(
             f_str, counter=ft_counter, extra_agg_names=custom_agg_names,
             named_measures=named_measures,
@@ -853,7 +869,16 @@ async def enrich_query(
                 named_measures=named_measures,
             )
             await _flatten_spec(spec, name)
-        processed_filters.append(rewritten)
+        processed_query_filters.append(rewritten)
+
+    # Mode-tagged filter list, in WHERE order: model filters first, then
+    # query filters. Used by the windowed-column scan, ``_resolve_joins`` /
+    # ``_collect_needed_paths``, and the ordering of the final
+    # ``EnrichedQuery.filters`` list.
+    processed_filters_with_mode: List[Tuple[str, str]] = (
+        [(mf, "sql") for mf in model.filters]
+        + [(qf, "dsl") for qf in processed_query_filters]
+    )
 
     has_first_or_last = any(m.aggregation in ("first", "last") for m in measures)
 
@@ -861,12 +886,13 @@ async def enrich_query(
     # window function used to auto-promote to a post-aggregation outer
     # WHERE. The escape hatch is removed — the rank-family transforms
     # (`rank` / `percent_rank` / `dense_rank` / `ntile`) cover top-N
-    # filtering in pure DSL.
+    # filtering in pure DSL. Applied to both modes — neither standard SQL
+    # nor SLayer DSL allows window functions in WHERE.
     _windowed_columns: Dict[str, str] = {
         c.name: c.sql for c in model.columns if c.sql and has_window_function(c.sql)
     }
     if _windowed_columns:
-        for f in processed_filters:
+        for f, _mode in processed_filters_with_mode:
             for col_name in _windowed_columns:
                 if re.search(rf"(?<!\w)\b{re.escape(col_name)}\b(?!\w)", f):
                     raise ValueError(
@@ -886,7 +912,7 @@ async def enrich_query(
         time_dimensions=time_dimensions,
         measures=measures,
         cross_model_measures=cross_model_measures,
-        processed_filters=processed_filters,
+        processed_filters=processed_filters_with_mode,
         named_queries=named_queries,
         resolve_join_target=resolve_join_target,
         extra_agg_names=custom_agg_names,
@@ -900,24 +926,45 @@ async def enrich_query(
     _query_aliases.update(m.name for m in measures if m.name)
     _query_aliases.update(t.name for t in enriched_transforms if t.name)
     _query_aliases.update(e.name for e in enriched_expressions if e.name)
-    parsed_filters = await resolve_filter_columns(
-        parsed_filters=[parse_filter(f, extra_agg_names=custom_agg_names) for f in processed_filters],
+    # DEV-1378: model filters and query filters resolve under different
+    # strictness rules. Model filters are SQL-mode and may reference any
+    # column on the underlying table even when not declared as a
+    # ``Column`` (``strict=False`` — see the comment block at
+    # ``resolve_filter_columns`` lines ~1652-1657). Query filters are
+    # DSL-mode and must strictly resolve to a Column / ModelMeasure /
+    # custom aggregation / canonical agg alias / query-level alias
+    # (``strict=True``). Run the resolver twice and concatenate.
+    resolved_model_filters = await resolve_filter_columns(
+        parsed_filters=parsed_model_filters,
         model=model,
         model_name=model_name_str,
         resolve_join_target=resolve_join_target,
         named_queries=named_queries,
         resolve_model=resolve_model,
         dialect=dialect,
-        # Both paths run strict resolution — bare names AND dotted paths
-        # must resolve. The difference is what to do when they don't:
-        # outer query raises (DEV-1367 — agents see translation-time
-        # error); the rerooted CTE drops the inherited unreachable filter
-        # so the cross-model post-process stays consistent with the new
-        # source's join graph.
+        strict=False,
+        drop_if_unresolved=False,
+        query_aliases=set(),
+    )
+    resolved_query_filters = await resolve_filter_columns(
+        parsed_filters=[
+            parse_filter(f, extra_agg_names=custom_agg_names)
+            for f in processed_query_filters
+        ],
+        model=model,
+        model_name=model_name_str,
+        resolve_join_target=resolve_join_target,
+        named_queries=named_queries,
+        resolve_model=resolve_model,
+        dialect=dialect,
+        # Strict resolution for DSL query filters — bare names AND dotted
+        # paths must resolve. Rerooted CTEs may drop unresolved filters
+        # (DEV-1367) via ``drop_if_unresolved``.
         strict=True,
         drop_if_unresolved=drop_unreachable_filters,
         query_aliases=_query_aliases,
     )
+    parsed_filters = list(resolved_model_filters) + list(resolved_query_filters)
 
     return EnrichedQuery(
         model_name=model_name_str,
@@ -1280,11 +1327,18 @@ def _collect_needed_paths(
     time_dimensions: List[EnrichedTimeDimension],
     measures: List[EnrichedMeasure],
     cross_model_measures: list,
-    processed_filters: List[str],
+    processed_filters: List[Tuple[str, str]],
     extra_agg_names: Optional[frozenset] = None,
     dialect: Optional[str] = None,
 ) -> Set[Tuple[str, ...]]:
-    """Extract ordered join-path tuples the query needs (including all prefixes)."""
+    """Extract ordered join-path tuples the query needs (including all prefixes).
+
+    ``processed_filters`` is a list of ``(filter_text, mode)`` tuples
+    where ``mode`` is ``"sql"`` for Mode A (model-side) filters and
+    ``"dsl"`` for Mode B (query-side) filters; each is parsed by the
+    matching parser so model filters with arbitrary SQL functions
+    don't trip the DSL allowlist (DEV-1378).
+    """
     paths: Set[Tuple[str, ...]] = set()
 
     for d in dimensions:
@@ -1306,8 +1360,11 @@ def _collect_needed_paths(
     # Scan filters for column references — dotted refs add their join
     # path directly; bare-name refs to derived local columns trigger a
     # walk of the column's SQL chain (DEV-1334).
-    for f_str in processed_filters:
-        parsed_f = parse_filter(f_str, extra_agg_names=extra_agg_names)
+    for f_str, mode in processed_filters:
+        if mode == "sql":
+            parsed_f = parse_sql_predicate(f_str)
+        else:
+            parsed_f = parse_filter(f_str, extra_agg_names=extra_agg_names)
         for col in parsed_f.columns:
             _scan_filter_column_ref(model=model, col=col, paths=paths, dialect=dialect)
 
@@ -1382,7 +1439,7 @@ async def _resolve_joins(
     time_dimensions: List[EnrichedTimeDimension],
     measures: List[EnrichedMeasure],
     cross_model_measures: list,
-    processed_filters: List[str],
+    processed_filters: List[Tuple[str, str]],
     named_queries: dict,
     resolve_join_target,
     extra_agg_names: Optional[frozenset] = None,
@@ -1495,7 +1552,11 @@ def extract_filter_transforms(
     """
     import ast as _ast
 
-    from slayer.core.formula import _expand_named_measures, _preprocess_agg_refs
+    from slayer.core.formula import (
+        _expand_named_measures,
+        _preprocess_agg_refs,
+        _preprocess_concat,
+    )
 
     if counter is None:
         counter = [0]
@@ -1510,6 +1571,8 @@ def extract_filter_transforms(
         raise ValueError(f"Filter '{filter_str}' {WINDOW_IN_FILTER_ERROR}")
     preprocessed = _rewrite_funcstyle_aggregations(filter_str, extra_agg_names)
     funcstyle_rewritten = preprocessed  # capture after funcstyle rewrite, before further preprocessing
+    # DEV-1378: rewrite SQL `||` to `<<` so AST parsing accepts the filter.
+    preprocessed = _preprocess_concat(preprocessed)
     preprocessed = _preprocess_like(preprocessed)
     # Preprocess colon syntax (e.g., "order_total:sum") into ast-safe placeholders
     preprocessed, agg_refs = _preprocess_agg_refs(preprocessed)
