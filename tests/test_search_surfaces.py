@@ -70,13 +70,15 @@ async def _call_mcp_tool(*, mcp, name: str, arguments: dict) -> str:  # NOSONAR(
 
 
 @pytest.mark.asyncio
-async def test_mcp_search_tool_returns_json_with_two_lists(
+async def test_mcp_search_tool_returns_json_with_three_lists(
     storage_with_corpus: StorageBackend,
 ) -> None:
     from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage_with_corpus)
     tools = await mcp.list_tools()
     assert any(t.name == "search" for t in tools)
+    # Old recall surface is gone.
+    assert not any(t.name == "recall_memories" for t in tools)
     result_text = await _call_mcp_tool(
         mcp=mcp,
         name="search",
@@ -84,12 +86,16 @@ async def test_mcp_search_tool_returns_json_with_two_lists(
             "entities": ["warehouse.orders.amount_paid"],
             "question": "gross refunds",
             "max_memories": 5,
+            "max_example_queries": 2,
             "max_entities": 5,
         },
     )
     payload = json.loads(result_text)
     assert "memories" in payload
+    assert "example_queries" in payload
     assert "entities" in payload
+    assert "resolved_input_entities" in payload
+    assert "warehouse.orders.amount_paid" in payload["resolved_input_entities"]
 
 
 @pytest.mark.asyncio
@@ -135,12 +141,20 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
         "entities": ["warehouse.orders.amount_paid"],
         "question": "refunds",
         "max_memories": 5,
+        "max_example_queries": 2,
         "max_entities": 5,
     })
     assert res.status_code == 200
     body = res.json()
     assert "memories" in body
+    assert "example_queries" in body
     assert "entities" in body
+    assert "resolved_input_entities" in body
+    # Recall endpoint is gone (FastAPI returns 405 because /memories/{id}
+    # captures the path with the wrong method, or 404 if no route matches).
+    assert client.post(
+        "/memories/recall", json={"about": ["warehouse.orders.amount_paid"]}
+    ).status_code in (404, 405)
 
 
 def test_rest_post_search_unknown_entity_returns_400(tmp_path) -> None:
@@ -210,6 +224,7 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
             "search",
             "--storage", storage_dir,
             "--entity", "warehouse.orders.amount_paid",
+            "--max-example-queries", "1",
             "--format", "json",
         ],
         monkeypatch, capsys,
@@ -217,6 +232,14 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
     assert code == 0
     payload = json.loads(out)
     assert "memories" in payload
+    assert "example_queries" in payload
+    assert "resolved_input_entities" in payload
+
+
+def test_cli_memory_recall_subcommand_removed(monkeypatch, capsys) -> None:
+    """`slayer memory recall` is gone — argparse should reject it."""
+    code, _ = _run_cli(["memory", "recall", "--help"], monkeypatch, capsys)
+    assert code != 0
 
 
 # ---------------------------------------------------------------------------
@@ -231,21 +254,32 @@ async def test_client_search_round_trip(
     """`SlayerClient(storage=...).search(...)` round-trips through the
     in-process ``SearchService`` and returns a populated ``SearchResponse``."""
     from slayer.client.slayer_client import SlayerClient
-    from slayer.search.service import EntityHit, MemoryHit, SearchResponse
+    from slayer.search.service import (
+        EntityHit,
+        ExampleQueryHit,
+        MemoryHit,
+        SearchResponse,
+    )
 
     assert hasattr(SlayerClient, "search")
+    # Old client method is gone.
+    assert not hasattr(SlayerClient, "recall_memories")
 
     client = SlayerClient(storage=storage_with_corpus)
     response = await client.search(
         entities=["warehouse.orders.amount_paid"],
         question="refunds",
+        max_example_queries=2,
     )
 
     assert isinstance(response, SearchResponse)
     assert isinstance(response.memories, list)
+    assert isinstance(response.example_queries, list)
     assert isinstance(response.entities, list)
     assert isinstance(response.warnings, list)
     assert all(isinstance(m, MemoryHit) for m in response.memories)
+    assert all(isinstance(e, ExampleQueryHit) for e in response.example_queries)
     assert all(isinstance(e, EntityHit) for e in response.entities)
     assert len(response.memories) >= 1
     assert "warehouse.orders.amount_paid" in response.memories[0].matched_entities
+    assert "warehouse.orders.amount_paid" in response.resolved_input_entities

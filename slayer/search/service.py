@@ -42,17 +42,31 @@ _OVER_FETCH_MULTIPLIER = 5
 
 
 class MemoryHit(BaseModel):
-    """A memory result. ``id`` is the integer memory id (suitable for
-    ``forget_memory(id=hit.id)``). ``score`` is always the
-    Reciprocal-Rank-Fusion score (``Σ 1 / (k + rank)``, ``k=60``); even
-    single-channel searches go through RRF, so the value is comparable
-    across channels but is not directly the raw BM25 / tantivy score."""
+    """A learning-only memory result (``Memory.query is None``). ``id`` is
+    the integer memory id (suitable for ``forget_memory(id=hit.id)``).
+    ``score`` is always the Reciprocal-Rank-Fusion score
+    (``Σ 1 / (k + rank)``, ``k=60``); even single-channel searches go
+    through RRF, so the value is comparable across channels but is not
+    directly the raw BM25 / tantivy score."""
 
     id: int
     score: float
     text: str
     matched_entities: List[str] = Field(default_factory=list)
-    query: Optional[SlayerQuery] = None
+
+
+class ExampleQueryHit(BaseModel):
+    """A query-bearing memory result (``Memory.query`` is set). Same id /
+    score / text shape as ``MemoryHit`` but always carries the attached
+    ``SlayerQuery``. Surfaces in ``SearchResponse.example_queries`` —
+    bulky reference material, capped independently from learning-only
+    memories so it cannot crowd them out."""
+
+    id: int
+    score: float
+    text: str
+    matched_entities: List[str] = Field(default_factory=list)
+    query: SlayerQuery
 
 
 class EntityHit(BaseModel):
@@ -67,7 +81,9 @@ class EntityHit(BaseModel):
 
 class SearchResponse(BaseModel):
     memories: List[MemoryHit] = Field(default_factory=list)
+    example_queries: List[ExampleQueryHit] = Field(default_factory=list)
     entities: List[EntityHit] = Field(default_factory=list)
+    resolved_input_entities: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -137,8 +153,11 @@ def _fuse_memory_hits(
     index_hits_by_memory_id: dict,
     canonical_input_entities: List[str],
     max_memories: int,
-) -> List["MemoryHit"]:
-    """RRF-fuse the two memory rankings and assemble the final list."""
+    max_example_queries: int,
+) -> tuple[List["MemoryHit"], List["ExampleQueryHit"]]:
+    """RRF-fuse the two memory rankings and partition into learning-only
+    (``MemoryHit``) vs query-bearing (``ExampleQueryHit``) lists, each
+    capped independently."""
     rankings: List[List[int]] = []
     if channel_1_ranking:
         rankings.append(channel_1_ranking)
@@ -148,24 +167,36 @@ def _fuse_memory_hits(
     fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
 
     wanted_set = set(canonical_input_entities)
-    out: List[MemoryHit] = []
-    for memory_id, score in fused_sorted[:max_memories]:
+    learnings: List[MemoryHit] = []
+    examples: List[ExampleQueryHit] = []
+    for memory_id, score in fused_sorted:
         mem = memory_by_id.get(memory_id)
         if mem is None:
             continue
         matched = sorted(wanted_set & set(mem.entities)) if wanted_set else []
-        out.append(MemoryHit(
-            id=memory_id,
-            score=score,
-            text=(
-                index_hits_by_memory_id[memory_id].text
-                if memory_id in index_hits_by_memory_id
-                else mem.learning
-            ),
-            matched_entities=matched,
-            query=mem.query,
-        ))
-    return out
+        text = (
+            index_hits_by_memory_id[memory_id].text
+            if memory_id in index_hits_by_memory_id
+            else mem.learning
+        )
+        if mem.query is None:
+            if len(learnings) < max_memories:
+                learnings.append(MemoryHit(
+                    id=memory_id, score=score, text=text,
+                    matched_entities=matched,
+                ))
+        else:
+            if len(examples) < max_example_queries:
+                examples.append(ExampleQueryHit(
+                    id=memory_id, score=score, text=text,
+                    matched_entities=matched, query=mem.query,
+                ))
+        if (
+            len(learnings) >= max_memories
+            and len(examples) >= max_example_queries
+        ):
+            break
+    return learnings, examples
 
 
 class SearchService:
@@ -181,10 +212,15 @@ class SearchService:
         query: Optional[Union[SlayerQuery, dict]] = None,
         question: Optional[str] = None,
         max_memories: int = 5,
+        max_example_queries: int = 2,
         max_entities: int = 5,
     ) -> SearchResponse:
         if max_memories < 0:
             raise ValueError(f"max_memories must be >= 0; got {max_memories}.")
+        if max_example_queries < 0:
+            raise ValueError(
+                f"max_example_queries must be >= 0; got {max_example_queries}."
+            )
         if max_entities < 0:
             raise ValueError(f"max_entities must be >= 0; got {max_entities}.")
 
@@ -194,13 +230,19 @@ class SearchService:
         channel_1_active = (entities is not None and len(entities) > 0) or query is not None
         question_active = bool(question and question.strip())
 
-        # Recency fallback for the all-empty case (mirrors recall_memories).
+        # Recency fallback for the all-empty case.
         if not channel_1_active and not question_active:
             return await self._recency_fallback(
-                max_memories=max_memories, warnings=warnings,
+                max_memories=max_memories,
+                max_example_queries=max_example_queries,
+                warnings=warnings,
             )
 
-        over_fetch = max(max_memories, max_entities) * _OVER_FETCH_MULTIPLIER
+        # Over-fetch must cover the worst case where every fused hit lands
+        # in the same bucket (all learnings, or all example queries).
+        over_fetch_budget = max(
+            max_memories + max_example_queries, max_entities,
+        ) * _OVER_FETCH_MULTIPLIER
 
         # Single memory-corpus fetch shared by both channels — avoids two
         # full scans when entities/query AND question are both supplied.
@@ -211,7 +253,7 @@ class SearchService:
         channel_1_memory_ranking, memory_by_id = self._run_channel_1(
             canonical_input_entities=canonical_input_entities,
             all_memories=all_memories,
-            over_fetch=over_fetch,
+            over_fetch=over_fetch_budget,
             channel_1_active=channel_1_active,
         )
         (
@@ -223,24 +265,29 @@ class SearchService:
             all_memories=all_memories,
             memory_by_id=memory_by_id,
             channel_1_memory_ranking=channel_1_memory_ranking,
-            over_fetch=over_fetch,
+            over_fetch=over_fetch_budget,
             question_active=question_active,
         )
 
-        memory_hits = _fuse_memory_hits(
+        memory_hits, example_query_hits = _fuse_memory_hits(
             channel_1_ranking=channel_1_memory_ranking,
             channel_2_ranking=channel_2_memory_ranking,
             memory_by_id=memory_by_id,
             index_hits_by_memory_id=index_hits_by_memory_id,
             canonical_input_entities=canonical_input_entities,
             max_memories=max_memories,
+            max_example_queries=max_example_queries,
         )
         entity_hits = [
             EntityHit(id=hit.id, kind=hit.kind, score=hit.score, text=hit.text)
             for hit in channel_2_entity_hits[:max_entities]
         ]
         return SearchResponse(
-            memories=memory_hits, entities=entity_hits, warnings=warnings,
+            memories=memory_hits,
+            example_queries=example_query_hits,
+            entities=entity_hits,
+            resolved_input_entities=canonical_input_entities,
+            warnings=warnings,
         )
 
     async def _resolve_inputs(
@@ -272,25 +319,47 @@ class SearchService:
         return _dedup(canonical), _dedup(warnings)
 
     async def _recency_fallback(
-        self, *, max_memories: int, warnings: List[str],
+        self,
+        *,
+        max_memories: int,
+        max_example_queries: int,
+        warnings: List[str],
     ) -> SearchResponse:
-        """Empty-input branch: return the newest ``max_memories`` memories."""
+        """Empty-input branch: partition all memories by recency into the
+        learning-only bucket (``memories``, capped by ``max_memories``)
+        and the query-bearing bucket (``example_queries``, capped by
+        ``max_example_queries``)."""
         warnings.append(
             "no entities, query, or question supplied; returning "
             "newest memories by recency."
         )
         recency_memories = await self._storage.list_memories(entities=None)
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
-        recency_memories = recency_memories[:max_memories]
+        memory_hits: List[MemoryHit] = []
+        example_query_hits: List[ExampleQueryHit] = []
+        for m in recency_memories:
+            if m.query is None:
+                if len(memory_hits) < max_memories:
+                    memory_hits.append(MemoryHit(
+                        id=m.id, score=0.0, text=m.learning,
+                        matched_entities=[],
+                    ))
+            else:
+                if len(example_query_hits) < max_example_queries:
+                    example_query_hits.append(ExampleQueryHit(
+                        id=m.id, score=0.0, text=m.learning,
+                        matched_entities=[], query=m.query,
+                    ))
+            if (
+                len(memory_hits) >= max_memories
+                and len(example_query_hits) >= max_example_queries
+            ):
+                break
         return SearchResponse(
-            memories=[
-                MemoryHit(
-                    id=m.id, score=0.0, text=m.learning,
-                    matched_entities=[], query=m.query,
-                )
-                for m in recency_memories
-            ],
+            memories=memory_hits,
+            example_queries=example_query_hits,
             entities=[],
+            resolved_input_entities=[],
             warnings=warnings,
         )
 

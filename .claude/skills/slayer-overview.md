@@ -31,7 +31,8 @@ Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`, `set_datasource_priority`
 Ingestion: `ingest_datasource_models`
 Schema drift: `validate_models` (read-only diff against live schema; surfaces `SchemaDriftError` cleanups)
-Memory: `save_memory`, `forget_memory`, `recall_memories` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
+Memory write side: `save_memory`, `forget_memory` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
+Search: `search` (two-channel: entity-overlap BM25 over memories + tantivy full-text over memories ∪ entities; partitions query-bearing memories into `example_queries` — see [search.md](../../docs/concepts/search.md))
 
 ## Package Structure
 

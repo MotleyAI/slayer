@@ -3,21 +3,21 @@
 SLayer ships a `search` tool that lets agents find both **memories** and
 **entities** (datasources, models, columns, named measures, custom
 aggregations) using two parallel retrieval channels merged by Reciprocal
-Rank Fusion.
+Rank Fusion. It is the **only** retrieval surface — there is no separate
+recall tool.
 
-This complements [`recall_memories`](memories.md), which is memory-only
-and uses entity-overlap BM25. `search` is broader: when you don't yet
-know which entity to look at, the tantivy full-text channel surfaces
-entities matching your natural-language question; when you have entity
-references in hand, the BM25 channel pulls back the most relevant
-memories.
+When you have entity references in hand, the BM25 channel pulls back
+the most relevant memories. When you don't yet know which entity to
+look at, the tantivy full-text channel surfaces entities matching your
+natural-language question. Both run together when both inputs are
+supplied.
 
 ## The two retrieval channels
 
 ### Channel 1 — entity-overlap BM25 over memories
 
-Same path as `recall_memories`. Inputs are resolved to canonical entity
-strings (`<ds>`, `<ds>.<model>`, or `<ds>.<model>.<leaf>` — see
+Inputs are resolved to canonical entity strings (`<ds>`, `<ds>.<model>`,
+or `<ds>.<model>.<leaf>` — see
 [memories.md](memories.md#the-canonical-entity-form)) and scored against
 each memory's stored entity tags via `BM25Plus`. Memories with zero
 overlap are excluded.
@@ -64,6 +64,7 @@ search(
     query: Optional[Union[SlayerQuery, dict]] = None,
     question: Optional[str] = None,
     max_memories: int = 5,
+    max_example_queries: int = 2,
     max_entities: int = 5,
 ) -> SearchResponse
 ```
@@ -79,12 +80,17 @@ search(
 
 | `entities`/`query` | `question` | Result |
 |---|---|---|
-| set | set | Both channels run. Memories RRF-fused. Entities from tantivy only. |
-| set | unset/empty | Channel 1 only. `entities=[]`. |
-| unset/empty | set | Channel 2 only. Memories from tantivy memory subset; entities from tantivy entity subset. |
-| unset/empty | unset/empty | Recency fallback: newest `max_memories` memories with a warning. |
+| set | set | Both channels run. Memories RRF-fused; query-bearing memories partitioned out to `example_queries`. Entities from tantivy only. |
+| set | unset/empty | Channel 1 only. `entities=[]`. Memories partitioned by `query` presence. |
+| unset/empty | set | Channel 2 only. Memories from tantivy memory subset (partitioned); entities from tantivy entity subset. |
+| unset/empty | unset/empty | Recency fallback: newest `max_memories` learning-only memories + newest `max_example_queries` query-bearing memories, with a warning. |
 
 ### Response shape
+
+Memories are partitioned by `Memory.query is None`: learning-only
+memories land in `memories`, query-bearing memories in
+`example_queries`. The two lists are capped independently so a few
+bulky example queries cannot crowd out small learning-only notes.
 
 ```python
 class MemoryHit(BaseModel):
@@ -93,7 +99,13 @@ class MemoryHit(BaseModel):
     text: str                        # full indexed text (no truncation)
     matched_entities: List[str]      # canonical entities that channel-1 input
                                      # overlapped with the memory's tags
-    query: Optional[SlayerQuery]     # set when the memory was saved with a query
+
+class ExampleQueryHit(BaseModel):
+    id: int                          # memory id
+    score: float                     # RRF-fused
+    text: str                        # full indexed text
+    matched_entities: List[str]
+    query: SlayerQuery               # always set on this hit type
 
 class EntityHit(BaseModel):
     id: str                          # canonical entity string
@@ -102,8 +114,10 @@ class EntityHit(BaseModel):
     text: str                        # full indexed text (no truncation)
 
 class SearchResponse(BaseModel):
-    memories: List[MemoryHit]
+    memories: List[MemoryHit]            # learning-only (query is None)
+    example_queries: List[ExampleQueryHit]   # query-bearing
     entities: List[EntityHit]
+    resolved_input_entities: List[str]   # echo of the resolver output
     warnings: List[str]
 ```
 

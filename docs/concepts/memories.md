@@ -5,20 +5,18 @@ SLayer carries an agent-memory layer alongside the semantic layer. A
 the schema, optionally bundled with an example `SlayerQuery`. Memories
 are indexed by the **canonical entities** they reference (models,
 columns, named measures, custom aggregations), so before issuing a new
-query an agent can call `recall_memories` and pull back every note or
-example previously saved against the entities in its draft.
-
-For natural-language discovery (when you don't yet know the canonical
-entity to look at), use [`search`](search.md) instead — it adds a
-tantivy full-text channel over both memories and entities.
+query an agent can call [`search`](search.md) and pull back every note
+or example previously saved against the entities in its draft (plus
+canonical entity matches via tantivy full-text — see the search docs).
 
 A memory has two flavours:
 
 - **Learning** — a memory with no attached query. Surfaces in
-  `inspect_model` and in the `learnings` list of `recall_memories`.
+  `inspect_model` and in the `memories` list of `search`.
 - **Query-bearing** — a memory whose `query` field carries a
-  `SlayerQuery`. Surfaces only in the `queries` list of
-  `recall_memories`.
+  `SlayerQuery`. Surfaces only in the `example_queries` list of
+  `search` (capped independently from `memories` so bulky examples
+  cannot crowd out small notes).
 
 The split is implicit: pass an entity list to `save_memory` to record
 a learning; pass a `SlayerQuery` and the memory carries that query.
@@ -53,7 +51,11 @@ Equality is plain string equality on the canonical form, so two
 callers using `revenue:sum` and `mydb.orders.revenue` reach the same
 record.
 
-## The three MCP tools
+## The two write-side MCP tools
+
+Memory retrieval is part of [`search`](search.md) (one tool covers
+both memories and canonical entity discovery). This page covers only
+the write side.
 
 ### `save_memory(learning, linked_entities)`
 
@@ -97,41 +99,14 @@ Delete by id. Accepts a positive int (the `memory_id` returned by
 `save_memory`); decimal-string forms (`"42"`) are also accepted. Raises
 a friendly error if the id is invalid or the memory does not exist.
 
-### `recall_memories(about, max_learnings=None, max_queries=2)`
-
-Look up memories by entity overlap. `about` accepts the same union as
-`save_memory`'s `linked_entities`: a list of entity strings, or a
-`SlayerQuery` (dict). Empty input or zero-extracted entities returns
-all memories ranked by recency (newest first) with an explanatory
-warning.
-
-Memories are ranked by BM25 over their canonical entity sets, so a
-memory tagged precisely against the query entities outranks one with
-a long entity list that overlaps incidentally. Memories with zero
-overlap are dropped. Each `RecallHit` carries the BM25 `score: float`
-(higher is better) for inspection or downstream re-ranking.
-
-The result splits memories without an attached query (`learnings`)
-from those with one (`queries`). Each list is capped independently by
-`max_learnings` / `max_queries`.
-
-```json
-{
-  "about": {
-    "source_model": "orders",
-    "measures": [{"formula": "amount:sum"}]
-  }
-}
-```
-
 ## Recommended agent workflow
 
 1. **Plan the query.** Decide the source model and the columns / measures you
    intend to use.
-2. **Call `recall_memories` first.** Pass either the entity list or the
-   draft query itself. Read the returned learnings and consider any
-   matching saved queries. They may flag pitfalls you'd otherwise hit
-   (NULL handling, units, deprecated columns, etc.).
+2. **Call `search` first.** Pass the entities you're considering (and/or
+   the draft query, and/or a free-text `question`). Read the returned
+   `memories` and `example_queries` — they may flag pitfalls you'd
+   otherwise hit (NULL handling, units, deprecated columns, etc.).
 3. **Issue the actual query** via the `query` tool.
 4. **Save what you learn.** When you discover a non-obvious quirk
    (encoding, NULL semantics, business rule), call `save_memory`
@@ -143,20 +118,24 @@ from those with one (`queries`). Each list is capped independently by
 every memory **whose `query` is `None`** and whose stored entity set
 overlaps the model's own entity set (the model itself, every column,
 every named measure, every custom aggregation). Query-bearing memories
-appear only via `recall_memories`. The section is auto-pruned when
-there are no matches — no header is emitted in that case.
+appear only via `search` (in the `example_queries` bucket). The
+section is auto-pruned when there are no matches — no header is
+emitted in that case.
 
 ## Surfaces
 
-The memory tools are also available outside MCP:
+The memory write-side tools are also available outside MCP:
 
-- **REST**: `POST /memories`, `DELETE /memories/{id}`, `POST /memories/recall`.
+- **REST**: `POST /memories`, `DELETE /memories/{id}`.
 - **CLI**: `slayer memory save --learning ... --entities ...`,
-  `slayer memory forget <id>`, `slayer memory recall --about ...`.
+  `slayer memory forget <id>`.
 - **Python client**: `SlayerClient.save_memory(...)`,
-  `forget_memory(...)`, `recall_memories(...)` — all async; the local-
-  mode client (constructed with `storage=`) skips HTTP and goes
-  through `MemoryService` directly.
+  `forget_memory(...)` — all async; the local-mode client
+  (constructed with `storage=`) skips HTTP and goes through
+  `MemoryService` directly.
+
+For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
+/search`, CLI `slayer search`, `SlayerClient.search`).
 
 ## Storage layout
 

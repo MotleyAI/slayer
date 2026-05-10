@@ -883,7 +883,7 @@ def create_mcp_server(storage: StorageBackend):
 
         Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
 
-        Before calling this tool, run ``recall_memories`` first, supplying the entities you're thinking of using (or the query itself via the ``about`` arg). Read the returned learnings and consider any matching saved queries before formulating the final query.
+        Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
         """
         data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
@@ -2499,9 +2499,9 @@ def create_mcp_server(storage: StorageBackend):
           ``source_model``, ``dimensions``, ``time_dimensions``,
           ``measures``, and ``filters``; resolution warnings are
           non-fatal. The query itself is stored alongside the
-          learning, so the memory surfaces in
-          ``recall_memories``'s ``queries`` list (vs the
-          ``learnings`` list for entity-list memories).
+          learning, so the memory surfaces in ``search``'s
+          ``example_queries`` list (vs the ``memories`` list for
+          entity-list memories).
 
         Returns the assigned ``memory_id`` (a positive int), the
         canonical entities stored, and any non-fatal warnings.
@@ -2558,58 +2558,6 @@ def create_mcp_server(storage: StorageBackend):
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
-    @mcp.tool()
-    async def recall_memories(
-        about: Any,
-        max_learnings: Optional[int] = None,
-        max_queries: Optional[int] = 2,
-    ) -> str:
-        """Look up agent memories by BM25 over canonical entity sets.
-
-        Call this BEFORE ``query`` to surface any notes or example
-        queries previously saved against the entities you're
-        considering.
-
-        ``about`` accepts either:
-
-        * a list of entity reference strings — each is resolved
-          strictly; resolution failures raise.
-        * a ``SlayerQuery`` (dict) — the entity extractor walks the
-          query and warnings are non-fatal.
-
-        Empty input (``about=[]`` or a query with no extractable
-        entities) returns all memories ranked by recency (newest first)
-        with an explanatory warning.
-
-        Stored memories are ranked by BM25 over their canonical entity
-        sets, so a memory tagged precisely against the query entities
-        outranks one with a long entity list that overlaps incidentally.
-        Memories with zero overlap are dropped. The result splits
-        memories without an attached query (``learnings``) from those
-        with one (``queries``); each list is capped independently.
-
-        Args:
-            about: List of entity reference strings, or an inline
-                ``SlayerQuery`` payload.
-            max_learnings: Cap on returned learning-shaped memories.
-                ``None`` = all.
-            max_queries: Cap on returned query-bearing memories.
-                Default ``2``.
-        """
-        try:
-            response = await memory_service.recall_memories(
-                about=about,
-                max_learnings=max_learnings,
-                max_queries=max_queries,
-            )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
-            return _format_resolution_error(exc)
-        return response.model_dump_json(indent=2)
-
     # ---------- DEV-1375: semantic search -----------------------------
 
     search_service = SearchService(storage=storage)
@@ -2620,9 +2568,14 @@ def create_mcp_server(storage: StorageBackend):
         query: Any = None,
         question: Optional[str] = None,
         max_memories: int = 5,
+        max_example_queries: int = 2,
         max_entities: int = 5,
     ) -> str:
         """Two-channel semantic search over memories + canonical entities.
+
+        Call this BEFORE ``query`` to surface any notes or example
+        queries previously saved against the entities you're
+        considering.
 
         Channel 1 (entity-overlap BM25 over memories): runs when
         ``entities`` and/or ``query`` is supplied. Memories whose
@@ -2634,17 +2587,25 @@ def create_mcp_server(storage: StorageBackend):
         non-hidden column / named measure / aggregation).
 
         Memory hits from both channels are fused via Reciprocal Rank
-        Fusion (k=60). Entity hits are channel-2 only.
+        Fusion (k=60). Entity hits are channel-2 only. Query-bearing
+        memories (those saved with an attached ``SlayerQuery``) are
+        partitioned into ``example_queries`` and capped independently
+        from learning-only ``memories`` so bulky example queries cannot
+        crowd out small notes.
 
         Empty input (no entities, no query, no question) returns the
-        newest ``max_memories`` memories with a warning.
+        newest ``max_memories`` learning-only memories and the newest
+        ``max_example_queries`` query-bearing memories, with a warning.
 
         Args:
             entities: Canonical entity reference strings.
             query: Optional ``SlayerQuery`` (dict). Entities are
                 auto-extracted to broaden channel-1 input.
             question: Free-text query for the tantivy full-text channel.
-            max_memories: Cap on returned memory hits (default 5).
+            max_memories: Cap on returned learning-only memory hits
+                (default 5).
+            max_example_queries: Cap on returned query-bearing memory
+                hits (default 2 — they're bulky).
             max_entities: Cap on returned entity hits (default 5).
         """
         try:
@@ -2653,6 +2614,7 @@ def create_mcp_server(storage: StorageBackend):
                 query=query,
                 question=question,
                 max_memories=max_memories,
+                max_example_queries=max_example_queries,
                 max_entities=max_entities,
             )
         except (

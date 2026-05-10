@@ -2,17 +2,20 @@
 
 Covers every input combination from the spec's behaviour matrix:
 
-| entities/query | question | result                                           |
-| set            | set      | both channels; RRF memories + tantivy entities   |
-| set            | unset    | channel 1 only; entities=[]                      |
-| unset          | set      | channel 2 only (memory subset + entity subset)   |
-| unset          | unset    | recency fallback (newest max_memories memories)  |
+| entities/query | question | result                                                        |
+| set            | set      | both channels; RRF memories + example_queries + tantivy ents  |
+| set            | unset    | channel 1 only; entities=[]                                   |
+| unset          | set      | channel 2 only (memory subset + entity subset)                |
+| unset          | unset    | recency fallback (newest memories + example_queries)          |
 
 Also pins:
 * Resolver errors propagate.
 * Warnings are aggregated and deduped.
-* `max_memories` / `max_entities` slice the final lists.
-* `recall_memories` is left untouched (no shared service call).
+* ``max_memories`` / ``max_example_queries`` / ``max_entities`` slice the
+  three return lists independently.
+* Query-bearing memories surface only via ``example_queries``; learning-only
+  memories surface only via ``memories``.
+* ``resolved_input_entities`` echoes the resolver output to the caller.
 """
 
 from __future__ import annotations
@@ -24,8 +27,15 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.search.service import EntityHit, SearchResponse, SearchService
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.query import SlayerQuery
+from slayer.search.service import (
+    EntityHit,
+    ExampleQueryHit,
+    MemoryHit,
+    SearchResponse,
+    SearchService,
+)
 from slayer.storage.base import StorageBackend, resolve_storage
 
 
@@ -190,6 +200,8 @@ async def test_negative_caps_rejected(service: SearchService) -> None:
         await service.search(question="x", max_memories=-1)
     with pytest.raises(ValueError):
         await service.search(question="x", max_entities=-1)
+    with pytest.raises(ValueError):
+        await service.search(question="x", max_example_queries=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -284,3 +296,169 @@ async def test_memory_appearing_in_both_channels_outranks_single_channel(
             None,
         )
         assert idx_1 is not None
+
+
+# ---------------------------------------------------------------------------
+# resolved_input_entities echo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolved_input_entities_populated_for_entity_input(
+    service: SearchService,
+) -> None:
+    response = await service.search(
+        entities=["warehouse.orders.amount_paid"],
+    )
+    assert "warehouse.orders.amount_paid" in response.resolved_input_entities
+
+
+@pytest.mark.asyncio
+async def test_resolved_input_entities_populated_for_query_input(
+    service: SearchService,
+) -> None:
+    response = await service.search(
+        query={
+            "source_model": "orders",
+            "measures": [{"formula": "amount_paid:sum"}],
+        },
+    )
+    # Both the source model and the referenced column should be resolved.
+    assert "warehouse.orders" in response.resolved_input_entities
+    assert "warehouse.orders.amount_paid" in response.resolved_input_entities
+
+
+@pytest.mark.asyncio
+async def test_resolved_input_entities_combined_input_dedupes(
+    service: SearchService,
+) -> None:
+    response = await service.search(
+        entities=["warehouse.orders.amount_paid"],
+        query={
+            "source_model": "orders",
+            "measures": [{"formula": "amount_paid:sum"}],
+        },
+    )
+    # `amount_paid` appears via both inputs but should not duplicate.
+    matches = [
+        e for e in response.resolved_input_entities
+        if e == "warehouse.orders.amount_paid"
+    ]
+    assert len(matches) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolved_input_entities_empty_on_recency_fallback(
+    service: SearchService,
+) -> None:
+    response = await service.search(max_memories=2)
+    assert response.resolved_input_entities == []
+
+
+# ---------------------------------------------------------------------------
+# example_queries: query-bearing memories surface separately
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def storage_with_query_memories(
+    storage_with_corpus: StorageBackend,
+) -> StorageBackend:
+    """Add three query-bearing memories to the base corpus."""
+    for i in range(3):
+        await storage_with_corpus.save_memory(
+            learning=f"example query {i}",
+            entities=["warehouse.orders.amount_paid"],
+            query=SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="amount_paid:sum")],
+            ),
+        )
+    return storage_with_corpus
+
+
+@pytest_asyncio.fixture
+async def service_with_query_memories(
+    storage_with_query_memories: StorageBackend,
+) -> SearchService:
+    return SearchService(storage=storage_with_query_memories)
+
+
+@pytest.mark.asyncio
+async def test_query_bearing_memories_go_to_example_queries(
+    service_with_query_memories: SearchService,
+) -> None:
+    response = await service_with_query_memories.search(
+        entities=["warehouse.orders.amount_paid"],
+        max_memories=10,
+        max_example_queries=10,
+    )
+    # No query-bearing memory should leak into `memories`.
+    assert all(isinstance(h, MemoryHit) for h in response.memories)
+    # All three query-bearing memories surface in `example_queries`.
+    assert len(response.example_queries) == 3
+    assert all(isinstance(h, ExampleQueryHit) for h in response.example_queries)
+    assert all(h.query is not None for h in response.example_queries)
+
+
+@pytest.mark.asyncio
+async def test_max_example_queries_default_is_two(
+    service_with_query_memories: SearchService,
+) -> None:
+    response = await service_with_query_memories.search(
+        entities=["warehouse.orders.amount_paid"],
+    )
+    assert len(response.example_queries) == 2
+
+
+@pytest.mark.asyncio
+async def test_max_example_queries_caps_independently(
+    service_with_query_memories: SearchService,
+) -> None:
+    response = await service_with_query_memories.search(
+        entities=["warehouse.orders.amount_paid"],
+        max_memories=10,
+        max_example_queries=1,
+    )
+    assert len(response.example_queries) == 1
+
+
+@pytest.mark.asyncio
+async def test_bulky_example_does_not_evict_small_learning(
+    service_with_query_memories: SearchService,
+) -> None:
+    """An agent setting low caps still receives both kinds of memory.
+    With three query-bearing memories all matching the same entity, the
+    learning-only memories must still surface in `memories` because the two
+    kinds have independent caps."""
+    response = await service_with_query_memories.search(
+        entities=["warehouse.orders.amount_paid"],
+        max_memories=2,
+        max_example_queries=1,
+    )
+    assert len(response.memories) == 2
+    assert len(response.example_queries) == 1
+    learning_texts = [h.text for h in response.memories]
+    assert any("gross of refunds" in t for t in learning_texts)
+
+
+@pytest.mark.asyncio
+async def test_recency_fallback_fills_both_buckets(
+    service_with_query_memories: SearchService,
+) -> None:
+    response = await service_with_query_memories.search(
+        max_memories=10,
+        max_example_queries=10,
+    )
+    # All learning-only memories from the base fixture (4) surface in
+    # `memories`; all query-bearing (3) in `example_queries`.
+    assert len(response.memories) == 4
+    assert len(response.example_queries) == 3
+
+
+@pytest.mark.asyncio
+async def test_memory_hit_no_longer_carries_query_field() -> None:
+    """`MemoryHit` is reserved for learning-only memories; the `query`
+    field has moved to `ExampleQueryHit`."""
+    assert "query" not in MemoryHit.model_fields
+    assert "query" in ExampleQueryHit.model_fields

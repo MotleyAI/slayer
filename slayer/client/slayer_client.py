@@ -7,7 +7,6 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import FieldMetadata, ResponseAttributes, SlayerResponse
 from slayer.memories.models import (
     ForgetMemoryResponse,
-    RecallResponse,
     SaveMemoryResponse,
 )
 
@@ -239,29 +238,6 @@ class SlayerClient:
         )
         return ForgetMemoryResponse.model_validate(result)
 
-    async def recall_memories(
-        self,
-        *,
-        about: Union[List[str], SlayerQuery, Dict[str, Any]],
-        max_learnings: Optional[int] = None,
-        max_queries: Optional[int] = 2,
-    ) -> RecallResponse:
-        if self._storage is not None:
-            return await self._memory_service().recall_memories(
-                about=self._coerce_linked_entities(about),
-                max_learnings=max_learnings,
-                max_queries=max_queries,
-            )
-        body = {
-            "about": self._coerce_linked_entities(about),
-            "max_learnings": max_learnings,
-            "max_queries": max_queries,
-        }
-        result = await self._request(
-            method="POST", path="/memories/recall", json=body
-        )
-        return RecallResponse.model_validate(result)
-
     # ----- Search API (DEV-1375) -----
 
     async def search(
@@ -271,6 +247,7 @@ class SlayerClient:
         query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
         question: Optional[str] = None,
         max_memories: int = 5,
+        max_example_queries: int = 2,
         max_entities: int = 5,
     ) -> "SearchResponse":
         """Two-channel semantic search over memories + canonical entities."""
@@ -292,10 +269,12 @@ class SlayerClient:
                 query=coerced_query,
                 question=question,
                 max_memories=max_memories,
+                max_example_queries=max_example_queries,
                 max_entities=max_entities,
             )
         body: Dict[str, Any] = {
             "max_memories": max_memories,
+            "max_example_queries": max_example_queries,
             "max_entities": max_entities,
         }
         if entities is not None:

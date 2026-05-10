@@ -385,7 +385,7 @@ examples:
     # ── memory ────────────────────────────────────────────────────────
     memory_parser = subparsers.add_parser(
         "memory",
-        help="Manage agent memories (learnings + saved queries)",
+        help="Manage agent memories (write side: save / forget)",
         epilog="""\
 examples:
   # Save a learning indexed by entities
@@ -397,11 +397,7 @@ examples:
   # Forget a memory by id
   slayer memory forget 42
 
-  # Recall memories about specific entities
-  slayer memory recall --about mydb.orders.amount,mydb.orders.status
-
-  # Recall memories relevant to a query
-  slayer memory recall --about-query @paid_revenue.json
+  # For retrieval, use `slayer search` (memories + canonical entities).
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -432,35 +428,6 @@ examples:
         "forget", help="Delete a memory by id"
     )
     memory_forget_parser.add_argument("id", type=int, help="Memory id (positive int)")
-
-    memory_recall_parser = memory_subparsers.add_parser(
-        "recall", help="Look up memories by entity overlap"
-    )
-    memory_recall_parser.add_argument(
-        "--about",
-        default=None,
-        help="Comma-separated list of entity references to search by.",
-    )
-    memory_recall_parser.add_argument(
-        "--about-query",
-        default=None,
-        dest="about_query",
-        help="Inline JSON SlayerQuery (or @file.json) whose entities augment --about.",
-    )
-    memory_recall_parser.add_argument(
-        "--max-learnings",
-        type=int,
-        default=None,
-        dest="max_learnings",
-        help="Cap on returned learning-shaped memories (default: all).",
-    )
-    memory_recall_parser.add_argument(
-        "--max-queries",
-        type=int,
-        default=2,
-        dest="max_queries",
-        help="Cap on returned query-bearing memories (default: 2).",
-    )
 
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
@@ -531,7 +498,14 @@ examples:
         type=int,
         default=5,
         dest="max_memories",
-        help="Cap on returned memory hits (default 5).",
+        help="Cap on returned learning-only memory hits (default 5).",
+    )
+    search_parser.add_argument(
+        "--max-example-queries",
+        type=int,
+        default=2,
+        dest="max_example_queries",
+        help="Cap on returned query-bearing memory hits (default 2 — bulky).",
     )
     search_parser.add_argument(
         "--max-entities",
@@ -674,8 +648,17 @@ def _print_search_response_text(response) -> None:
     """Pretty-print a ``SearchResponse`` for the default text format."""
     for w in response.warnings:
         print(f"[warning] {w}")
+    if response.resolved_input_entities:
+        print(
+            "\nResolved input entities: "
+            + ", ".join(response.resolved_input_entities)
+        )
     print(f"\nMemories ({len(response.memories)}):")
     for hit in response.memories:
+        print(f"  M{hit.id} (score={hit.score:.4f})")
+        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
+    print(f"\nExample queries ({len(response.example_queries)}):")
+    for hit in response.example_queries:
         print(f"  M{hit.id} (score={hit.score:.4f})")
         print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
     print(f"\nEntities ({len(response.entities)}):")
@@ -693,6 +676,7 @@ def _run_search_query(args, storage) -> None:
         query=query_input,
         question=args.question,
         max_memories=args.max_memories,
+        max_example_queries=args.max_example_queries,
         max_entities=args.max_entities,
     ))
     if args.format == "json":
@@ -1586,60 +1570,20 @@ def _run_memory_forget(args, service):
     print(f"Forgot memory {response.deleted_id}.")
 
 
-def _run_memory_recall(args, service):
-    from slayer.core.errors import AmbiguousModelError, EntityResolutionError
-
-    if args.about and args.about_query:
-        print("Error: --about and --about-query are mutually exclusive.")
-        sys.exit(1)
-    if args.about:
-        about = [a.strip() for a in args.about.split(",") if a.strip()]
-    elif args.about_query:
-        about = _load_query_arg(args.about_query)
-    else:
-        about = []
-    try:
-        response = run_sync(
-            service.recall_memories(
-                about=about,
-                max_learnings=args.max_learnings,
-                max_queries=args.max_queries,
-            )
-        )
-    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
-        _exit_with_error(exc)
-        return
-    for warning in response.warnings:
-        print(f"Warning: {warning}")
-    _print_recall_section("Learnings", response.learnings)
-    _print_recall_section("Queries", response.queries)
-    if not response.learnings and not response.queries:
-        print("No matching memories.")
-
-
-def _print_recall_section(title, hits):
-    if not hits:
-        return
-    print(f"{title} ({len(hits)}):")
-    for hit in hits:
-        tags = ", ".join(hit.matched_entities) or "—"
-        print(f"  M{hit.id} [{tags}] (score={hit.score:.3f}): {hit.learning}")
-
-
 _MEMORY_DISPATCH = {
     "save": _run_memory_save,
     "forget": _run_memory_forget,
-    "recall": _run_memory_recall,
 }
 
 
 def _run_memory(args):
-    """Dispatcher for ``slayer memory <save|forget|recall>``."""
+    """Dispatcher for ``slayer memory <save|forget>``. Memory retrieval
+    is handled by ``slayer search``."""
     from slayer.memories.service import MemoryService
 
     handler = _MEMORY_DISPATCH.get(args.memory_command)
     if handler is None:
-        print("Usage: slayer memory {save,forget,recall}")
+        print("Usage: slayer memory {save,forget}")
         sys.exit(1)
     storage = _resolve_storage(args)
     handler(args, MemoryService(storage=storage))

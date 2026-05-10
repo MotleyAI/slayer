@@ -98,27 +98,21 @@ class SaveMemoryRequest(BaseModel):
     linked_entities: Any
 
 
-class RecallMemoriesRequest(BaseModel):
-    """Body for ``POST /memories/recall``. Same union as ``about`` on
-    the MCP / Python-client surfaces."""
-
-    about: Any
-    max_learnings: Optional[int] = None
-    max_queries: Optional[int] = 2
-
-
 class SearchRequest(BaseModel):
     """Body for ``POST /search`` (DEV-1375). Mirrors the MCP / CLI /
     SlayerClient surfaces.
 
     All three retrieval inputs are optional. Empty input falls back to
-    a recency listing of the newest ``max_memories`` memories.
+    a recency listing of the newest ``max_memories`` learning-only
+    memories plus the newest ``max_example_queries`` query-bearing
+    memories.
     """
 
     entities: Optional[List[str]] = None
     query: Optional[Any] = None
     question: Optional[str] = None
     max_memories: int = 5
+    max_example_queries: int = 2
     max_entities: int = 5
 
 
@@ -581,34 +575,6 @@ def create_app(storage: StorageBackend) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
-    @app.post(
-        "/memories/recall",
-        responses={
-            400: {
-                "description": (
-                    "Invalid input: ambiguous bare-name reference, "
-                    "unknown entity, or malformed query payload."
-                )
-            }
-        },
-    )
-    async def recall_memories(
-        request: RecallMemoriesRequest,
-    ) -> Dict[str, Any]:
-        try:
-            response = await memory_service.recall_memories(
-                about=request.about,
-                max_learnings=request.max_learnings,
-                max_queries=request.max_queries,
-            )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        return response.model_dump(mode="json")
-
     # ---------- DEV-1375: semantic search -----------------------------
 
     search_service = SearchService(storage=storage)
@@ -631,6 +597,7 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 query=request.query,
                 question=request.question,
                 max_memories=request.max_memories,
+                max_example_queries=request.max_example_queries,
                 max_entities=request.max_entities,
             )
         except (
