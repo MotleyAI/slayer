@@ -183,7 +183,7 @@ def test_cli_search_subcommand_help(monkeypatch, capsys) -> None:
 
 
 def test_cli_search_refresh_samples_subcommand_help(monkeypatch, capsys) -> None:
-    code, out = _run_cli(["search", "refresh-samples", "--help"], monkeypatch, capsys)
+    code, _ = _run_cli(["search", "refresh-samples", "--help"], monkeypatch, capsys)
     assert code == 0
 
 

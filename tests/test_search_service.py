@@ -99,9 +99,9 @@ async def test_entities_and_question_both_set_runs_both_channels(
         max_entities=5,
     )
     assert isinstance(response, SearchResponse)
-    # Channel 1 should surface the two memories tagged on amount_paid.
-    mem_ids = {h.id for h in response.memories}
-    assert any(h.id in mem_ids for h in response.memories)
+    # Channel 1 should surface the memory tagged on amount_paid.
+    learnings = [h.text for h in response.memories]
+    assert any("gross of refunds" in lm for lm in learnings)
     # Channel 2 should surface entity hits.
     assert all(isinstance(h, EntityHit) for h in response.entities)
 

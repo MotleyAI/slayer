@@ -49,7 +49,7 @@ Activated when `question` is supplied.
 
 Memory hits from both channels are fused via RRF (`k = 60`):
 
-```
+```text
 score(d) = Σ_r 1 / (k + rank_r(d))
 ```
 

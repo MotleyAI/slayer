@@ -443,7 +443,7 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `version` | int | No | `3` | Schema version stamp (see [Schema versioning](#schema-versioning)) |
+| `version` | int | No | `6` | Schema version stamp (see [Schema versioning](#schema-versioning)) |
 | `name` | string | Yes | — | Unique model name |
 | `sql_table` | string | One of | — | Database table (e.g. `public.orders`) |
 | `sql` | string | these | — | Custom SQL subquery |
@@ -462,10 +462,10 @@ See the [multistage queries example](../examples/06_multistage_queries/multistag
 
 ## Schema versioning
 
-Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field that records the schema it was written against. The current schema is `3` for `SlayerModel` and `SlayerQuery`, and `1` for `DatasourceConfig`.
+Every persisted SLayer entity (`SlayerModel`, `SlayerQuery`, `DatasourceConfig`) carries a `version: int` field that records the schema it was written against. The current schema is `6` for `SlayerModel`, `3` for `SlayerQuery`, and `1` for `DatasourceConfig`.
 
 ```yaml
-version: 3
+version: 6
 name: orders
 sql_table: public.orders
 ...
@@ -473,7 +473,7 @@ sql_table: public.orders
 
 Behaviour:
 
-- **On save**, SLayer always writes the current schema version. New `SlayerModel` and `SlayerQuery` objects default `version` to `3`; new `DatasourceConfig` objects default to `1`.
+- **On save**, SLayer always writes the current schema version. New `SlayerModel` objects default `version` to `6`, new `SlayerQuery` objects default to `3`, and new `DatasourceConfig` objects default to `1`.
 - **On load**, if the file's version is older than the current schema, SLayer runs a chain of pure dict→dict converters before Pydantic validates the data. This means hand-edited or older files keep working when the schema evolves.
 - **Forward tolerance.** A file with a higher `version` than this SLayer knows about loads on a best-effort basis. For `SlayerModel` and `DatasourceConfig`, unknown fields are ignored. `SlayerQuery` v3 sets `extra="forbid"`, so any unknown field on a future-version query raises a `ValidationError` rather than being silently dropped — this catches typos but means a future schema's new fields will not load on an older SLayer.
 - **Round-tripping** an older file (load → save) upgrades it on disk to the current schema.

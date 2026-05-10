@@ -12,6 +12,8 @@ Pins:
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 import tempfile
 from typing import Optional
 
@@ -30,7 +32,6 @@ from slayer.storage.base import resolve_storage
 @pytest.fixture
 def sqlite_setup():
     """Build a SQLite-backed engine + storage with a populated `orders` table."""
-    import sqlite3
     with tempfile.TemporaryDirectory() as tmpdir:
         db_file = f"{tmpdir}/data.db"
         conn = sqlite3.connect(db_file)
@@ -54,9 +55,6 @@ def sqlite_setup():
         ds = DatasourceConfig(
             name="ds", type="sqlite", database=db_file,
         )
-        # Sync entry point: use the sync API so the fixture stays sync.
-        import asyncio
-        asyncio.get_event_loop_policy().new_event_loop()
 
         async def _setup():
             await storage.save_datasource(ds)

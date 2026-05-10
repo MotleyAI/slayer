@@ -8,12 +8,15 @@ populates the cache.
 
 from __future__ import annotations
 
+import json
+import os
+import sqlite3
 import tempfile
 
 import pytest
+import yaml
 
-from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import SlayerModel
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -88,28 +91,43 @@ def test_v6_payload_round_trips_with_sampled_value() -> None:
 
 @pytest.mark.asyncio
 async def test_yaml_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
+    """Seed a raw ``version: 5`` YAML file directly on disk (no
+    ``sampled`` field) and confirm ``get_model`` runs the v5→v6 migration
+    so the loaded model is v6 with ``sampled=None`` on every column."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         from slayer.core.models import DatasourceConfig
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        # Save a v5-shaped model directly via Pydantic; loading will migrate.
-        model = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="ds",
-            columns=[Column(name="amount", type=DataType.DOUBLE)],
-        )
-        await storage.save_model(model)
+
+        v5_path = os.path.join(tmpdir, "models", "ds", "orders.yaml")
+        os.makedirs(os.path.dirname(v5_path), exist_ok=True)
+        with open(v5_path, "w") as f:
+            yaml.dump({
+                "version": 5,
+                "name": "orders",
+                "sql_table": "orders",
+                "data_source": "ds",
+                "columns": [
+                    {"name": "id", "type": "INT", "primary_key": True},
+                    {"name": "amount", "type": "DOUBLE"},
+                ],
+            }, f, sort_keys=False)
+
         loaded = await storage.get_model("orders", data_source="ds")
         assert loaded is not None
         assert loaded.version == 6
-        assert loaded.columns[0].sampled is None
+        assert {c.name: c.sampled for c in loaded.columns} == {
+            "id": None, "amount": None,
+        }
 
 
 @pytest.mark.asyncio
 async def test_sqlite_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
+    """Same as the YAML test, but seeded directly into the SQLite
+    ``models`` table via raw SQL so the v5→v6 migration actually runs on
+    load."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = f"{tmpdir}/storage.db"
         storage = SQLiteStorage(db_path=db_path)
@@ -117,17 +135,29 @@ async def test_sqlite_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        model = SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="ds",
-            columns=[Column(name="amount", type=DataType.DOUBLE)],
-        )
-        await storage.save_model(model)
+
+        v5_payload = {
+            "version": 5,
+            "name": "orders",
+            "sql_table": "orders",
+            "data_source": "ds",
+            "columns": [
+                {"name": "id", "type": "INT", "primary_key": True},
+                {"name": "amount", "type": "DOUBLE"},
+            ],
+        }
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",
+                ("ds", "orders", json.dumps(v5_payload)),
+            )
+
         loaded = await storage.get_model("orders", data_source="ds")
         assert loaded is not None
         assert loaded.version == 6
-        assert loaded.columns[0].sampled is None
+        assert {c.name: c.sampled for c in loaded.columns} == {
+            "id": None, "amount": None,
+        }
 
 
 # ---------------------------------------------------------------------------

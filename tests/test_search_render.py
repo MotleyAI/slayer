@@ -199,9 +199,10 @@ def test_column_text_includes_sampled_when_present() -> None:
 
 def test_column_text_omits_sampled_when_absent() -> None:
     m = _make_orders_model()
-    col = m.get_column("id")  # sampled=None
+    col = m.get_column("id")
     text = render_column_text(model=m, column=col)
-    assert "Sample values" not in text or "None" not in text
+    assert "Sample values" not in text
+    assert "None" not in text
 
 
 def test_column_text_excludes_meta() -> None:

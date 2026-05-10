@@ -18,9 +18,10 @@ Spec rules pinned by ``tests/test_search_render.py``:
 * ``meta`` is excluded from indexed text in v1 — arbitrary user JSON,
   tracked as DEV-1377 follow-up.
 * Hidden columns / hidden models are skipped at the *call site*; these
-  helpers expect their input to already be filtered. (The model
-  renderer still mentions hidden columns by name in its CSV — callers
-  pre-filter the columns list when desired.)
+  helpers expect their input to already be filtered. The model renderer
+  itself also filters hidden columns out of its CSV (see
+  ``render_model_text``'s ``visible_columns`` filter), so a hidden
+  column will never appear in the indexed text of any entity.
 """
 
 from __future__ import annotations
