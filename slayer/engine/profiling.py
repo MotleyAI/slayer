@@ -73,6 +73,86 @@ def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
     return f"{entry.min_value} .. {entry.max_value}"
 
 
+async def _profile_categorical_column(
+    *,
+    model: SlayerModel,
+    column: Column,
+    engine: SlayerQueryEngine,
+    max_values: int,
+) -> Optional[_DimProfileEntry]:
+    """Profile one string/boolean column via a one-shot distinct-values query.
+
+    Returns ``None`` when the column query fails — caller skips the column.
+    """
+    try:
+        q = SlayerQuery.model_validate({
+            "source_model": model.name,
+            "dimensions": [{"name": column.name}],
+            "measures": [{"formula": "*:count"}],
+            "limit": max_values + 1,
+        })
+        r = await engine.execute(query=q, data_source=model.data_source or None)
+    except Exception:
+        return None
+    value_key = f"{model.name}.{column.name}"
+    values = [row.get(value_key) for row in r.data]
+    overflow = len(values) > max_values
+    return _DimProfileEntry(
+        name=column.name,
+        type_str=str(column.type),
+        distinct_count=None if overflow else len(values),
+        values=None if overflow else values,
+        min_value=None,
+        max_value=None,
+    )
+
+
+async def _profile_numeric_temporal_columns(
+    *,
+    model: SlayerModel,
+    columns: List[Column],
+    engine: SlayerQueryEngine,
+) -> Dict[str, _DimProfileEntry]:
+    """Profile every numeric/temporal column in a single batched min/max query."""
+    if not columns:
+        return {}
+    ext_columns = [
+        {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name,
+         "type": str(c.type)}
+        for c in columns
+    ]
+    measures_payload: List[Dict[str, str]] = []
+    for c in columns:
+        measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
+        measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
+    row: Dict[str, Any] = {}
+    try:
+        q = SlayerQuery.model_validate({
+            "source_model": {"source_name": model.name, "columns": ext_columns},
+            "measures": measures_payload,
+        })
+        r = await engine.execute(query=q, data_source=model.data_source or None)
+        if r.data:
+            row = r.data[0]
+    except Exception:
+        row = {}
+    out: Dict[str, _DimProfileEntry] = {}
+    for c in columns:
+        mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
+        mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
+        if mn is None and mx is None:
+            continue
+        out[c.name] = _DimProfileEntry(
+            name=c.name,
+            type_str=str(c.type),
+            distinct_count=None,
+            values=None,
+            min_value=mn,
+            max_value=mx,
+        )
+    return out
+
+
 async def _collect_dim_profile(
     *,
     model: SlayerModel,
@@ -106,65 +186,17 @@ async def _collect_dim_profile(
     ]
 
     entries: Dict[str, _DimProfileEntry] = {}
-
     for c in categorical:
-        try:
-            q = SlayerQuery.model_validate({
-                "source_model": model.name,
-                "dimensions": [{"name": c.name}],
-                "measures": [{"formula": "*:count"}],
-                "limit": max_values + 1,
-            })
-            r = await engine.execute(query=q, data_source=model.data_source or None)
-        except Exception:
-            continue
-        value_key = f"{model.name}.{c.name}"
-        values = [row.get(value_key) for row in r.data]
-        overflow = len(values) > max_values
-        entries[c.name] = _DimProfileEntry(
-            name=c.name,
-            type_str=str(c.type),
-            distinct_count=None if overflow else len(values),
-            values=None if overflow else values,
-            min_value=None,
-            max_value=None,
+        entry = await _profile_categorical_column(
+            model=model, column=c, engine=engine, max_values=max_values,
         )
-
-    if numeric_temporal:
-        ext_columns = [
-            {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name,
-             "type": str(c.type)}
-            for c in numeric_temporal
-        ]
-        measures_payload: List[Dict[str, str]] = []
-        for c in numeric_temporal:
-            measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
-            measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
-        row: Dict[str, Any] = {}
-        try:
-            q = SlayerQuery.model_validate({
-                "source_model": {"source_name": model.name, "columns": ext_columns},
-                "measures": measures_payload,
-            })
-            r = await engine.execute(query=q, data_source=model.data_source or None)
-            if r.data:
-                row = r.data[0]
-        except Exception:
-            row = {}
-        for c in numeric_temporal:
-            mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
-            mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
-            if mn is None and mx is None:
-                continue
-            entries[c.name] = _DimProfileEntry(
-                name=c.name,
-                type_str=str(c.type),
-                distinct_count=None,
-                values=None,
-                min_value=mn,
-                max_value=mx,
-            )
-
+        if entry is not None:
+            entries[c.name] = entry
+    entries.update(
+        await _profile_numeric_temporal_columns(
+            model=model, columns=numeric_temporal, engine=engine,
+        )
+    )
     return [entries[c.name] for c in eligible if c.name in entries]
 
 

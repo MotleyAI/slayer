@@ -1,6 +1,7 @@
 """CLI entry point for SLayer."""
 
 import argparse
+import asyncio
 import copy
 import json
 import os
@@ -9,6 +10,12 @@ from typing import List, Optional
 
 from slayer.async_utils import run_sync
 from slayer.core.models import SlayerModel
+from slayer.engine.profiling import (
+    refresh_all_table_backed_sampled,
+    refresh_table_backed_model_sampled,
+)
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
 from slayer.storage.type_refinement import (
@@ -613,51 +620,72 @@ examples:
 
 def _run_search(args) -> None:
     """Dispatch ``slayer search [...]`` and ``slayer search refresh-samples``."""
-    import asyncio
     storage = _resolve_storage(args)
     sub = getattr(args, "search_command", None)
     if sub == "refresh-samples":
-        from slayer.engine.profiling import refresh_all_table_backed_sampled, refresh_table_backed_model_sampled
-        from slayer.engine.query_engine import SlayerQueryEngine
-        engine = SlayerQueryEngine(storage=storage)
-
-        async def _run_refresh():
-            errors: list[str] = []
-            data_source = args.data_source
-            models = args.models
-            if data_source is None:
-                datasources = await storage.list_datasources()
-            else:
-                datasources = [data_source]
-            for ds in datasources:
-                if models:
-                    for model_name in models:
-                        m = await storage.get_model(model_name, data_source=ds)
-                        if m is None:
-                            continue
-                        errs = await refresh_table_backed_model_sampled(
-                            model=m, engine=engine, storage=storage,
-                        )
-                        errors.extend(errs)
-                else:
-                    errors.extend(
-                        await refresh_all_table_backed_sampled(
-                            engine=engine, storage=storage, data_source=ds,
-                        )
-                    )
-            return errors
-
-        errors = asyncio.run(_run_refresh())
-        if errors:
-            print("Sample-value refresh completed with errors:")
-            for e in errors:
-                print(f"  - {e}")
-        else:
-            print("Sample-value refresh completed successfully.")
+        _run_search_refresh_samples(args, storage)
         return
+    _run_search_query(args, storage)
 
-    # Default: run a search.
-    from slayer.search.service import SearchService
+
+async def _refresh_samples_async(args, storage) -> List[str]:
+    """Async core of ``slayer search refresh-samples`` — loop datasources
+    and (optional) model filters, accumulate per-column errors."""
+    engine = SlayerQueryEngine(storage=storage)
+    errors: List[str] = []
+    data_source = args.data_source
+    models = args.models
+    if data_source is None:
+        datasources = await storage.list_datasources()
+    else:
+        datasources = [data_source]
+    for ds in datasources:
+        if models:
+            for model_name in models:
+                m = await storage.get_model(model_name, data_source=ds)
+                if m is None:
+                    continue
+                errs = await refresh_table_backed_model_sampled(
+                    model=m, engine=engine, storage=storage,
+                )
+                errors.extend(errs)
+        else:
+            errors.extend(
+                await refresh_all_table_backed_sampled(
+                    engine=engine, storage=storage, data_source=ds,
+                )
+            )
+    return errors
+
+
+def _run_search_refresh_samples(args, storage) -> None:
+    """``slayer search refresh-samples`` — re-profile + persist
+    ``Column.sampled`` for every table-backed model in scope."""
+    errors = asyncio.run(_refresh_samples_async(args, storage))
+    if errors:
+        print("Sample-value refresh completed with errors:")
+        for e in errors:
+            print(f"  - {e}")
+    else:
+        print("Sample-value refresh completed successfully.")
+
+
+def _print_search_response_text(response) -> None:
+    """Pretty-print a ``SearchResponse`` for the default text format."""
+    for w in response.warnings:
+        print(f"[warning] {w}")
+    print(f"\nMemories ({len(response.memories)}):")
+    for hit in response.memories:
+        print(f"  M{hit.id} (score={hit.score:.4f})")
+        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
+    print(f"\nEntities ({len(response.entities)}):")
+    for hit in response.entities:
+        print(f"  [{hit.kind}] {hit.id} (score={hit.score:.4f})")
+
+
+def _run_search_query(args, storage) -> None:
+    """``slayer search [...]`` — call the SearchService and emit JSON or
+    pretty text."""
     service = SearchService(storage=storage)
     query_input = _load_query_arg(args.query) if args.query else None
     response = asyncio.run(service.search(
@@ -670,15 +698,7 @@ def _run_search(args) -> None:
     if args.format == "json":
         print(response.model_dump_json(indent=2))
     else:
-        for w in response.warnings:
-            print(f"[warning] {w}")
-        print(f"\nMemories ({len(response.memories)}):")
-        for hit in response.memories:
-            print(f"  M{hit.id} (score={hit.score:.4f})")
-            print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
-        print(f"\nEntities ({len(response.entities)}):")
-        for hit in response.entities:
-            print(f"  [{hit.kind}] {hit.id} (score={hit.score:.4f})")
+        _print_search_response_text(response)
 
 
 def _run_storage(args) -> None:

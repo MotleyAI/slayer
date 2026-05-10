@@ -94,6 +94,45 @@ def _dedup(items: List[str]) -> List[str]:
     return out
 
 
+def _fuse_memory_hits(
+    *,
+    channel_1_ranking: List[int],
+    channel_2_ranking: List[int],
+    memory_by_id: dict,
+    index_hits_by_memory_id: dict,
+    canonical_input_entities: List[str],
+    max_memories: int,
+) -> List["MemoryHit"]:
+    """RRF-fuse the two memory rankings and assemble the final list."""
+    rankings: List[List[int]] = []
+    if channel_1_ranking:
+        rankings.append(channel_1_ranking)
+    if channel_2_ranking:
+        rankings.append(channel_2_ranking)
+    fused = rrf_fuse(rankings=rankings, k=_RRF_K) if rankings else {}
+    fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
+
+    wanted_set = set(canonical_input_entities)
+    out: List[MemoryHit] = []
+    for memory_id, score in fused_sorted[:max_memories]:
+        mem = memory_by_id.get(memory_id)
+        if mem is None:
+            continue
+        matched = sorted(wanted_set & set(mem.entities)) if wanted_set else []
+        out.append(MemoryHit(
+            id=memory_id,
+            score=score,
+            text=(
+                index_hits_by_memory_id[memory_id].text
+                if memory_id in index_hits_by_memory_id
+                else mem.learning
+            ),
+            matched_entities=matched,
+            query=mem.query,
+        ))
+    return out
+
+
 class SearchService:
     """Orchestrates the two retrieval channels + RRF fusion."""
 
@@ -114,56 +153,16 @@ class SearchService:
         if max_entities < 0:
             raise ValueError(f"max_entities must be >= 0; got {max_entities}.")
 
-        warnings: List[str] = []
-        canonical_input_entities: List[str] = []
-
-        # Channel-1 input: union of resolved entity-list + entities
-        # extracted from query.
+        canonical_input_entities, warnings = await self._resolve_inputs(
+            entities=entities, query=query,
+        )
         channel_1_active = (entities is not None and len(entities) > 0) or query is not None
-        if entities:
-            for raw in entities:
-                if not isinstance(raw, str):
-                    raise ValueError(
-                        f"entities list items must be strings; got "
-                        f"{type(raw).__name__}."
-                    )
-                result = await resolve_entity(raw, storage=self._storage)
-                canonical_input_entities.extend(result.canonical_forms)
-                warnings.extend(result.warnings)
-        if query is not None:
-            extraction = await extract_entities_from_query(
-                _coerce_query(query), storage=self._storage,
-            )
-            canonical_input_entities.extend(extraction.canonical_forms)
-            warnings.extend(extraction.warnings)
-
-        canonical_input_entities = _dedup(canonical_input_entities)
-        warnings = _dedup(warnings)
-
         question_active = bool(question and question.strip())
 
         # Recency fallback for the all-empty case (mirrors recall_memories).
         if not channel_1_active and not question_active:
-            warnings.append(
-                "no entities, query, or question supplied; returning "
-                "newest memories by recency."
-            )
-            recency_memories = await self._storage.list_memories(entities=None)
-            recency_memories.sort(key=lambda m: m.created_at, reverse=True)
-            recency_memories = recency_memories[:max_memories]
-            return SearchResponse(
-                memories=[
-                    MemoryHit(
-                        id=m.id,
-                        score=0.0,
-                        text=m.learning,
-                        matched_entities=[],
-                        query=m.query,
-                    )
-                    for m in recency_memories
-                ],
-                entities=[],
-                warnings=warnings,
+            return await self._recency_fallback(
+                max_memories=max_memories, warnings=warnings,
             )
 
         over_fetch = max(max_memories, max_entities) * _OVER_FETCH_MULTIPLIER
@@ -174,7 +173,101 @@ class SearchService:
         if channel_1_active or question_active:
             all_memories = await self._storage.list_memories(entities=None)
 
-        # ---- Channel 1: entity-overlap BM25 over memories ------------------
+        channel_1_memory_ranking, memory_by_id = self._run_channel_1(
+            canonical_input_entities=canonical_input_entities,
+            all_memories=all_memories,
+            over_fetch=over_fetch,
+            channel_1_active=channel_1_active,
+        )
+        (
+            channel_2_memory_ranking,
+            channel_2_entity_hits,
+            index_hits_by_memory_id,
+        ) = await self._run_channel_2(
+            question=question,
+            all_memories=all_memories,
+            memory_by_id=memory_by_id,
+            channel_1_memory_ranking=channel_1_memory_ranking,
+            over_fetch=over_fetch,
+            question_active=question_active,
+        )
+
+        memory_hits = _fuse_memory_hits(
+            channel_1_ranking=channel_1_memory_ranking,
+            channel_2_ranking=channel_2_memory_ranking,
+            memory_by_id=memory_by_id,
+            index_hits_by_memory_id=index_hits_by_memory_id,
+            canonical_input_entities=canonical_input_entities,
+            max_memories=max_memories,
+        )
+        entity_hits = [
+            EntityHit(id=hit.id, kind=hit.kind, score=hit.score, text=hit.text)
+            for hit in channel_2_entity_hits[:max_entities]
+        ]
+        return SearchResponse(
+            memories=memory_hits, entities=entity_hits, warnings=warnings,
+        )
+
+    async def _resolve_inputs(
+        self,
+        *,
+        entities: Optional[List[str]],
+        query: Optional[Union[SlayerQuery, dict]],
+    ) -> tuple[List[str], List[str]]:
+        """Walk ``entities`` + ``query`` into a deduped canonical-entity list
+        plus a deduped warning list."""
+        canonical: List[str] = []
+        warnings: List[str] = []
+        if entities:
+            for raw in entities:
+                if not isinstance(raw, str):
+                    raise ValueError(
+                        f"entities list items must be strings; got "
+                        f"{type(raw).__name__}."
+                    )
+                result = await resolve_entity(raw, storage=self._storage)
+                canonical.extend(result.canonical_forms)
+                warnings.extend(result.warnings)
+        if query is not None:
+            extraction = await extract_entities_from_query(
+                _coerce_query(query), storage=self._storage,
+            )
+            canonical.extend(extraction.canonical_forms)
+            warnings.extend(extraction.warnings)
+        return _dedup(canonical), _dedup(warnings)
+
+    async def _recency_fallback(
+        self, *, max_memories: int, warnings: List[str],
+    ) -> SearchResponse:
+        """Empty-input branch: return the newest ``max_memories`` memories."""
+        warnings.append(
+            "no entities, query, or question supplied; returning "
+            "newest memories by recency."
+        )
+        recency_memories = await self._storage.list_memories(entities=None)
+        recency_memories.sort(key=lambda m: m.created_at, reverse=True)
+        recency_memories = recency_memories[:max_memories]
+        return SearchResponse(
+            memories=[
+                MemoryHit(
+                    id=m.id, score=0.0, text=m.learning,
+                    matched_entities=[], query=m.query,
+                )
+                for m in recency_memories
+            ],
+            entities=[],
+            warnings=warnings,
+        )
+
+    def _run_channel_1(
+        self,
+        *,
+        canonical_input_entities: List[str],
+        all_memories: List[Memory],
+        over_fetch: int,
+        channel_1_active: bool,
+    ) -> tuple[List[int], dict[int, Memory]]:
+        """Entity-overlap BM25 channel."""
         channel_1_memory_ranking: List[int] = []
         memory_by_id: dict[int, Memory] = {}
         if channel_1_active and canonical_input_entities:
@@ -182,87 +275,59 @@ class SearchService:
             for memory, _score in ranked[:over_fetch]:
                 memory_by_id[memory.id] = memory
                 channel_1_memory_ranking.append(memory.id)
+        return channel_1_memory_ranking, memory_by_id
 
-        # ---- Channel 2: tantivy full-text over memories ∪ entities ---------
+    async def _run_channel_2(
+        self,
+        *,
+        question: Optional[str],
+        all_memories: List[Memory],
+        memory_by_id: dict[int, Memory],
+        channel_1_memory_ranking: List[int],
+        over_fetch: int,
+        question_active: bool,
+    ) -> tuple[List[int], List[IndexHit], dict[int, IndexHit]]:
+        """Tantivy full-text channel; mutates ``memory_by_id`` so the
+        caller can resolve any memory id from either channel."""
         channel_2_memory_ranking: List[int] = []
         channel_2_entity_hits: List[IndexHit] = []
         index_hits_by_memory_id: dict[int, IndexHit] = {}
-
-        if question_active:
-            all_models, datasources = await self._collect_index_corpus()
-            index = build_in_memory_index(
-                memories=all_memories,
-                models=all_models,
-                datasources=datasources,
+        if not question_active:
+            return (
+                channel_2_memory_ranking,
+                channel_2_entity_hits,
+                index_hits_by_memory_id,
             )
-            tantivy_hits = search_index(
-                index=index,
-                question=question,
-                limit=over_fetch,
-            )
-            for hit in tantivy_hits:
-                if hit.kind == "memory" and hit.memory_id is not None:
-                    channel_2_memory_ranking.append(hit.memory_id)
-                    index_hits_by_memory_id[hit.memory_id] = hit
-                else:
-                    channel_2_entity_hits.append(hit)
-            # Make sure channel-1's memories surface as MemoryHits even
-            # when channel 2 didn't visit them.
-            for mem_id in channel_1_memory_ranking:
-                if mem_id not in memory_by_id:
-                    mem = next((m for m in all_memories if m.id == mem_id), None)
-                    if mem is not None:
-                        memory_by_id[mem_id] = mem
-            # And the inverse: channel-2 memories not in channel-1.
-            for mem_id, hit in index_hits_by_memory_id.items():
-                if mem_id not in memory_by_id:
-                    mem = next((m for m in all_memories if m.id == mem_id), None)
-                    if mem is not None:
-                        memory_by_id[mem_id] = mem
 
-        # ---- RRF fusion of memory rankings ---------------------------------
-        rankings: List[List[int]] = []
-        if channel_1_memory_ranking:
-            rankings.append(channel_1_memory_ranking)
-        if channel_2_memory_ranking:
-            rankings.append(channel_2_memory_ranking)
-        fused = rrf_fuse(rankings=rankings, k=_RRF_K) if rankings else {}
-        fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
-
-        memory_hits: List[MemoryHit] = []
-        wanted_set = set(canonical_input_entities)
-        for memory_id, score in fused_sorted[:max_memories]:
-            mem = memory_by_id.get(memory_id)
-            if mem is None:
-                continue
-            matched = sorted(wanted_set & set(mem.entities)) if wanted_set else []
-            memory_hits.append(MemoryHit(
-                id=memory_id,
-                score=score,
-                text=(
-                    index_hits_by_memory_id[memory_id].text
-                    if memory_id in index_hits_by_memory_id
-                    else mem.learning
-                ),
-                matched_entities=matched,
-                query=mem.query,
-            ))
-
-        # ---- Entity hits (channel 2 only) ----------------------------------
-        entity_hits = [
-            EntityHit(
-                id=hit.id,
-                kind=hit.kind,
-                score=hit.score,
-                text=hit.text,
-            )
-            for hit in channel_2_entity_hits[:max_entities]
-        ]
-
-        return SearchResponse(
-            memories=memory_hits,
-            entities=entity_hits,
-            warnings=warnings,
+        all_models, datasources = await self._collect_index_corpus()
+        index = build_in_memory_index(
+            memories=all_memories, models=all_models, datasources=datasources,
+        )
+        tantivy_hits = search_index(
+            index=index, question=question, limit=over_fetch,
+        )
+        for hit in tantivy_hits:
+            if hit.kind == "memory" and hit.memory_id is not None:
+                channel_2_memory_ranking.append(hit.memory_id)
+                index_hits_by_memory_id[hit.memory_id] = hit
+            else:
+                channel_2_entity_hits.append(hit)
+        # Backfill memory_by_id from both rankings so downstream RRF can
+        # always resolve the memory.
+        for mem_id in channel_1_memory_ranking:
+            if mem_id not in memory_by_id:
+                mem = next((m for m in all_memories if m.id == mem_id), None)
+                if mem is not None:
+                    memory_by_id[mem_id] = mem
+        for mem_id in index_hits_by_memory_id:
+            if mem_id not in memory_by_id:
+                mem = next((m for m in all_memories if m.id == mem_id), None)
+                if mem is not None:
+                    memory_by_id[mem_id] = mem
+        return (
+            channel_2_memory_ranking,
+            channel_2_entity_hits,
+            index_hits_by_memory_id,
         )
 
     async def _collect_index_corpus(

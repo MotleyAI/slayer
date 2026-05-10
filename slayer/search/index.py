@@ -84,6 +84,65 @@ def _add_doc(
     writer.add_document(doc)
 
 
+def _add_datasource_docs(
+    *, writer, datasources: List[str], visible_models: List[SlayerModel],
+) -> None:
+    """One datasource doc per datasource, with mentions of its visible models."""
+    models_by_ds: dict[str, List[SlayerModel]] = {}
+    for m in visible_models:
+        models_by_ds.setdefault(m.data_source, []).append(m)
+    for ds in datasources:
+        ds_models = models_by_ds.get(ds, [])
+        _add_doc(
+            writer=writer, doc_id=ds, kind="datasource",
+            canonical=ds,
+            text=render_datasource_text(name=ds, models=ds_models),
+        )
+
+
+def _add_model_subtree_docs(*, writer, model: SlayerModel) -> None:
+    """Model doc + per-child docs (columns, measures, aggregations)."""
+    model_canonical = f"{model.data_source}.{model.name}"
+    _add_doc(
+        writer=writer, doc_id=model_canonical, kind="model",
+        canonical=model_canonical, text=render_model_text(model=model),
+    )
+    for column in model.columns:
+        if column.hidden:
+            continue
+        col_canonical = f"{model_canonical}.{column.name}"
+        _add_doc(
+            writer=writer, doc_id=col_canonical, kind="column",
+            canonical=col_canonical,
+            text=render_column_text(model=model, column=column),
+        )
+    for measure in model.measures:
+        if measure.name is None:
+            continue
+        measure_canonical = f"{model_canonical}.{measure.name}"
+        _add_doc(
+            writer=writer, doc_id=measure_canonical, kind="measure",
+            canonical=measure_canonical,
+            text=render_measure_text(model=model, measure=measure),
+        )
+    for aggregation in model.aggregations:
+        agg_canonical = f"{model_canonical}.{aggregation.name}"
+        _add_doc(
+            writer=writer, doc_id=agg_canonical, kind="aggregation",
+            canonical=agg_canonical,
+            text=render_aggregation_text(model=model, aggregation=aggregation),
+        )
+
+
+def _add_memory_docs(*, writer, memories: List[Memory]) -> None:
+    for memory in memories:
+        _add_doc(
+            writer=writer, doc_id=f"memory:{memory.id}", kind="memory",
+            canonical=str(memory.id),
+            text=render_memory_text(memory=memory),
+        )
+
+
 def build_in_memory_index(
     *,
     memories: List[Memory],
@@ -100,63 +159,16 @@ def build_in_memory_index(
     index = tantivy.Index(schema=schema)
     writer = index.writer()
 
-    # Datasource docs (one per datasource). Hidden models must not leak
-    # into the datasource doc — otherwise a query against a hidden model's
-    # name surfaces the parent datasource and breaks the contract.
+    # Hidden models must not leak into the datasource doc either —
+    # otherwise a query against a hidden model's name surfaces the parent
+    # datasource and breaks the contract.
     visible_models = [m for m in models if not m.hidden]
-    models_by_ds: dict[str, List[SlayerModel]] = {}
-    for m in visible_models:
-        models_by_ds.setdefault(m.data_source, []).append(m)
-    for ds in datasources:
-        ds_models = models_by_ds.get(ds, [])
-        text = render_datasource_text(name=ds, models=ds_models)
-        _add_doc(
-            writer=writer, doc_id=ds, kind="datasource",
-            canonical=ds, text=text,
-        )
-
-    # Model + column + measure + aggregation docs.
+    _add_datasource_docs(
+        writer=writer, datasources=datasources, visible_models=visible_models,
+    )
     for model in visible_models:
-        model_canonical = f"{model.data_source}.{model.name}"
-        _add_doc(
-            writer=writer, doc_id=model_canonical, kind="model",
-            canonical=model_canonical,
-            text=render_model_text(model=model),
-        )
-        for column in model.columns:
-            if column.hidden:
-                continue
-            col_canonical = f"{model_canonical}.{column.name}"
-            _add_doc(
-                writer=writer, doc_id=col_canonical, kind="column",
-                canonical=col_canonical,
-                text=render_column_text(model=model, column=column),
-            )
-        for measure in model.measures:
-            if measure.name is None:
-                continue
-            measure_canonical = f"{model_canonical}.{measure.name}"
-            _add_doc(
-                writer=writer, doc_id=measure_canonical, kind="measure",
-                canonical=measure_canonical,
-                text=render_measure_text(model=model, measure=measure),
-            )
-        for aggregation in model.aggregations:
-            agg_canonical = f"{model_canonical}.{aggregation.name}"
-            _add_doc(
-                writer=writer, doc_id=agg_canonical, kind="aggregation",
-                canonical=agg_canonical,
-                text=render_aggregation_text(model=model, aggregation=aggregation),
-            )
-
-    # Memory docs.
-    for memory in memories:
-        memory_id_str = str(memory.id)
-        _add_doc(
-            writer=writer, doc_id=f"memory:{memory.id}", kind="memory",
-            canonical=memory_id_str,
-            text=render_memory_text(memory=memory),
-        )
+        _add_model_subtree_docs(writer=writer, model=model)
+    _add_memory_docs(writer=writer, memories=memories)
 
     writer.commit()
     index.reload()
