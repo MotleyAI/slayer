@@ -16,7 +16,7 @@ import tempfile
 import pytest
 import yaml
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -96,14 +96,13 @@ async def test_yaml_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
     so the loaded model is v6 with ``sampled=None`` on every column."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
-        from slayer.core.models import DatasourceConfig
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
 
         v5_path = os.path.join(tmpdir, "models", "ds", "orders.yaml")
         os.makedirs(os.path.dirname(v5_path), exist_ok=True)
-        with open(v5_path, "w") as f:
+        with open(v5_path, "w") as f:  # NOSONAR(S7493) — test seeds a tempfile; mirrors YAMLStorage's sync-in-async pattern
             yaml.dump({
                 "version": 5,
                 "name": "orders",
@@ -131,7 +130,6 @@ async def test_sqlite_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = f"{tmpdir}/storage.db"
         storage = SQLiteStorage(db_path=db_path)
-        from slayer.core.models import DatasourceConfig
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))

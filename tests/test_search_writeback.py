@@ -21,6 +21,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import resolve_storage
 
@@ -82,11 +83,10 @@ async def test_refresh_samples_via_engine_helper(sqlite_table_setup) -> None:
         ],
     ))
     engine = SlayerQueryEngine(storage=storage)
-    from slayer.engine.profiling import refresh_all_table_backed_sampled
     errors = await refresh_all_table_backed_sampled(
         engine=engine, storage=storage, data_source="ds",
     )
-    assert errors == [] or all(isinstance(e, str) for e in errors)
+    assert errors == [], f"Unexpected refresh errors: {errors}"
     loaded = await storage.get_model("orders", data_source="ds")
     assert loaded.get_column("amount").sampled is not None
 

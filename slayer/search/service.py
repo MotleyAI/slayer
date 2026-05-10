@@ -94,6 +94,38 @@ def _dedup(items: List[str]) -> List[str]:
     return out
 
 
+def _split_tantivy_hits(
+    hits: List[IndexHit],
+) -> tuple[List[int], List[IndexHit], dict[int, IndexHit]]:
+    """Sort tantivy hits into the memory ranking, the entity-hit list, and
+    a memory-id→hit lookup."""
+    memory_ranking: List[int] = []
+    entity_hits: List[IndexHit] = []
+    by_memory_id: dict[int, IndexHit] = {}
+    for hit in hits:
+        if hit.kind == "memory" and hit.memory_id is not None:
+            memory_ranking.append(hit.memory_id)
+            by_memory_id[hit.memory_id] = hit
+        else:
+            entity_hits.append(hit)
+    return memory_ranking, entity_hits, by_memory_id
+
+
+def _backfill_memory_by_id(
+    memory_by_id: dict,
+    all_memories: List["Memory"],
+    mem_ids,
+) -> None:
+    """For each id in ``mem_ids`` not already in ``memory_by_id``, look it
+    up in ``all_memories`` and insert it. Mutates ``memory_by_id``."""
+    for mem_id in mem_ids:
+        if mem_id in memory_by_id:
+            continue
+        mem = next((m for m in all_memories if m.id == mem_id), None)
+        if mem is not None:
+            memory_by_id[mem_id] = mem
+
+
 def _fuse_memory_hits(
     *,
     channel_1_ranking: List[int],
@@ -289,15 +321,8 @@ class SearchService:
     ) -> tuple[List[int], List[IndexHit], dict[int, IndexHit]]:
         """Tantivy full-text channel; mutates ``memory_by_id`` so the
         caller can resolve any memory id from either channel."""
-        channel_2_memory_ranking: List[int] = []
-        channel_2_entity_hits: List[IndexHit] = []
-        index_hits_by_memory_id: dict[int, IndexHit] = {}
         if not question_active:
-            return (
-                channel_2_memory_ranking,
-                channel_2_entity_hits,
-                index_hits_by_memory_id,
-            )
+            return [], [], {}
 
         all_models, datasources = await self._collect_index_corpus()
         index = build_in_memory_index(
@@ -306,24 +331,19 @@ class SearchService:
         tantivy_hits = search_index(
             index=index, question=question, limit=over_fetch,
         )
-        for hit in tantivy_hits:
-            if hit.kind == "memory" and hit.memory_id is not None:
-                channel_2_memory_ranking.append(hit.memory_id)
-                index_hits_by_memory_id[hit.memory_id] = hit
-            else:
-                channel_2_entity_hits.append(hit)
+        (
+            channel_2_memory_ranking,
+            channel_2_entity_hits,
+            index_hits_by_memory_id,
+        ) = _split_tantivy_hits(tantivy_hits)
         # Backfill memory_by_id from both rankings so downstream RRF can
         # always resolve the memory.
-        for mem_id in channel_1_memory_ranking:
-            if mem_id not in memory_by_id:
-                mem = next((m for m in all_memories if m.id == mem_id), None)
-                if mem is not None:
-                    memory_by_id[mem_id] = mem
-        for mem_id in index_hits_by_memory_id:
-            if mem_id not in memory_by_id:
-                mem = next((m for m in all_memories if m.id == mem_id), None)
-                if mem is not None:
-                    memory_by_id[mem_id] = mem
+        _backfill_memory_by_id(
+            memory_by_id, all_memories, channel_1_memory_ranking,
+        )
+        _backfill_memory_by_id(
+            memory_by_id, all_memories, index_hits_by_memory_id.keys(),
+        )
         return (
             channel_2_memory_ranking,
             channel_2_entity_hits,
