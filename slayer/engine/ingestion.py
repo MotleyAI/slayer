@@ -17,6 +17,8 @@ import sqlalchemy as sa
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.engine.profiling import refresh_all_table_backed_sampled
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -976,6 +978,22 @@ async def ingest_datasource_idempotent(
     to_delete = await validate_datasource(
         datasource=datasource, models=scoped_models
     )
+
+    # DEV-1375: refresh persisted Column.sampled values for every
+    # table-backed model in this datasource. Best-effort: per-column
+    # failures are accumulated as IngestionError entries.
+    refresh_engine = SlayerQueryEngine(storage=storage)
+    refresh_errors = await refresh_all_table_backed_sampled(
+        engine=refresh_engine,
+        storage=storage,
+        data_source=datasource.name,
+    )
+    for err in refresh_errors:
+        errors.append(IngestionError(
+            model_name=err.split(".", 1)[0] if "." in err else "",
+            data_source=datasource.name,
+            error=f"sample-value refresh: {err}",
+        ))
 
     return IdempotentIngestResult(
         additions=additions,

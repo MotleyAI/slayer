@@ -485,6 +485,79 @@ examples:
     )
     _add_storage_arg(migrate_types_parser)
 
+    # ── search (DEV-1375) ────────────────────────────────────────────
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Semantic search over memories + canonical entities (DEV-1375)",
+        epilog="""\
+examples:
+  # Two-channel search by entity overlap + tantivy full-text
+  slayer search --entity mydb.orders.amount_paid --question "paid revenue"
+
+  # Refresh persisted Column.sampled values for every table-backed model
+  slayer search refresh-samples --data-source mydb
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(search_parser)
+    search_subparsers = search_parser.add_subparsers(dest="search_command")
+    # ``slayer search`` (no subcommand) runs the search query directly.
+    search_parser.add_argument(
+        "--entity",
+        action="append",
+        default=None,
+        dest="entities",
+        help="Canonical entity reference(s) (repeatable).",
+    )
+    search_parser.add_argument(
+        "--query",
+        default=None,
+        help="Inline JSON SlayerQuery (or @file.json) to extract entities from.",
+    )
+    search_parser.add_argument(
+        "--question",
+        default=None,
+        help="Free-text query for the tantivy full-text channel.",
+    )
+    search_parser.add_argument(
+        "--max-memories",
+        type=int,
+        default=5,
+        dest="max_memories",
+        help="Cap on returned memory hits (default 5).",
+    )
+    search_parser.add_argument(
+        "--max-entities",
+        type=int,
+        default=5,
+        dest="max_entities",
+        help="Cap on returned entity hits (default 5).",
+    )
+    search_parser.add_argument(
+        "--format",
+        choices=["json", "text"],
+        default="text",
+        help="Output format (default: text).",
+    )
+    refresh_parser = search_subparsers.add_parser(
+        "refresh-samples",
+        help="Re-profile and persist Column.sampled for table-backed models.",
+    )
+    _add_storage_arg(refresh_parser)
+    refresh_parser.add_argument(
+        "--data-source",
+        default=None,
+        dest="data_source",
+        help="Limit refresh to one datasource (default: all).",
+    )
+    refresh_parser.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        dest="models",
+        help="Model name(s) to refresh (repeatable; default: all in scope).",
+    )
+
     # ── help ──────────────────────────────────────────────────────────
     from slayer.help import TOPIC_SUMMARY_LINE
 
@@ -527,6 +600,8 @@ examples:
         _run_datasources(args)
     elif args.command == "memory":
         _run_memory(args)
+    elif args.command == "search":
+        _run_search(args)
     elif args.command == "storage":
         _run_storage(args)
     elif args.command == "help":
@@ -534,6 +609,76 @@ examples:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_search(args) -> None:
+    """Dispatch ``slayer search [...]`` and ``slayer search refresh-samples``."""
+    import asyncio
+    storage = _resolve_storage(args)
+    sub = getattr(args, "search_command", None)
+    if sub == "refresh-samples":
+        from slayer.engine.profiling import refresh_all_table_backed_sampled, refresh_table_backed_model_sampled
+        from slayer.engine.query_engine import SlayerQueryEngine
+        engine = SlayerQueryEngine(storage=storage)
+
+        async def _run_refresh():
+            errors: list[str] = []
+            data_source = args.data_source
+            models = args.models
+            if data_source is None:
+                datasources = await storage.list_datasources()
+            else:
+                datasources = [data_source]
+            for ds in datasources:
+                if models:
+                    for model_name in models:
+                        m = await storage.get_model(model_name, data_source=ds)
+                        if m is None:
+                            continue
+                        errs = await refresh_table_backed_model_sampled(
+                            model=m, engine=engine, storage=storage,
+                        )
+                        errors.extend(errs)
+                else:
+                    errors.extend(
+                        await refresh_all_table_backed_sampled(
+                            engine=engine, storage=storage, data_source=ds,
+                        )
+                    )
+            return errors
+
+        errors = asyncio.run(_run_refresh())
+        if errors:
+            print("Sample-value refresh completed with errors:")
+            for e in errors:
+                print(f"  - {e}")
+        else:
+            print("Sample-value refresh completed successfully.")
+        return
+
+    # Default: run a search.
+    from slayer.search.service import SearchService
+    service = SearchService(storage=storage)
+    query_input = _load_query_arg(args.query) if args.query else None
+    response = asyncio.run(service.search(
+        entities=args.entities,
+        query=query_input,
+        question=args.question,
+        max_memories=args.max_memories,
+        max_entities=args.max_entities,
+    ))
+    if args.format == "json":
+        print(response.model_dump_json(indent=2))
+    else:
+        for w in response.warnings:
+            print(f"[warning] {w}")
+        print(f"\nMemories ({len(response.memories)}):")
+        for hit in response.memories:
+            print(f"  M{hit.id} (score={hit.score:.4f})")
+            print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
+        print(f"\nEntities ({len(response.entities)}):")
+        for hit in response.entities:
+            print(f"  [{hit.kind}] {hit.id} (score={hit.score:.4f})")
 
 
 def _run_storage(args) -> None:

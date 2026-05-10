@@ -96,6 +96,38 @@ class YAMLStorage(StorageBackend):
             return True
         return False
 
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        path = self._model_path(data_source, model_name)
+        if not os.path.exists(path):
+            raise ValueError(
+                f"update_column_sampled: model {model_name!r} in datasource "
+                f"{data_source!r} not found."
+            )
+        with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design
+            data = yaml.safe_load(f) or {}
+        cols = data.get("columns") or []
+        for col in cols:
+            if isinstance(col, dict) and col.get("name") == column_name:
+                if sampled is None:
+                    col.pop("sampled", None)
+                else:
+                    col["sampled"] = sampled
+                break
+        else:
+            raise ValueError(
+                f"update_column_sampled: column {column_name!r} not found "
+                f"on model {model_name!r} in datasource {data_source!r}."
+            )
+        with open(path, "w") as f:  # NOSONAR(S7493)
+            yaml.dump(data, f, sort_keys=False)
+
     # ---- datasource CRUD ---------------------------------------------------
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:

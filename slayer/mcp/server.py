@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 
@@ -21,9 +21,15 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.profiling import (
+    _collect_dim_profile,
+    _format_dim_profile_value,
+    handle_edit_refresh,
+)
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
 from slayer.memories.service import MemoryService
+from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -527,136 +533,6 @@ async def _get_row_count(
         return int(val)
     except (TypeError, ValueError):
         return None
-
-
-class _DimProfileEntry(NamedTuple):
-    """One row of dimension-profile output.
-
-    Exactly one of two population modes is used:
-    - Categorical (string/boolean): ``distinct_count`` and ``values`` are set.
-      When cardinality exceeds the cap, both are ``None`` to signal overflow.
-    - Numeric/temporal: ``min_value`` and ``max_value`` are set.
-    """
-    name: str
-    type_str: str
-    distinct_count: Optional[int]
-    values: Optional[List[Any]]
-    min_value: Optional[Any]
-    max_value: Optional[Any]
-
-
-def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
-    """Render a profile entry as a single-cell string for the Dimensions table.
-
-    - Enumerated categorical → ```a`, `b`, `c`` (backticked, comma-separated).
-    - Overflowed categorical → ``> 20 distinct``.
-    - Numeric/temporal range → ``<min> .. <max>``.
-    """
-    if entry.values is not None:
-        return ", ".join(_md_code_span(v) for v in entry.values)
-    if (
-        entry.distinct_count is None
-        and entry.values is None
-        and entry.min_value is None
-        and entry.max_value is None
-    ):
-        return "> 20 distinct"
-    return f"{entry.min_value} .. {entry.max_value}"
-
-
-async def _collect_dim_profile(
-    model: SlayerModel,
-    engine: SlayerQueryEngine,
-    *,
-    max_values: int = 20,
-    max_dims: int = 10,
-) -> List[_DimProfileEntry]:
-    """Produce one profile entry per eligible dimension (non-hidden, non-pk).
-
-    - string/boolean dims: distinct values (or overflow marker) via one query
-      per dim.
-    - number/date/time dims: min and max via one batched query across all such
-      dims, using a ``ModelExtension`` with transient inline measures.
-
-    Caps the total number of eligible dims at ``max_dims``. Individual failures
-    are swallowed — that dim is simply omitted from the result.
-    """
-    eligible = [
-        c for c in model.columns
-        if not c.hidden and not c.primary_key
-    ][:max_dims]
-    # DEV-1361: type vocabulary aligned to sqlglot — TEXT/BOOLEAN are
-    # categorical; INT/DOUBLE/DATE/TIMESTAMP are numeric/temporal.
-    categorical = [c for c in eligible if c.type in (DataType.TEXT, DataType.BOOLEAN)]
-    numeric_temporal = [
-        c for c in eligible
-        if c.type in (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
-    ]
-
-    entries: Dict[str, _DimProfileEntry] = {}
-
-    # --- categorical dims: one query per dim
-    for c in categorical:
-        try:
-            q = SlayerQuery.model_validate({
-                "source_model": model.name,
-                "dimensions": [{"name": c.name}],
-                "measures": [{"formula": "*:count"}],
-                "limit": max_values + 1,
-            })
-            r = await engine.execute(query=q, data_source=model.data_source or None)
-        except Exception:
-            continue
-        value_key = f"{model.name}.{c.name}"
-        values = [row.get(value_key) for row in r.data]
-        overflow = len(values) > max_values
-        entries[c.name] = _DimProfileEntry(
-            name=c.name,
-            type_str=str(c.type),
-            distinct_count=None if overflow else len(values),
-            values=None if overflow else values,
-            min_value=None,
-            max_value=None,
-        )
-
-    # --- numeric/temporal dims: ONE batched query for all mins and maxes
-    if numeric_temporal:
-        ext_columns = [
-            {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name,
-             "type": str(c.type)}
-            for c in numeric_temporal
-        ]
-        measures_payload: List[Dict[str, str]] = []
-        for c in numeric_temporal:
-            measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
-            measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
-        row: Dict[str, Any] = {}
-        try:
-            q = SlayerQuery.model_validate({
-                "source_model": {"source_name": model.name, "columns": ext_columns},
-                "measures": measures_payload,
-            })
-            r = await engine.execute(query=q, data_source=model.data_source or None)
-            if r.data:
-                row = r.data[0]
-        except Exception:
-            row = {}
-        for c in numeric_temporal:
-            mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
-            mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
-            if mn is None and mx is None:
-                continue  # query failed or empty table
-            entries[c.name] = _DimProfileEntry(
-                name=c.name,
-                type_str=str(c.type),
-                distinct_count=None,
-                values=None,
-                min_value=mn,
-                max_value=mx,
-            )
-
-    # Preserve declaration order in the rendered output
-    return [entries[c.name] for c in eligible if c.name in entries]
 
 
 async def _collect_measure_profile(
@@ -1363,14 +1239,43 @@ def create_mcp_server(storage: StorageBackend):
         # DB-hitting computations — skip when their consumers aren't requested.
         # ------------------------------------------------------------------
         # Dimension/measure profile populates the ``sampled`` column of the
-        # columns table. Only needed when ``columns`` is fully included.
+        # columns table. Read cached ``Column.sampled`` first; on miss, profile
+        # live and write back via storage so subsequent calls (and any search)
+        # get the cached value for free (DEV-1375).
         profile_by_name: Dict[str, str] = {}
         measure_profile: Dict[str, str] = {}
         if "columns" in included_set:
-            profile_entries = await _collect_dim_profile(model=model, engine=engine)
-            profile_by_name = {
-                e.name: _format_dim_profile_value(e) for e in profile_entries
-            }
+            cached_columns: List[str] = []
+            uncached_columns: List[Column] = []
+            for c in model.columns:
+                if c.hidden or c.primary_key:
+                    continue
+                if c.sampled is not None:
+                    profile_by_name[c.name] = c.sampled
+                    cached_columns.append(c.name)
+                else:
+                    uncached_columns.append(c)
+            if uncached_columns:
+                live_entries = await _collect_dim_profile(
+                    model=model, engine=engine,
+                    only_columns={c.name for c in uncached_columns},
+                )
+                for e in live_entries:
+                    live_value = _format_dim_profile_value(e)
+                    profile_by_name[e.name] = live_value
+                    try:
+                        await storage.update_column_sampled(
+                            data_source=model.data_source,
+                            model_name=model.name,
+                            column_name=e.name,
+                            sampled=live_value,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "inspect_model: failed to persist sampled value for "
+                            "%s.%s.%s: %s",
+                            model.data_source, model.name, e.name, exc,
+                        )
             measure_profile = await _collect_measure_profile(model=model, engine=engine)
 
         # ``measure_types`` informs the sample query's choice of avg vs
@@ -1984,6 +1889,11 @@ def create_mcp_server(storage: StorageBackend):
 
         original_data_source = model.data_source
         changes: List[str] = []
+        # DEV-1375: track refresh-triggering changes so the post-save hook
+        # knows whether to refresh just the touched columns or every
+        # column on the model.
+        changed_columns: set = set()
+        model_level_change = False
 
         # --- Phase 1: Scalar metadata ---
         if description is not None:
@@ -2029,11 +1939,13 @@ def create_mcp_server(storage: StorageBackend):
             model.sql_table = sql_table
             model.sql = None
             model.source_queries = None
+            model_level_change = True
             changes.append(f"set sql_table to '{sql_table}'")
         if sql is not None:
             model.sql = sql
             model.sql_table = None
             model.source_queries = None
+            model_level_change = True
             changes.append(f"set sql to '{sql}'")
         if source_queries is not None:
             # Switching to query-backed source mode. Cache columns and
@@ -2099,6 +2011,9 @@ def create_mcp_server(storage: StorageBackend):
 
         # --- Phase 3: Entity upserts ---
         for spec in columns or []:
+            col_name = spec.get("name")
+            if isinstance(col_name, str):
+                changed_columns.add(col_name)
             err = _upsert_entity(
                 entity_list=model.columns, spec=spec, entity_cls=Column,
                 id_field="name", changes=changes, label="column",
@@ -2138,6 +2053,7 @@ def create_mcp_server(storage: StorageBackend):
                     model.filters.append(f)
                     existing_filters.add(f)
                     changes.append(f"added filter '{f}'")
+                    model_level_change = True
 
         if remove_filters:
             for f in remove_filters:
@@ -2145,6 +2061,7 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Filter not found on model '{model_name}': {f}"
                 model.filters.remove(f)
                 changes.append(f"removed filter '{f}'")
+                model_level_change = True
 
         if not changes:
             return f"No changes specified for model '{model_name}'."
@@ -2207,6 +2124,18 @@ def create_mcp_server(storage: StorageBackend):
         if saved_model.data_source != original_data_source:
             await storage.delete_model(
                 saved_model.name, data_source=original_data_source
+            )
+        # DEV-1375: refresh persisted Column.sampled values for any
+        # touched columns (or every column when a model-level change
+        # made every column's sample suspect). Best-effort.
+        if changed_columns or model_level_change:
+            await handle_edit_refresh(
+                engine=engine,
+                storage=storage,
+                data_source=saved_model.data_source,
+                model_name=saved_model.name,
+                changed_columns=changed_columns,
+                model_level_change=model_level_change,
             )
         return json.dumps({
             "success": True,
@@ -2672,6 +2601,59 @@ def create_mcp_server(storage: StorageBackend):
                 about=about,
                 max_learnings=max_learnings,
                 max_queries=max_queries,
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            return _format_resolution_error(exc)
+        return response.model_dump_json(indent=2)
+
+    # ---------- DEV-1375: semantic search -----------------------------
+
+    search_service = SearchService(storage=storage)
+
+    @mcp.tool()
+    async def search(
+        entities: Optional[List[str]] = None,
+        query: Any = None,
+        question: Optional[str] = None,
+        max_memories: int = 5,
+        max_entities: int = 5,
+    ) -> str:
+        """Two-channel semantic search over memories + canonical entities.
+
+        Channel 1 (entity-overlap BM25 over memories): runs when
+        ``entities`` and/or ``query`` is supplied. Memories whose
+        canonical entity tags overlap the resolved input are ranked.
+
+        Channel 2 (tantivy full-text over memories ∪ entities): runs
+        when ``question`` is supplied. The in-memory index covers every
+        memory + every searchable entity (datasource / non-hidden model /
+        non-hidden column / named measure / aggregation).
+
+        Memory hits from both channels are fused via Reciprocal Rank
+        Fusion (k=60). Entity hits are channel-2 only.
+
+        Empty input (no entities, no query, no question) returns the
+        newest ``max_memories`` memories with a warning.
+
+        Args:
+            entities: Canonical entity reference strings.
+            query: Optional ``SlayerQuery`` (dict). Entities are
+                auto-extracted to broaden channel-1 input.
+            question: Free-text query for the tantivy full-text channel.
+            max_memories: Cap on returned memory hits (default 5).
+            max_entities: Cap on returned entity hits (default 5).
+        """
+        try:
+            response = await search_service.search(
+                entities=entities,
+                query=query,
+                question=question,
+                max_memories=max_memories,
+                max_entities=max_entities,
             )
         except (
             EntityResolutionError,

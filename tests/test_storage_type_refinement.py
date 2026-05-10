@@ -287,7 +287,7 @@ class TestYamlStorageRefinementOnLoad:
         # Re-read raw YAML; should be v5 with refined types.
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
-        assert raw["version"] == 5
+        assert raw["version"] == 6
         types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
         assert types_by_name["id"] == "INT"
         assert types_by_name["qty"] == "INT"
@@ -435,7 +435,7 @@ class TestCliMigrateTypes:
         _run_storage(args)
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
-        assert raw["version"] == 5
+        assert raw["version"] == 6
         types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
         assert types_by_name["id"] == "INT"
         assert types_by_name["qty"] == "INT"

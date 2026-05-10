@@ -65,6 +65,7 @@ Each column carries the metadata needed to use it either as a GROUP BY key (a "d
 | `allowed_aggregations` | list[str] | No | — | Whitelist of permitted aggregations. Must be a subset of the type-default eligibility set (or be a custom aggregation defined on this model). Validated at model construction time |
 | `filter` | string | No | — | SQL condition applied inside CASE-WHEN at aggregation time. See [Filtered Columns](#filtered-columns) below |
 | `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"source": "CRM", "team": "analytics"}`) |
+| `sampled` | string | No | — | DEV-1375: cached sample-value snapshot (distinct values for low-cardinality categorical, `min .. max` for numeric/temporal, `> 20 distinct` for high-cardinality). Auto-populated by `slayer ingest`, `slayer search refresh-samples`, and `inspect_model`'s lazy fill. Read by `inspect_model` and the [search index](search.md). |
 
 ### Derived Columns Referencing Other Derived Columns
 

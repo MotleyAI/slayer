@@ -19,6 +19,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.service import MemoryService
+from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,21 @@ class RecallMemoriesRequest(BaseModel):
     about: Any
     max_learnings: Optional[int] = None
     max_queries: Optional[int] = 2
+
+
+class SearchRequest(BaseModel):
+    """Body for ``POST /search`` (DEV-1375). Mirrors the MCP / CLI /
+    SlayerClient surfaces.
+
+    All three retrieval inputs are optional. Empty input falls back to
+    a recency listing of the newest ``max_memories`` memories.
+    """
+
+    entities: Optional[List[str]] = None
+    query: Optional[Any] = None
+    question: Optional[str] = None
+    max_memories: int = 5
+    max_entities: int = 5
 
 
 def _slayer_version() -> str:
@@ -584,6 +600,38 @@ def create_app(storage: StorageBackend) -> FastAPI:
                 about=request.about,
                 max_learnings=request.max_learnings,
                 max_queries=request.max_queries,
+            )
+        except (
+            EntityResolutionError,
+            AmbiguousModelError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return response.model_dump(mode="json")
+
+    # ---------- DEV-1375: semantic search -----------------------------
+
+    search_service = SearchService(storage=storage)
+
+    @app.post(
+        "/search",
+        responses={
+            400: {
+                "description": (
+                    "Invalid input: ambiguous bare-name reference, "
+                    "unknown entity, or malformed query payload."
+                )
+            }
+        },
+    )
+    async def search(request: SearchRequest) -> Dict[str, Any]:
+        try:
+            response = await search_service.search(
+                entities=request.entities,
+                query=request.query,
+                question=request.question,
+                max_memories=request.max_memories,
+                max_entities=request.max_entities,
             )
         except (
             EntityResolutionError,

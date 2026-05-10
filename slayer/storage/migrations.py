@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Tuple
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: Dict[str, int] = {
-    "SlayerModel": 5,
+    "SlayerModel": 6,
     "SlayerQuery": 3,
     "DatasourceConfig": 1,
     "Memory": 1,
@@ -87,3 +87,4 @@ from slayer.storage import v2_migration  # noqa: E402, F401
 from slayer.storage import v3_migration  # noqa: E402, F401
 from slayer.storage import v4_migration  # noqa: E402, F401
 from slayer.storage import v5_migration  # noqa: E402, F401
+from slayer.storage import v6_migration  # noqa: E402, F401

@@ -10,6 +10,7 @@ from slayer.memories.models import (
     RecallResponse,
     SaveMemoryResponse,
 )
+from slayer.search.service import SearchResponse, SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,45 @@ class SlayerClient:
             method="POST", path="/memories/recall", json=body
         )
         return RecallResponse.model_validate(result)
+
+    # ----- Search API (DEV-1375) -----
+
+    async def search(
+        self,
+        *,
+        entities: Optional[List[str]] = None,
+        query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
+        question: Optional[str] = None,
+        max_memories: int = 5,
+        max_entities: int = 5,
+    ) -> SearchResponse:
+        """Two-channel semantic search over memories + canonical entities."""
+        coerced_query: Any = None
+        if query is not None:
+            coerced_query = (
+                query.model_dump(mode="json", exclude_none=True)
+                if isinstance(query, SlayerQuery) else query
+            )
+        if self._storage is not None:
+            return await SearchService(storage=self._storage).search(
+                entities=entities,
+                query=coerced_query,
+                question=question,
+                max_memories=max_memories,
+                max_entities=max_entities,
+            )
+        body: Dict[str, Any] = {
+            "max_memories": max_memories,
+            "max_entities": max_entities,
+        }
+        if entities is not None:
+            body["entities"] = entities
+        if coerced_query is not None:
+            body["query"] = coerced_query
+        if question is not None:
+            body["question"] = question
+        result = await self._request(method="POST", path="/search", json=body)
+        return SearchResponse.model_validate(result)
 
     # ----- Sync API (for notebooks, scripts, CLI) -----
 

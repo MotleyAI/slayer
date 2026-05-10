@@ -3011,3 +3011,190 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
         assert amounts == sorted(amounts, reverse=True), (
             f"customer {cid} amounts not in DESC order: {ranks}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1375 — semantic search end-to-end on SQLite
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def search_env(tmp_path):
+    """SQLite + storage with two models ingested through the live
+    ``ingest_datasource_idempotent`` path so every column gets a real
+    ``Column.sampled`` snapshot, plus one seeded memory tagged on
+    ``test_sqlite.orders`` for the entity-channel test."""
+    from slayer.engine.ingestion import ingest_datasource_idempotent
+
+    db_path = tmp_path / "search.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE customers (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            region TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            amount REAL NOT NULL,
+            customer_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        )
+        """
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?, ?, ?)",
+        [
+            (1, "Alice", "US"),
+            (2, "Bob", "EU"),
+            (3, "Charlie", "US"),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
+        [
+            (1, "completed", 100.0, 1, "2025-01-15"),
+            (2, "completed", 200.0, 2, "2025-01-20"),
+            (3, "pending", 50.0, 1, "2025-02-10"),
+            (4, "cancelled", 75.0, 3, "2025-02-15"),
+            (5, "completed", 300.0, 2, "2025-03-05"),
+            (6, "pending", 25.0, 3, "2025-03-20"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    datasource = DatasourceConfig(
+        name="test_sqlite", type="sqlite", database=str(db_path),
+    )
+    await storage.save_datasource(datasource)
+
+    # Live ingest — populates Column.sampled on every non-pk column via the
+    # production code path.
+    await ingest_datasource_idempotent(datasource=datasource, storage=storage)
+
+    await storage.save_memory(
+        learning="orders.amount is gross of refunds.",
+        entities=["test_sqlite.orders"],
+    )
+
+    engine = SlayerQueryEngine(storage=storage)
+    return engine, storage
+
+
+async def test_search_ingest_populates_sampled(search_env):
+    """``slayer ingest`` writes ``Column.sampled`` for every non-pk column
+    on every table-backed model. Categorical and numeric columns get
+    different formats — spot-check one of each."""
+    _engine, storage = search_env
+    orders = await storage.get_model("orders", data_source="test_sqlite")
+    customers = await storage.get_model("customers", data_source="test_sqlite")
+    assert orders is not None
+    assert customers is not None
+
+    for model in (orders, customers):
+        for col in model.columns:
+            if col.primary_key or col.hidden:
+                continue
+            assert col.sampled is not None, (
+                f"{model.name}.{col.name} sampled was not populated by ingest"
+            )
+
+    status = next(c for c in orders.columns if c.name == "status")
+    assert "completed" in status.sampled
+    assert "pending" in status.sampled
+    assert "cancelled" in status.sampled
+
+    amount = next(c for c in orders.columns if c.name == "amount")
+    # Numeric columns surface as "<min> .. <max>".
+    assert ".." in amount.sampled
+
+
+async def test_search_question_finds_column(search_env):
+    """``search(question="amount")`` returns a column EntityHit pointing at
+    one of the seeded ``amount``-named columns."""
+    from slayer.search.service import SearchService
+
+    _engine, storage = search_env
+    response = await SearchService(storage=storage).search(
+        question="amount",
+        max_entities=10,
+        max_memories=0,
+    )
+    column_hits = [e for e in response.entities if e.kind == "column"]
+    assert column_hits, (
+        "expected at least one column EntityHit; got entities="
+        f"{[(e.id, e.kind) for e in response.entities]}"
+    )
+    expected = {"test_sqlite.orders.amount", "test_sqlite.customers.region"}
+    assert any(h.id in expected for h in column_hits) or any(
+        h.id.endswith(".amount") for h in column_hits
+    )
+
+
+async def test_search_entity_filter_finds_memory(search_env):
+    """``search(entities=["test_sqlite.orders"])`` returns the seeded
+    memory with ``matched_entities`` listing the orders canonical id."""
+    from slayer.search.service import SearchService
+
+    _engine, storage = search_env
+    response = await SearchService(storage=storage).search(
+        entities=["test_sqlite.orders"],
+        max_memories=5,
+    )
+    assert len(response.memories) >= 1
+    hit = response.memories[0]
+    assert "test_sqlite.orders" in hit.matched_entities
+    assert "refunds" in hit.text
+
+
+async def test_search_edit_model_filter_refreshes_sampled(search_env):
+    """A model-level mutation (``SlayerModel.filters``) triggers
+    ``handle_edit_refresh(model_level_change=True)`` which re-profiles
+    every column. After the mutation, every column still has a
+    ``sampled`` snapshot."""
+    from slayer.engine.profiling import handle_edit_refresh
+
+    engine, storage = search_env
+    orders_before = await storage.get_model("orders", data_source="test_sqlite")
+    assert orders_before is not None
+    before_sampled = {c.name: c.sampled for c in orders_before.columns}
+
+    orders_before.filters = ["status != 'cancelled'"]
+    await storage.save_model(orders_before)
+
+    errors = await handle_edit_refresh(
+        engine=engine,
+        storage=storage,
+        data_source="test_sqlite",
+        model_name="orders",
+        changed_columns=set(),
+        model_level_change=True,
+    )
+    assert errors == []
+
+    orders_after = await storage.get_model("orders", data_source="test_sqlite")
+    assert orders_after is not None
+    for col in orders_after.columns:
+        if col.primary_key or col.hidden:
+            continue
+        assert col.sampled is not None, (
+            f"orders.{col.name} sampled was cleared without repopulation"
+        )
+
+    status_after = next(c for c in orders_after.columns if c.name == "status")
+    # The filter excludes 'cancelled', so the new sampled snapshot must
+    # not list it.
+    assert "cancelled" not in status_after.sampled
+    assert before_sampled["status"] != status_after.sampled

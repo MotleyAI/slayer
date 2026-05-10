@@ -5052,6 +5052,50 @@ typing-extensions = {version = ">=4.10.0", markers = "python_version < \"3.13\""
 full = ["httpx (>=0.27.0,<0.29.0)", "itsdangerous", "jinja2", "python-multipart (>=0.0.18)", "pyyaml"]
 
 [[package]]
+name = "tantivy"
+version = "0.26.0"
+description = "Official Python bindings for the Tantivy search engine"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "tantivy-0.26.0-cp310-cp310-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:7c5b86629e5f0834b520607497f91545b0deedf800a912872a1b647f13cef54f"},
+    {file = "tantivy-0.26.0-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:c0c8421eccad77435da3ef93ea770b8fb9d9e09b8d44d135b8b9d6cde7ff2ec0"},
+    {file = "tantivy-0.26.0-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:162ce3923c962b5d03d16dd06af51122c868626609135cee960b768ea7a95ea8"},
+    {file = "tantivy-0.26.0-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:458959b476a7a7082c840d2736588057d7c4c22400babdb4c8ae159519f0e5bb"},
+    {file = "tantivy-0.26.0-cp310-cp310-win_amd64.whl", hash = "sha256:9b8fc70a7b86978e9e2dbece96def11d41aa1ee8cbaea773124d2dca2c0270a5"},
+    {file = "tantivy-0.26.0-cp311-cp311-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:5748304687042b2c643e30b646047f254e8a21441515929ea0e54c6de0ed493b"},
+    {file = "tantivy-0.26.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:d8617af05dfc030acca0d93c14594b247e18550d803359946cb8cf76620a767e"},
+    {file = "tantivy-0.26.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3dbb17edf7ee25c77f60e7b757488bb8a127c28fc6cac3d8484e2d1ae862d77f"},
+    {file = "tantivy-0.26.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:62cfb03e3ca4cb0f41213acf0a3fd04ffe7f359ca6e3e91cab37c06799e68d3c"},
+    {file = "tantivy-0.26.0-cp311-cp311-win_amd64.whl", hash = "sha256:d2f7406936fc835925274ce26db338ae4063e9fae62ca7ac772e8fe9b3681bbe"},
+    {file = "tantivy-0.26.0-cp312-cp312-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:a4676c1989d8d7e61ebc4d6d4b46224fa9351eedb6e077a815a5f7233c4e20b6"},
+    {file = "tantivy-0.26.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:df1e2f21f69ffe9ea12ca7f3f3900eadea4670cf6f8c15aa4fec0bb3a1185577"},
+    {file = "tantivy-0.26.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d2d22d53c9fd718b6d74eea3b0e8a26ec8bd7ca8a594ba15c7a38ac5e9e3d33b"},
+    {file = "tantivy-0.26.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ff0765cfbc9e10e96b71c78074e29f25fee388e5bc8a0a7c8aa166bf80304769"},
+    {file = "tantivy-0.26.0-cp312-cp312-win_amd64.whl", hash = "sha256:98847127caa2c619dcad151480bd7d331b46dc5f7be140abed87837722dad6b0"},
+    {file = "tantivy-0.26.0-cp313-cp313-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:7509b06fab07d4209bf37759e3c0c407f6c53fa3184d694ec82416fc8d189e7d"},
+    {file = "tantivy-0.26.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:0c77962afc03f8a7081991fee088d09891acaa3401cdf882b1cc40d9d839a683"},
+    {file = "tantivy-0.26.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9f017f6991752da8092c46c670e0eae349a1266d2315720ff5b252ed1ea4acd4"},
+    {file = "tantivy-0.26.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bb7df28cc98497c767b86ebc5f167e3f2552739f748a1c28c10e14e7db726cd1"},
+    {file = "tantivy-0.26.0-cp313-cp313-win_amd64.whl", hash = "sha256:9d4278d25df78ebd71dcf5510273fa0f4c552e1eed1b6e35a8f2d00b2003b2d7"},
+    {file = "tantivy-0.26.0-cp313-cp313t-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:7b9a350e59513e330fbcb0930ef2f574d86a8aa46047a1ad1c5b4c91838e3aec"},
+    {file = "tantivy-0.26.0-cp313-cp313t-macosx_10_12_x86_64.whl", hash = "sha256:e1bdf6dcbd25fdc3244e6b09f5114253a81ec533ad5346eff135ee98668f04c7"},
+    {file = "tantivy-0.26.0-cp313-cp313t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a9450186861d6f350ec5969ff2e349377d2ed5617f084a8ad0f303ed7a91a2e3"},
+    {file = "tantivy-0.26.0-cp313-cp313t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e69569ec68c0e8d1c3aa3cf52423ced6b9b9b5bb0156e8b32088390919d41964"},
+    {file = "tantivy-0.26.0-cp313-cp313t-win_amd64.whl", hash = "sha256:2064dd212455666b0f212d832bed38cc5b2de6c5f8069009926ad103bc2eb428"},
+    {file = "tantivy-0.26.0-cp314-cp314-macosx_10_12_x86_64.macosx_11_0_arm64.macosx_10_12_universal2.whl", hash = "sha256:7983206d75c7334fdcb1c49372adf6afe8aeb89ad2abfc7a5fd9701254735134"},
+    {file = "tantivy-0.26.0-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:4a970d35402612208b077de5feb9da978380c173e7835335c50d15d0f13cbaba"},
+    {file = "tantivy-0.26.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:22f6acf0c4d9dff2aecb161071db921c9a0bd3e2485dbc8304fd4561fe50c6a7"},
+    {file = "tantivy-0.26.0-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a92825f3215fc4b5ef55da8a577eb9ad30c7ee5c7371daea82329e67aa4c7d12"},
+    {file = "tantivy-0.26.0-cp314-cp314-win_amd64.whl", hash = "sha256:0c9ce6c5a04c4a18244f38601ea18a94044c07f8e713894d456dcbfccd3fa0f5"},
+    {file = "tantivy-0.26.0.tar.gz", hash = "sha256:7c9507fcc62bac4ef1d40b1ed37ff7fa07e44b5043b30288f63bcf4fdc62644a"},
+]
+
+[package.extras]
+dev = ["nox"]
+
+[[package]]
 name = "terminado"
 version = "0.18.1"
 description = "Tornado websocket backend for the Xterm.js Javascript terminal emulator library."
@@ -5594,4 +5638,4 @@ postgres = ["asyncpg", "psycopg2-binary"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "bb21f324d637afcd351cd130f8dbb370a83f4317cb79c1cac919999013db6f9c"
+content-hash = "bdb98abb9b11358c52aafa03a786af1a0a998baebab83ea6c9a5ba62ebb4f101"

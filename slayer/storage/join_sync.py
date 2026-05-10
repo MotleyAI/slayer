@@ -179,6 +179,21 @@ class JoinSyncStorage(StorageBackend):
         await self._ensure_reconciled()
         return await self._inner.get_model(name, data_source=data_source)
 
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        return await self._inner.update_column_sampled(
+            data_source=data_source,
+            model_name=model_name,
+            column_name=column_name,
+            sampled=sampled,
+        )
+
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         return await self._inner.save_datasource(datasource)
 

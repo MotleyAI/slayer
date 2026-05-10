@@ -133,6 +133,22 @@ class StorageBackend(ABC):
         data_source: Optional[str] = None,
     ) -> bool: ...
 
+    @abstractmethod
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        """Patch a single column's ``sampled`` field in-place (DEV-1375).
+
+        Avoids a full ``save_model`` per refresh — read-modify-write the
+        single field, leave every other field untouched. Raises
+        ``ValueError`` when the model or column doesn't exist.
+        """
+
     # ---- shared model lookup / load helpers --------------------------------
 
     async def _resolve_target_or_none(

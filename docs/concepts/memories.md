@@ -8,6 +8,10 @@ columns, named measures, custom aggregations), so before issuing a new
 query an agent can call `recall_memories` and pull back every note or
 example previously saved against the entities in its draft.
 
+For natural-language discovery (when you don't yet know the canonical
+entity to look at), use [`search`](search.md) instead — it adds a
+tantivy full-text channel over both memories and entities.
+
 A memory has two flavours:
 
 - **Learning** — a memory with no attached query. Surfaces in

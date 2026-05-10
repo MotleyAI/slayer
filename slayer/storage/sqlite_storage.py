@@ -195,6 +195,53 @@ class SQLiteStorage(StorageBackend):
         data_source, name = target
         return await asyncio.to_thread(self._delete_model_sync, data_source, name)
 
+    def _update_column_sampled_sync(
+        self, *, data_source: str, model_name: str,
+        column_name: str, sampled: Optional[str],
+    ) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT data FROM models WHERE data_source = ? AND name = ?",
+                (data_source, model_name),
+            ).fetchone()
+            if not row:
+                raise ValueError(
+                    f"update_column_sampled: model {model_name!r} in datasource "
+                    f"{data_source!r} not found."
+                )
+            data = json.loads(row[0])
+            cols = data.get("columns") or []
+            for col in cols:
+                if isinstance(col, dict) and col.get("name") == column_name:
+                    if sampled is None:
+                        col.pop("sampled", None)
+                    else:
+                        col["sampled"] = sampled
+                    break
+            else:
+                raise ValueError(
+                    f"update_column_sampled: column {column_name!r} not found "
+                    f"on model {model_name!r} in datasource {data_source!r}."
+                )
+            conn.execute(
+                "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+                (json.dumps(data), data_source, model_name),
+            )
+
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        await asyncio.to_thread(
+            self._update_column_sampled_sync,
+            data_source=data_source, model_name=model_name,
+            column_name=column_name, sampled=sampled,
+        )
+
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)
 
