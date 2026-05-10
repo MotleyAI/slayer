@@ -179,8 +179,8 @@ async def test_inspect_model_writes_back_on_sampled_miss(
         name="orders", sql_table="orders", data_source="ds",
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),  # sampled=None
-            Column(name="status", type=DataType.TEXT),    # sampled=None
+            Column(name="amount", type=DataType.DOUBLE),  # NOSONAR(S125) — sampled=None test annotation
+            Column(name="status", type=DataType.TEXT),    # NOSONAR(S125) — sampled=None test annotation
         ],
     ))
     from slayer.mcp.server import create_mcp_server

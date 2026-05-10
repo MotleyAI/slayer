@@ -50,7 +50,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
 # ---------------------------------------------------------------------------
 
 
-async def _call_mcp_tool(*, mcp, name: str, arguments: dict) -> str:
+async def _call_mcp_tool(*, mcp, name: str, arguments: dict) -> str:  # NOSONAR(S3776) — small test helper that branches over three FastMCP result shapes; splitting hurts readability
     """Invoke an MCP tool and return its text result."""
     result = await mcp.call_tool(name, arguments)
     if isinstance(result, tuple):
@@ -170,7 +170,7 @@ def _run_cli(args: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.Ca
     try:
         main()
         code = 0
-    except SystemExit as e:
+    except SystemExit as e:  # NOSONAR(S5754) — _run_cli intentionally captures SystemExit so tests can assert on exit codes
         code = int(e.code or 0)
     captured = capsys.readouterr()
     return code, captured.out
