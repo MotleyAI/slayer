@@ -17,7 +17,7 @@ import io
 import re
 import tokenize
 import warnings
-from typing import Any, Dict, List, Mapping, Optional, Union
+from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -69,6 +69,26 @@ STRING_HYGIENE_OPS = frozenset({
     "length",
     "concat",
 })
+
+CallCategory = Literal["transform", "hygiene", "like_internal", "unknown"]
+
+_LIKE_INTERNAL_NAMES = frozenset({"__like__", "__notlike__"})
+
+
+def _classify_call_name(name: str) -> CallCategory:
+    """Categorize a function-call identifier for the formula and filter walkers.
+
+    Single source of truth shared by ``_parse_node`` (formula → FieldSpec) and
+    ``_call_to_sql`` (filter → SQL string). Each walker still decides what
+    to do with the category; this helper just classifies the name.
+    """
+    if name in ALL_TRANSFORMS:
+        return "transform"
+    if name in STRING_HYGIENE_OPS:
+        return "hygiene"
+    if name in _LIKE_INTERNAL_NAMES:
+        return "like_internal"
+    return "unknown"
 
 
 class AggregatedMeasureRef(BaseModel):
@@ -534,7 +554,7 @@ def _parse_node(
             raise ValueError(f"Unsupported function call in formula: {original!r}")
 
         func_name = node.func.id
-        if func_name not in ALL_TRANSFORMS:
+        if _classify_call_name(func_name) != "transform":
             raise ValueError(
                 f"Unknown transform function '{func_name}'. "
                 f"Supported: {', '.join(sorted(ALL_TRANSFORMS))}"
@@ -1118,11 +1138,11 @@ def _call_to_sql(node: ast.Call, original: str, recur) -> str:
     if not isinstance(node.func, ast.Name):
         raise ValueError(f"Unsupported call expression: {ast.dump(node)}")
     func_name = node.func.id
-    if func_name == "__like__" and len(node.args) >= 2:
-        return f"{recur(node.args[0])} LIKE '{_get_string_arg(node.args[1], original)}'"
-    if func_name == "__notlike__" and len(node.args) >= 2:
-        return f"{recur(node.args[0])} NOT LIKE '{_get_string_arg(node.args[1], original)}'"
-    if func_name in STRING_HYGIENE_OPS:
+    category = _classify_call_name(func_name)
+    if category == "like_internal" and len(node.args) >= 2:
+        sql_op = "LIKE" if func_name == "__like__" else "NOT LIKE"
+        return f"{recur(node.args[0])} {sql_op} '{_get_string_arg(node.args[1], original)}'"
+    if category == "hygiene":
         # DEV-1378: lowercase string-hygiene scalars (lower / upper / trim /
         # replace / substr / instr / length / concat). Args recurse through
         # the standard handler, so nested calls and literal/integer
