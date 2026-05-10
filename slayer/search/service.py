@@ -43,8 +43,10 @@ _OVER_FETCH_MULTIPLIER = 5
 
 class MemoryHit(BaseModel):
     """A memory result. ``id`` is the integer memory id (suitable for
-    ``forget_memory(id=hit.id)``). ``score`` is the RRF-fused score
-    when both channels contributed; otherwise the channel's raw score."""
+    ``forget_memory(id=hit.id)``). ``score`` is always the
+    Reciprocal-Rank-Fusion score (``Σ 1 / (k + rank)``, ``k=60``); even
+    single-channel searches go through RRF, so the value is comparable
+    across channels but is not directly the raw BM25 / tantivy score."""
 
     id: int
     score: float
@@ -112,6 +114,7 @@ def _split_tantivy_hits(
 
 
 def _backfill_memory_by_id(
+    *,
     memory_by_id: dict,
     all_memories: List["Memory"],
     mem_ids,
@@ -257,12 +260,12 @@ class SearchService:
                         f"entities list items must be strings; got "
                         f"{type(raw).__name__}."
                     )
-                result = await resolve_entity(raw, storage=self._storage)
+                result = await resolve_entity(raw=raw, storage=self._storage)
                 canonical.extend(result.canonical_forms)
                 warnings.extend(result.warnings)
         if query is not None:
             extraction = await extract_entities_from_query(
-                _coerce_query(query), storage=self._storage,
+                query=_coerce_query(query), storage=self._storage,
             )
             canonical.extend(extraction.canonical_forms)
             warnings.extend(extraction.warnings)
@@ -303,7 +306,10 @@ class SearchService:
         channel_1_memory_ranking: List[int] = []
         memory_by_id: dict[int, Memory] = {}
         if channel_1_active and canonical_input_entities:
-            ranked = bm25_rank(all_memories, canonical_input_entities)
+            ranked = bm25_rank(
+                memories=all_memories,
+                query_entities=canonical_input_entities,
+            )
             for memory, _score in ranked[:over_fetch]:
                 memory_by_id[memory.id] = memory
                 channel_1_memory_ranking.append(memory.id)
@@ -339,10 +345,14 @@ class SearchService:
         # Backfill memory_by_id from both rankings so downstream RRF can
         # always resolve the memory.
         _backfill_memory_by_id(
-            memory_by_id, all_memories, channel_1_memory_ranking,
+            memory_by_id=memory_by_id,
+            all_memories=all_memories,
+            mem_ids=channel_1_memory_ranking,
         )
         _backfill_memory_by_id(
-            memory_by_id, all_memories, index_hits_by_memory_id.keys(),
+            memory_by_id=memory_by_id,
+            all_memories=all_memories,
+            mem_ids=index_hits_by_memory_id.keys(),
         )
         return (
             channel_2_memory_ranking,
