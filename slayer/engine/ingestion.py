@@ -981,13 +981,17 @@ async def ingest_datasource_idempotent(
 
     # DEV-1375: refresh persisted Column.sampled values for every
     # table-backed model in this datasource. Best-effort: per-column
-    # failures are accumulated as IngestionError entries.
+    # failures are accumulated as IngestionError entries; an unexpected
+    # raise is also caught so ingestion's idempotent contract holds.
     refresh_engine = SlayerQueryEngine(storage=storage)
-    refresh_errors = await refresh_all_table_backed_sampled(
-        engine=refresh_engine,
-        storage=storage,
-        data_source=datasource.name,
-    )
+    try:
+        refresh_errors = await refresh_all_table_backed_sampled(
+            engine=refresh_engine,
+            storage=storage,
+            data_source=datasource.name,
+        )
+    except Exception as exc:
+        refresh_errors = [f"{datasource.name}: {exc}"]
     for err in refresh_errors:
         errors.append(IngestionError(
             model_name=err.split(".", 1)[0] if "." in err else "",

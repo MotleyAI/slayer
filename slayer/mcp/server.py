@@ -1276,7 +1276,7 @@ def create_mcp_server(storage: StorageBackend):
                             "%s.%s.%s: %s",
                             model.data_source, model.name, e.name, exc,
                         )
-            measure_profile = await _collect_measure_profile(model=model, engine=engine)
+                measure_profile = await _collect_measure_profile(model=model, engine=engine)
 
         # ``measure_types`` informs the sample query's choice of avg vs
         # count_distinct. Only needed when ``samples`` is in the included set.

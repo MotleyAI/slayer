@@ -1,7 +1,7 @@
 """Python client for SLayer API."""
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import FieldMetadata, ResponseAttributes, SlayerResponse
@@ -10,7 +10,9 @@ from slayer.memories.models import (
     RecallResponse,
     SaveMemoryResponse,
 )
-from slayer.search.service import SearchResponse, SearchService
+
+if TYPE_CHECKING:
+    from slayer.search.service import SearchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -270,8 +272,14 @@ class SlayerClient:
         question: Optional[str] = None,
         max_memories: int = 5,
         max_entities: int = 5,
-    ) -> SearchResponse:
+    ) -> "SearchResponse":
         """Two-channel semantic search over memories + canonical entities."""
+        # Local imports: slayer.search.service transitively imports tantivy,
+        # which is not part of the client extras (httpx + pandas). Remote-only
+        # client installs that never call .search() should not blow up at
+        # module-import time.
+        from slayer.search.service import SearchResponse, SearchService
+
         coerced_query: Any = None
         if query is not None:
             coerced_query = (

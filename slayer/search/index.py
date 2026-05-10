@@ -100,9 +100,12 @@ def build_in_memory_index(
     index = tantivy.Index(schema=schema)
     writer = index.writer()
 
-    # Datasource docs (one per datasource).
+    # Datasource docs (one per datasource). Hidden models must not leak
+    # into the datasource doc — otherwise a query against a hidden model's
+    # name surfaces the parent datasource and breaks the contract.
+    visible_models = [m for m in models if not m.hidden]
     models_by_ds: dict[str, List[SlayerModel]] = {}
-    for m in models:
+    for m in visible_models:
         models_by_ds.setdefault(m.data_source, []).append(m)
     for ds in datasources:
         ds_models = models_by_ds.get(ds, [])
@@ -113,9 +116,7 @@ def build_in_memory_index(
         )
 
     # Model + column + measure + aggregation docs.
-    for model in models:
-        if model.hidden:
-            continue
+    for model in visible_models:
         model_canonical = f"{model.data_source}.{model.name}"
         _add_doc(
             writer=writer, doc_id=model_canonical, kind="model",

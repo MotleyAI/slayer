@@ -168,12 +168,17 @@ class SearchService:
 
         over_fetch = max(max_memories, max_entities) * _OVER_FETCH_MULTIPLIER
 
+        # Single memory-corpus fetch shared by both channels — avoids two
+        # full scans when entities/query AND question are both supplied.
+        all_memories: List[Memory] = []
+        if channel_1_active or question_active:
+            all_memories = await self._storage.list_memories(entities=None)
+
         # ---- Channel 1: entity-overlap BM25 over memories ------------------
         channel_1_memory_ranking: List[int] = []
         memory_by_id: dict[int, Memory] = {}
         if channel_1_active and canonical_input_entities:
-            corpus = await self._storage.list_memories(entities=None)
-            ranked = bm25_rank(corpus, canonical_input_entities)
+            ranked = bm25_rank(all_memories, canonical_input_entities)
             for memory, _score in ranked[:over_fetch]:
                 memory_by_id[memory.id] = memory
                 channel_1_memory_ranking.append(memory.id)
@@ -184,7 +189,6 @@ class SearchService:
         index_hits_by_memory_id: dict[int, IndexHit] = {}
 
         if question_active:
-            all_memories = await self._storage.list_memories(entities=None)
             all_models, datasources = await self._collect_index_corpus()
             index = build_in_memory_index(
                 memories=all_memories,
