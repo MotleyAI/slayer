@@ -6699,7 +6699,11 @@ class TestStringHygieneDialectTranslation:
             measures=[ModelMeasure(formula="*:count")],
             filters=["lower(status) = 'active'"],
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
     @pytest.mark.parametrize(
@@ -6720,7 +6724,11 @@ class TestStringHygieneDialectTranslation:
             measures=[ModelMeasure(formula="*:count")],
             filters=["instr(status, ',') > 0"],
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
     @pytest.mark.parametrize(
@@ -6741,7 +6749,11 @@ class TestStringHygieneDialectTranslation:
             measures=[ModelMeasure(formula="*:count")],
             filters=["substr(status, 1, 5) = 'abcde'"],
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
     @pytest.mark.parametrize(
@@ -6763,7 +6775,11 @@ class TestStringHygieneDialectTranslation:
             measures=[ModelMeasure(formula="*:count")],
             filters=["status || status = 'foo'"],
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
         assert expected_substring in sql, f"{dialect}: {expected_substring!r} not in {sql!r}"
 
 
@@ -6787,7 +6803,11 @@ class TestReplaceFunctionInPredicate:
             measures=[ModelMeasure(formula="*:count")],
             filters=["replace(status, ',', '') = 'foo'"],
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
         # Function-call form, not the broken `REPLACE (x, ...)` Command form.
         assert "REPLACE(" in sql.upper() or "replace(" in sql
         assert "REPLACE (" not in sql.upper()  # space after REPLACE = Command form
@@ -6808,7 +6828,11 @@ class TestReplaceFunctionInPredicate:
             source_model="orders",
             measures=[ModelMeasure(formula="cleaned_amt:sum")],
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
         # Function-call form, not Command.
         assert "REPLACE(" in sql.upper() or "replace(" in sql
         assert "REPLACE (" not in sql.upper()
