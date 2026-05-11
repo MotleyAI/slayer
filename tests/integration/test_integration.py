@@ -3011,3 +3011,247 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
         assert amounts == sorted(amounts, reverse=True), (
             f"customer {cid} amounts not in DESC order: {ranks}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1378 — Mode A SQL filter end-to-end via parse_sql_predicate
+# ---------------------------------------------------------------------------
+
+
+async def _setup_items_db(tmp_path) -> YAMLStorage:
+    """Build the shared SQLite ``items`` table + storage used by the
+    DEV-1378 ``lower(...)`` filter tests below."""
+    db_path = tmp_path / "ds.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)")
+    cur.executemany(
+        "INSERT INTO items VALUES (?, ?, ?)",
+        [(1, "Active", 10.0), (2, "ACTIVE", 20.0), (3, "inactive", 5.0), (4, "active", 30.0)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+    return storage
+
+
+async def test_model_filter_with_lower_function_runs(tmp_path):
+    """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
+    (``lower(...)``) must execute end-to-end against SQLite. Before
+    DEV-1378 the engine raised ``Unknown filter function 'lower'`` at
+    enrichment time."""
+    storage = await _setup_items_db(tmp_path)
+
+    model = SlayerModel(
+        name="items",
+        sql_table="items",
+        data_source="ds",
+        filters=["lower(status) = 'active'"],
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+    )
+    await storage.save_model(model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="*:count")])
+    )
+    # Three rows match: "Active", "ACTIVE", "active" (case-folded match for "active").
+    assert response.data[0]["items._count"] == 3
+
+
+async def test_column_filter_with_lower_function_runs(tmp_path):
+    """Mode A: ``Column.filter`` with ``lower(...)`` runs end-to-end as a
+    CASE-WHEN measure-level filter against SQLite."""
+    storage = await _setup_items_db(tmp_path)
+
+    model = SlayerModel(
+        name="items",
+        sql_table="items",
+        data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(
+                name="active_amount",
+                sql="amount",
+                filter="lower(status) = 'active'",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    await storage.save_model(model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="active_amount:sum")])
+    )
+    # Active rows total: 10 + 20 + 30 = 60
+    assert response.data[0]["items.active_amount_sum"] == pytest.approx(60.0)
+
+
+async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
+    """Mode A: ``SlayerModel.filters`` with a ``__``-delimited join path
+    (``customers__regions.name = 'EU'``) must drive the join planner
+    correctly so the filter is applied against the joined table."""
+    db_path = tmp_path / "ds.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+    cur.execute(
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER NOT NULL,"
+        " FOREIGN KEY(region_id) REFERENCES regions(id))"
+    )
+    cur.execute(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, amount REAL NOT NULL,"
+        " FOREIGN KEY(customer_id) REFERENCES customers(id))"
+    )
+    cur.executemany("INSERT INTO regions VALUES (?, ?)", [(1, "US"), (2, "EU")])
+    cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 1), (2, 2), (3, 1)])
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?)",
+        [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 75.0), (4, 2, 25.0)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+
+    regions_model = SlayerModel(
+        name="regions",
+        sql_table="regions",
+        data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+        ],
+    )
+    customers_model = SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.INT),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[("region_id", "id")])],
+    )
+    orders_model = SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="ds",
+        # Mode A SQL filter with __-delimited join path through customers→regions.
+        filters=["customers__regions.name = 'EU'"],
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")])],
+    )
+    await storage.save_model(regions_model)
+    await storage.save_model(customers_model)
+    await storage.save_model(orders_model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+    )
+    # Customers in EU: id=2 only. Their orders: id=2 (amount 50) and id=4 (amount 25) = 2 orders.
+    assert response.data[0]["orders._count"] == 2
+
+
+async def test_model_filter_with_json_extract_runs(tmp_path):
+    """Mode A: ``SlayerModel.filters`` with ``json_extract(...)`` (a SQLite
+    built-in function) executes end-to-end. Pre-DEV-1378 this raised
+    ``Unknown filter function 'json_extract'`` at enrichment time."""
+    db_path = tmp_path / "ds.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL, amount REAL NOT NULL)"
+    )
+    cur.executemany(
+        "INSERT INTO items VALUES (?, ?, ?)",
+        [
+            (1, '{"active": 1}', 10.0),
+            (2, '{"active": 0}', 20.0),
+            (3, '{"active": 1}', 30.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+
+    model = SlayerModel(
+        name="items",
+        sql_table="items",
+        data_source="ds",
+        filters=["json_extract(metadata, '$.active') = 1"],
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="metadata", sql="metadata", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+    )
+    await storage.save_model(model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="*:count")])
+    )
+    # Two rows have active=1.
+    assert response.data[0]["items._count"] == 2
+
+
+
+async def test_query_filter_with_lower_function_runs(integration_env):
+    """DEV-1378: ``SlayerQuery.filters`` accepts ``lower(...)`` from the
+    string-hygiene allowlist and matches case-insensitively at runtime."""
+    engine = integration_env
+
+    # The integration_env's ``orders`` table has statuses
+    # ``completed`` / ``pending`` / ``cancelled`` (lowercase). The
+    # filter folds and compares against ``completed`` to confirm it
+    # actually goes through the engine, not just round-trip.
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["lower(status) = 'completed'"],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders._count"] == 3
+
+
+async def test_query_filter_with_replace_runs(integration_env):
+    """DEV-1378: ``replace(...)`` in a ``SlayerQuery.filters`` predicate
+    runs end-to-end on SQLite. Pre-fix, ``sqlglot.parse_one`` falls back
+    to a ``Command`` (REPLACE INTO) parse and the emitted SQL is
+    malformed; ``SQLGenerator._parse_predicate`` wraps in SELECT
+    context to dodge it."""
+    engine = integration_env
+
+    # Replace any commas in `status` with empty string. None of the
+    # statuses contain commas, so this is identity — match `completed`.
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["replace(status, ',', '') = 'completed'"],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders._count"] == 3
