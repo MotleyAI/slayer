@@ -36,17 +36,42 @@ def current_model() -> str:
 
 @lru_cache(maxsize=1)
 def is_available() -> bool:
-    """Return True iff the ``embedding_search`` extra is installed.
+    """Return True iff the embedding channel is usable.
 
-    Cached for the lifetime of the process — installing a package mid-run
-    is not a supported scenario. Tests that need to toggle availability
-    should patch this symbol directly.
+    Two conditions, both required:
+
+    1. The ``embedding_search`` extra is installed (``litellm`` imports).
+    2. The configured embedding model has a usable API key in the
+       environment, per ``litellm.validate_environment``.
+
+    Both "extra not installed" and "extra installed but no API key" yield
+    ``False`` — the write-side refresh hooks short-circuit silently in
+    that case, and the search service emits a single user-visible
+    warning into ``SearchResponse.warnings``. This distinction matters
+    on CI where the extra is installed (for unit-test imports) but no
+    provider key is configured: per-entity refresh warnings would
+    otherwise spam ``save_memory`` / ``ingest`` / ``edit_model``
+    responses for a "feature not configured" case.
+
+    A genuine runtime error (rate limit, network blip, revoked key) is
+    a separate code path: ``embed_batch`` catches the exception there
+    and per-entity warnings *do* bubble up, surfacing the failure to
+    the user.
+
+    Cached for the lifetime of the process; tests should clear with
+    ``is_available.cache_clear()`` after touching env vars or patching
+    the symbol.
     """
     try:
-        import litellm  # noqa: F401
-        return True
+        import litellm
     except ImportError:
         return False
+    try:
+        validation = litellm.validate_environment(model=current_model())
+    except Exception:  # noqa: BLE001 — unknown model / litellm version drift
+        # Trust the user and let the actual embed call surface any error.
+        return True
+    return bool(validation.get("keys_in_environment", False))
 
 
 async def embed_batch(

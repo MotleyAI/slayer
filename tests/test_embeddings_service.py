@@ -92,17 +92,20 @@ def _make_model() -> SlayerModel:
 # ---------------------------------------------------------------------------
 
 
-async def test_refresh_memory_missing_extra_returns_warning(
+async def test_refresh_memory_silent_when_channel_unavailable(
     storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """When the extra isn't installed (or no API key is configured),
+    the write-side stays silent — no per-call warning bubbles up to
+    ``save_memory.warnings`` for a "feature not configured" case. The
+    user-visible signal lives on the search response."""
     monkeypatch.setattr(embedding_client, "is_available", lambda: False)
     service = EmbeddingService(
         storage=storage, model_name="openai/x",
     )
     memory = Memory(id=1, learning="hello", entities=["e1"])
     warnings = await service.refresh_memory(memory)
-    assert len(warnings) == 1
-    assert "embedding_search" in warnings[0]
+    assert warnings == []
     # Nothing got persisted.
     assert await storage.get_embedding(
         canonical_id="memory:1", embedding_model_name="openai/x",

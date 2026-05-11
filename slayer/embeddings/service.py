@@ -37,10 +37,6 @@ from slayer.storage.base import StorageBackend
 
 _log = logging.getLogger(__name__)
 
-_MISSING_EXTRA_WARNING = (
-    "embedding_search extra not installed; skipping embedding refresh."
-)
-
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -108,7 +104,13 @@ class EmbeddingService:
         """Refresh the embedding for a single memory. Returns warning
         strings (empty on success or hash-skip)."""
         if not embedding_client.is_available():
-            return [_MISSING_EXTRA_WARNING]
+            # Channel disabled (no extra installed, or no API key
+            # configured for the active embedding model). Stay silent on
+            # the write path — this is "feature not configured", not a
+            # runtime failure. The search-side surface emits one
+            # user-visible warning into ``SearchResponse.warnings`` on
+            # the next query.
+            return []
         pending = _PendingRefresh(
             canonical_id=_memory_canonical_id(memory.id),
             entity_kind="memory",
@@ -121,7 +123,13 @@ class EmbeddingService:
     ) -> List[str]:
         """Refresh the embedding for one datasource doc."""
         if not embedding_client.is_available():
-            return [_MISSING_EXTRA_WARNING]
+            # Channel disabled (no extra installed, or no API key
+            # configured for the active embedding model). Stay silent on
+            # the write path — this is "feature not configured", not a
+            # runtime failure. The search-side surface emits one
+            # user-visible warning into ``SearchResponse.warnings`` on
+            # the next query.
+            return []
         pending = _PendingRefresh(
             canonical_id=name,
             entity_kind="datasource",
@@ -137,7 +145,13 @@ class EmbeddingService:
         tantivy indexing rules).
         """
         if not embedding_client.is_available():
-            return [_MISSING_EXTRA_WARNING]
+            # Channel disabled (no extra installed, or no API key
+            # configured for the active embedding model). Stay silent on
+            # the write path — this is "feature not configured", not a
+            # runtime failure. The search-side surface emits one
+            # user-visible warning into ``SearchResponse.warnings`` on
+            # the next query.
+            return []
         if model.hidden:
             return []
         pending: List[_PendingRefresh] = []

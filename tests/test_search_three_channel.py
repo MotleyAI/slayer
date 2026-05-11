@@ -33,11 +33,12 @@ def storage() -> Iterator[YAMLStorage]:
 
 @pytest.fixture
 def stub_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Reset client state, then stub. The original ``is_available`` is an
-    # ``lru_cache``-wrapped function with a ``cache_clear`` attribute;
-    # the stub replaces it with a plain lambda, so call ``cache_clear``
-    # *before* the monkeypatch.
-    embedding_client.is_available.cache_clear()
+    """Opt in to the embedding code path. The session-wide autouse
+    fixture in ``conftest.py`` defaults ``is_available`` to a lambda
+    returning ``False``; this fixture replaces it with ``True``.
+
+    The query-embedding cache is process-wide, so clear it on entry so
+    a prior test's stubbed query doesn't leak in."""
     embedding_client._reset_query_cache()
     monkeypatch.setattr(embedding_client, "is_available", lambda: True)
 
@@ -71,10 +72,11 @@ async def _seed_basic_corpus(storage: YAMLStorage) -> None:
 async def test_question_only_warns_when_extra_missing(
     storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the extra isn't installed, the embedding channel emits a
-    warning and the search still returns whatever tantivy + BM25 found."""
-    embedding_client.is_available.cache_clear()
-    monkeypatch.setattr(embedding_client, "is_available", lambda: False)
+    """If the extra isn't installed (or no API key is configured), the
+    embedding channel emits a warning and the search still returns
+    whatever tantivy + BM25 found. The session-wide autouse fixture
+    already stubs ``is_available`` to ``False`` — this test relies on
+    that default rather than re-patching it."""
     await _seed_basic_corpus(storage)
     service = SearchService(storage=storage)
     response = await service.search(question="how do I look up purchases?")

@@ -17,8 +17,9 @@ from slayer.embeddings import client as embedding_client
 
 @pytest.fixture(autouse=True)
 def _reset_caches() -> None:
-    """Clear per-process caches between tests so env-var changes propagate."""
-    embedding_client.is_available.cache_clear()
+    """Clear the query-embedding cache between tests so a prior stub's
+    response doesn't leak in. ``is_available`` is reset to a False stub
+    by the conftest autouse fixture, so it is not re-cleared here."""
     embedding_client._reset_query_cache()
 
 

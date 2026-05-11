@@ -535,8 +535,9 @@ class SearchService:
             return [], [], []
         if not embedding_client.is_available():
             return [], [], [
-                "embedding channel skipped: "
-                "`embedding_search` extra not installed.",
+                "embedding channel skipped: `embedding_search` extra not "
+                "installed or no API key configured for the active "
+                "embedding model.",
             ]
 
         # Local import to break the ``slayer.search`` ↔ ``slayer.embeddings``
