@@ -581,6 +581,24 @@ class TestParseFilterInjection:
         result = parse_filter("customers.email not like '%spam.com'")
         assert "customers.email NOT LIKE '%spam.com'" in result.sql
 
+    # --- DEV-1378: hygiene-call LHS for LIKE / NOT LIKE ---------------------
+
+    def test_like_hygiene_call_lhs(self) -> None:
+        """``lower(name) like 'a%'`` and friends must parse — DEV-1378
+        added hygiene scalars but the LIKE preprocessor only matched
+        bare/dotted identifiers, so call LHS surfaced as a syntax error."""
+        result = parse_filter("lower(name) like 'a%'")
+        assert "lower(name) LIKE 'a%'" in result.sql
+
+    def test_not_like_hygiene_call_lhs(self) -> None:
+        result = parse_filter("trim(email) not like '%@test.com'")
+        assert "trim(email) NOT LIKE '%@test.com'" in result.sql
+
+    def test_like_hygiene_call_dotted_arg(self) -> None:
+        """The hygiene call's argument itself can be a dotted ref."""
+        result = parse_filter("lower(customers.email) like '%@motley.ai'")
+        assert "lower(customers.email) LIKE '%@motley.ai'" in result.sql
+
     # --- DEV-1376: subquery-in-filter helpful error -------------------------
 
     def test_filter_subquery_in_clause_raises(self) -> None:

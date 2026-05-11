@@ -3018,11 +3018,9 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
 # ---------------------------------------------------------------------------
 
 
-async def test_model_filter_with_lower_function_runs(tmp_path):
-    """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
-    (``lower(...)``) must execute end-to-end against SQLite. Before
-    DEV-1378 the engine raised ``Unknown filter function 'lower'`` at
-    enrichment time."""
+async def _setup_items_db(tmp_path) -> YAMLStorage:
+    """Build the shared SQLite ``items`` table + storage used by the
+    DEV-1378 ``lower(...)`` filter tests below."""
     db_path = tmp_path / "ds.db"
     conn = sqlite3.connect(str(db_path))
     cur = conn.cursor()
@@ -3038,6 +3036,15 @@ async def test_model_filter_with_lower_function_runs(tmp_path):
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+    return storage
+
+
+async def test_model_filter_with_lower_function_runs(tmp_path):
+    """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
+    (``lower(...)``) must execute end-to-end against SQLite. Before
+    DEV-1378 the engine raised ``Unknown filter function 'lower'`` at
+    enrichment time."""
+    storage = await _setup_items_db(tmp_path)
 
     model = SlayerModel(
         name="items",
@@ -3063,21 +3070,7 @@ async def test_model_filter_with_lower_function_runs(tmp_path):
 async def test_column_filter_with_lower_function_runs(tmp_path):
     """Mode A: ``Column.filter`` with ``lower(...)`` runs end-to-end as a
     CASE-WHEN measure-level filter against SQLite."""
-    db_path = tmp_path / "ds.db"
-    conn = sqlite3.connect(str(db_path))
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)")
-    cur.executemany(
-        "INSERT INTO items VALUES (?, ?, ?)",
-        [(1, "Active", 10.0), (2, "ACTIVE", 20.0), (3, "inactive", 5.0), (4, "active", 30.0)],
-    )
-    conn.commit()
-    conn.close()
-
-    storage_dir = tmp_path / "storage"
-    storage_dir.mkdir()
-    storage = YAMLStorage(base_dir=str(storage_dir))
-    await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+    storage = await _setup_items_db(tmp_path)
 
     model = SlayerModel(
         name="items",

@@ -607,6 +607,42 @@ class TestCascadeRules:
         qb_entry = _entry_for("qb_orders_summary", out)
         assert isinstance(qb_entry, WholeModelDelete)
 
+    def test_rule_6_query_backed_stage_filter_with_colon_syntax_cascades(
+        self,
+    ) -> None:
+        """A query-backed model whose stage filter uses Mode B DSL constructs
+        (``revenue:sum > 100``, ``change(...) > 0``) must still trigger a
+        cascade drop when the underlying column is dropped. Regression for
+        DEV-1378: stage filters were routed through the SQL-only ref
+        extractor and returned ``[]``, so drift cascades were missed.
+        """
+        orders = _orders_model()
+        qb = SlayerModel(
+            name="qb_orders_filtered",
+            data_source="ds",
+            source_queries=[
+                SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum", "name": "total"}],
+                    # DSL filter using colon-syntax aggregation — must be
+                    # parsed by the DSL parser so 'amount' surfaces as a ref.
+                    filters=["amount:sum > 100"],
+                ),
+            ],
+        )
+        edit = EditModelDelete(
+            model_name="orders",
+            data_source="ds",
+            remove=RemoveSpec(columns=["amount"]),
+        )
+        out = compute_datasource_drops(
+            models=[orders, qb],
+            sql_table_diffs={"orders": (edit, {"amount"})},
+            sql_diffs={},
+        )
+        qb_entry = _entry_for("qb_orders_filtered", out)
+        assert isinstance(qb_entry, WholeModelDelete)
+
     def test_rule_6_query_backed_whole_drop_when_base_model_whole_dropped(
         self,
     ) -> None:

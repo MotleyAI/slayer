@@ -852,10 +852,27 @@ class ParsedFilter(BaseModel):
             "regex that would let typos like ``made_up_sum`` through."
         ),
     )
+    agg_refs: List["AggregatedMeasureRef"] = Field(
+        default_factory=list,
+        description=(
+            "Aggregated measure references extracted from colon syntax in "
+            "the source filter (one per ``<measure>:<agg>`` occurrence). "
+            "Empty for Mode A SQL filters parsed by ``parse_sql_predicate``. "
+            "Schema drift uses these to recover the underlying measure name "
+            "(e.g. ``revenue`` from ``revenue:sum > 100``) — ``columns`` "
+            "alone only carries the canonical alias."
+        ),
+    )
 
 
+# LHS of a LIKE / NOT LIKE may be a bare/dotted identifier OR a single
+# hygiene-call (e.g. ``lower(name)``, ``trim(customers.email)``). The
+# call alternative is matched before the dotted-identifier alternative
+# so that ``lower(name) like 'a%'`` resolves to the call form.
+# ``[^()]*`` keeps this to one level of parens — nested hygiene calls
+# inside LIKE (e.g. ``concat(lower(a), b) like '%'``) still fall through.
 _LIKE_RE = re.compile(
-    r"\b((?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
+    r"\b(\w+\([^()]*\)|(?:\w+\.)*\w+)\s+(not\s+)?like\s+('[^']*')",
     flags=re.IGNORECASE,
 )
 
@@ -1039,7 +1056,12 @@ def parse_filter(
 
     columns: list[str] = []
     sql = _filter_node_to_sql(tree.body, formula, columns)
-    return ParsedFilter(sql=sql, columns=columns, synthesized_aliases=synthesized_aliases)
+    return ParsedFilter(
+        sql=sql,
+        columns=columns,
+        synthesized_aliases=synthesized_aliases,
+        agg_refs=list(agg_refs.values()),
+    )
 
 
 _BINOP_OP_MAP: Dict[type, str] = {

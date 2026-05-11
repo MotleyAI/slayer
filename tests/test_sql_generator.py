@@ -3085,15 +3085,12 @@ class TestFilteredMeasures:
         assert "_last_rn" in sql
         assert "_last_rn_f0" in sql
 
-    async def test_filtered_last_with_cross_model_filter_carries_join(
-        self, generator: SQLGenerator,
-    ) -> None:
-        """Regression for CodeRabbit #8 — when a filtered last measure's filter
-        references a column on a JOINED model, the LEFT JOIN must be applied
-        INSIDE the ranked subquery so the filter columns resolve. Previously
-        _build_last_ranked_from() built the subquery from base_from only and
-        the outer string-level join injection never matched the subquery wrapper."""
-
+    @staticmethod
+    async def _filtered_last_cross_model_sql(generator: SQLGenerator) -> str:
+        """Shared setup for the two ``active_balance:last`` cross-model
+        filter tests below. Builds the customers+orders models, runs
+        enrichment with a stub join resolver, and returns the generated
+        SQL — each caller asserts on a different facet of the output."""
         customers = SlayerModel(
             name="customers",
             sql_table="public.customers",
@@ -3140,7 +3137,18 @@ class TestFilteredMeasures:
             resolve_cross_model_measure=_noop_async,
             resolve_join_target=resolve_join_target,
         )
-        sql = generator.generate(enriched=enriched)
+        return generator.generate(enriched=enriched)
+
+    async def test_filtered_last_with_cross_model_filter_carries_join(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Regression for CodeRabbit #8 — when a filtered last measure's filter
+        references a column on a JOINED model, the LEFT JOIN must be applied
+        INSIDE the ranked subquery so the filter columns resolve. Previously
+        _build_last_ranked_from() built the subquery from base_from only and
+        the outer string-level join injection never matched the subquery wrapper."""
+
+        sql = await self._filtered_last_cross_model_sql(generator)
         # The customers LEFT JOIN must be inside the ranked subquery so the
         # filter customers.status = 'active' resolves. Extract the subquery
         # by matching balanced parens after `FROM (`.
@@ -3170,53 +3178,7 @@ class TestFilteredMeasures:
         inside the ranked subquery so the filter resolves, and the final SELECT
         does not reference the joined table directly."""
 
-        customers = SlayerModel(
-            name="customers",
-            sql_table="public.customers",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-            ],
-        )
-        orders = SlayerModel(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-
-                Column(
-                    name="active_balance",
-                    sql="amount",
-                    filter="customers.status = 'active'", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-            default_time_dimension="created_at",
-        )
-
-        async def resolve_join_target(*, target_model_name, named_queries):
-            if target_model_name == "customers":
-                return ("public.customers", customers)
-            return None
-
-        query = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
-            ],
-            measures=[ModelMeasure(formula="active_balance:last")],
-        )
-        enriched = await enrich_query(
-            query=query,
-            model=orders,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=resolve_join_target,
-        )
-        sql = generator.generate(enriched=enriched)
+        sql = await self._filtered_last_cross_model_sql(generator)
 
         # The outermost SELECT (after all CTEs) should not reference
         # 'customers.' directly — it pulls pre-computed values from CTEs.
@@ -3494,7 +3456,11 @@ class TestMeasureFilterInjection:
         query = SlayerQuery(
             source_model="orders", measures=[ModelMeasure(formula="irish_names:sum")]
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
         # sqlglot preserves the SQL-doubled apostrophe per dialect.
         assert "'O''Brien'" in sql
 

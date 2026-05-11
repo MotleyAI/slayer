@@ -504,6 +504,24 @@ async def enrich_query(
         else:
             raise ValueError(f"Bare measure name '{mname}' in expression is not valid. Use colon syntax.")
 
+    async def _resolve_inner_alias(inner_spec, fallback_name: str) -> str:
+        """Flatten a transform's inner spec to a measure alias.
+
+        ``AggregatedMeasureRef`` inners reuse their canonical alias
+        (e.g. ``revenue:sum`` → ``revenue_sum``) so the hidden inner
+        measure shares the same column key as a sibling-level reference;
+        every other shape falls back to ``fallback_name``.
+        """
+        if isinstance(inner_spec, AggregatedMeasureRef):
+            canonical = _canonical_agg_name(
+                measure_name=inner_spec.measure_name,
+                aggregation_name=inner_spec.aggregation_name,
+                agg_args=inner_spec.agg_args,
+                agg_kwargs=inner_spec.agg_kwargs,
+            )
+            return await _flatten_spec(inner_spec, canonical)
+        return await _flatten_spec(inner_spec, fallback_name)
+
     async def _flatten_spec(spec, field_name: str) -> str:
         if isinstance(spec, AggregatedMeasureRef):
             if "." in spec.measure_name and spec.measure_name != "*":
@@ -583,17 +601,9 @@ async def enrich_query(
                     )
 
                 # Flatten the inner spec to get the measure alias
-                inner_name = f"_inner_{field_name}"
-                if isinstance(spec.inner, AggregatedMeasureRef):
-                    canonical = _canonical_agg_name(
-                        measure_name=spec.inner.measure_name,
-                        aggregation_name=spec.inner.aggregation_name,
-                        agg_args=spec.inner.agg_args,
-                        agg_kwargs=spec.inner.agg_kwargs,
-                    )
-                    inner_alias = await _flatten_spec(spec.inner, canonical)
-                else:
-                    inner_alias = await _flatten_spec(spec.inner, inner_name)
+                inner_alias = await _resolve_inner_alias(
+                    spec.inner, f"_inner_{field_name}"
+                )
 
                 # Determine offset and granularity
                 offset = -1
@@ -642,17 +652,9 @@ async def enrich_query(
                     f"Both use self-join CTEs. Try wrapping with a window function instead "
                     f"(e.g., cumsum, lag)."
                 )
-            inner_name = f"_inner_{field_name}"
-            if isinstance(spec.inner, AggregatedMeasureRef):
-                canonical = _canonical_agg_name(
-                    measure_name=spec.inner.measure_name,
-                    aggregation_name=spec.inner.aggregation_name,
-                    agg_args=spec.inner.agg_args,
-                    agg_kwargs=spec.inner.agg_kwargs,
-                )
-                inner_alias = await _flatten_spec(spec.inner, canonical)
-            else:
-                inner_alias = await _flatten_spec(spec.inner, inner_name)
+            inner_alias = await _resolve_inner_alias(
+                spec.inner, f"_inner_{field_name}"
+            )
 
             offset = 1
             granularity = None
