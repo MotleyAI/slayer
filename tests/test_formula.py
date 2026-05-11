@@ -556,6 +556,73 @@ class TestParseFilterInjection:
             return
         assert result.sql.count("OR") >= 100
 
+    # --- DEV-1376: path-qualified LIKE / NOT LIKE ---------------------------
+
+    def test_like_path_qualified_simple_literal(self) -> None:
+        """``<joined_model>.<col> like '...'`` must parse — agents reach for
+        this shape because dotted refs work in dimensions/measures."""
+        result = parse_filter("infrastructure.wateraccess like '%yes%'")
+        assert "infrastructure.wateraccess LIKE '%yes%'" in result.sql
+
+    def test_like_path_qualified_messy_literal(self) -> None:
+        """Literal content (commas, spaces, mixed case) must not affect
+        whether path-qualified LIKE parses. Reproduces the original
+        benchmark failure (households_14)."""
+        result = parse_filter(
+            "infrastructure.wateraccess like '%Yes, available at least in one room%'"
+        )
+        assert (
+            "infrastructure.wateraccess LIKE "
+            "'%Yes, available at least in one room%'"
+        ) in result.sql
+
+    def test_not_like_path_qualified(self) -> None:
+        """NOT LIKE on a dotted path mirrors the LIKE fix."""
+        result = parse_filter("customers.email not like '%spam.com'")
+        assert "customers.email NOT LIKE '%spam.com'" in result.sql
+
+    # --- DEV-1378: hygiene-call LHS for LIKE / NOT LIKE ---------------------
+
+    def test_like_hygiene_call_lhs(self) -> None:
+        """``lower(name) like 'a%'`` and friends must parse — DEV-1378
+        added hygiene scalars but the LIKE preprocessor only matched
+        bare/dotted identifiers, so call LHS surfaced as a syntax error."""
+        result = parse_filter("lower(name) like 'a%'")
+        assert "lower(name) LIKE 'a%'" in result.sql
+
+    def test_not_like_hygiene_call_lhs(self) -> None:
+        result = parse_filter("trim(email) not like '%@test.com'")
+        assert "trim(email) NOT LIKE '%@test.com'" in result.sql
+
+    def test_like_hygiene_call_dotted_arg(self) -> None:
+        """The hygiene call's argument itself can be a dotted ref."""
+        result = parse_filter("lower(customers.email) like '%@motley.ai'")
+        assert "lower(customers.email) LIKE '%@motley.ai'" in result.sql
+
+    # --- DEV-1376: subquery-in-filter helpful error -------------------------
+
+    def test_filter_subquery_in_clause_raises(self) -> None:
+        """``IN (SELECT ...)`` should surface the targeted error instead of
+        Python's misleading "Perhaps you forgot a comma" advice."""
+        with pytest.raises(ValueError, match="Subqueries are not allowed"):
+            parse_filter("housenum in (select houselink from properties)")
+
+    def test_filter_subquery_not_in_clause_raises(self) -> None:
+        """``NOT IN (SELECT ...)`` is also a subquery shape."""
+        with pytest.raises(ValueError, match="Subqueries are not allowed"):
+            parse_filter("id not in (select id from t)")
+
+    def test_filter_exists_subquery_raises(self) -> None:
+        """``EXISTS (SELECT ...)`` is also a subquery shape."""
+        with pytest.raises(ValueError, match="Subqueries are not allowed"):
+            parse_filter("exists (select 1 from t)")
+
+    def test_filter_subquery_shape_inside_string_literal_does_not_raise(self) -> None:
+        """The subquery sniff must ignore SQL-shaped text that lives inside a
+        string-literal RHS of a comparison — it's data, not syntax."""
+        result = parse_filter("note = 'in (select 1 from t)'")
+        assert "note = 'in (select 1 from t)'" in result.sql
+
 
 # ---------------------------------------------------------------------------
 # Function-style aggregation rewrite
@@ -935,7 +1002,7 @@ class TestCollectNeededPathsExtraAggNames:
             time_dimensions=[],
             measures=[],
             cross_model_measures=[],
-            processed_filters=["custom_total(revenue) > 100"],
+            processed_filters=[("custom_total(revenue) > 100", "dsl")],
             extra_agg_names=frozenset({"custom_total"}),
         )
         # No cross-model references → empty paths
@@ -958,7 +1025,7 @@ class TestCollectNeededPathsExtraAggNames:
             time_dimensions=[],
             measures=[],
             cross_model_measures=[],
-            processed_filters=["customers.total:custom_total > 100"],
+            processed_filters=[("customers.total:custom_total > 100", "dsl")],
             extra_agg_names=frozenset({"custom_total"}),
         )
         # Should detect the "customers" join path from the dotted column reference
@@ -1039,3 +1106,89 @@ class TestPlaceholderLeakRegression:
         names = {(r.measure_name, r.aggregation_name) for r in result.agg_refs.values()}
         assert ("*", "count") in names
         assert ("temperature_c", "max") in names
+
+
+class TestStringHygieneFilters:
+    """DEV-1378: lowercase string-hygiene scalar functions accepted inline
+    in Mode B (DSL) filters: ``lower``, ``upper``, ``trim``, ``replace``,
+    ``substr``, ``instr``, ``length``, ``concat``. The SQL ``||``
+    operator is rewritten to ``concat(...)`` by ``_preprocess_concat``.
+    """
+
+    @pytest.mark.parametrize("op", ["lower", "upper", "trim", "length"])
+    def test_unary_op_round_trips(self, op: str) -> None:
+        pf = parse_filter(f"{op}(name) = 'eu'")
+        assert pf.sql == f"{op}(name) = 'eu'"
+        assert "name" in pf.columns
+
+    def test_replace_three_arg(self) -> None:
+        pf = parse_filter("replace(x, ',', '') = 'foo'")
+        assert pf.sql == "replace(x, ',', '') = 'foo'"
+        assert "x" in pf.columns
+
+    def test_substr_three_arg(self) -> None:
+        pf = parse_filter("substr(s, 1, 5) = 'abcde'")
+        assert pf.sql == "substr(s, 1, 5) = 'abcde'"
+        assert "s" in pf.columns
+
+    def test_substr_two_arg(self) -> None:
+        pf = parse_filter("substr(s, 3) = 'abc'")
+        assert pf.sql == "substr(s, 3) = 'abc'"
+
+    def test_instr_with_string_literal(self) -> None:
+        pf = parse_filter("instr(s, ',') > 0")
+        assert pf.sql == "instr(s, ',') > 0"
+        assert "s" in pf.columns
+
+    def test_concat_explicit_call(self) -> None:
+        pf = parse_filter("concat(a, b, c) = 'abc'")
+        assert pf.sql == "concat(a, b, c) = 'abc'"
+        assert {"a", "b", "c"}.issubset(set(pf.columns))
+
+    def test_nested_length_replace(self) -> None:
+        pf = parse_filter("length(replace(x, ',', '')) > 0")
+        assert pf.sql == "length(replace(x, ',', '')) > 0"
+        assert "x" in pf.columns
+
+    def test_substr_instr_pairing(self) -> None:
+        # Canonical "first delimited token" pattern from the issue.
+        pf = parse_filter("substr(s, 1, instr(s, ',') - 1) = 'first'")
+        assert pf.sql == "substr(s, 1, instr(s, ',') - 1) = 'first'"
+
+    def test_pipe_pipe_two_operands(self) -> None:
+        pf = parse_filter("a || b = 'foo'")
+        assert pf.sql == "concat(a, b) = 'foo'"
+        assert {"a", "b"}.issubset(set(pf.columns))
+
+    def test_pipe_pipe_chain_three_operands(self) -> None:
+        # Chained `||` folds into a flat n-ary concat.
+        pf = parse_filter("a || b || c = 'foo'")
+        assert pf.sql == "concat(a, b, c) = 'foo'"
+
+    def test_pipe_pipe_no_spaces(self) -> None:
+        pf = parse_filter("a||b = 'foo'")
+        assert pf.sql == "concat(a, b) = 'foo'"
+
+    def test_pipe_pipe_with_function_call_operands(self) -> None:
+        pf = parse_filter("lower(name) || ' ' || trim(addr) = 'eu london'")
+        assert pf.sql == "concat(lower(name), ' ', trim(addr)) = 'eu london'"
+
+    def test_pipe_pipe_preserves_string_literal(self) -> None:
+        # `||` inside a string literal must NOT be rewritten.
+        pf = parse_filter("note = 'a||b'")
+        assert pf.sql == "note = 'a||b'"
+
+    def test_function_name_preserved_in_string_literal(self) -> None:
+        pf = parse_filter("note = 'lower(x)'")
+        assert pf.sql == "note = 'lower(x)'"
+
+    def test_uppercase_function_name_rejected(self) -> None:
+        # Casing is lowercase-only — consistent with existing transform names.
+        with pytest.raises(ValueError, match="Unknown filter function 'LOWER'"):
+            parse_filter("LOWER(name) = 'eu'")
+
+    def test_substring_synonym_rejected(self) -> None:
+        # The canonical name is ``substr`` (SQLite spelling); ``substring``
+        # is an unknown DSL function.
+        with pytest.raises(ValueError, match="Unknown filter function 'substring'"):
+            parse_filter("substring(s, 1, 5) = 'abcde'")

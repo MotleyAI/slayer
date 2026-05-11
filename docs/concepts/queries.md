@@ -127,6 +127,32 @@ Use `and`, `or`, `not` within a single filter string:
 
 Multiple entries in the `filters` list are combined with AND.
 
+### String-Hygiene Operators
+
+Filters in `SlayerQuery.filters` accept a small allowlist of lowercase
+SQL scalar functions for case-folding, trimming, substring extraction,
+and string concatenation: `lower`, `upper`, `trim`, `replace`, `substr`,
+`instr`, `length`, `concat`. The SQL `||` concat operator is rewritten
+to `concat(...)` automatically.
+
+```json
+"filters": [
+  "lower(status) = 'active'",
+  "trim(name) = 'Smith'",
+  "replace(category, ',', '') = 'books'",
+  "substr(s, 1, instr(s, ',') - 1) = 'first_token'",
+  "length(replace(x, ',', '')) > 0",
+  "first || ' ' || last = 'jane doe'"
+]
+```
+
+Names are lowercase only — `LOWER(...)` is rejected. sqlglot translates
+each call to the target dialect's preferred spelling at SQL-generation
+time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
+`SUBSTRING`, `concat` → `||` on SQLite). Calls outside the allowlist
+(`json_extract`, `coalesce`, …) belong in `Column.sql` /
+`Column.filter` / `SlayerModel.filters` (Mode A SQL).
+
 ### Filtering on Computed Columns
 
 Filters can reference names of computed measures — transforms and arithmetic expressions defined in `measures`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "*:count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
