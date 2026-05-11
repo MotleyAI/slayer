@@ -1,7 +1,6 @@
 """CLI entry point for SLayer."""
 
 import argparse
-import asyncio
 import copy
 import json
 import os
@@ -657,8 +656,19 @@ def _run_search_refresh_samples(*, args, storage) -> None:
     """``slayer search refresh-samples`` — re-profile + persist
     ``Column.sampled`` for every table-backed model in scope. Exits
     non-zero on unresolved user-specified ``--model`` names so typos
-    don't masquerade as a clean run."""
-    result = asyncio.run(_refresh_samples_async(args=args, storage=storage))
+    don't masquerade as a clean run.
+
+    Honors the shared ``--format`` flag: ``json`` emits the
+    ``RefreshSamplesResult`` envelope; otherwise the human-readable
+    text path runs.
+    """
+    result = run_sync(_refresh_samples_async(args=args, storage=storage))
+    fmt = getattr(args, "format", "text")
+    if fmt == "json":
+        print(result.model_dump_json(indent=2))
+        if result.unresolved_models:
+            sys.exit(1)
+        return
     if result.unresolved_models:
         print(
             "Sample-value refresh: requested model(s) not found in scope:",
@@ -703,7 +713,7 @@ def _run_search_query(args, storage) -> None:
     service = SearchService(storage=storage)
     query_input = _load_query_arg(args.query) if args.query else None
     try:
-        response = asyncio.run(service.search(
+        response = run_sync(service.search(
             entities=args.entities,
             query=query_input,
             question=args.question,

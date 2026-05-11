@@ -2625,7 +2625,7 @@ def create_mcp_server(storage: StorageBackend):
         max_example_queries: int = 2,
         max_entities: int = 5,
     ) -> str:
-        """Two-channel semantic search over memories + canonical entities.
+        """Up to three-channel semantic search over memories + canonical entities.
 
         Call this BEFORE ``query`` to surface any notes or example
         queries previously saved against the entities you're
