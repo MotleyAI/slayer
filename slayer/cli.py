@@ -8,6 +8,8 @@ import os
 import sys
 from typing import List, Optional
 
+from pydantic import BaseModel, Field
+
 from slayer.async_utils import run_sync
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -33,6 +35,17 @@ _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     f"(default: {_STORAGE_DEFAULT})"
 )
+
+
+class RefreshSamplesResult(BaseModel):
+    """Result envelope for ``slayer search refresh-samples``. ``errors``
+    accumulates per-column profile / persist failures (best-effort);
+    ``unresolved_models`` lists any user-specified ``--model`` names
+    that didn't resolve in the requested scope — those are reported as
+    a hard error so typos fail fast."""
+
+    errors: List[str] = Field(default_factory=list)
+    unresolved_models: List[str] = Field(default_factory=list)
 
 
 def _add_storage_arg(parser):
@@ -602,16 +615,18 @@ def _run_search(args) -> None:
     storage = _resolve_storage(args)
     sub = getattr(args, "search_command", None)
     if sub == "refresh-samples":
-        _run_search_refresh_samples(args, storage)
+        _run_search_refresh_samples(args=args, storage=storage)
         return
-    _run_search_query(args, storage)
+    _run_search_query(args=args, storage=storage)
 
 
-async def _refresh_samples_async(args, storage) -> List[str]:
+async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
     """Async core of ``slayer search refresh-samples`` — loop datasources
-    and (optional) model filters, accumulate per-column errors."""
+    and (optional) model filters, accumulate per-column errors and the
+    names of any user-specified models that didn't resolve."""
     engine = SlayerQueryEngine(storage=storage)
     errors: List[str] = []
+    unresolved_models: List[str] = []
     data_source = args.data_source
     models = args.models
     if data_source is None:
@@ -623,6 +638,7 @@ async def _refresh_samples_async(args, storage) -> List[str]:
             for model_name in models:
                 m = await storage.get_model(model_name, data_source=ds)
                 if m is None:
+                    unresolved_models.append(f"{ds}.{model_name}")
                     continue
                 errs = await refresh_table_backed_model_sampled(
                     model=m, engine=engine, storage=storage,
@@ -634,16 +650,26 @@ async def _refresh_samples_async(args, storage) -> List[str]:
                     engine=engine, storage=storage, data_source=ds,
                 )
             )
-    return errors
+    return RefreshSamplesResult(errors=errors, unresolved_models=unresolved_models)
 
 
-def _run_search_refresh_samples(args, storage) -> None:
+def _run_search_refresh_samples(*, args, storage) -> None:
     """``slayer search refresh-samples`` — re-profile + persist
-    ``Column.sampled`` for every table-backed model in scope."""
-    errors = asyncio.run(_refresh_samples_async(args, storage))
-    if errors:
+    ``Column.sampled`` for every table-backed model in scope. Exits
+    non-zero on unresolved user-specified ``--model`` names so typos
+    don't masquerade as a clean run."""
+    result = asyncio.run(_refresh_samples_async(args=args, storage=storage))
+    if result.unresolved_models:
+        print(
+            "Sample-value refresh: requested model(s) not found in scope:",
+            file=sys.stderr,
+        )
+        for m in result.unresolved_models:
+            print(f"  - {m}", file=sys.stderr)
+        sys.exit(1)
+    if result.errors:
         print("Sample-value refresh completed with errors:")
-        for e in errors:
+        for e in result.errors:
             print(f"  - {e}")
     else:
         print("Sample-value refresh completed successfully.")

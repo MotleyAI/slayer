@@ -3138,9 +3138,12 @@ async def test_search_question_finds_column(search_env):
         "expected at least one column EntityHit; got entities="
         f"{[(e.id, e.kind) for e in response.entities]}"
     )
-    expected = {"test_sqlite.orders.amount", "test_sqlite.customers.region"}
-    assert any(h.id in expected for h in column_hits) or any(
-        h.id.endswith(".amount") for h in column_hits
+    # The question is "amount" — only ``*.amount`` columns are
+    # acceptable. Accepting any column hit (e.g. ``customers.region``)
+    # would mask a relevance regression in the search ranker.
+    assert any(h.id.endswith(".amount") for h in column_hits), (
+        "expected an `.amount` column EntityHit; got column hits="
+        f"{[h.id for h in column_hits]}"
     )
 
 

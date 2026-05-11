@@ -1277,6 +1277,31 @@ def create_mcp_server(storage: StorageBackend):
                             model.data_source, model.name, e.name, exc,
                         )
                 measure_profile = await _collect_measure_profile(model=model, engine=engine)
+                # Persist any measure-side (numeric/temporal) profile
+                # values to ``Column.sampled`` so subsequent
+                # ``inspect_model`` / search calls hit the cache
+                # instead of re-running the live profile query.
+                for col in uncached_columns:
+                    sampled_value = measure_profile.get(col.name)
+                    if sampled_value is None or col.name in profile_by_name:
+                        # Either no measure-side value for this column
+                        # (already covered by dim profile above), or
+                        # the dim profile already won the cache slot.
+                        continue
+                    profile_by_name[col.name] = sampled_value
+                    try:
+                        await storage.update_column_sampled(
+                            data_source=model.data_source,
+                            model_name=model.name,
+                            column_name=col.name,
+                            sampled=sampled_value,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "inspect_model: failed to persist sampled value for "
+                            "%s.%s.%s: %s",
+                            model.data_source, model.name, col.name, exc,
+                        )
 
         # ``measure_types`` informs the sample query's choice of avg vs
         # count_distinct. Only needed when ``samples`` is in the included set.
@@ -1894,6 +1919,12 @@ def create_mcp_server(storage: StorageBackend):
         # column on the model.
         changed_columns: set = set()
         model_level_change = False
+        # DEV-1386: pure model-doc changes (measures / aggregations /
+        # joins) don't invalidate ``Column.sampled`` but DO change the
+        # embedding text rendered by ``slayer.search.render``. Track
+        # these separately so the embedding refresh fires without
+        # triggering a full per-column sample-value re-profile.
+        model_doc_changed = False
 
         # --- Phase 1: Scalar metadata ---
         if description is not None:
@@ -1994,6 +2025,7 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Measure '{name}' not found on model '{model_name}'."
                 model.measures.remove(match)
                 changes.append(f"removed measure '{name}'")
+                model_doc_changed = True
 
             for name in remove.get("aggregations", []):
                 match = next((a for a in model.aggregations if a.name == name), None)
@@ -2001,6 +2033,7 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Aggregation '{name}' not found on model '{model_name}'."
                 model.aggregations.remove(match)
                 changes.append(f"removed aggregation '{name}'")
+                model_doc_changed = True
 
             for target in remove.get("joins", []):
                 match = next((j for j in model.joins if j.target_model == target), None)
@@ -2008,6 +2041,7 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Join to '{target}' not found on model '{model_name}'."
                 model.joins.remove(match)
                 changes.append(f"removed join to '{target}'")
+                model_doc_changed = True
 
         # --- Phase 3: Entity upserts ---
         for spec in columns or []:
@@ -2028,6 +2062,7 @@ def create_mcp_server(storage: StorageBackend):
             )
             if err:
                 return err
+            model_doc_changed = True
 
         for spec in aggregations or []:
             err = _upsert_entity(
@@ -2036,6 +2071,7 @@ def create_mcp_server(storage: StorageBackend):
             )
             if err:
                 return err
+            model_doc_changed = True
 
         for spec in joins or []:
             err = _upsert_entity(
@@ -2044,6 +2080,7 @@ def create_mcp_server(storage: StorageBackend):
             )
             if err:
                 return err
+            model_doc_changed = True
 
         # --- Phase 4: Filters ---
         if add_filters:
@@ -2125,24 +2162,41 @@ def create_mcp_server(storage: StorageBackend):
             await storage.delete_model(
                 saved_model.name, data_source=original_data_source
             )
-        # DEV-1375: refresh persisted Column.sampled values for any
-        # touched columns (or every column when a model-level change
-        # made every column's sample suspect). Best-effort.
-        if changed_columns or model_level_change:
-            await handle_edit_refresh(
-                engine=engine,
-                storage=storage,
-                data_source=saved_model.data_source,
-                model_name=saved_model.name,
-                changed_columns=changed_columns,
-                model_level_change=model_level_change,
-            )
-        return json.dumps({
+        # DEV-1375 / DEV-1386: refresh persisted ``Column.sampled``
+        # values for any touched columns (or every column when a
+        # source-level change made every column's sample suspect), and
+        # refresh embeddings for the model subtree on any edit that
+        # changed the indexed text. Best-effort: any raise here is
+        # captured into ``refresh_warnings`` so the save's success
+        # status survives a flaky embedding API.
+        refresh_warnings: List[str] = []
+        if changed_columns or model_level_change or model_doc_changed:
+            try:
+                refresh_warnings = await handle_edit_refresh(
+                    engine=engine,
+                    storage=storage,
+                    data_source=saved_model.data_source,
+                    model_name=saved_model.name,
+                    changed_columns=changed_columns,
+                    model_level_change=model_level_change,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort post-save
+                logger.warning(
+                    "edit_model refresh hook raised for %s.%s: %s",
+                    saved_model.data_source, saved_model.name, exc,
+                )
+                refresh_warnings = [
+                    f"refresh hook raised: {exc}",
+                ]
+        response_payload: dict = {
             "success": True,
             "model_name": model_name,
             "changes": changes,
             "message": f"Applied {len(changes)} change(s) to '{model_name}'",
-        }, indent=2)
+        }
+        if refresh_warnings:
+            response_payload["warnings"] = refresh_warnings
+        return json.dumps(response_payload, indent=2)
 
     # -----------------------------------------------------------------------
     # Datasource management
@@ -2586,12 +2640,20 @@ def create_mcp_server(storage: StorageBackend):
         memory + every searchable entity (datasource / non-hidden model /
         non-hidden column / named measure / aggregation).
 
-        Memory hits from both channels are fused via Reciprocal Rank
-        Fusion (k=60). Entity hits are channel-2 only. Query-bearing
-        memories (those saved with an attached ``SlayerQuery``) are
-        partitioned into ``example_queries`` and capped independently
-        from learning-only ``memories`` so bulky example queries cannot
-        crowd out small notes.
+        Channel 3 (dense embedding similarity, optional): runs when
+        ``question`` is supplied AND the ``embedding_search`` extra is
+        installed AND a provider API key is configured for the active
+        embedding model. Cosine similarity between the question
+        embedding and persisted entity/memory embeddings. Skipped with
+        a single warning into ``SearchResponse.warnings`` when any
+        precondition fails — tantivy + BM25 continue to work.
+
+        Memory rankings from every active channel and entity rankings
+        from channels 2 and 3 are fused via Reciprocal Rank Fusion
+        (k=60). Query-bearing memories (those saved with an attached
+        ``SlayerQuery``) are partitioned into ``example_queries`` and
+        capped independently from learning-only ``memories`` so bulky
+        example queries cannot crowd out small notes.
 
         Empty input (no entities, no query, no question) returns the
         newest ``max_memories`` learning-only memories and the newest

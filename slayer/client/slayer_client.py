@@ -250,7 +250,16 @@ class SlayerClient:
         max_example_queries: int = 2,
         max_entities: int = 5,
     ) -> "SearchResponse":
-        """Two-channel semantic search over memories + canonical entities."""
+        """Up to three-channel semantic search over memories + canonical
+        entities.
+
+        Channels: (1) entity-overlap BM25 over memories; (2) tantivy
+        full-text over memories ∪ entities; (3) optional dense embedding
+        similarity (gated by the ``embedding_search`` extra and a
+        configured provider API key). Memory rankings from all active
+        channels and entity rankings from channels 2 and 3 are fused via
+        Reciprocal Rank Fusion (``k=60``).
+        """
         # Local imports: slayer.search.service transitively imports tantivy,
         # which is not part of the client extras (httpx + pandas). Remote-only
         # client installs that never call .search() should not blow up at

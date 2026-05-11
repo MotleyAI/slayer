@@ -12,7 +12,7 @@ from __future__ import annotations
 from slayer.storage.migrations import register_migration
 
 
-@register_migration("SlayerModel", 5)
+@register_migration(entity="SlayerModel", source_version=5)
 def _model_v5_to_v6(data: dict) -> dict:
     """No-op forward. ``Column.sampled`` defaults to ``None`` on validation."""
     return data

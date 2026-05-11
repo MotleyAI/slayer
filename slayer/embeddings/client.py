@@ -125,6 +125,11 @@ async def embed_query(text: str, *, model: Optional[str] = None) -> Optional[Lis
 
     Returns ``None`` when the extra is not installed or the embedding call
     failed — the search service skips channel 3 in that case.
+
+    LRU semantics: on a cache hit, refresh recency by re-inserting the
+    key at the end of the insertion-order dict. Eviction pops the
+    oldest entry (front of the dict). Without the on-hit refresh the
+    cache degenerates into FIFO and frequently-used keys still age out.
     """
     if not text or not text.strip():
         return None
@@ -132,14 +137,16 @@ async def embed_query(text: str, *, model: Optional[str] = None) -> Optional[Lis
     key = (resolved_model, text)
     cached = _QUERY_CACHE.get(key)
     if cached is not None:
+        # Move-to-end on hit so eviction pops the genuinely least-
+        # recently-used entry, not just the oldest inserted one.
+        _QUERY_CACHE.pop(key, None)
+        _QUERY_CACHE[key] = cached
         return cached
     result = await embed_batch([text], model=resolved_model)
     vec = result[0] if result else None
     if vec is None:
         return None
     if len(_QUERY_CACHE) >= _QUERY_CACHE_MAX:
-        # Evict the oldest entry. Insertion order is preserved by dict in
-        # Python 3.7+, so the first iterated key is the oldest.
         oldest_key = next(iter(_QUERY_CACHE))
         _QUERY_CACHE.pop(oldest_key, None)
     _QUERY_CACHE[key] = vec
