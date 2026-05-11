@@ -113,6 +113,7 @@ async def test_entities_and_question_both_set_runs_both_channels(
     learnings = [h.text for h in response.memories]
     assert any("gross of refunds" in lm for lm in learnings)
     # Channel 2 should surface entity hits.
+    assert response.entities, "expected channel 2 to surface at least one entity hit"
     assert all(isinstance(h, EntityHit) for h in response.entities)
 
 
@@ -286,16 +287,28 @@ async def test_memory_appearing_in_both_channels_outranks_single_channel(
         max_memories=5,
     )
     learnings_in_order = [h.text for h in response.memories]
-    # Memory 1 ("amount_paid is gross of refunds") matches both:
-    # - entity overlap on amount_paid
-    # - tantivy on "gross refunds"
-    # It should rank ahead of memory 2 which matches only on entity overlap.
-    if len(learnings_in_order) >= 2:
-        idx_1 = next(
-            (i for i, lm in enumerate(learnings_in_order) if "gross of refunds" in lm),
-            None,
-        )
-        assert idx_1 is not None
+    # Memory 1 ("amount_paid is gross of refunds") matches both channels.
+    # Memory 2 ("Filter status='paid' for net revenue.") matches only via
+    # entity overlap on amount_paid — tantivy doesn't pick it up on the
+    # "amount_paid gross refunds" question. The dual-channel hit must rank
+    # ahead of the single-channel one.
+    assert len(learnings_in_order) >= 2, (
+        f"expected at least 2 memory hits; got {learnings_in_order}"
+    )
+    idx_dual = next(
+        (i for i, lm in enumerate(learnings_in_order) if "gross of refunds" in lm),
+        None,
+    )
+    idx_single = next(
+        (i for i, lm in enumerate(learnings_in_order) if "Filter status='paid'" in lm),
+        None,
+    )
+    assert idx_dual is not None, "dual-channel memory missing from results"
+    assert idx_single is not None, "single-channel memory missing from results"
+    assert idx_dual < idx_single, (
+        f"dual-channel memory must rank ahead of single-channel; "
+        f"got dual@{idx_dual}, single@{idx_single}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -145,6 +145,35 @@ def _backfill_memory_by_id(
             memory_by_id[mem_id] = mem
 
 
+def _build_memory_hit(
+    *,
+    mem: "Memory",
+    memory_id: int,
+    score: float,
+    index_hits_by_memory_id: dict,
+    canonical_input_entities: List[str],
+) -> Union["MemoryHit", "ExampleQueryHit"]:
+    """Build the appropriate hit type for ``mem``: ``MemoryHit`` for
+    learning-only memories (``query is None``), ``ExampleQueryHit`` for
+    query-bearing ones. ``text`` falls back to ``mem.learning`` when the
+    memory wasn't reached via tantivy."""
+    wanted_set = set(canonical_input_entities)
+    matched = sorted(wanted_set & set(mem.entities)) if wanted_set else []
+    text = (
+        index_hits_by_memory_id[memory_id].text
+        if memory_id in index_hits_by_memory_id
+        else mem.learning
+    )
+    if mem.query is None:
+        return MemoryHit(
+            id=memory_id, score=score, text=text, matched_entities=matched,
+        )
+    return ExampleQueryHit(
+        id=memory_id, score=score, text=text,
+        matched_entities=matched, query=mem.query,
+    )
+
+
 def _fuse_memory_hits(
     *,
     channel_1_ranking: List[int],
@@ -158,39 +187,27 @@ def _fuse_memory_hits(
     """RRF-fuse the two memory rankings and partition into learning-only
     (``MemoryHit``) vs query-bearing (``ExampleQueryHit``) lists, each
     capped independently."""
-    rankings: List[List[int]] = []
-    if channel_1_ranking:
-        rankings.append(channel_1_ranking)
-    if channel_2_ranking:
-        rankings.append(channel_2_ranking)
+    rankings = [r for r in (channel_1_ranking, channel_2_ranking) if r]
     fused = rrf_fuse(rankings=rankings, k=_RRF_K) if rankings else {}
     fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
 
-    wanted_set = set(canonical_input_entities)
     learnings: List[MemoryHit] = []
     examples: List[ExampleQueryHit] = []
     for memory_id, score in fused_sorted:
         mem = memory_by_id.get(memory_id)
         if mem is None:
             continue
-        matched = sorted(wanted_set & set(mem.entities)) if wanted_set else []
-        text = (
-            index_hits_by_memory_id[memory_id].text
-            if memory_id in index_hits_by_memory_id
-            else mem.learning
+        hit = _build_memory_hit(
+            mem=mem,
+            memory_id=memory_id,
+            score=score,
+            index_hits_by_memory_id=index_hits_by_memory_id,
+            canonical_input_entities=canonical_input_entities,
         )
-        if mem.query is None:
-            if len(learnings) < max_memories:
-                learnings.append(MemoryHit(
-                    id=memory_id, score=score, text=text,
-                    matched_entities=matched,
-                ))
-        else:
-            if len(examples) < max_example_queries:
-                examples.append(ExampleQueryHit(
-                    id=memory_id, score=score, text=text,
-                    matched_entities=matched, query=mem.query,
-                ))
+        if isinstance(hit, MemoryHit) and len(learnings) < max_memories:
+            learnings.append(hit)
+        elif isinstance(hit, ExampleQueryHit) and len(examples) < max_example_queries:
+            examples.append(hit)
         if (
             len(learnings) >= max_memories
             and len(examples) >= max_example_queries
@@ -338,18 +355,20 @@ class SearchService:
         memory_hits: List[MemoryHit] = []
         example_query_hits: List[ExampleQueryHit] = []
         for m in recency_memories:
-            if m.query is None:
-                if len(memory_hits) < max_memories:
-                    memory_hits.append(MemoryHit(
-                        id=m.id, score=0.0, text=m.learning,
-                        matched_entities=[],
-                    ))
-            else:
-                if len(example_query_hits) < max_example_queries:
-                    example_query_hits.append(ExampleQueryHit(
-                        id=m.id, score=0.0, text=m.learning,
-                        matched_entities=[], query=m.query,
-                    ))
+            hit = _build_memory_hit(
+                mem=m,
+                memory_id=m.id,
+                score=0.0,
+                index_hits_by_memory_id={},
+                canonical_input_entities=[],
+            )
+            if isinstance(hit, MemoryHit) and len(memory_hits) < max_memories:
+                memory_hits.append(hit)
+            elif (
+                isinstance(hit, ExampleQueryHit)
+                and len(example_query_hits) < max_example_queries
+            ):
+                example_query_hits.append(hit)
             if (
                 len(memory_hits) >= max_memories
                 and len(example_query_hits) >= max_example_queries

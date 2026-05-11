@@ -9,6 +9,11 @@ import sys
 from typing import List, Optional
 
 from slayer.async_utils import run_sync
+from slayer.core.errors import (
+    AmbiguousModelError,
+    EntityResolutionError,
+    MemoryNotFoundError,
+)
 from slayer.core.models import SlayerModel
 from slayer.engine.profiling import (
     refresh_all_table_backed_sampled,
@@ -466,10 +471,10 @@ examples:
         epilog="""\
 examples:
   # Two-channel search by entity overlap + tantivy full-text
-  slayer search --entity mydb.orders.amount_paid --question "paid revenue"
+  poetry run slayer search --entity mydb.orders.amount_paid --question "paid revenue"
 
   # Refresh persisted Column.sampled values for every table-backed model
-  slayer search refresh-samples --data-source mydb
+  poetry run slayer search refresh-samples --data-source mydb
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -671,14 +676,18 @@ def _run_search_query(args, storage) -> None:
     pretty text."""
     service = SearchService(storage=storage)
     query_input = _load_query_arg(args.query) if args.query else None
-    response = asyncio.run(service.search(
-        entities=args.entities,
-        query=query_input,
-        question=args.question,
-        max_memories=args.max_memories,
-        max_example_queries=args.max_example_queries,
-        max_entities=args.max_entities,
-    ))
+    try:
+        response = asyncio.run(service.search(
+            entities=args.entities,
+            query=query_input,
+            question=args.question,
+            max_memories=args.max_memories,
+            max_example_queries=args.max_example_queries,
+            max_entities=args.max_entities,
+        ))
+    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
+        _exit_with_error(exc)
+        return
     if args.format == "json":
         print(response.model_dump_json(indent=2))
     else:
@@ -1529,8 +1538,6 @@ def _exit_with_error(exc: Exception) -> None:
 
 
 def _run_memory_save(args, service):
-    from slayer.core.errors import AmbiguousModelError, EntityResolutionError
-
     if not args.entities and not args.query:
         print("Error: --entities or --query must be supplied (one or the other).")
         sys.exit(1)
@@ -1560,8 +1567,6 @@ def _run_memory_save(args, service):
 
 
 def _run_memory_forget(args, service):
-    from slayer.core.errors import MemoryNotFoundError
-
     try:
         response = run_sync(service.forget_memory(identifier=args.id))
     except (MemoryNotFoundError, ValueError) as exc:
