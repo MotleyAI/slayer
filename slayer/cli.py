@@ -359,8 +359,8 @@ examples:
     datasources_create_parser.add_argument(
         "--years",
         type=int,
-        default=4,
-        help="(demo only) Years of synthetic data to generate (default: 4)",
+        default=2,
+        help="(demo only) Years of synthetic data to generate (default: 2)",
     )
     datasources_create_parser.add_argument(
         "-y",

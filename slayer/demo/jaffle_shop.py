@@ -1,16 +1,18 @@
 """Jaffle Shop demo dataset — bundled, one-command setup.
 
-Generates ~4 years of synthetic coffee-shop data via ``jafgen``, loads it into
+Generates ~2 years of synthetic coffee-shop data via ``jafgen``, loads it into
 a DuckDB file under the storage directory, registers a ``jaffle_shop``
-datasource, and (optionally) auto-ingests SLayer models. The default of 4
-years is chosen so all six jafgen stores have orders — the latest one (Los
-Angeles) opens on simulated day 1107 (~3.03 years).
+datasource, and (optionally) auto-ingests SLayer models. The default is kept
+small so ``slayer serve --demo`` / ``slayer mcp --demo`` finish quickly enough
+to fit inside MCP-client startup timeouts; bump ``--years`` for a richer
+dataset (only the first four jafgen stores open within the first 2 years).
 
 All operations are idempotent: re-running with the same storage path reuses
 the existing DuckDB file instead of regenerating.
 """
 
 import datetime as dt
+import io
 import os
 import subprocess
 import sys
@@ -124,6 +126,21 @@ def resolve_demo_db_path(storage_path: str) -> str:
     return os.path.join(demo_dir, "jaffle_shop.duckdb")
 
 
+def _stream_fileno(stream) -> Optional[int]:
+    """Return ``stream.fileno()`` if it points at a real file descriptor, else None.
+
+    ipykernel / nbclient replace ``sys.stdout`` / ``sys.stderr`` with shim
+    streams whose ``fileno()`` raises ``io.UnsupportedOperation``; same with
+    ``io.StringIO``. ``subprocess.run(stdout=stream)`` walks ``fileno()``
+    unconditionally, so we need to detect that up front and fall back to a
+    pumped Popen.
+    """
+    try:
+        return stream.fileno()
+    except (AttributeError, io.UnsupportedOperation, ValueError, OSError):
+        return None
+
+
 def generate_data(
     output_dir: str,
     years: int = 1,
@@ -135,14 +152,38 @@ def generate_data(
     jafgen prints Rich progress bars to its own stdout. To keep them visible
     (and to avoid corrupting stdio-based protocols like MCP), both jafgen's
     stdout and stderr are routed to ``stream`` (default: this process's
-    stderr). When ``stream`` is a TTY, Rich animates the bars in place.
+    stderr). When ``stream`` is a real OS file (e.g. a TTY), the child
+    inherits it directly so Rich can animate the bars in place. When it is a
+    shim without ``fileno()`` (Jupyter ``OutStream``, ``io.StringIO``, …), we
+    pump the child's output line by line into ``stream`` instead.
     """
     cmd = ["jafgen", str(max(1, years))]
     out = stream if stream is not None else sys.stderr
-    try:
-        subprocess.run(args=cmd, cwd=output_dir, check=True, stdout=out, stderr=out)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"jafgen failed with exit code {e.returncode}") from e
+    if _stream_fileno(out) is not None:
+        try:
+            subprocess.run(args=cmd, cwd=output_dir, check=True, stdout=out, stderr=out)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"jafgen failed with exit code {e.returncode}") from e
+        return os.path.join(output_dir, "jaffle-data")
+
+    with subprocess.Popen(
+        args=cmd,
+        cwd=output_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            out.write(line)
+            try:
+                out.flush()
+            except Exception:
+                pass
+        rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"jafgen failed with exit code {rc}")
     return os.path.join(output_dir, "jaffle-data")
 
 
@@ -286,7 +327,7 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
 def build_jaffle_shop(
     db_path: str,
     *,
-    years: int = 4,
+    years: int = 2,
     force: bool = False,
     stream: Optional[IO[str]] = None,
 ) -> bool:
@@ -328,7 +369,7 @@ def ensure_demo_datasource(
     *,
     storage_path: str,
     name: str = DEMO_NAME,
-    years: int = 4,
+    years: int = 2,
     ingest_models: bool = True,
     assume_yes: bool = True,
     stream: Optional[IO[str]] = None,
