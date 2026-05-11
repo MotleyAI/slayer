@@ -71,6 +71,14 @@ Persist a memory. `linked_entities` accepts either form:
 Returns `memory_id` (a positive int), the canonical entities stored,
 and any non-fatal warnings.
 
+**Embedding side effect.** When the `embedding_search` extra is
+installed and `SLAYER_EMBEDDING_MODEL` resolves to a configured
+provider, `save_memory` also embeds the new memory inline so it
+participates in the embedding-similarity search channel right away.
+Embed failures are non-fatal and surface as warnings; the memory is
+still persisted. Without the extra installed, no embedding is created
+and search continues via the tantivy + BM25 channels.
+
 Learning form:
 
 ```json

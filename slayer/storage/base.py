@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage import migrations as _mig
 from slayer.storage.type_refinement import (
@@ -126,12 +127,39 @@ class StorageBackend(ABC):
         data_source: Optional[str] = None,
     ) -> Optional[SlayerModel]: ...
 
-    @abstractmethod
     async def delete_model(
         self,
         name: str,
         data_source: Optional[str] = None,
-    ) -> bool: ...
+    ) -> bool:
+        """Delete one model by ``(data_source, name)`` and cascade-delete
+        every embedding row tagged with that model's canonical prefix.
+
+        Bare ``name`` resolves through the priority list (see
+        ``_resolve_target_or_none``). Returns ``False`` when no model matches
+        — no cascade is attempted in that case.
+        """
+        target = await self._resolve_target_or_none(name, data_source=data_source)
+        if target is None:
+            return False
+        resolved_data_source, resolved_name = target
+        deleted = await self._delete_model_row(
+            data_source=resolved_data_source, name=resolved_name,
+        )
+        if deleted:
+            await self.delete_embeddings_for_canonical(
+                canonical_id_prefix=f"{resolved_data_source}.{resolved_name}",
+            )
+        return deleted
+
+    @abstractmethod
+    async def _delete_model_row(
+        self, *, data_source: str, name: str,
+    ) -> bool:
+        """Delete the persisted row for ``(data_source, name)``. Returns
+        ``True`` if a row was removed, ``False`` when the identity did not
+        exist. Embedding cascade is handled by the public ``delete_model``
+        wrapper on the ABC; backends only do the row I/O here."""
 
     @abstractmethod
     async def update_column_sampled(
@@ -230,8 +258,29 @@ class StorageBackend(ABC):
     @abstractmethod
     async def list_datasources(self) -> List[str]: ...
 
+    async def delete_datasource(self, name: str) -> bool:
+        """Delete the datasource config and cascade-delete every embedding
+        row tagged with the datasource's canonical prefix (the datasource
+        doc itself, plus every model / column / measure / aggregation
+        embedding under it).
+
+        Models that lived in the deleted datasource are *not* themselves
+        deleted by this call (matches pre-DEV-1386 behaviour); they become
+        orphans referencing a missing datasource config. Re-creating the
+        datasource and re-running ``slayer ingest`` repopulates embeddings.
+        """
+        deleted = await self._delete_datasource_row(name)
+        if deleted:
+            await self.delete_embeddings_for_canonical(
+                canonical_id_prefix=name,
+            )
+        return deleted
+
     @abstractmethod
-    async def delete_datasource(self, name: str) -> bool: ...
+    async def _delete_datasource_row(self, name: str) -> bool:
+        """Delete the datasource config row. Returns ``True`` when a row
+        was removed. Embedding cascade is handled by the public
+        ``delete_datasource`` wrapper on the ABC."""
 
     # ---- datasource priority (bare-name disambiguation) -------------------
 
@@ -411,6 +460,49 @@ class StorageBackend(ABC):
     async def delete_memory(self, memory_id: int) -> None:
         if not await self._delete_memory_row(memory_id):
             raise MemoryNotFoundError(memory_id)
+        # Cascade: drop any embedding rows tagged with this memory's
+        # canonical id so an orphan embedding never survives its source.
+        await self.delete_embeddings_for_canonical(
+            canonical_id_prefix=f"memory:{memory_id}",
+        )
+
+    # ---- embeddings sidecar (DEV-1386) ------------------------------------
+    #
+    # One row per ``(canonical_id, embedding_model_name)`` pair. The active
+    # ``embedding_model_name`` (from ``SLAYER_EMBEDDING_MODEL``) selects
+    # which rows the search service actually reads — changing the env var
+    # leaves prior rows in place but inert.
+
+    @abstractmethod
+    async def save_embedding(self, row: Embedding) -> None:
+        """Upsert one embedding row keyed by
+        ``(canonical_id, embedding_model_name)``."""
+
+    @abstractmethod
+    async def get_embedding(
+        self, *, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Embedding]:
+        """Fetch one embedding row; ``None`` when no row matches."""
+
+    @abstractmethod
+    async def list_embeddings(
+        self, *, embedding_model_name: str,
+    ) -> List[Embedding]:
+        """Return every row for ``embedding_model_name``. Used by the
+        search service to load the entire corpus into a numpy matrix."""
+
+    @abstractmethod
+    async def delete_embeddings_for_canonical(
+        self, *, canonical_id_prefix: str,
+    ) -> int:
+        """Cascade-delete embedding rows whose ``canonical_id`` starts with
+        ``canonical_id_prefix``. Returns the row-count deleted.
+
+        Used by ``delete_model`` (prefix ``"<ds>.<model>"`` cascades to
+        child column / measure / aggregation embeddings), ``delete_memory``
+        (prefix ``"memory:<id>"`` — exact match for one row), and
+        ``delete_datasource`` (prefix ``"<ds>"``).
+        """
 
 
 # ---------------------------------------------------------------------------

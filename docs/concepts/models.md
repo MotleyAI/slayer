@@ -65,7 +65,7 @@ Each column carries the metadata needed to use it either as a GROUP BY key (a "d
 | `allowed_aggregations` | list[str] | No | — | Whitelist of permitted aggregations. Must be a subset of the type-default eligibility set (or be a custom aggregation defined on this model). Validated at model construction time |
 | `filter` | string | No | — | SQL condition applied inside CASE-WHEN at aggregation time. See [Filtered Columns](#filtered-columns) below |
 | `meta` | dict | No | — | Arbitrary JSON metadata (e.g., `{"source": "CRM", "team": "analytics"}`) |
-| `sampled` | string | No | — | DEV-1375: cached sample-value snapshot (distinct values for low-cardinality categorical, `min .. max` for numeric/temporal, `> 20 distinct` for high-cardinality). Auto-populated by `slayer ingest`, `slayer search refresh-samples`, and `inspect_model`'s lazy fill. Read by `inspect_model` and the [search index](search.md). |
+| `sampled` | string | No | — | Cached sample-value snapshot (distinct values for low-cardinality categorical, `min .. max` for numeric/temporal, `> 20 distinct` for high-cardinality). Auto-populated by `slayer ingest`, `slayer search refresh-samples`, and `inspect_model`'s lazy fill. Read by `inspect_model` and the [search index](search.md). |
 
 ### Derived Columns Referencing Other Derived Columns
 
@@ -126,7 +126,7 @@ When `allowed_aggregations` is set, it intersects with the type-default set: eve
 
 A column's `sql` may contain a window function (`row_number() over (...)`, `dense_rank() over (...)`, etc.). The column behaves like any other column when used in `dimensions` / SELECT.
 
-> **DEV-1369:** filtering directly on a window-function `Column.sql` from a query (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) used to auto-promote to a post-aggregation outer `WHERE`. That escape hatch is removed — the rank-family transforms cover the top-N case in pure DSL, and a query filter naming a windowed column now raises with a clear message. Use `{"filters": ["rank(<measure>) <= 3"]}` (see [formulas.md](formulas.md#rank)) or factor the column into a multi-stage `source_queries` model.
+> **Filtering on a windowed column is rejected.** A query filter naming a `Column` whose `sql` contains a window function (e.g. `{"filters": ["rn <= 3"]}` against a column whose `sql` is `row_number() over (...)`) raises with a clear message. Use `{"filters": ["rank(<measure>) <= 3"]}` (see [formulas.md](formulas.md#rank)) — the rank-family transforms cover the top-N case in pure DSL — or factor the column into a multi-stage `source_queries` model.
 
 ## Measures (Named Formulas)
 
@@ -317,7 +317,7 @@ filters:
   - "status <> 'test'"
 ```
 
-Model filters are SQL-mode expressions (DEV-1369): any valid SQL expression for the underlying dialect is accepted, including function calls (`json_extract`, `coalesce`, `lower`, …), `CASE WHEN`, and joined-column references via the `__` alias syntax. Aggregation colon syntax (`revenue:sum`) and SLayer transform calls (`cumsum`, `change`, …) are rejected — those are DSL constructs and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table.
+Model filters are SQL-mode expressions: any valid SQL expression for the underlying dialect is accepted, including function calls (`json_extract`, `coalesce`, `lower`, …), `CASE WHEN`, and joined-column references via the `__` alias syntax. Aggregation colon syntax (`revenue:sum`) and SLayer transform calls (`cumsum`, `change`, …) are rejected — those are DSL constructs and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table.
 
 Multi-hop joined column references use the `__` alias syntax (e.g., `customers__regions.name`); single-dot `table.column` references are left as-is, and multi-dot input (`customers.regions.name`) is auto-converted to `customers__regions.name` with a warning. The same auto-conversion applies to `Column.sql` and `Column.filter`.
 

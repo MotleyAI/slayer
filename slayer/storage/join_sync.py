@@ -16,6 +16,7 @@ from typing import List, Optional, Set, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
+from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 
@@ -153,6 +154,8 @@ class JoinSyncStorage(StorageBackend):
                 return False
             data_source, name = identity
         model = await self._inner.get_model(name, data_source=data_source)
+        # Inner's ``delete_model`` is the ABC's non-abstract wrapper; it
+        # cascade-deletes embeddings for the model's canonical prefix.
         result = await self._inner.delete_model(name, data_source=data_source)
         if result and model:
             inner_targets = {
@@ -164,6 +167,23 @@ class JoinSyncStorage(StorageBackend):
                     name, model.data_source, inner_targets, self._inner
                 )
         return result
+
+    async def _delete_model_row(
+        self, *, data_source: str, name: str,
+    ) -> bool:
+        # Pure delegation — the wrapper's reverse-join cleanup runs only
+        # through the public ``delete_model`` path above. Direct callers
+        # of ``_delete_model_row`` (currently only the ABC's wrapper) get
+        # the underlying row delete without join sync; that's fine here
+        # since the ABC wrapper at this level is bypassed when the
+        # ``self._inner.delete_model`` call above runs the wrapper on the
+        # inner backend.
+        return await self._inner._delete_model_row(
+            data_source=data_source, name=name,
+        )
+
+    async def _delete_datasource_row(self, name: str) -> bool:
+        return await self._inner._delete_datasource_row(name)
 
     # -- pure delegation --------------------------------------------------
 
@@ -230,3 +250,30 @@ class JoinSyncStorage(StorageBackend):
 
     async def _next_memory_seq(self) -> int:
         return await self._inner._next_memory_seq()
+
+    # -- embeddings (DEV-1386) — pure delegation --------------------------
+
+    async def save_embedding(self, row: Embedding) -> None:
+        await self._inner.save_embedding(row)
+
+    async def get_embedding(
+        self, *, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Embedding]:
+        return await self._inner.get_embedding(
+            canonical_id=canonical_id,
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def list_embeddings(
+        self, *, embedding_model_name: str,
+    ) -> List[Embedding]:
+        return await self._inner.list_embeddings(
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def delete_embeddings_for_canonical(
+        self, *, canonical_id_prefix: str,
+    ) -> int:
+        return await self._inner.delete_embeddings_for_canonical(
+            canonical_id_prefix=canonical_id_prefix,
+        )

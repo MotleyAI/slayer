@@ -148,6 +148,19 @@ class MemoryService:
             entities=canonical,
             query=attached_query,
         )
+        # DEV-1386: best-effort embedding refresh for this single
+        # memory. Local import keeps the embeddings module off the
+        # critical-path import graph; failures are surfaced as warnings,
+        # never aborting the save.
+        from slayer.embeddings.service import EmbeddingService
+
+        try:
+            embed_warnings = await EmbeddingService(
+                storage=self._storage,
+            ).refresh_memory(memory)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            embed_warnings = [f"embedding refresh failed: {exc}"]
+        warnings = _dedup(warnings + embed_warnings)
         return SaveMemoryResponse(
             memory_id=memory.id,
             resolved_entities=canonical,

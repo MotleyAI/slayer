@@ -172,7 +172,7 @@ The same auto-join logic applies to model-level `filters` (always-applied WHERE)
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
 
 * **Raw `OVER (...)` in filter strings is rejected at SlayerQuery construction.** Inline window-function SQL inside a query filter or `ModelMeasure.formula` is not parseable by SLayer's formula grammar.
-* **Filtering on a `Column` whose `sql` contains a window function is rejected at enrichment** (DEV-1369; reverses the DEV-1336 auto-promotion). A query filter `"rn <= 3"` against a column whose `sql` is `row_number() over (...)` raises with a suggestion to use a rank-family transform.
+* **Filtering on a `Column` whose `sql` contains a window function is rejected at enrichment.** A query filter `"rn <= 3"` against a column whose `sql` is `row_number() over (...)` raises with a suggestion to use a rank-family transform.
 
 Use one of:
 

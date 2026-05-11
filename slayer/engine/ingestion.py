@@ -999,8 +999,64 @@ async def ingest_datasource_idempotent(
             error=f"sample-value refresh: {err}",
         ))
 
+    # DEV-1386: refresh persisted embeddings for the datasource doc plus
+    # every visible model + its visible children. Best-effort: per-entity
+    # failures are surfaced as IngestionError entries, never aborts
+    # ingestion. When the `embedding_search` extra is not installed,
+    # EmbeddingService returns a single warning and does no work.
+    embedding_errors = await _refresh_datasource_embeddings(
+        datasource_name=datasource.name, storage=storage,
+    )
+    for err in embedding_errors:
+        errors.append(IngestionError(
+            model_name="",
+            data_source=datasource.name,
+            error=f"embedding refresh: {err}",
+        ))
+
     return IdempotentIngestResult(
         additions=additions,
         to_delete=list(to_delete),
         errors=errors,
     )
+
+
+async def _refresh_datasource_embeddings(
+    *, datasource_name: str, storage: StorageBackend,
+) -> List[str]:
+    """Walk every model in the datasource + the datasource doc itself
+    through ``EmbeddingService.refresh_*``. Best-effort: returns warning
+    strings; never raises."""
+    # Local import to avoid pulling embeddings into ingestion's import
+    # graph on a cold start without the optional extra installed.
+    from slayer.embeddings.service import EmbeddingService
+
+    service = EmbeddingService(storage=storage)
+    warnings: List[str] = []
+    models_in_ds: List = []
+    try:
+        identities = await storage._list_all_model_identities()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        return [f"{datasource_name}: {exc}"]
+    for ds, name in identities:
+        if ds != datasource_name:
+            continue
+        try:
+            m = await storage.get_model(name, data_source=ds)
+        except Exception as exc:  # noqa: BLE001 — defensive per-model
+            warnings.append(f"{ds}.{name}: {exc}")
+            continue
+        if m is None:
+            continue
+        models_in_ds.append(m)
+        try:
+            warnings.extend(await service.refresh_model_subtree(m))
+        except Exception as exc:  # noqa: BLE001 — defensive per-model
+            warnings.append(f"{ds}.{name}: {exc}")
+    try:
+        warnings.extend(await service.refresh_datasource(
+            name=datasource_name, models=models_in_ds,
+        ))
+    except Exception as exc:  # noqa: BLE001 — defensive
+        warnings.append(f"{datasource_name} (datasource doc): {exc}")
+    return warnings

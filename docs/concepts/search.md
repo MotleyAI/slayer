@@ -1,10 +1,16 @@
-# Semantic search (DEV-1375)
+# Semantic search
 
 SLayer ships a `search` tool that lets agents find both **memories** and
 **entities** (datasources, models, columns, named measures, custom
-aggregations) using two parallel retrieval channels merged by Reciprocal
-Rank Fusion. It is the **only** retrieval surface — there is no separate
-recall tool.
+aggregations) using up to three parallel retrieval channels merged by
+Reciprocal Rank Fusion. It is the **only** retrieval surface — there is
+no separate recall tool.
+
+A third channel (dense embeddings via litellm) is gated behind the
+optional `embedding_search` extra. When the extra is not installed or
+no provider API key is configured, the embedding channel emits a
+warning into `SearchResponse.warnings` and search degrades gracefully
+via tantivy + BM25 alone.
 
 When you have entity references in hand, the BM25 channel pulls back
 the most relevant memories. When you don't yet know which entity to
@@ -12,7 +18,7 @@ look at, the tantivy full-text channel surfaces entities matching your
 natural-language question. Both run together when both inputs are
 supplied.
 
-## The two retrieval channels
+## The three retrieval channels
 
 ### Channel 1 — entity-overlap BM25 over memories
 
@@ -45,16 +51,66 @@ a literal canonical string and get the doc back.
 
 Activated when `question` is supplied.
 
+### Channel 3 — dense embedding similarity
+
+A persistent embeddings sidecar table holds one row per indexable doc
+(memory or non-hidden datasource / model / column / measure /
+aggregation) under each configured `embedding_model_name`. On search,
+the question is embedded once, the corpus matrix is loaded fresh, and
+top-k cosine similarities are computed with numpy.
+
+Activated when **all of the following** hold:
+
+- `question` is supplied;
+- the `embedding_search` extra is installed (`pip install motley-slayer[embedding_search]`);
+- at least one embedding row exists for the active model name;
+- the query-embedding call succeeds.
+
+When any precondition is not met, the channel emits a one-line warning
+into `SearchResponse.warnings` and contributes no rankings — search
+continues via channels 1 and 2.
+
+**Configuration.** `SLAYER_EMBEDDING_MODEL` (env var) selects the
+embedding model, in `<provider>/<model-name>` litellm format. Defaults
+to `openai/text-embedding-3-small`. Provider credentials
+(`OPENAI_API_KEY`, `AZURE_API_KEY`, etc.) are read by litellm itself.
+
+**Refresh.** Embedding rows are refreshed inline on the same write-side
+edges as `Column.sampled`:
+
+- `slayer ingest` / `ingest_datasource_models` MCP / `POST /ingest` —
+  refreshes the datasource doc plus every visible model + its visible
+  children (columns, named measures, aggregations);
+- `edit_model` — refreshes the model's whole subtree;
+- `save_memory` — refreshes that one memory.
+
+Each refresh hashes the rendered indexed text and compares it to the
+stored `content_hash`; the litellm call is skipped when the source text
+hasn't changed since the last refresh, so idempotent re-runs are cheap.
+
+**Model changes.** Switching `SLAYER_EMBEDDING_MODEL` mid-project leaves
+old rows in place but inert — the search service reads only rows
+matching the active model name. Re-run `slayer ingest` (or re-save
+memories) to populate the new model's rows. A dimension-mismatch
+between the question embedding and stored rows is detected and emits a
+warning instead of crashing.
+
+**Failure mode.** Per-entity embed failures (rate limits, transient
+network errors, bad keys) are non-fatal: the failing row is simply not
+written, and a warning is appended to the surfaced response (or to
+`IdempotentIngestResult.errors` on ingest).
+
 ### Reciprocal Rank Fusion
 
-Memory hits from both channels are fused via RRF (`k = 60`):
+Memory rankings from every active channel are fused via RRF (`k = 60`):
 
 ```text
 score(d) = Σ_r 1 / (k + rank_r(d))
 ```
 
-Entities only come from channel 2 — they bypass RRF and surface their
-raw tantivy BM25 score.
+Entity rankings from channels 2 and 3 are RRF-fused the same way.
+Channel 1 contributes to the memory ranking only (it operates on
+memory entity tags, not on entity docs).
 
 ## Tool surface
 
@@ -80,9 +136,9 @@ search(
 
 | `entities`/`query` | `question` | Result |
 |---|---|---|
-| set | set | Both channels run. Memories RRF-fused; query-bearing memories partitioned out to `example_queries`. Entities from tantivy only. |
-| set | unset/empty | Channel 1 only. `entities=[]`. Memories partitioned by `query` presence. |
-| unset/empty | set | Channel 2 only. Memories from tantivy memory subset (partitioned); entities from tantivy entity subset. |
+| set | set | All eligible channels run. Memories RRF-fused (channels 1 + 2 + 3); entities RRF-fused (channels 2 + 3). Channel 3 is skipped with a warning when the `embedding_search` extra is missing. Query-bearing memories partitioned out to `example_queries`. |
+| set | unset/empty | Channel 1 only. Memories partitioned by `query` presence; no entity hits. |
+| unset/empty | set | Channels 2 and 3 (when eligible). Memories RRF-fused; entities RRF-fused. |
 | unset/empty | unset/empty | Recency fallback: newest `max_memories` learning-only memories + newest `max_example_queries` query-bearing memories, with a warning. |
 
 ### Response shape
@@ -136,17 +192,36 @@ field is populated:
 - lazily on `inspect_model` when the cached value is `None` (write-back
   best-effort).
 
-sql-mode and query-backed models are silently skipped in v1 (tracked as
-[DEV-1377](https://linear.app/motley-ai/issue/DEV-1377/search-index-hardening-meta-exfiltration-text-size-bounds-and-broader)).
+sql-mode and query-backed models are silently skipped in v1.
 
 ## Index design notes
 
-- The index is built **fresh on every search call** in v1 (no
+- The tantivy index is built **fresh on every search call** in v1 (no
   persistence, no invalidation logic). For typical SLayer setups (tens
   to low-hundreds of models, tens to low-thousands of memories) this is
   fast; persistent on-disk indexing is a future follow-up.
-- `meta` is **excluded** from indexed text — arbitrary user JSON, see
-  DEV-1377.
+- `meta` is **excluded** from indexed text — arbitrary user JSON.
 - Hidden models and hidden columns are skipped entirely from the index.
-- Each indexed doc has four schema fields: `id` (raw), `kind` (raw),
+- Each tantivy doc has four schema fields: `id` (raw), `kind` (raw),
   `canonical` (raw, exact-match), `text` (en-stemmed + tokenised).
+
+## Embedding sidecar design notes
+
+- **Stored**, not rebuilt per call. Rows live in the
+  `embeddings` table (SQLite) or `embeddings.yaml` (YAML), keyed by
+  `(canonical_id, embedding_model_name)`. Search loads the corpus
+  matrix fresh per call and runs cosine similarity in numpy.
+- Same render pipeline as tantivy (`slayer/search/render.py`) — every
+  doc that goes into the tantivy index also feeds the embedding text.
+- Refresh is **inline** on the same write-side edges as
+  `Column.sampled`: ingest, `edit_model`, `save_memory`. SHA256 content
+  hash makes idempotent re-runs cheap.
+- **Cascade** semantics: `delete_model` drops every embedding under
+  `<ds>.<model>%` (model doc + columns + measures + aggregations).
+  `delete_memory` drops the matching `memory:<id>` row.
+  `delete_datasource` drops every row under `<ds>%`.
+- Optional pip extra: `pip install motley-slayer[embedding_search]`
+  installs `litellm` + `numpy`. When omitted, the embedding channel
+  emits a one-line warning and contributes nothing.
+- **Storage shape**: embeddings are stored as JSON lists of floats —
+  portable, debuggable, dialect-neutral. ~6 KB per 1536-dim row.

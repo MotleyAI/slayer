@@ -54,6 +54,10 @@ jafgen = "^0.4.14"
 rank-bm25 = ">=0.2.2"
 dbt-core = {version = ">=1.7", optional = true}
 tantivy = "^0.26"
+# Embedding-based semantic search (DEV-1386). Optional — search degrades
+# gracefully to tantivy + BM25 when this extra is not installed.
+litellm = {version = ">=1.50", optional = true}
+numpy = {version = ">=1.24", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -62,7 +66,8 @@ mysql = ["pymysql", "aiomysql"]
 clickhouse = ["clickhouse-sqlalchemy"]
 dbt = ["dbt-core"]
 docs = ["mkdocs-material"]
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core"]
+embedding_search = ["litellm", "numpy"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core", "litellm", "numpy"]
 
 [project.scripts]
 slayer = "slayer.cli:main"

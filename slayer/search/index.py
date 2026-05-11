@@ -19,7 +19,7 @@ The index is rebuilt fresh per ``search`` call (no persistence in v1).
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import tantivy
 from pydantic import BaseModel, ConfigDict
@@ -84,65 +84,6 @@ def _add_doc(
     writer.add_document(doc)
 
 
-def _add_datasource_docs(
-    *, writer, datasources: List[str], visible_models: List[SlayerModel],
-) -> None:
-    """One datasource doc per datasource, with mentions of its visible models."""
-    models_by_ds: dict[str, List[SlayerModel]] = {}
-    for m in visible_models:
-        models_by_ds.setdefault(m.data_source, []).append(m)
-    for ds in datasources:
-        ds_models = models_by_ds.get(ds, [])
-        _add_doc(
-            writer=writer, doc_id=ds, kind="datasource",
-            canonical=ds,
-            text=render_datasource_text(name=ds, models=ds_models),
-        )
-
-
-def _add_model_subtree_docs(*, writer, model: SlayerModel) -> None:
-    """Model doc + per-child docs (columns, measures, aggregations)."""
-    model_canonical = f"{model.data_source}.{model.name}"
-    _add_doc(
-        writer=writer, doc_id=model_canonical, kind="model",
-        canonical=model_canonical, text=render_model_text(model=model),
-    )
-    for column in model.columns:
-        if column.hidden:
-            continue
-        col_canonical = f"{model_canonical}.{column.name}"
-        _add_doc(
-            writer=writer, doc_id=col_canonical, kind="column",
-            canonical=col_canonical,
-            text=render_column_text(model=model, column=column),
-        )
-    for measure in model.measures:
-        if measure.name is None:
-            continue
-        measure_canonical = f"{model_canonical}.{measure.name}"
-        _add_doc(
-            writer=writer, doc_id=measure_canonical, kind="measure",
-            canonical=measure_canonical,
-            text=render_measure_text(model=model, measure=measure),
-        )
-    for aggregation in model.aggregations:
-        agg_canonical = f"{model_canonical}.{aggregation.name}"
-        _add_doc(
-            writer=writer, doc_id=agg_canonical, kind="aggregation",
-            canonical=agg_canonical,
-            text=render_aggregation_text(model=model, aggregation=aggregation),
-        )
-
-
-def _add_memory_docs(*, writer, memories: List[Memory]) -> None:
-    for memory in memories:
-        _add_doc(
-            writer=writer, doc_id=f"memory:{memory.id}", kind="memory",
-            canonical=str(memory.id),
-            text=render_memory_text(memory=memory),
-        )
-
-
 def build_in_memory_index(
     *,
     memories: List[Memory],
@@ -154,25 +95,129 @@ def build_in_memory_index(
     Hidden models and hidden columns are skipped entirely. The caller is
     expected to pass datasource names + every model in scope; this
     function does *not* call into storage.
+
+    Returns just the tantivy index for callers that don't need the
+    canonical-text lookups. ``build_in_memory_corpus`` returns both.
+    """
+    corpus = build_in_memory_corpus(
+        memories=memories, models=models, datasources=datasources,
+    )
+    return corpus.index
+
+
+class Corpus(BaseModel):
+    """The tantivy index plus the parallel ``canonical_id → text`` and
+    ``canonical_id → kind`` maps. The embedding channel (DEV-1386) uses
+    the maps to recover hit text without re-rendering the entity or
+    round-tripping through the raw ``canonical`` tantivy field."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    index: "tantivy.Index"
+    canonical_to_text: Dict[str, str]
+    canonical_to_kind: Dict[str, str]
+
+
+def _collect_render_pairs(
+    *,
+    memories: List[Memory],
+    visible_models: List[SlayerModel],
+    datasources: List[str],
+) -> List[Tuple[str, str, str]]:
+    """Return ``[(canonical_id, kind, rendered_text), ...]`` for every
+    doc that goes into the index. Same filter rules as the indexer:
+    hidden models and hidden columns are skipped."""
+    out: List[Tuple[str, str, str]] = []
+    models_by_ds: Dict[str, List[SlayerModel]] = {}
+    for m in visible_models:
+        models_by_ds.setdefault(m.data_source, []).append(m)
+    for ds in datasources:
+        out.append((
+            ds, "datasource",
+            render_datasource_text(name=ds, models=models_by_ds.get(ds, [])),
+        ))
+    for model in visible_models:
+        model_canonical = f"{model.data_source}.{model.name}"
+        out.append((
+            model_canonical, "model",
+            render_model_text(model=model),
+        ))
+        for column in model.columns:
+            if column.hidden:
+                continue
+            out.append((
+                f"{model_canonical}.{column.name}", "column",
+                render_column_text(model=model, column=column),
+            ))
+        for measure in model.measures:
+            if measure.name is None:
+                continue
+            out.append((
+                f"{model_canonical}.{measure.name}", "measure",
+                render_measure_text(model=model, measure=measure),
+            ))
+        for aggregation in model.aggregations:
+            out.append((
+                f"{model_canonical}.{aggregation.name}", "aggregation",
+                render_aggregation_text(model=model, aggregation=aggregation),
+            ))
+    for memory in memories:
+        out.append((
+            f"memory:{memory.id}", "memory",
+            render_memory_text(memory=memory),
+        ))
+    return out
+
+
+def build_in_memory_corpus(
+    *,
+    memories: List[Memory],
+    models: List[SlayerModel],
+    datasources: List[str],
+) -> Corpus:
+    """Build the index AND the parallel canonical lookup maps in one walk.
+
+    The embedding channel (DEV-1386) reads from the same render pipeline
+    as tantivy, so rendering once here keeps the two channels in sync
+    without paying for two traversals.
     """
     schema = _build_schema()
     index = tantivy.Index(schema=schema)
     writer = index.writer()
 
-    # Hidden models must not leak into the datasource doc either —
-    # otherwise a query against a hidden model's name surfaces the parent
-    # datasource and breaks the contract.
     visible_models = [m for m in models if not m.hidden]
-    _add_datasource_docs(
-        writer=writer, datasources=datasources, visible_models=visible_models,
+    pairs = _collect_render_pairs(
+        memories=memories,
+        visible_models=visible_models,
+        datasources=datasources,
     )
-    for model in visible_models:
-        _add_model_subtree_docs(writer=writer, model=model)
-    _add_memory_docs(writer=writer, memories=memories)
+    canonical_to_text: Dict[str, str] = {}
+    canonical_to_kind: Dict[str, str] = {}
+    for canonical, kind, text in pairs:
+        # Memory docs use ``id="memory:<int>"`` and ``canonical="<int>"``
+        # to match the DEV-1375 tantivy schema; entity docs use the same
+        # canonical string for both ``id`` and ``canonical`` fields.
+        if kind == "memory":
+            int_part = canonical.split(":", 1)[1]
+            _add_doc(
+                writer=writer, doc_id=canonical, kind="memory",
+                canonical=int_part, text=text,
+            )
+        else:
+            _add_doc(
+                writer=writer, doc_id=canonical, kind=kind,
+                canonical=canonical, text=text,
+            )
+        canonical_to_text[canonical] = text
+        canonical_to_kind[canonical] = kind
 
     writer.commit()
     index.reload()
-    return index
+    return Corpus(
+        index=index,
+        canonical_to_text=canonical_to_text,
+        canonical_to_kind=canonical_to_kind,
+    )
 
 
 # ---------------------------------------------------------------------------

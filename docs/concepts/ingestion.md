@@ -152,4 +152,13 @@ If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warnin
 
 After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
 
+### Search side effects
+
+After validation, every ingest also refreshes the search corpus for the touched datasource:
+
+- **Sample values** (`Column.sampled`) — re-profiled for every non-hidden, non-PK column on every table-backed model in the datasource. The cached snapshot is consumed by the tantivy search index and by `inspect_model`. See [Search](search.md#sample-value-cache).
+- **Embedding rows** — when the `embedding_search` extra is installed and `SLAYER_EMBEDDING_MODEL` is configured, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3--dense-embedding-similarity).
+
+Both refreshes are best-effort: per-entity failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `embedding_search` extra is not installed, the embedding pass emits one warning and does no work.
+
 `include_tables` / `exclude_tables` constrain the additive pass plus the `sql_table`-mode subset of validation: a `sql_table`-mode model whose table is excluded is left out of both. `sql`-mode and query-backed models in the same datasource are still passed through `validate_models` regardless of the table filter — they are not tied to a specific table name. Run `validate_models` directly (no `--include`/`--exclude`) to validate only those modes.

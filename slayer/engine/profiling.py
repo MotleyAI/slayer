@@ -318,11 +318,37 @@ async def handle_edit_refresh(
       ``source_queries`` body changed and so every column's sample-value
       could be affected).
     * Otherwise refresh just the columns named in ``changed_columns``.
+
+    DEV-1386: after the sample-value refresh, runs the embedding refresh
+    over the model's subtree (model doc + visible columns + named
+    measures + custom aggregations). Best-effort: per-entity embed
+    failures are appended to the returned warning list, never aborting
+    ``edit_model``.
     """
     model = await storage.get_model(model_name, data_source=data_source)
     if model is None:
         return [f"model {model_name!r} not found in datasource {data_source!r}"]
     only = None if model_level_change else changed_columns
-    return await refresh_table_backed_model_sampled(
+    warnings = await refresh_table_backed_model_sampled(
         model=model, engine=engine, storage=storage, only_columns=only,
     )
+    # Reload the model — the sample-value refresh just patched it on
+    # disk, and the embedding text rendering needs the updated dict to
+    # match the new content_hash.
+    reloaded = await storage.get_model(model_name, data_source=data_source)
+    if reloaded is not None:
+        # Local import: keep embeddings off the cold-start path when the
+        # extra is not installed.
+        from slayer.embeddings.service import EmbeddingService
+
+        try:
+            warnings.extend(
+                await EmbeddingService(storage=storage).refresh_model_subtree(
+                    reloaded,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            warnings.append(
+                f"{model_name}: embedding refresh failed: {exc}"
+            )
+    return warnings

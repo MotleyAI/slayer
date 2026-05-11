@@ -1,33 +1,50 @@
-"""SearchService — two-channel + RRF orchestrator (DEV-1375).
+"""SearchService — three-channel + RRF orchestrator (DEV-1375 / DEV-1386).
 
-* Channel 1: entity-overlap BM25 over memories (existing
-  ``slayer.memories.ranker.bm25_rank``). Skipped when neither
-  ``entities`` nor ``query`` is supplied.
-* Channel 2: tantivy full-text over memories ∪ entities. Skipped when
-  ``question`` is empty.
+* **Channel 1** — entity-overlap BM25 over memories
+  (``slayer.memories.ranker.bm25_rank``). Skipped when neither
+  ``entities`` nor ``query`` is supplied. Contributes only to the memory
+  ranking.
+* **Channel 2** — tantivy full-text over memories ∪ entities. Skipped
+  when ``question`` is empty. Contributes to both the memory ranking
+  and the entity ranking.
+* **Channel 3** — dense embedding similarity over memories ∪ entities
+  (DEV-1386). Skipped when ``question`` is empty, when the
+  ``embedding_search`` extra is not installed, when the query
+  embedding call fails, or when there are no embedding rows for the
+  active model name. Contributes to both the memory ranking and the
+  entity ranking.
 
-Memory hits from both channels are fused via RRF; entity hits come from
-channel 2 only and surface their raw tantivy BM25 score.
+Memory rankings from every active channel are fused via RRF
+(``k = 60``). Entity rankings from channels 2 and 3 are fused the same
+way. Channel 1 does not contribute to entity ranking (it operates on
+memory entity tags, not on entity docs).
 
 Empty input (no entities, no query, no question) falls back to recency:
-newest ``max_memories`` memories with an explanatory warning.
+newest ``max_memories`` learning-only memories + newest
+``max_example_queries`` query-bearing memories, with a warning.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Set, Union
+from typing import List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, Field
 
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.embeddings import client as embedding_client
 from slayer.memories.models import Memory
 from slayer.memories.ranker import bm25_rank
 from slayer.memories.resolver import (
     extract_entities_from_query,
     resolve_entity,
 )
-from slayer.search.index import IndexHit, build_in_memory_index, search_index
+from slayer.search.index import (
+    Corpus,
+    IndexHit,
+    build_in_memory_corpus,
+    search_index,
+)
 from slayer.search.rrf import rrf_fuse
 from slayer.storage.base import StorageBackend
 
@@ -47,7 +64,7 @@ class MemoryHit(BaseModel):
     ``score`` is always the Reciprocal-Rank-Fusion score
     (``Σ 1 / (k + rank)``, ``k=60``); even single-channel searches go
     through RRF, so the value is comparable across channels but is not
-    directly the raw BM25 / tantivy score."""
+    directly the raw BM25 / tantivy / cosine score."""
 
     id: int
     score: float
@@ -71,7 +88,9 @@ class ExampleQueryHit(BaseModel):
 
 class EntityHit(BaseModel):
     """An entity result. ``id`` is the canonical entity string
-    (``"<ds>"``, ``"<ds>.<model>"``, or ``"<ds>.<model>.<leaf>"``)."""
+    (``"<ds>"``, ``"<ds>.<model>"``, or ``"<ds>.<model>.<leaf>"``).
+    ``score`` is the RRF-fused score across channels 2 and 3 (or the
+    single-channel raw score when only one channel contributed)."""
 
     id: str
     kind: str  # "datasource" | "model" | "column" | "measure" | "aggregation"
@@ -114,7 +133,7 @@ def _dedup(items: List[str]) -> List[str]:
 
 def _split_tantivy_hits(
     hits: List[IndexHit],
-) -> tuple[List[int], List[IndexHit], dict[int, IndexHit]]:
+) -> Tuple[List[int], List[IndexHit], dict[int, IndexHit]]:
     """Sort tantivy hits into the memory ranking, the entity-hit list, and
     a memory-id→hit lookup."""
     memory_ranking: List[int] = []
@@ -176,19 +195,19 @@ def _build_memory_hit(
 
 def _fuse_memory_hits(
     *,
-    channel_1_ranking: List[int],
-    channel_2_ranking: List[int],
+    rankings: List[List[int]],
     memory_by_id: dict,
     index_hits_by_memory_id: dict,
     canonical_input_entities: List[str],
     max_memories: int,
     max_example_queries: int,
-) -> tuple[List["MemoryHit"], List["ExampleQueryHit"]]:
-    """RRF-fuse the two memory rankings and partition into learning-only
-    (``MemoryHit``) vs query-bearing (``ExampleQueryHit``) lists, each
-    capped independently."""
-    rankings = [r for r in (channel_1_ranking, channel_2_ranking) if r]
-    fused = rrf_fuse(rankings=rankings, k=_RRF_K) if rankings else {}
+) -> Tuple[List["MemoryHit"], List["ExampleQueryHit"]]:
+    """RRF-fuse the supplied memory rankings and partition into
+    learning-only (``MemoryHit``) vs query-bearing (``ExampleQueryHit``)
+    lists, each capped independently. Empty inner rankings are filtered
+    out so single-channel results still flow through RRF normalisation."""
+    non_empty = [r for r in rankings if r]
+    fused = rrf_fuse(rankings=non_empty, k=_RRF_K) if non_empty else {}
     fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
 
     learnings: List[MemoryHit] = []
@@ -216,8 +235,35 @@ def _fuse_memory_hits(
     return learnings, examples
 
 
+def _fuse_entity_hits(
+    *,
+    rankings: List[List[str]],
+    corpus: Optional[Corpus],
+    max_entities: int,
+) -> List[EntityHit]:
+    """RRF-fuse the entity rankings and look text/kind up from the corpus
+    map. Returns at most ``max_entities`` hits."""
+    if corpus is None:
+        return []
+    non_empty = [r for r in rankings if r]
+    fused = rrf_fuse(rankings=non_empty, k=_RRF_K) if non_empty else {}
+    fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
+    out: List[EntityHit] = []
+    for canonical, score in fused_sorted:
+        if len(out) >= max_entities:
+            break
+        kind = corpus.canonical_to_kind.get(canonical)
+        text = corpus.canonical_to_text.get(canonical)
+        if kind is None or text is None:
+            continue
+        out.append(EntityHit(
+            id=canonical, kind=kind, score=score, text=text,
+        ))
+    return out
+
+
 class SearchService:
-    """Orchestrates the two retrieval channels + RRF fusion."""
+    """Orchestrates the three retrieval channels + RRF fusion."""
 
     def __init__(self, *, storage: StorageBackend) -> None:
         self._storage = storage
@@ -261,11 +307,22 @@ class SearchService:
             max_memories + max_example_queries, max_entities,
         ) * _OVER_FETCH_MULTIPLIER
 
-        # Single memory-corpus fetch shared by both channels — avoids two
-        # full scans when entities/query AND question are both supplied.
+        # Single memory-corpus fetch shared by all channels.
         all_memories: List[Memory] = []
         if channel_1_active or question_active:
             all_memories = await self._storage.list_memories(entities=None)
+
+        # Build the in-memory corpus once when question is active — both
+        # channels 2 and 3 read from it (channel 2 for tantivy search,
+        # channel 3 to recover hit text by canonical_id).
+        corpus: Optional[Corpus] = None
+        if question_active:
+            all_models, datasources = await self._collect_index_corpus()
+            corpus = build_in_memory_corpus(
+                memories=all_memories,
+                models=all_models,
+                datasources=datasources,
+            )
 
         channel_1_memory_ranking, memory_by_id = self._run_channel_1(
             canonical_input_entities=canonical_input_entities,
@@ -275,30 +332,60 @@ class SearchService:
         )
         (
             channel_2_memory_ranking,
-            channel_2_entity_hits,
+            channel_2_entity_ranking,
             index_hits_by_memory_id,
-        ) = await self._run_channel_2(
+        ) = self._run_channel_2(
+            corpus=corpus,
             question=question,
-            all_memories=all_memories,
-            memory_by_id=memory_by_id,
-            channel_1_memory_ranking=channel_1_memory_ranking,
+            over_fetch=over_fetch_budget,
+        )
+        (
+            channel_3_memory_ranking,
+            channel_3_entity_ranking,
+            channel_3_warnings,
+        ) = await self._run_channel_3(
+            question=question,
+            corpus=corpus,
             over_fetch=over_fetch_budget,
             question_active=question_active,
         )
+        warnings = _dedup(warnings + channel_3_warnings)
+
+        # Backfill memory_by_id from every channel so RRF can resolve
+        # any memory hit downstream.
+        _backfill_memory_by_id(
+            memory_by_id=memory_by_id,
+            all_memories=all_memories,
+            mem_ids=channel_1_memory_ranking,
+        )
+        _backfill_memory_by_id(
+            memory_by_id=memory_by_id,
+            all_memories=all_memories,
+            mem_ids=index_hits_by_memory_id.keys(),
+        )
+        _backfill_memory_by_id(
+            memory_by_id=memory_by_id,
+            all_memories=all_memories,
+            mem_ids=channel_3_memory_ranking,
+        )
 
         memory_hits, example_query_hits = _fuse_memory_hits(
-            channel_1_ranking=channel_1_memory_ranking,
-            channel_2_ranking=channel_2_memory_ranking,
+            rankings=[
+                channel_1_memory_ranking,
+                channel_2_memory_ranking,
+                channel_3_memory_ranking,
+            ],
             memory_by_id=memory_by_id,
             index_hits_by_memory_id=index_hits_by_memory_id,
             canonical_input_entities=canonical_input_entities,
             max_memories=max_memories,
             max_example_queries=max_example_queries,
         )
-        entity_hits = [
-            EntityHit(id=hit.id, kind=hit.kind, score=hit.score, text=hit.text)
-            for hit in channel_2_entity_hits[:max_entities]
-        ]
+        entity_hits = _fuse_entity_hits(
+            rankings=[channel_2_entity_ranking, channel_3_entity_ranking],
+            corpus=corpus,
+            max_entities=max_entities,
+        )
         return SearchResponse(
             memories=memory_hits,
             example_queries=example_query_hits,
@@ -312,7 +399,7 @@ class SearchService:
         *,
         entities: Optional[List[str]],
         query: Optional[Union[SlayerQuery, dict]],
-    ) -> tuple[List[str], List[str]]:
+    ) -> Tuple[List[str], List[str]]:
         """Walk ``entities`` + ``query`` into a deduped canonical-entity list
         plus a deduped warning list."""
         canonical: List[str] = []
@@ -389,7 +476,7 @@ class SearchService:
         all_memories: List[Memory],
         over_fetch: int,
         channel_1_active: bool,
-    ) -> tuple[List[int], dict[int, Memory]]:
+    ) -> Tuple[List[int], dict[int, Memory]]:
         """Entity-overlap BM25 channel."""
         channel_1_memory_ranking: List[int] = []
         memory_by_id: dict[int, Memory] = {}
@@ -403,54 +490,113 @@ class SearchService:
                 channel_1_memory_ranking.append(memory.id)
         return channel_1_memory_ranking, memory_by_id
 
-    async def _run_channel_2(
+    def _run_channel_2(
+        self,
+        *,
+        corpus: Optional[Corpus],
+        question: Optional[str],
+        over_fetch: int,
+    ) -> Tuple[List[int], List[str], dict[int, IndexHit]]:
+        """Tantivy full-text channel. Returns
+        ``(memory_ranking, entity_ranking_canonicals, by_memory_id_hits)``.
+        Empty when ``corpus`` or ``question`` is missing."""
+        if corpus is None or not question or not question.strip():
+            return [], [], {}
+        tantivy_hits = search_index(
+            index=corpus.index, question=question, limit=over_fetch,
+        )
+        (
+            memory_ranking,
+            entity_hits,
+            by_memory_id,
+        ) = _split_tantivy_hits(tantivy_hits)
+        entity_ranking = [h.id for h in entity_hits]
+        return memory_ranking, entity_ranking, by_memory_id
+
+    async def _run_channel_3(
         self,
         *,
         question: Optional[str],
-        all_memories: List[Memory],
-        memory_by_id: dict[int, Memory],
-        channel_1_memory_ranking: List[int],
+        corpus: Optional[Corpus],
         over_fetch: int,
         question_active: bool,
-    ) -> tuple[List[int], List[IndexHit], dict[int, IndexHit]]:
-        """Tantivy full-text channel; mutates ``memory_by_id`` so the
-        caller can resolve any memory id from either channel."""
-        if not question_active:
-            return [], [], {}
+    ) -> Tuple[List[int], List[str], List[str]]:
+        """Embedding-similarity channel (DEV-1386). Returns
+        ``(memory_ranking, entity_ranking_canonicals, warnings)``.
 
-        all_models, datasources = await self._collect_index_corpus()
-        index = build_in_memory_index(
-            memories=all_memories, models=all_models, datasources=datasources,
-        )
-        tantivy_hits = search_index(
-            index=index, question=question, limit=over_fetch,
-        )
-        (
-            channel_2_memory_ranking,
-            channel_2_entity_hits,
-            index_hits_by_memory_id,
-        ) = _split_tantivy_hits(tantivy_hits)
-        # Backfill memory_by_id from both rankings so downstream RRF can
-        # always resolve the memory.
-        _backfill_memory_by_id(
-            memory_by_id=memory_by_id,
-            all_memories=all_memories,
-            mem_ids=channel_1_memory_ranking,
-        )
-        _backfill_memory_by_id(
-            memory_by_id=memory_by_id,
-            all_memories=all_memories,
-            mem_ids=index_hits_by_memory_id.keys(),
-        )
-        return (
-            channel_2_memory_ranking,
-            channel_2_entity_hits,
-            index_hits_by_memory_id,
-        )
+        Skipped (with a warning) when:
+
+        * ``question`` is empty,
+        * the ``embedding_search`` extra is not installed,
+        * the active model has no embedding rows in storage,
+        * the query embedding call fails.
+        """
+        if not question_active or corpus is None:
+            return [], [], []
+        if not embedding_client.is_available():
+            return [], [], [
+                "embedding channel skipped: "
+                "`embedding_search` extra not installed.",
+            ]
+
+        # Local import to break the ``slayer.search`` ↔ ``slayer.embeddings``
+        # cycle (the embedding service imports render helpers from
+        # ``slayer.search.render``).
+        from slayer.embeddings.service import EmbeddingService
+
+        service = EmbeddingService(storage=self._storage)
+        rows = await service.fetch_corpus()
+        if not rows:
+            return [], [], [
+                f"embedding channel skipped: no embedding rows for model "
+                f"{service.model_name!r}. Run `slayer ingest` to populate.",
+            ]
+        try:
+            import numpy as np
+            from slayer.embeddings.ranker import (
+                normalise,
+                normalise_matrix,
+                top_k_cosine,
+            )
+        except ImportError:
+            return [], [], [
+                "embedding channel skipped: numpy not installed "
+                "(reinstall with the `embedding_search` extra).",
+            ]
+        query_vec = await service.embed_question(question or "")
+        if query_vec is None:
+            return [], [], [
+                "embedding channel skipped: query embedding failed.",
+            ]
+        matrix = np.array([r.embedding for r in rows], dtype=np.float32)
+        if matrix.shape[1] != len(query_vec):
+            return [], [], [
+                f"embedding channel skipped: dim mismatch "
+                f"(query={len(query_vec)}, corpus={matrix.shape[1]}). "
+                f"Re-run `slayer ingest` to refresh embeddings against "
+                f"the current model.",
+            ]
+        matrix = normalise_matrix(matrix)
+        query_arr = normalise(query_vec)
+        pairs = top_k_cosine(query=query_arr, matrix=matrix, k=over_fetch)
+
+        memory_ranking: List[int] = []
+        entity_ranking: List[str] = []
+        for idx, _score in pairs:
+            row = rows[idx]
+            if row.entity_kind == "memory":
+                try:
+                    memory_id = int(row.canonical_id.split(":", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                memory_ranking.append(memory_id)
+            else:
+                entity_ranking.append(row.canonical_id)
+        return memory_ranking, entity_ranking, []
 
     async def _collect_index_corpus(
         self,
-    ) -> tuple[List[SlayerModel], List[str]]:
+    ) -> Tuple[List[SlayerModel], List[str]]:
         """Walk every datasource + every model into the in-memory corpus."""
         datasources = await self._storage.list_datasources()
         models: List[SlayerModel] = []
