@@ -874,7 +874,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         # Heuristic: a JSON query starts with '{' or '['; anything else
         # is treated as a model name for run-by-name dispatch.
         stripped = query_input.lstrip()
-        is_json = stripped.startswith("{") or stripped.startswith("[")
+        is_json = stripped.startswith(("{", "["))
 
     if is_json:
         data = json.loads(query_input)

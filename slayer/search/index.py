@@ -118,6 +118,38 @@ class Corpus(BaseModel):
     canonical_to_kind: Dict[str, str]
 
 
+def _render_model_subtree_pairs(
+    model: SlayerModel,
+) -> List[Tuple[str, str, str]]:
+    """Render docs for one model: the model itself + its visible columns +
+    named measures + custom aggregations. Hidden columns and unnamed
+    measures are skipped to match the indexer's filter rules."""
+    model_canonical = f"{model.data_source}.{model.name}"
+    pairs: List[Tuple[str, str, str]] = [(
+        model_canonical, "model", render_model_text(model=model),
+    )]
+    for column in model.columns:
+        if column.hidden:
+            continue
+        pairs.append((
+            f"{model_canonical}.{column.name}", "column",
+            render_column_text(model=model, column=column),
+        ))
+    for measure in model.measures:
+        if measure.name is None:
+            continue
+        pairs.append((
+            f"{model_canonical}.{measure.name}", "measure",
+            render_measure_text(model=model, measure=measure),
+        ))
+    for aggregation in model.aggregations:
+        pairs.append((
+            f"{model_canonical}.{aggregation.name}", "aggregation",
+            render_aggregation_text(model=model, aggregation=aggregation),
+        ))
+    return pairs
+
+
 def _collect_render_pairs(
     *,
     memories: List[Memory],
@@ -137,30 +169,7 @@ def _collect_render_pairs(
             render_datasource_text(name=ds, models=models_by_ds.get(ds, [])),
         ))
     for model in visible_models:
-        model_canonical = f"{model.data_source}.{model.name}"
-        out.append((
-            model_canonical, "model",
-            render_model_text(model=model),
-        ))
-        for column in model.columns:
-            if column.hidden:
-                continue
-            out.append((
-                f"{model_canonical}.{column.name}", "column",
-                render_column_text(model=model, column=column),
-            ))
-        for measure in model.measures:
-            if measure.name is None:
-                continue
-            out.append((
-                f"{model_canonical}.{measure.name}", "measure",
-                render_measure_text(model=model, measure=measure),
-            ))
-        for aggregation in model.aggregations:
-            out.append((
-                f"{model_canonical}.{aggregation.name}", "aggregation",
-                render_aggregation_text(model=model, aggregation=aggregation),
-            ))
+        out.extend(_render_model_subtree_pairs(model))
     for memory in memories:
         out.append((
             f"memory:{memory.id}", "memory",

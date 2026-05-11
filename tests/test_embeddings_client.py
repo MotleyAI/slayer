@@ -42,16 +42,9 @@ def test_current_model_blank_env_uses_default(
 async def test_embed_batch_empty_input_short_circuits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    called: List[Any] = []
-
-    async def fail(*_a: Any, **_kw: Any) -> Any:
-        called.append("called")
-        raise AssertionError("should not be called for empty input")
-
     monkeypatch.setattr(embedding_client, "is_available", lambda: True)
     # Even if available, empty input must not hit the SDK.
     assert await embedding_client.embed_batch([], model="openai/x") == []
-    assert called == []
 
 
 async def test_embed_batch_no_extra_returns_none_list(
@@ -77,7 +70,7 @@ async def test_embed_batch_calls_litellm_with_resolved_model(
         def __init__(self, data: List[dict]) -> None:
             self.data = data
 
-    async def fake_aembedding(*, model: str, input: List[str]) -> _FakeResponse:
+    async def fake_aembedding(*, model: str, input: List[str]) -> _FakeResponse:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         captured["model"] = model
         captured["input"] = list(input)
         return _FakeResponse(
@@ -119,7 +112,7 @@ async def test_embed_batch_pads_short_response_with_none(
         def __init__(self) -> None:
             self.data = [{"embedding": [1.0, 2.0]}]
 
-    async def short_response(*_a: Any, **_kw: Any) -> Any:
+    async def short_response(*_a: Any, **_kw: Any) -> Any:  # NOSONAR(S7503) — stub matches litellm.aembedding async signature
         return _FakeResponse()
 
     import litellm
@@ -134,7 +127,7 @@ async def test_embed_query_caches_repeated_calls(
     monkeypatch.setattr(embedding_client, "is_available", lambda: True)
     call_count = {"n": 0}
 
-    async def fake_embed_batch(
+    async def fake_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
         texts: List[str], *, model: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         call_count["n"] += 1

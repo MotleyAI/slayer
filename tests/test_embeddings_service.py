@@ -214,7 +214,7 @@ async def test_refresh_model_subtree_per_entry_failure_warns(
     """A single None in the batch surfaces a warning but doesn't abort
     persistence of the other rows."""
 
-    async def partial_failure(
+    async def partial_failure(  # NOSONAR(S7503) — stub matches embed_batch async signature
         texts: List[str], *, model: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         out: List[Optional[List[float]]] = []

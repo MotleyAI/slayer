@@ -111,7 +111,7 @@ async def test_question_with_embeddings_returns_entity(
     # against the query embedding.
     text_to_vec: dict = {}
 
-    async def stub_embed_batch(
+    async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
         texts: List[str], *, model: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         out: List[Optional[List[float]]] = []
@@ -143,7 +143,7 @@ async def test_question_with_embeddings_returns_entity(
 
     # Stub the query-side embedding: align with the "amount" column
     # vector so cosine ranks it #1.
-    async def stub_embed_query(
+    async def stub_embed_query(  # NOSONAR(S7503) — stub matches embed_query async signature
         text: str, *, model: Optional[str] = None,
     ) -> List[float]:
         # Align with amount column.
@@ -174,12 +174,12 @@ async def test_entity_hits_now_carry_rrf_fused_score(
     a single-channel hit through RRF emits a score < 0.05."""
     await _seed_basic_corpus(storage)
 
-    async def stub_embed_batch(
+    async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
         texts: List[str], *, model: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         return [[0.0, 0.0, 0.0, 0.0] for _ in texts]
 
-    async def stub_embed_query(*_a, **_kw) -> List[float]:
+    async def stub_embed_query(*_a, **_kw) -> List[float]:  # NOSONAR(S7503) — stub matches embed_query async signature
         return [0.0, 0.0, 0.0, 0.0]
 
     monkeypatch.setattr(
@@ -218,7 +218,7 @@ async def test_query_embed_failure_warns_and_continues(
 ) -> None:
     await _seed_basic_corpus(storage)
 
-    async def stub_embed_batch(
+    async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
         texts: List[str], *, model: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         return [[0.1, 0.1, 0.1, 0.1] for _ in texts]
@@ -231,7 +231,7 @@ async def test_query_embed_failure_warns_and_continues(
     assert model is not None
     await EmbeddingService(storage=storage).refresh_model_subtree(model)
 
-    async def failing_query(*_a, **_kw):
+    async def failing_query(*_a, **_kw):  # NOSONAR(S7503) — stub matches embed_query async signature
         return None
 
     monkeypatch.setattr(embedding_client, "embed_query", failing_query)
@@ -262,7 +262,7 @@ async def test_entity_only_does_not_trigger_channel_3(
 
     embed_called: List[str] = []
 
-    async def stub_embed_query(text: str, *, model: Optional[str] = None):
+    async def stub_embed_query(text: str, *, model: Optional[str] = None):  # NOSONAR(S7503) — stub matches embed_query async signature
         embed_called.append(text)
         return [0.1, 0.1, 0.1, 0.1]
 
