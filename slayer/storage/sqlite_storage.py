@@ -13,6 +13,7 @@ import sqlite3
 from typing import Dict, List, Optional, Tuple
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.v4_migration import migrate_sqlite_schema
@@ -74,6 +75,22 @@ class SQLiteStorage(StorageBackend):
                     last_value INTEGER NOT NULL
                 )
             """)
+            # DEV-1386: embeddings sidecar table.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS embeddings (
+                    canonical_id TEXT NOT NULL,
+                    embedding_model_name TEXT NOT NULL,
+                    entity_kind TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    embedding TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (canonical_id, embedding_model_name)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_model "
+                "ON embeddings(embedding_model_name)"
+            )
 
     # --- Sync helpers (run in thread to avoid blocking the event loop) ---
 
@@ -184,16 +201,57 @@ class SQLiteStorage(StorageBackend):
             name=name, data=data, data_source=data_source,
         )
 
-    async def delete_model(
-        self,
-        name: str,
-        data_source: Optional[str] = None,
+    async def _delete_model_row(
+        self, *, data_source: str, name: str,
     ) -> bool:
-        target = await self._resolve_target_or_none(name, data_source=data_source)
-        if target is None:
-            return False
-        data_source, name = target
         return await asyncio.to_thread(self._delete_model_sync, data_source, name)
+
+    def _update_column_sampled_sync(
+        self, *, data_source: str, model_name: str,
+        column_name: str, sampled: Optional[str],
+    ) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT data FROM models WHERE data_source = ? AND name = ?",
+                (data_source, model_name),
+            ).fetchone()
+            if not row:
+                raise ValueError(
+                    f"update_column_sampled: model {model_name!r} in datasource "
+                    f"{data_source!r} not found."
+                )
+            data = json.loads(row[0])
+            cols = data.get("columns") or []
+            for col in cols:
+                if isinstance(col, dict) and col.get("name") == column_name:
+                    if sampled is None:
+                        col.pop("sampled", None)
+                    else:
+                        col["sampled"] = sampled
+                    break
+            else:
+                raise ValueError(
+                    f"update_column_sampled: column {column_name!r} not found "
+                    f"on model {model_name!r} in datasource {data_source!r}."
+                )
+            conn.execute(
+                "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
+                (json.dumps(data), data_source, model_name),
+            )
+
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        await asyncio.to_thread(
+            self._update_column_sampled_sync,
+            data_source=data_source, model_name=model_name,
+            column_name=column_name, sampled=sampled,
+        )
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)
@@ -208,7 +266,7 @@ class SQLiteStorage(StorageBackend):
     async def list_datasources(self) -> List[str]:
         return await asyncio.to_thread(self._list_datasources_sync)
 
-    async def delete_datasource(self, name: str) -> bool:
+    async def _delete_datasource_row(self, name: str) -> bool:
         return await asyncio.to_thread(self._delete_datasource_sync, name)
 
     async def get_datasource_priority(self) -> List[str]:
@@ -332,3 +390,105 @@ class SQLiteStorage(StorageBackend):
 
     async def _delete_memory_row(self, memory_id: int) -> bool:
         return await asyncio.to_thread(self._delete_memory_sync, memory_id)
+
+    # ---- embeddings (DEV-1386) -------------------------------------------
+
+    def _save_embedding_sync(self, row: Embedding) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO embeddings "
+                "(canonical_id, embedding_model_name, entity_kind, "
+                "content_hash, embedding, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    row.canonical_id,
+                    row.embedding_model_name,
+                    row.entity_kind,
+                    row.content_hash,
+                    json.dumps(row.embedding),
+                    row.created_at.isoformat(),
+                ),
+            )
+
+    async def save_embedding(self, row: Embedding) -> None:
+        await asyncio.to_thread(self._save_embedding_sync, row)
+
+    def _get_embedding_sync(
+        self, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Tuple]:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT canonical_id, embedding_model_name, entity_kind, "
+                "content_hash, embedding, created_at "
+                "FROM embeddings "
+                "WHERE canonical_id = ? AND embedding_model_name = ?",
+                (canonical_id, embedding_model_name),
+            ).fetchone()
+        return row
+
+    async def get_embedding(
+        self, *, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Embedding]:
+        raw = await asyncio.to_thread(
+            self._get_embedding_sync, canonical_id, embedding_model_name,
+        )
+        if raw is None:
+            return None
+        return Embedding.model_validate({
+            "canonical_id": raw[0],
+            "embedding_model_name": raw[1],
+            "entity_kind": raw[2],
+            "content_hash": raw[3],
+            "embedding": json.loads(raw[4]),
+            "created_at": raw[5],
+        })
+
+    def _list_embeddings_sync(self, embedding_model_name: str) -> List[Tuple]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT canonical_id, embedding_model_name, entity_kind, "
+                "content_hash, embedding, created_at "
+                "FROM embeddings "
+                "WHERE embedding_model_name = ? "
+                "ORDER BY canonical_id",
+                (embedding_model_name,),
+            ).fetchall()
+        return rows
+
+    async def list_embeddings(
+        self, *, embedding_model_name: str,
+    ) -> List[Embedding]:
+        raws = await asyncio.to_thread(
+            self._list_embeddings_sync, embedding_model_name,
+        )
+        return [
+            Embedding.model_validate({
+                "canonical_id": r[0],
+                "embedding_model_name": r[1],
+                "entity_kind": r[2],
+                "content_hash": r[3],
+                "embedding": json.loads(r[4]),
+                "created_at": r[5],
+            })
+            for r in raws
+        ]
+
+    def _delete_embeddings_by_prefix_sync(self, prefix: str) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            # SQLite LIKE uses ``%`` for wildcards. ``GLOB`` would be
+            # case-sensitive but doesn't support escaping; canonical ids
+            # never legitimately contain ``%`` or ``_`` so we escape both
+            # to be safe and use ESCAPE.
+            escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            cursor = conn.execute(
+                "DELETE FROM embeddings WHERE canonical_id LIKE ? ESCAPE '\\'",
+                (escaped + "%",),
+            )
+            return int(cursor.rowcount or 0)
+
+    async def delete_embeddings_for_canonical(
+        self, *, canonical_id_prefix: str,
+    ) -> int:
+        return await asyncio.to_thread(
+            self._delete_embeddings_by_prefix_sync, canonical_id_prefix,
+        )

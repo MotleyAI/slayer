@@ -36,19 +36,15 @@ The `Column._validate_name` validator allows `__` inside `Column.name`. This is 
 
 `reject_user_dunder` in `slayer/core/refs.py` is retained as a helper for narrow contexts where `__` is unambiguously wrong (e.g. `SlayerQuery.name`, where `__` would clash with the SQL alias namespace) — it is not applied to free-form formula / filter strings.
 
-## What changed in DEV-1369
+## Reference-resolution rules at a glance
 
-The implementation drift fixed by DEV-1369:
+1. **Model-side filters** (`Column.filter`, `SlayerModel.filters`) use a sqlglot-based SQL-mode parser, so they accept arbitrary SQL function calls (`json_extract`, `coalesce`, `CASE WHEN`, …) — matching the spec that "models are the boundary that lifts raw SQL tables into the SLayer DSL".
 
-1. **Model-side filters** (`Column.filter`, `SlayerModel.filters`) used to share the DSL parser with query-side filters. They now use a sqlglot-based SQL-mode parser so they accept arbitrary SQL function calls (`json_extract`, `coalesce`, `CASE WHEN`, …) — matching the spec that "models are the boundary that lifts raw SQL tables into the SLayer DSL".
+2. **Query-side filters** strict-resolve at enrichment time: any bare name that isn't a `Column` / `ModelMeasure` / custom aggregation / query alias / canonical-agg synthesis raises a clear error.
 
-2. **Query-side filters** used to silently pass through unknown bare names — a filter `unknown_col > 0` would emit raw SQL referencing `unknown_col` on the underlying table. They now strict-resolve at enrichment time: any bare name that isn't a `Column` / `ModelMeasure` / custom aggregation / query alias / canonical-agg synthesis raises a clear error.
+3. **No predicate promotion.** A query filter that names a windowed `Column` raises with a suggestion to use a rank-family transform (`rank` / `percent_rank` / `dense_rank` / `ntile`) or a multi-stage `source_queries` model. The rank-family transforms cover top-N filtering in pure DSL.
 
-3. **Predicate promotion** — the DEV-1336 escape hatch where a query filter naming a `Column` whose `sql` contained a window function auto-promoted to a post-aggregation outer `WHERE` — is removed. The rank-family transforms (`rank` / `percent_rank` / `dense_rank` / `ntile`, DEV-1353) cover top-N filtering in pure DSL, so the escape hatch is redundant. A query filter that names a windowed `Column` now raises with a suggestion to use a rank transform or a multi-stage `source_queries` model.
-
-4. **Reference resolution consolidation** — the four scattered identifier regexes (in `formula.py`, `dbt/converter.py`, `engine/enrichment.py`, `memories/resolver.py`) and the two near-duplicate join walkers in `query_engine.py` (`_resolve_dimension_with_terminal`, `_resolve_cross_model_measure`) collapse into `slayer/core/refs.py` and `_walk_join_chain`.
-
-A sibling issue DEV-1370 will further unify the DSL formula parser and filter parser behind a single `FieldSpec`-producing entry point. That cleanup is deferred to keep this PR's surface tight.
+4. **Single reference-resolution surface.** Identifier handling lives in `slayer/core/refs.py`; join walks live in `_walk_join_chain` in the engine.
 
 ## Examples — accepted and rejected
 

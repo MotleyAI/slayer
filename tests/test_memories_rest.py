@@ -1,15 +1,15 @@
 """REST endpoint tests for the unified Memory surface (DEV-1357 v2).
 
-Three endpoints land on the FastAPI server:
+Two endpoints land on the FastAPI server:
 
 * ``POST /memories``         body ``{learning, linked_entities}``
 * ``DELETE /memories/{id}``
-* ``POST /memories/recall``  body ``{about, max_learnings, max_queries}``
 
-``linked_entities`` and ``about`` accept either a list of entity strings
-or an inline ``SlayerQuery`` payload (dict). Errors map:
-``EntityResolutionError`` / ``AmbiguousModelError`` / ``ValueError`` →
-``400``; ``MemoryNotFoundError`` → ``404``.
+Memory retrieval is part of ``POST /search`` (covered in
+``test_search_surfaces.py``). ``linked_entities`` accepts either a list
+of entity strings or an inline ``SlayerQuery`` payload (dict). Errors
+map: ``EntityResolutionError`` / ``AmbiguousModelError`` /
+``ValueError`` → ``400``; ``MemoryNotFoundError`` → ``404``.
 """
 
 import os
@@ -201,99 +201,15 @@ class TestDeleteMemory:
         assert resp.status_code == 404
 
 
-class TestRecallEndpoint:
-    async def test_recall_with_entity_list(
+class TestRecallEndpointRemoved:
+    async def test_recall_endpoint_returns_404(  # NOSONAR(S7503) — keeps async fixture binding consistent
         self, client: TestClient, seeded: YAMLStorage
     ) -> None:
-        await seeded.save_memory(
-            learning="match", entities=["mydb.orders.amount"]
-        )
-        await seeded.save_memory(
-            learning="other", entities=["mydb.orders.status"]
-        )
+        """``POST /memories/recall`` is gone; retrieval is now ``POST /search``."""
         resp = client.post(
             "/memories/recall",
             json={"about": ["mydb.orders.amount"]},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        learnings = [hit["learning"] for hit in body["learnings"]]
-        assert "match" in learnings
-        assert "other" not in learnings
-
-    async def test_recall_with_query_payload(
-        self, client: TestClient, seeded: YAMLStorage
-    ) -> None:
-        await seeded.save_memory(
-            learning="amount-related",
-            entities=["mydb.orders.amount"],
-        )
-        resp = client.post(
-            "/memories/recall",
-            json={
-                "about": {
-                    "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
-                },
-            },
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        learnings = [hit["learning"] for hit in body["learnings"]]
-        assert "amount-related" in learnings
-
-    async def test_recall_bm25_outranks_overbroad_memory(
-        self, client: TestClient, seeded: YAMLStorage
-    ) -> None:
-        # DEV-1365: BM25 ranking must place a precisely-tagged memory
-        # above an over-broad one; the response must carry score (not
-        # match_count) per the new RecallHit shape.
-        await seeded.save_memory(
-            learning="precise", entities=["mydb.orders.amount"]
-        )
-        await seeded.save_memory(
-            learning="broad",
-            entities=[
-                "mydb.orders.amount",
-                "mydb.orders.id",
-                "mydb.orders.status",
-                "mydb.orders",
-                "mydb",
-            ],
-        )
-        resp = client.post(
-            "/memories/recall",
-            json={"about": ["mydb.orders.amount"]},
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        learnings = body["learnings"]
-        assert learnings[0]["learning"] == "precise", (
-            f"precise memory must rank first; got {learnings}"
-        )
-        assert "score" in learnings[0]
-        assert isinstance(learnings[0]["score"], (int, float))
-
-    async def test_recall_max_caps(
-        self, client: TestClient, seeded: YAMLStorage
-    ) -> None:
-        for _ in range(3):
-            await seeded.save_memory(
-                learning="x", entities=["mydb.orders"]
-            )
-        resp = client.post(
-            "/memories/recall",
-            json={"about": ["mydb.orders"], "max_learnings": 1},
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert len(body["learnings"]) == 1
-
-    async def test_recall_resolution_error_returns_400(  # NOSONAR(S7503) — keeps a uniform async signature across the class so the seeded async fixture binds the same way for every test
-        self, client: TestClient, seeded: YAMLStorage
-    ) -> None:
-        resp = client.post(
-            "/memories/recall",
-            json={"about": ["amount"]},  # ambiguous
-        )
-        assert resp.status_code == 400
+        # FastAPI returns 405 because /memories/{id} captures the path
+        # with the wrong method, or 404 if no route matches.
+        assert resp.status_code in (404, 405)

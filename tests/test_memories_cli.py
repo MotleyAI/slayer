@@ -1,16 +1,16 @@
 """CLI tests for ``slayer memory <subcommand>`` (DEV-1357 v2).
 
-Three subcommands land:
+Two subcommands land:
 
     slayer memory save    --learning "<text>" [--entities a,b,c | --query <json|@file>]
     slayer memory forget  <id>
-    slayer memory recall  [--about a,b,c | --about-query <json|@file>]
-                          [--max-learnings N] [--max-queries N]
 
-Tests invoke the dispatcher (`_run_memory`) directly with a populated
-``argparse.Namespace`` — same pattern as ``test_cli.py`` already uses
-for ``_run_query``. End-to-end argparse plumbing is covered by a
-single-shot subprocess test at the bottom.
+Memory retrieval is part of ``slayer search`` (covered in
+``test_search_surfaces.py``). Tests invoke the dispatcher
+(`_run_memory`) directly with a populated ``argparse.Namespace`` — same
+pattern as ``test_cli.py`` already uses for ``_run_query``. End-to-end
+argparse plumbing is covered by a single-shot subprocess test at the
+bottom.
 """
 
 import json
@@ -79,10 +79,6 @@ def _args(
     entities: Optional[str] = None,
     query: Optional[str] = None,
     id: Optional[int] = None,  # noqa: A002 — argparse arg
-    about: Optional[str] = None,
-    about_query: Optional[str] = None,
-    max_learnings: Optional[int] = None,
-    max_queries: Optional[int] = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         storage=storage_path,
@@ -92,10 +88,6 @@ def _args(
         entities=entities,
         query=query,
         id=id,
-        about=about,
-        about_query=about_query,
-        max_learnings=max_learnings,
-        max_queries=max_queries,
     )
 
 
@@ -203,105 +195,11 @@ class TestMemoryForgetSubcommand:
             )
 
 
-class TestMemoryRecallSubcommand:
-    def test_recall_entity_list(self, seeded_storage_path, capsys):
-        _run_memory(
-            _args(
-                storage_path=seeded_storage_path,
-                memory_command="save",
-                learning="amount-note",
-                entities="mydb.orders.amount",
-            )
-        )
-        capsys.readouterr()
-        _run_memory(
-            _args(
-                storage_path=seeded_storage_path,
-                memory_command="recall",
-                about="mydb.orders.amount",
-            )
-        )
-        out = capsys.readouterr().out
-        assert "amount-note" in out
-
-    def test_recall_bm25_outranks_overbroad_memory(
-        self, seeded_storage_path, capsys
-    ):
-        # DEV-1365: precise memory must appear above the over-broad
-        # one in the rendered output, and the score field must be
-        # part of the new line format.
-        _run_memory(
-            _args(
-                storage_path=seeded_storage_path,
-                memory_command="save",
-                learning="precise",
-                entities="mydb.orders.amount",
-            )
-        )
-        _run_memory(
-            _args(
-                storage_path=seeded_storage_path,
-                memory_command="save",
-                learning="broad",
-                entities=(
-                    "mydb.orders.amount,mydb.orders.id,"
-                    "mydb.orders.rev,mydb.orders"
-                ),
-            )
-        )
-        capsys.readouterr()
-        _run_memory(
-            _args(
-                storage_path=seeded_storage_path,
-                memory_command="recall",
-                about="mydb.orders.amount",
-            )
-        )
-        out = capsys.readouterr().out
-        assert "score=" in out, (
-            "CLI must print BM25 score in the recall line"
-        )
-        precise_idx = out.find("precise")
-        broad_idx = out.find("broad")
-        assert precise_idx >= 0 and broad_idx >= 0, out
-        assert precise_idx < broad_idx, (
-            "precise memory must rank before broad memory; got:\n" + out
-        )
-
-    def test_recall_with_query(
-        self,
-        seeded_storage_path,
-        capsys,
-    ):
-        _run_memory(
-            _args(
-                storage_path=seeded_storage_path,
-                memory_command="save",
-                learning="match",
-                entities="mydb.orders.amount",
-            )
-        )
-        capsys.readouterr()
-        _run_memory(
-            _args(
-                storage_path=seeded_storage_path,
-                memory_command="recall",
-                about_query=json.dumps(
-                    {
-                        "source_model": "orders",
-                        "measures": [{"formula": "amount:sum"}],
-                    }
-                ),
-            )
-        )
-        out = capsys.readouterr().out
-        assert "match" in out
-
-
 class TestMemoryArgparsePlumbing:
     """Single subprocess smoke test that the ``memory`` subcommand and
-    its three subsubcommands are wired into the top-level argparser
-    (`slayer memory --help` must exit 0 and mention the three actions)."""
+    its two subsubcommands are wired into the top-level argparser
+    (`slayer memory --help` must exit 0 and list save+forget but no
+    longer mention the removed ``recall`` subcommand)."""
 
     def test_top_level_help_lists_memory(self):
         env = dict(os.environ)
@@ -316,4 +214,15 @@ class TestMemoryArgparsePlumbing:
         out = result.stdout.lower()
         assert "save" in out
         assert "forget" in out
-        assert "recall" in out
+        assert "recall" not in out
+
+    def test_memory_recall_subcommand_rejected(self):
+        env = dict(os.environ)
+        result = subprocess.run(
+            [sys.executable, "-m", "slayer.cli", "memory", "recall"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode != 0

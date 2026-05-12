@@ -1,18 +1,17 @@
-"""MCP tool tests for the unified Memory surface (DEV-1357 v2).
+"""MCP tool tests for the unified Memory write surface (DEV-1357 v2).
 
-Three new MCP tools replace the previous four:
+Two MCP tools land on the write side:
 
 * ``save_memory(learning, linked_entities)`` — ``linked_entities`` accepts
   either a list of entity strings (each must resolve, errors are fatal)
   or a ``SlayerQuery``/dict (entities are auto-extracted, resolution
   warnings are non-fatal, the query is persisted on the memory).
 * ``forget_memory(id)`` — accepts ``int`` or its decimal string form.
-* ``recall_memories(about, max_learnings, max_queries)`` — single
-  union arg ``about`` (list[str] or SlayerQuery/dict). Empty input
-  falls back to all memories (most-recent first) plus a warning.
 
-Tests follow the same ``_call(mcp_server, name=..., arguments=...)``
-pattern as the existing MCP test suite.
+Memory retrieval is part of ``search`` — see ``test_search_surfaces.py``
+and ``test_search_service.py``. Tests follow the same
+``_call(mcp_server, name=..., arguments=...)`` pattern as the existing
+MCP test suite.
 """
 
 import json
@@ -392,237 +391,6 @@ class TestForgetMemory:
 
 
 # ---------------------------------------------------------------------------
-# recall_memories
-# ---------------------------------------------------------------------------
-
-
-class TestRecallMemories:
-    async def test_ranks_by_intersection_size(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        await seeded.save_memory(
-            learning="weak", entities=["mydb.orders"]
-        )
-        await seeded.save_memory(
-            learning="strong",
-            entities=["mydb.orders", "mydb.orders.amount"],
-        )
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={
-                "about": ["mydb.orders", "mydb.orders.amount"],
-            },
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        learnings = [hit["learning"] for hit in payload["learnings"]]
-        assert learnings[:2] == ["strong", "weak"]
-
-    async def test_bm25_outranks_overbroad_memory(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        # DEV-1365: precise tagging beats incidental tagging on a long
-        # entity list. Both memories overlap the query on the same
-        # single entity, but the broad memory drowns it among five
-        # unrelated entries — under raw overlap-count ranking they
-        # tied; BM25 length normalisation breaks the tie correctly.
-        await seeded.save_memory(
-            learning="precise", entities=["mydb.orders.amount"]
-        )
-        await seeded.save_memory(
-            learning="broad",
-            entities=[
-                "mydb.orders.amount",
-                "mydb.orders.id",
-                "mydb.orders.rev",
-                "mydb.orders",
-                "mydb",
-            ],
-        )
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": ["mydb.orders.amount"]},
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        learnings = payload["learnings"]
-        assert learnings[0]["learning"] == "precise", (
-            f"precise memory must rank first; got {learnings}"
-        )
-        assert all(isinstance(hit["score"], (int, float)) for hit in learnings)
-
-    async def test_max_queries_default_is_two(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        for _ in range(3):
-            await seeded.save_memory(
-                learning="d",
-                entities=["mydb.orders"],
-                query=SlayerQuery(
-                    source_model="orders",
-                    measures=[ModelMeasure(formula="*:count")],
-                ),
-            )
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": ["mydb.orders"]},
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        assert len(payload["queries"]) == 2
-
-    async def test_max_learnings_none_returns_all(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        for _ in range(5):
-            await seeded.save_memory(
-                learning="x", entities=["mydb.orders"]
-            )
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={
-                "about": ["mydb.orders"],
-                "max_learnings": None,
-            },
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        assert len(payload["learnings"]) == 5
-
-    async def test_negative_max_learnings_rejected(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        # Negative caps would silently slice "all but the last N"
-        # entries via Python's negative-index behaviour. Reject up
-        # front so the API is predictable.
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={
-                "about": ["mydb.orders"],
-                "max_learnings": -1,
-            },
-        )
-        assert "max_learnings" in result
-        assert "ValueError" in result or "must be" in result
-
-    async def test_negative_max_queries_rejected(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={
-                "about": ["mydb.orders"],
-                "max_queries": -1,
-            },
-        )
-        assert "max_queries" in result
-        assert "ValueError" in result or "must be" in result
-
-    async def test_query_arg_extracts_entities(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        await seeded.save_memory(
-            learning="amount-related", entities=["mydb.orders.amount"]
-        )
-        await seeded.save_memory(
-            learning="status-related", entities=["mydb.orders.status"]
-        )
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={
-                "about": {
-                    "source_model": "orders",
-                    "measures": [{"formula": "amount:sum"}],
-                },
-            },
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        learnings = [hit["learning"] for hit in payload["learnings"]]
-        assert "amount-related" in learnings
-        assert "status-related" not in learnings
-
-    async def test_resolved_input_entities_returned(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": ["orders.amount"]},
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        assert "mydb.orders.amount" in payload["resolved_input_entities"]
-
-    async def test_resolution_failure_is_fatal(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": ["amount"]},  # ambiguous
-        )
-        assert "ambiguous" in result.lower() or "amount" in result.lower()
-
-    async def test_split_by_query_presence(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        # Memories without a query land in `learnings`; with a query in
-        # `queries`. Both use the same monotonic int id.
-        await seeded.save_memory(
-            learning="learning-only", entities=["mydb.orders"]
-        )
-        await seeded.save_memory(
-            learning="with-query",
-            entities=["mydb.orders"],
-            query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="*:count")],
-            ),
-        )
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": ["mydb.orders"]},
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        learnings = [hit["learning"] for hit in payload["learnings"]]
-        queries = [hit["learning"] for hit in payload["queries"]]
-        assert learnings == ["learning-only"]
-        assert queries == ["with-query"]
-        # The query-bearing hit also carries the SlayerQuery payload.
-        assert payload["queries"][0]["query"] is not None
-        assert payload["learnings"][0]["query"] is None
-
-    async def test_empty_about_returns_all_with_warning(
-        self, mcp_server, seeded: YAMLStorage
-    ) -> None:
-        await seeded.save_memory(
-            learning="A", entities=["mydb.orders"]
-        )
-        await seeded.save_memory(
-            learning="B", entities=["mydb.customers.name"]
-        )
-        result = await _call(
-            mcp_server,
-            name="recall_memories",
-            arguments={"about": []},
-        )
-        payload = _try_parse_json(result)
-        assert payload is not None, result
-        bodies = {hit["learning"] for hit in payload["learnings"]}
-        assert bodies == {"A", "B"}
-        assert payload["warnings"], "expected a warning for empty input"
-
-# ---------------------------------------------------------------------------
 # Tool registration smoke
 # ---------------------------------------------------------------------------
 
@@ -631,11 +399,12 @@ class TestToolRegistration:
     async def test_tools_registered(self, mcp_server) -> None:
         tools = await mcp_server.list_tools()
         names = {t.name for t in tools}
-        assert {"save_memory", "forget_memory", "recall_memories"}.issubset(
-            names
-        )
+        assert {"save_memory", "forget_memory"}.issubset(names)
+        # Memory retrieval is now part of `search`.
+        assert "search" in names
         # Old names are gone.
         assert "save_learning" not in names
         assert "save_query" not in names
         assert "delete_learning_or_query" not in names
         assert "recall" not in names
+        assert "recall_memories" not in names

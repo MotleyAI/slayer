@@ -17,6 +17,8 @@ import sqlalchemy as sa
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.engine.profiling import refresh_all_table_backed_sampled
+from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -977,8 +979,84 @@ async def ingest_datasource_idempotent(
         datasource=datasource, models=scoped_models
     )
 
+    # DEV-1375: refresh persisted Column.sampled values for every
+    # table-backed model in this datasource. Best-effort: per-column
+    # failures are accumulated as IngestionError entries; an unexpected
+    # raise is also caught so ingestion's idempotent contract holds.
+    refresh_engine = SlayerQueryEngine(storage=storage)
+    try:
+        refresh_errors = await refresh_all_table_backed_sampled(
+            engine=refresh_engine,
+            storage=storage,
+            data_source=datasource.name,
+        )
+    except Exception as exc:
+        refresh_errors = [f"{datasource.name}: {exc}"]
+    for err in refresh_errors:
+        errors.append(IngestionError(
+            model_name=err.split(".", 1)[0] if "." in err else "",
+            data_source=datasource.name,
+            error=f"sample-value refresh: {err}",
+        ))
+
+    # DEV-1386: refresh persisted embeddings for the datasource doc plus
+    # every visible model + its visible children. Best-effort: per-entity
+    # failures are surfaced as IngestionError entries, never aborts
+    # ingestion. When the `embedding_search` extra is not installed,
+    # EmbeddingService returns a single warning and does no work.
+    embedding_errors = await _refresh_datasource_embeddings(
+        datasource_name=datasource.name, storage=storage,
+    )
+    for err in embedding_errors:
+        errors.append(IngestionError(
+            model_name="",
+            data_source=datasource.name,
+            error=f"embedding refresh: {err}",
+        ))
+
     return IdempotentIngestResult(
         additions=additions,
         to_delete=list(to_delete),
         errors=errors,
     )
+
+
+async def _refresh_datasource_embeddings(
+    *, datasource_name: str, storage: StorageBackend,
+) -> List[str]:
+    """Walk every model in the datasource + the datasource doc itself
+    through ``EmbeddingService.refresh_*``. Best-effort: returns warning
+    strings; never raises."""
+    # Local import to avoid pulling embeddings into ingestion's import
+    # graph on a cold start without the optional extra installed.
+    from slayer.embeddings.service import EmbeddingService
+
+    service = EmbeddingService(storage=storage)
+    warnings: List[str] = []
+    models_in_ds: List = []
+    try:
+        identities = await storage._list_all_model_identities()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        return [f"{datasource_name}: {exc}"]
+    for ds, name in identities:
+        if ds != datasource_name:
+            continue
+        try:
+            m = await storage.get_model(name, data_source=ds)
+        except Exception as exc:  # noqa: BLE001 — defensive per-model
+            warnings.append(f"{ds}.{name}: {exc}")
+            continue
+        if m is None:
+            continue
+        models_in_ds.append(m)
+        try:
+            warnings.extend(await service.refresh_model_subtree(m))
+        except Exception as exc:  # noqa: BLE001 — defensive per-model
+            warnings.append(f"{ds}.{name}: {exc}")
+    try:
+        warnings.extend(await service.refresh_datasource(
+            name=datasource_name, models=models_in_ds,
+        ))
+    except Exception as exc:  # noqa: BLE001 — defensive
+        warnings.append(f"{datasource_name} (datasource doc): {exc}")
+    return warnings

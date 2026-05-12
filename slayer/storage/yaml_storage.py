@@ -17,6 +17,7 @@ import yaml
 from pydantic import ValidationError
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.v4_migration import migrate_yaml_layout
@@ -30,6 +31,7 @@ class YAMLStorage(StorageBackend):
         self._priority_path = os.path.join(base_dir, "priority.yaml")
         self._memories_path = os.path.join(base_dir, "memories.yaml")
         self._counters_path = os.path.join(base_dir, "counters.yaml")
+        self._embeddings_path = os.path.join(base_dir, "embeddings.yaml")
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
         # Idempotent — moves any pre-v4 flat files into <data_source>/ subdirs.
@@ -81,20 +83,46 @@ class YAMLStorage(StorageBackend):
             name=name, data=data, data_source=data_source,
         )
 
-    async def delete_model(
-        self,
-        name: str,
-        data_source: Optional[str] = None,
+    async def _delete_model_row(
+        self, *, data_source: str, name: str,
     ) -> bool:
-        target = await self._resolve_target_or_none(name, data_source=data_source)
-        if target is None:
-            return False
-        data_source, name = target
         path = self._model_path(data_source, name)
         if os.path.exists(path):
             os.remove(path)
             return True
         return False
+
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        path = self._model_path(data_source, model_name)
+        if not os.path.exists(path):
+            raise ValueError(
+                f"update_column_sampled: model {model_name!r} in datasource "
+                f"{data_source!r} not found."
+            )
+        with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design
+            data = yaml.safe_load(f) or {}
+        cols = data.get("columns") or []
+        for col in cols:
+            if isinstance(col, dict) and col.get("name") == column_name:
+                if sampled is None:
+                    col.pop("sampled", None)
+                else:
+                    col["sampled"] = sampled
+                break
+        else:
+            raise ValueError(
+                f"update_column_sampled: column {column_name!r} not found "
+                f"on model {model_name!r} in datasource {data_source!r}."
+            )
+        with open(path, "w") as f:  # NOSONAR(S7493)
+            yaml.dump(data, f, sort_keys=False)
 
     # ---- datasource CRUD ---------------------------------------------------
 
@@ -129,7 +157,7 @@ class YAMLStorage(StorageBackend):
                 result.append(filename.rsplit(".", 1)[0])
         return result
 
-    async def delete_datasource(self, name: str) -> bool:
+    async def _delete_datasource_row(self, name: str) -> bool:
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
         if os.path.exists(path):
             os.remove(path)
@@ -232,3 +260,49 @@ class YAMLStorage(StorageBackend):
             return False
         self._write_yaml_list(self._memories_path, kept)
         return True
+
+    # ---- embeddings (DEV-1386) -------------------------------------------
+
+    def _embedding_key(self, row: Dict[str, Any]) -> Tuple[str, str]:
+        return (
+            str(row.get("canonical_id", "")),
+            str(row.get("embedding_model_name", "")),
+        )
+
+    async def save_embedding(self, row: Embedding) -> None:
+        rows = self._read_yaml_list(self._embeddings_path)
+        target_key = (row.canonical_id, row.embedding_model_name)
+        kept = [r for r in rows if self._embedding_key(r) != target_key]
+        kept.append(row.model_dump(mode="json"))
+        self._write_yaml_list(self._embeddings_path, kept)
+
+    async def get_embedding(
+        self, *, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Embedding]:
+        target_key = (canonical_id, embedding_model_name)
+        for row in self._read_yaml_list(self._embeddings_path):
+            if self._embedding_key(row) == target_key:
+                return Embedding.model_validate(row)
+        return None
+
+    async def list_embeddings(
+        self, *, embedding_model_name: str,
+    ) -> List[Embedding]:
+        out: List[Embedding] = []
+        for row in self._read_yaml_list(self._embeddings_path):
+            if str(row.get("embedding_model_name", "")) == embedding_model_name:
+                out.append(Embedding.model_validate(row))
+        return out
+
+    async def delete_embeddings_for_canonical(
+        self, *, canonical_id_prefix: str,
+    ) -> int:
+        rows = self._read_yaml_list(self._embeddings_path)
+        kept = [
+            r for r in rows
+            if not str(r.get("canonical_id", "")).startswith(canonical_id_prefix)
+        ]
+        removed = len(rows) - len(kept)
+        if removed > 0:
+            self._write_yaml_list(self._embeddings_path, kept)
+        return removed

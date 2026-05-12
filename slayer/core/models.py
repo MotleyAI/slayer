@@ -117,6 +117,7 @@ class Column(BaseModel):
     allowed_aggregations: Optional[List[str]] = None
     filter: Optional[str] = None  # Applied inside CASE WHEN at aggregation time only
     meta: Optional[Dict[str, Any]] = None
+    sampled: Optional[str] = None  # DEV-1375: cached sample-value snapshot
 
     @model_validator(mode="before")
     @classmethod
@@ -332,7 +333,7 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 4
+    version: int = 6
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None

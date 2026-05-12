@@ -7,8 +7,21 @@ import os
 import sys
 from typing import List, Optional
 
+from pydantic import BaseModel, Field
+
 from slayer.async_utils import run_sync
+from slayer.core.errors import (
+    AmbiguousModelError,
+    EntityResolutionError,
+    MemoryNotFoundError,
+)
 from slayer.core.models import SlayerModel
+from slayer.engine.profiling import (
+    refresh_all_table_backed_sampled,
+    refresh_table_backed_model_sampled,
+)
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.search.service import SearchService
 from slayer.storage import migrations as _mig
 from slayer.storage.base import default_storage_path
 from slayer.storage.type_refinement import (
@@ -21,6 +34,17 @@ _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     f"(default: {_STORAGE_DEFAULT})"
 )
+
+
+class RefreshSamplesResult(BaseModel):
+    """Result envelope for ``slayer search refresh-samples``. ``errors``
+    accumulates per-column profile / persist failures (best-effort);
+    ``unresolved_models`` lists any user-specified ``--model`` names
+    that didn't resolve in the requested scope — those are reported as
+    a hard error so typos fail fast."""
+
+    errors: List[str] = Field(default_factory=list)
+    unresolved_models: List[str] = Field(default_factory=list)
 
 
 def _add_storage_arg(parser):
@@ -378,7 +402,7 @@ examples:
     # ── memory ────────────────────────────────────────────────────────
     memory_parser = subparsers.add_parser(
         "memory",
-        help="Manage agent memories (learnings + saved queries)",
+        help="Manage agent memories (write side: save / forget)",
         epilog="""\
 examples:
   # Save a learning indexed by entities
@@ -390,11 +414,7 @@ examples:
   # Forget a memory by id
   slayer memory forget 42
 
-  # Recall memories about specific entities
-  slayer memory recall --about mydb.orders.amount,mydb.orders.status
-
-  # Recall memories relevant to a query
-  slayer memory recall --about-query @paid_revenue.json
+  # For retrieval, use `slayer search` (memories + canonical entities).
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -426,35 +446,6 @@ examples:
     )
     memory_forget_parser.add_argument("id", type=int, help="Memory id (positive int)")
 
-    memory_recall_parser = memory_subparsers.add_parser(
-        "recall", help="Look up memories by entity overlap"
-    )
-    memory_recall_parser.add_argument(
-        "--about",
-        default=None,
-        help="Comma-separated list of entity references to search by.",
-    )
-    memory_recall_parser.add_argument(
-        "--about-query",
-        default=None,
-        dest="about_query",
-        help="Inline JSON SlayerQuery (or @file.json) whose entities augment --about.",
-    )
-    memory_recall_parser.add_argument(
-        "--max-learnings",
-        type=int,
-        default=None,
-        dest="max_learnings",
-        help="Cap on returned learning-shaped memories (default: all).",
-    )
-    memory_recall_parser.add_argument(
-        "--max-queries",
-        type=int,
-        default=2,
-        dest="max_queries",
-        help="Cap on returned query-bearing memories (default: 2).",
-    )
-
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
         "storage",
@@ -484,6 +475,86 @@ examples:
         help="Report planned refinements without writing them back to storage.",
     )
     _add_storage_arg(migrate_types_parser)
+
+    # ── search (DEV-1375) ────────────────────────────────────────────
+    search_parser = subparsers.add_parser(
+        "search",
+        help="Semantic search over memories + canonical entities (DEV-1375)",
+        epilog="""\
+examples:
+  # Two-channel search by entity overlap + tantivy full-text
+  poetry run slayer search --entity mydb.orders.amount_paid --question "paid revenue"
+
+  # Refresh persisted Column.sampled values for every table-backed model
+  poetry run slayer search refresh-samples --data-source mydb
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_storage_arg(search_parser)
+    search_subparsers = search_parser.add_subparsers(dest="search_command")
+    # ``slayer search`` (no subcommand) runs the search query directly.
+    search_parser.add_argument(
+        "--entity",
+        action="append",
+        default=None,
+        dest="entities",
+        help="Canonical entity reference(s) (repeatable).",
+    )
+    search_parser.add_argument(
+        "--query",
+        default=None,
+        help="Inline JSON SlayerQuery (or @file.json) to extract entities from.",
+    )
+    search_parser.add_argument(
+        "--question",
+        default=None,
+        help="Free-text query for the tantivy full-text channel.",
+    )
+    search_parser.add_argument(
+        "--max-memories",
+        type=int,
+        default=5,
+        dest="max_memories",
+        help="Cap on returned learning-only memory hits (default 5).",
+    )
+    search_parser.add_argument(
+        "--max-example-queries",
+        type=int,
+        default=2,
+        dest="max_example_queries",
+        help="Cap on returned query-bearing memory hits (default 2 — bulky).",
+    )
+    search_parser.add_argument(
+        "--max-entities",
+        type=int,
+        default=5,
+        dest="max_entities",
+        help="Cap on returned entity hits (default 5).",
+    )
+    search_parser.add_argument(
+        "--format",
+        choices=["json", "text"],
+        default="text",
+        help="Output format (default: text).",
+    )
+    refresh_parser = search_subparsers.add_parser(
+        "refresh-samples",
+        help="Re-profile and persist Column.sampled for table-backed models.",
+    )
+    _add_storage_arg(refresh_parser)
+    refresh_parser.add_argument(
+        "--data-source",
+        default=None,
+        dest="data_source",
+        help="Limit refresh to one datasource (default: all).",
+    )
+    refresh_parser.add_argument(
+        "--model",
+        action="append",
+        default=None,
+        dest="models",
+        help="Model name(s) to refresh (repeatable; default: all in scope).",
+    )
 
     # ── help ──────────────────────────────────────────────────────────
     from slayer.help import TOPIC_SUMMARY_LINE
@@ -527,6 +598,8 @@ examples:
         _run_datasources(args)
     elif args.command == "memory":
         _run_memory(args)
+    elif args.command == "search":
+        _run_search(args)
     elif args.command == "storage":
         _run_storage(args)
     elif args.command == "help":
@@ -534,6 +607,127 @@ examples:
     else:
         parser.print_help()
         sys.exit(1)
+
+
+def _run_search(args) -> None:
+    """Dispatch ``slayer search [...]`` and ``slayer search refresh-samples``."""
+    storage = _resolve_storage(args)
+    sub = getattr(args, "search_command", None)
+    if sub == "refresh-samples":
+        _run_search_refresh_samples(args=args, storage=storage)
+        return
+    _run_search_query(args=args, storage=storage)
+
+
+async def _refresh_samples_async(*, args, storage) -> "RefreshSamplesResult":
+    """Async core of ``slayer search refresh-samples`` — loop datasources
+    and (optional) model filters, accumulate per-column errors and the
+    names of any user-specified models that didn't resolve."""
+    engine = SlayerQueryEngine(storage=storage)
+    errors: List[str] = []
+    unresolved_models: List[str] = []
+    data_source = args.data_source
+    models = args.models
+    if data_source is None:
+        datasources = await storage.list_datasources()
+    else:
+        datasources = [data_source]
+    for ds in datasources:
+        if models:
+            for model_name in models:
+                m = await storage.get_model(model_name, data_source=ds)
+                if m is None:
+                    unresolved_models.append(f"{ds}.{model_name}")
+                    continue
+                errs = await refresh_table_backed_model_sampled(
+                    model=m, engine=engine, storage=storage,
+                )
+                errors.extend(errs)
+        else:
+            errors.extend(
+                await refresh_all_table_backed_sampled(
+                    engine=engine, storage=storage, data_source=ds,
+                )
+            )
+    return RefreshSamplesResult(errors=errors, unresolved_models=unresolved_models)
+
+
+def _run_search_refresh_samples(*, args, storage) -> None:
+    """``slayer search refresh-samples`` — re-profile + persist
+    ``Column.sampled`` for every table-backed model in scope. Exits
+    non-zero on unresolved user-specified ``--model`` names so typos
+    don't masquerade as a clean run.
+
+    Honors the shared ``--format`` flag: ``json`` emits the
+    ``RefreshSamplesResult`` envelope; otherwise the human-readable
+    text path runs.
+    """
+    result = run_sync(_refresh_samples_async(args=args, storage=storage))
+    fmt = getattr(args, "format", "text")
+    if fmt == "json":
+        print(result.model_dump_json(indent=2))
+        if result.unresolved_models:
+            sys.exit(1)
+        return
+    if result.unresolved_models:
+        print(
+            "Sample-value refresh: requested model(s) not found in scope:",
+            file=sys.stderr,
+        )
+        for m in result.unresolved_models:
+            print(f"  - {m}", file=sys.stderr)
+        sys.exit(1)
+    if result.errors:
+        print("Sample-value refresh completed with errors:")
+        for e in result.errors:
+            print(f"  - {e}")
+    else:
+        print("Sample-value refresh completed successfully.")
+
+
+def _print_search_response_text(response) -> None:
+    """Pretty-print a ``SearchResponse`` for the default text format."""
+    for w in response.warnings:
+        print(f"[warning] {w}")
+    if response.resolved_input_entities:
+        print(
+            "\nResolved input entities: "
+            + ", ".join(response.resolved_input_entities)
+        )
+    print(f"\nMemories ({len(response.memories)}):")
+    for hit in response.memories:
+        print(f"  M{hit.id} (score={hit.score:.4f})")
+        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
+    print(f"\nExample queries ({len(response.example_queries)}):")
+    for hit in response.example_queries:
+        print(f"  M{hit.id} (score={hit.score:.4f})")
+        print(f"    {hit.text.splitlines()[0] if hit.text else ''}")
+    print(f"\nEntities ({len(response.entities)}):")
+    for hit in response.entities:
+        print(f"  [{hit.kind}] {hit.id} (score={hit.score:.4f})")
+
+
+def _run_search_query(args, storage) -> None:
+    """``slayer search [...]`` — call the SearchService and emit JSON or
+    pretty text."""
+    service = SearchService(storage=storage)
+    query_input = _load_query_arg(args.query) if args.query else None
+    try:
+        response = run_sync(service.search(
+            entities=args.entities,
+            query=query_input,
+            question=args.question,
+            max_memories=args.max_memories,
+            max_example_queries=args.max_example_queries,
+            max_entities=args.max_entities,
+        ))
+    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
+        _exit_with_error(exc)
+        return
+    if args.format == "json":
+        print(response.model_dump_json(indent=2))
+    else:
+        _print_search_response_text(response)
 
 
 def _run_storage(args) -> None:
@@ -716,7 +910,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         # Heuristic: a JSON query starts with '{' or '['; anything else
         # is treated as a model name for run-by-name dispatch.
         stripped = query_input.lstrip()
-        is_json = stripped.startswith("{") or stripped.startswith("[")
+        is_json = stripped.startswith(("{", "["))
 
     if is_json:
         data = json.loads(query_input)
@@ -1383,8 +1577,6 @@ def _exit_with_error(exc: Exception) -> None:
 
 
 def _run_memory_save(args, service):
-    from slayer.core.errors import AmbiguousModelError, EntityResolutionError
-
     if not args.entities and not args.query:
         print("Error: --entities or --query must be supplied (one or the other).")
         sys.exit(1)
@@ -1414,8 +1606,6 @@ def _run_memory_save(args, service):
 
 
 def _run_memory_forget(args, service):
-    from slayer.core.errors import MemoryNotFoundError
-
     try:
         response = run_sync(service.forget_memory(identifier=args.id))
     except (MemoryNotFoundError, ValueError) as exc:
@@ -1424,60 +1614,20 @@ def _run_memory_forget(args, service):
     print(f"Forgot memory {response.deleted_id}.")
 
 
-def _run_memory_recall(args, service):
-    from slayer.core.errors import AmbiguousModelError, EntityResolutionError
-
-    if args.about and args.about_query:
-        print("Error: --about and --about-query are mutually exclusive.")
-        sys.exit(1)
-    if args.about:
-        about = [a.strip() for a in args.about.split(",") if a.strip()]
-    elif args.about_query:
-        about = _load_query_arg(args.about_query)
-    else:
-        about = []
-    try:
-        response = run_sync(
-            service.recall_memories(
-                about=about,
-                max_learnings=args.max_learnings,
-                max_queries=args.max_queries,
-            )
-        )
-    except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
-        _exit_with_error(exc)
-        return
-    for warning in response.warnings:
-        print(f"Warning: {warning}")
-    _print_recall_section("Learnings", response.learnings)
-    _print_recall_section("Queries", response.queries)
-    if not response.learnings and not response.queries:
-        print("No matching memories.")
-
-
-def _print_recall_section(title, hits):
-    if not hits:
-        return
-    print(f"{title} ({len(hits)}):")
-    for hit in hits:
-        tags = ", ".join(hit.matched_entities) or "—"
-        print(f"  M{hit.id} [{tags}] (score={hit.score:.3f}): {hit.learning}")
-
-
 _MEMORY_DISPATCH = {
     "save": _run_memory_save,
     "forget": _run_memory_forget,
-    "recall": _run_memory_recall,
 }
 
 
 def _run_memory(args):
-    """Dispatcher for ``slayer memory <save|forget|recall>``."""
+    """Dispatcher for ``slayer memory <save|forget>``. Memory retrieval
+    is handled by ``slayer search``."""
     from slayer.memories.service import MemoryService
 
     handler = _MEMORY_DISPATCH.get(args.memory_command)
     if handler is None:
-        print("Usage: slayer memory {save,forget,recall}")
+        print("Usage: slayer memory {save,forget}")
         sys.exit(1)
     storage = _resolve_storage(args)
     handler(args, MemoryService(storage=storage))

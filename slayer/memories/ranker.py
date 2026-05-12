@@ -1,7 +1,7 @@
 """BM25 ranking for memory retrieval (DEV-1365).
 
 Replaces the naive `match_count = |wanted ∩ memory.entities|` ranker
-that previously drove `MemoryService.recall_memories`. The old ranker
+that previously drove memory recall. The old ranker
 trivially favoured memories with large entity sets — a memory tagged
 with 50 entities would out-overlap a precisely-tagged one of 2
 regardless of relevance. BM25's length normalisation is the explicit
