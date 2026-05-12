@@ -175,7 +175,8 @@ class TestListMemories:
         await storage.save_memory(learning="x", entities=["mydb.orders"])
         # ``entities=[]`` is a strict intersection-filter primitive: any
         # non-empty set has empty intersection with [], so nothing matches.
-        # (recall_memories at the service level treats [] specially.)
+        # (The search service treats [] / "no entities" specially at the
+        # service level — recency fallback instead of an empty result.)
         assert await storage.list_memories(entities=[]) == []
 
     async def test_list_includes_query_bearing_memories(

@@ -1,8 +1,9 @@
 """Python client tests for the unified Memory surface (DEV-1357 v2).
 
-Covers ``SlayerClient.save_memory`` / ``forget_memory`` /
-``recall_memories`` in **local mode** — the same shape as
-``tests/test_client.py``. Local mode talks to the storage backend
+Covers ``SlayerClient.save_memory`` / ``forget_memory`` in **local
+mode** — the same shape as ``tests/test_client.py``. Memory retrieval
+is part of ``SlayerClient.search`` (covered in
+``test_search_surfaces.py``). Local mode talks to the storage backend
 directly (no HTTP), which is enough to validate the client surface.
 Remote-mode behaviour is exercised by ``test_memories_rest.py``.
 """
@@ -110,68 +111,7 @@ class TestForgetMemory:
         assert resp.deleted_id == memory.id
 
 
-class TestRecallMemories:
-    async def test_recall_with_entities(
-        self, client: SlayerClient, storage: YAMLStorage
-    ) -> None:
-        await storage.save_memory(
-            learning="match", entities=["mydb.orders.amount"]
-        )
-        await storage.save_memory(
-            learning="other", entities=["mydb.orders"]
-        )
-        resp = await client.recall_memories(about=["mydb.orders.amount"])
-        assert any(hit.learning == "match" for hit in resp.learnings)
-
-    async def test_recall_with_query(
-        self, client: SlayerClient, storage: YAMLStorage
-    ) -> None:
-        await storage.save_memory(
-            learning="match", entities=["mydb.orders.amount"]
-        )
-        resp = await client.recall_memories(
-            about={
-                "source_model": "orders",
-                "measures": [{"formula": "amount:sum"}],
-            }
-        )
-        learnings = [hit.learning for hit in resp.learnings]
-        assert "match" in learnings
-
-    async def test_recall_max_caps_apply(
-        self, client: SlayerClient, storage: YAMLStorage
-    ) -> None:
-        for _ in range(3):
-            await storage.save_memory(
-                learning="x", entities=["mydb.orders"]
-            )
-        resp = await client.recall_memories(
-            about=["mydb.orders"], max_learnings=1
-        )
-        assert len(resp.learnings) == 1
-
-    async def test_recall_bm25_outranks_overbroad_memory(
-        self, client: SlayerClient, storage: YAMLStorage
-    ) -> None:
-        # DEV-1365: the precisely-tagged memory must rank above one
-        # whose entity list incidentally includes the queried entity.
-        await storage.save_memory(
-            learning="precise", entities=["mydb.orders.amount"]
-        )
-        await storage.save_memory(
-            learning="broad",
-            entities=[
-                "mydb.orders.amount",
-                "mydb.orders.id",
-                "mydb.orders.rev",
-                "mydb.orders",
-                "mydb",
-                "extra.unrelated.col",
-            ],
-        )
-        resp = await client.recall_memories(about=["mydb.orders.amount"])
-        learnings = [hit.learning for hit in resp.learnings]
-        assert learnings[0] == "precise", (
-            f"precise memory must rank first; got order {learnings}"
-        )
-        assert all(isinstance(hit.score, float) for hit in resp.learnings)
+class TestRecallMemoriesRemoved:
+    def test_recall_memories_attr_gone(self) -> None:
+        """``SlayerClient.recall_memories`` is removed; use ``search``."""
+        assert not hasattr(SlayerClient, "recall_memories")

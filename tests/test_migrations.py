@@ -900,7 +900,7 @@ class TestV4ToV5DictMigration:
     """
 
     def test_current_version_is_5(self) -> None:
-        assert mig.CURRENT_VERSIONS["SlayerModel"] == 5
+        assert mig.CURRENT_VERSIONS["SlayerModel"] == 6
 
     def test_string_renames_to_text(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -909,7 +909,7 @@ class TestV4ToV5DictMigration:
             "columns": [{"name": "title", "sql": "title", "type": "string"}],
         })
         assert d["columns"][0]["type"] == "TEXT"
-        assert d["version"] == 5
+        assert d["version"] == 6
 
     def test_number_renames_to_double(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -994,7 +994,7 @@ class TestV4ToV5DictMigration:
                 {"name": "ts", "sql": "ts", "type": "time"},
             ],
         })
-        assert m.version == 5
+        assert m.version == 6
         assert m.columns[0].type.name == "TEXT"
         assert m.columns[1].type.name == "DOUBLE"
         assert m.columns[2].type.name == "TIMESTAMP"
@@ -1007,4 +1007,4 @@ class TestV4ToV5DictMigration:
             "columns": [{"name": "amount", "sql": "amount", "type": "DOUBLE"}],
         })
         assert d["columns"][0]["type"] == "DOUBLE"
-        assert d["version"] == 5
+        assert d["version"] == 6

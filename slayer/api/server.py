@@ -19,6 +19,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.service import MemoryService
+from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -97,13 +98,22 @@ class SaveMemoryRequest(BaseModel):
     linked_entities: Any
 
 
-class RecallMemoriesRequest(BaseModel):
-    """Body for ``POST /memories/recall``. Same union as ``about`` on
-    the MCP / Python-client surfaces."""
+class SearchRequest(BaseModel):
+    """Body for ``POST /search`` (DEV-1375). Mirrors the MCP / CLI /
+    SlayerClient surfaces.
 
-    about: Any
-    max_learnings: Optional[int] = None
-    max_queries: Optional[int] = 2
+    All three retrieval inputs are optional. Empty input falls back to
+    a recency listing of the newest ``max_memories`` learning-only
+    memories plus the newest ``max_example_queries`` query-bearing
+    memories.
+    """
+
+    entities: Optional[List[str]] = None
+    query: Optional[Any] = None
+    question: Optional[str] = None
+    max_memories: int = 5
+    max_example_queries: int = 2
+    max_entities: int = 5
 
 
 def _slayer_version() -> str:
@@ -581,8 +591,12 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
+    # ---------- DEV-1375: semantic search -----------------------------
+
+    search_service = SearchService(storage=storage)
+
     @app.post(
-        "/memories/recall",
+        "/search",
         responses={
             400: {
                 "description": (
@@ -592,14 +606,15 @@ def create_app(
             }
         },
     )
-    async def recall_memories(
-        request: RecallMemoriesRequest,
-    ) -> Dict[str, Any]:
+    async def search(request: SearchRequest) -> Dict[str, Any]:
         try:
-            response = await memory_service.recall_memories(
-                about=request.about,
-                max_learnings=request.max_learnings,
-                max_queries=request.max_queries,
+            response = await search_service.search(
+                entities=request.entities,
+                query=request.query,
+                question=request.question,
+                max_memories=request.max_memories,
+                max_example_queries=request.max_example_queries,
+                max_entities=request.max_entities,
             )
         except (
             EntityResolutionError,

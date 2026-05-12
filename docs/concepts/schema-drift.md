@@ -5,7 +5,7 @@ flips, a table goes away — persisted SLayer models stop being valid. Until
 the change is reconciled, queries against the affected models fail with
 raw DBAPI errors that don't tell you which model is broken or what to fix.
 
-DEV-1356 surfaces drift as a first-class concept across three behaviours:
+SLayer surfaces drift as a first-class concept across three behaviours:
 
 1. **`validate_models`** — read-only diff that returns the minimal list of
    *deletes* needed to make persisted models valid against the live state.
@@ -65,9 +65,7 @@ A drop on `M.X` cascades through:
    measures, or filters.
 
 Cascade walking stays strictly within the parent datasource. Joins and
-references that resolve into another datasource are skipped silently —
-the broader hardening of cross-datasource resolution is tracked in
-[DEV-1360](https://linear.app/motley-ai/issue/DEV-1360).
+references that resolve into another datasource are skipped silently.
 
 ## Two-pass invariant for type drift
 
@@ -144,8 +142,3 @@ from FK relationships — define joins manually via `edit_model`.
 
 * [Models](models.md) — `SlayerModel` source modes, columns, measures.
 * [Ingestion](ingestion.md) — auto-ingestion details, FK rollups.
-* [DEV-1356 issue](https://linear.app/motley-ai/issue/DEV-1356)
-* Sibling work: [DEV-1358](https://linear.app/motley-ai/issue/DEV-1358)
-  (save-time `sql`-mode projection introspection) and
-  [DEV-1360](https://linear.app/motley-ai/issue/DEV-1360) (cross-DS
-  reference rejection) — both out of scope here.
