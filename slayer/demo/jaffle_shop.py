@@ -1,20 +1,23 @@
 """Jaffle Shop demo dataset — bundled, one-command setup.
 
-Generates ~4 years of synthetic coffee-shop data via ``jafgen``, loads it into
+Generates ~2 years of synthetic coffee-shop data via ``jafgen``, loads it into
 a DuckDB file under the storage directory, registers a ``jaffle_shop``
-datasource, and (optionally) auto-ingests SLayer models. The default of 4
-years is chosen so all six jafgen stores have orders — the latest one (Los
-Angeles) opens on simulated day 1107 (~3.03 years).
+datasource, and (optionally) auto-ingests SLayer models. The default is kept
+small so ``slayer serve --demo`` / ``slayer mcp --demo`` finish quickly enough
+to fit inside MCP-client startup timeouts; bump ``--years`` for a richer
+dataset (only the first four jafgen stores open within the first 2 years).
 
 All operations are idempotent: re-running with the same storage path reuses
 the existing DuckDB file instead of regenerating.
 """
 
 import datetime as dt
+import io
 import os
 import subprocess
+import sys
 import tempfile
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import IO, TYPE_CHECKING, List, Optional, Tuple
 
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, SlayerModel
@@ -123,14 +126,64 @@ def resolve_demo_db_path(storage_path: str) -> str:
     return os.path.join(demo_dir, "jaffle_shop.duckdb")
 
 
-def generate_data(output_dir: str, years: int = 1) -> str:
-    """Run ``jafgen`` into ``output_dir``; return the path to the generated CSVs."""
-    cmd = ["jafgen", str(max(1, years))]
+def _stream_fileno(stream) -> Optional[int]:
+    """Return ``stream.fileno()`` if it points at a real file descriptor, else None.
+
+    ipykernel / nbclient replace ``sys.stdout`` / ``sys.stderr`` with shim
+    streams whose ``fileno()`` raises ``io.UnsupportedOperation``; same with
+    ``io.StringIO``. ``subprocess.run(stdout=stream)`` walks ``fileno()``
+    unconditionally, so we need to detect that up front and fall back to a
+    pumped Popen.
+    """
     try:
-        subprocess.run(args=cmd, cwd=output_dir, check=True, capture_output=True)
-    except subprocess.CalledProcessError as e:
-        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        raise RuntimeError(f"jafgen failed: {stderr.strip() or e}") from e
+        return stream.fileno()
+    except (AttributeError, io.UnsupportedOperation, ValueError, OSError):
+        return None
+
+
+def generate_data(
+    output_dir: str,
+    years: int = 1,
+    *,
+    stream: Optional[IO[str]] = None,
+) -> str:
+    """Run ``jafgen`` into ``output_dir``; return the path to the generated CSVs.
+
+    jafgen prints Rich progress bars to its own stdout. To keep them visible
+    (and to avoid corrupting stdio-based protocols like MCP), both jafgen's
+    stdout and stderr are routed to ``stream`` (default: this process's
+    stderr). When ``stream`` is a real OS file (e.g. a TTY), the child
+    inherits it directly so Rich can animate the bars in place. When it is a
+    shim without ``fileno()`` (Jupyter ``OutStream``, ``io.StringIO``, …), we
+    pump the child's output line by line into ``stream`` instead.
+    """
+    cmd = ["jafgen", str(max(1, years))]
+    out = stream if stream is not None else sys.stderr
+    if _stream_fileno(out) is not None:
+        try:
+            subprocess.run(args=cmd, cwd=output_dir, check=True, stdout=out, stderr=out)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"jafgen failed with exit code {e.returncode}") from e
+        return os.path.join(output_dir, "jaffle-data")
+
+    with subprocess.Popen(
+        args=cmd,
+        cwd=output_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            out.write(line)
+            try:
+                out.flush()
+            except Exception:
+                pass
+        rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"jafgen failed with exit code {rc}")
     return os.path.join(output_dir, "jaffle-data")
 
 
@@ -271,14 +324,21 @@ def verify(conn: "duckdb.DuckDBPyConnection") -> dict:
     return results
 
 
-def build_jaffle_shop(db_path: str, *, years: int = 4, force: bool = False) -> bool:
+def build_jaffle_shop(
+    db_path: str,
+    *,
+    years: int = 2,
+    force: bool = False,
+    stream: Optional[IO[str]] = None,
+) -> bool:
     """Generate the Jaffle Shop DuckDB at ``db_path`` if it does not already exist.
 
     Returns ``True`` if the DB was freshly generated, ``False`` if an existing
     file at ``db_path`` was reused. When ``force=True``, any existing file is
     overwritten. On the reuse path, dates are re-shifted so
     ``MAX(orders.ordered_at) == today`` — this keeps the demo feeling current
-    even when the DB was built days or weeks earlier.
+    even when the DB was built days or weeks earlier. ``stream`` is forwarded
+    to ``generate_data`` so jafgen's Rich progress bars stay visible.
     """
     import duckdb
 
@@ -294,7 +354,7 @@ def build_jaffle_shop(db_path: str, *, years: int = 4, force: bool = False) -> b
         os.remove(db_path)
 
     with tempfile.TemporaryDirectory(prefix="jaffle_") as tmpdir:
-        data_dir = generate_data(output_dir=tmpdir, years=years)
+        data_dir = generate_data(output_dir=tmpdir, years=years, stream=stream)
         conn = duckdb.connect(db_path)
         try:
             create_schema(conn)
@@ -309,9 +369,10 @@ def ensure_demo_datasource(
     *,
     storage_path: str,
     name: str = DEMO_NAME,
-    years: int = 4,
+    years: int = 2,
     ingest_models: bool = True,
     assume_yes: bool = True,
+    stream: Optional[IO[str]] = None,
 ) -> Tuple[DatasourceConfig, List[SlayerModel], bool]:
     """Ensure the Jaffle Shop demo is fully set up in ``storage``.
 
@@ -327,7 +388,7 @@ def ensure_demo_datasource(
     freshly generated this call.
     """
     db_path = resolve_demo_db_path(storage_path)
-    db_built = build_jaffle_shop(db_path=db_path, years=years)
+    db_built = build_jaffle_shop(db_path=db_path, years=years, stream=stream)
 
     ds = DatasourceConfig.model_validate(
         {

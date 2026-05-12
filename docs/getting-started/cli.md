@@ -23,7 +23,14 @@ slayer datasources create demo --ingest
 slayer query '{"source_model": "orders", "measures": ["*:count"]}'
 ```
 
-This generates ~4 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N` (the default of 4 ensures all six bundled stores have orders — the last store opens on simulated day 1107).
+This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `stores`, `supplies`, `tweets`). Re-running is idempotent — the DuckDB is reused if it already exists. Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
+
+Pre-populate once and `--demo` is instant afterwards:
+
+```bash
+slayer datasources create demo --ingest --yes      # builds and ingests upfront
+slayer mcp --demo                                  # subsequent runs reuse the DuckDB
+```
 
 DuckDB and `jafgen` ship with `motley-slayer`, so no extra install is needed.
 

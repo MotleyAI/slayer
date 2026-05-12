@@ -359,8 +359,8 @@ examples:
     datasources_create_parser.add_argument(
         "--years",
         type=int,
-        default=4,
-        help="(demo only) Years of synthetic data to generate (default: 4)",
+        default=2,
+        help="(demo only) Years of synthetic data to generate (default: 2)",
     )
     datasources_create_parser.add_argument(
         "-y",
@@ -776,6 +776,7 @@ def _prepare_demo(args, storage, *, stream=None):
             storage_path=storage_path,
             ingest_models=True,
             assume_yes=True,
+            stream=out,
         )
     except Exception as e:
         print(f"Failed to set up the Jaffle Shop demo: {e}", file=out)
@@ -1299,7 +1300,9 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
     db_path = resolve_demo_db_path(storage_path)
 
     try:
-        db_built = build_jaffle_shop(db_path=db_path, years=max(1, args.years))
+        db_built = build_jaffle_shop(
+            db_path=db_path, years=max(1, args.years), stream=sys.stderr
+        )
     except Exception as e:
         print(f"Failed to build Jaffle Shop demo: {e}")
         sys.exit(1)
