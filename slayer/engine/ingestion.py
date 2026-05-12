@@ -1024,11 +1024,14 @@ def _friendly_db_error(exc: Exception) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _print_ingest_addition(addition, *, file: TextIO = sys.stdout) -> None:
+def _print_ingest_addition(
+    addition, *, file: Optional[TextIO] = None
+) -> None:
+    out = file if file is not None else sys.stdout
     if addition.created:
         print(
             f"Created: {addition.model_name} ({len(addition.new_columns)} columns)",
-            file=file,
+            file=out,
         )
         return
     if not (addition.new_columns or addition.new_joins):
@@ -1038,18 +1041,21 @@ def _print_ingest_addition(addition, *, file: TextIO = sys.stdout) -> None:
         details.append(f"+columns: {', '.join(addition.new_columns)}")
     if addition.new_joins:
         details.append(f"+joins: {', '.join(addition.new_joins)}")
-    print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=file)
+    print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
 
 
-def _print_ingest_drift_and_errors(result, *, file: TextIO = sys.stdout) -> None:
+def _print_ingest_drift_and_errors(
+    result, *, file: Optional[TextIO] = None
+) -> None:
+    out = file if file is not None else sys.stdout
     if result.to_delete:
-        print("\nPending drift (run `slayer validate-models` to inspect):", file=file)
+        print("\nPending drift (run `slayer validate-models` to inspect):", file=out)
         for entry in result.to_delete:
-            print(f"  - {entry.tool}: {entry.model_name}", file=file)
+            print(f"  - {entry.tool}: {entry.model_name}", file=out)
     if result.errors:
-        print(f"\nErrors ({len(result.errors)}):", file=file)
+        print(f"\nErrors ({len(result.errors)}):", file=out)
         for err in result.errors:
-            print(f"  - {err.model_name}: {err.error}", file=file)
+            print(f"  - {err.model_name}: {err.error}", file=out)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1109,7 +1115,13 @@ async def ingest_all_datasources_idempotent(
 
     for name in names:
         print(f"Ingesting datasource '{name}'…", file=out)
-        ds = await storage.get_datasource(name)
+        try:
+            ds = await storage.get_datasource(name)
+        except Exception as exc:  # noqa: BLE001 — per-datasource isolation
+            friendly = _friendly_db_error(exc)
+            summary.failures.append(StartupIngestFailure(name=name, error=friendly))
+            print(f"Datasource '{name}': failed — {friendly}", file=out)
+            continue
         if ds is None:
             err = "datasource config disappeared between listing and load"
             summary.failures.append(StartupIngestFailure(name=name, error=err))

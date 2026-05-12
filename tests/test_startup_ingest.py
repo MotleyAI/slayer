@@ -367,6 +367,34 @@ class TestOrchestrator:
         assert [f.name for f in summary.failures] == ["b"]
         assert "disappeared" in summary.failures[0].error
 
+    async def test_get_datasource_raises_does_not_abort_iteration(self, monkeypatch):
+        """A YAML parse error / invalid-config raise on a single datasource
+        must not abort the whole startup pass — only `list_datasources()`
+        raising is supposed to prevent boot."""
+        names = ["a", "b", "c"]
+        storage = MagicMock()
+        storage.list_datasources = AsyncMock(return_value=list(names))
+
+        async def _get(name: str):
+            if name == "b":
+                raise RuntimeError("invalid YAML in datasources/b.yaml")
+            return _ds(name)
+
+        storage.get_datasource = AsyncMock(side_effect=_get)
+        called = _patch_ingester(
+            monkeypatch, lambda n, ds: _result_with_addition(f"{n}_model", n)
+        )
+        stream = io.StringIO()
+
+        summary = await ingest_all_datasources_idempotent(
+            storage=storage, stream=stream
+        )
+
+        assert called == ["a", "c"]
+        assert summary.succeeded == ["a", "c"]
+        assert [f.name for f in summary.failures] == ["b"]
+        assert "invalid YAML" in summary.failures[0].error
+
     async def test_output_routed_to_stream_not_stdout(self, monkeypatch, capsys):
         storage = _stub_storage(names=["a"])
         _patch_ingester(
