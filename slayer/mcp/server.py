@@ -775,7 +775,7 @@ def _model_to_summary(model: SlayerModel) -> dict:
     }
 
 
-def create_mcp_server(
+def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,

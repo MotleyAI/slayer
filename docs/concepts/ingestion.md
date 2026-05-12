@@ -202,13 +202,13 @@ All boot-ingest output goes to **stderr** for both `slayer serve` and
 `slayer mcp` — `mcp` uses stdio JSON-RPC and any byte on stdout would
 corrupt the channel. Final line:
 
-```
+```text
 Ingest-on-startup: N/M datasources ingested
 ```
 
 or, when at least one failed:
 
-```
+```text
 Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
 ```
 

@@ -123,7 +123,7 @@ def _slayer_version() -> str:
         return "0.0.0+unknown"
 
 
-def create_app(
+def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity is the cumulative inline closure body of every @app.<route> handler. Splitting would require dependency-injecting `engine`/`storage`/`mcp` into a separate module — out of scope for incremental PRs.
     storage: StorageBackend,
     *,
     ingest_on_startup: bool = False,

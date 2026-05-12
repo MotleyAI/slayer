@@ -39,7 +39,7 @@ from slayer.engine.schema_drift import (
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────  # NOSONAR(S125) — section separator, not commented-out code
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ def _stub_storage(
     else:
         storage.list_datasources = AsyncMock(return_value=list(names))
 
-    async def _get(name: str) -> Optional[DatasourceConfig]:
+    async def _get(name: str) -> Optional[DatasourceConfig]:  # NOSONAR(S7503) — must be `async def` to be a valid AsyncMock.side_effect
         if name in missing_set:
             return None
         if name in names:
@@ -136,7 +136,7 @@ def _patch_ingester(monkeypatch, behaviour):
     """
     call_log: List[str] = []
 
-    async def fake(*, datasource, storage, schema, include_tables, exclude_tables):
+    async def fake(*, datasource, storage, schema, include_tables, exclude_tables):  # NOSONAR(S7503) — must be `async def` to replace the real async ingest_datasource_idempotent
         call_log.append(datasource.name)
         out = behaviour(datasource.name, datasource)
         if isinstance(out, BaseException):
@@ -152,25 +152,25 @@ def _patch_ingester(monkeypatch, behaviour):
 
 
 def _serve_args(**overrides) -> argparse.Namespace:
-    base = dict(
-        host="h",
-        port=1,
-        storage=None,
-        models_dir=None,
-        demo=False,
-        ingest_on_startup=False,
-    )
+    base = {
+        "host": "h",
+        "port": 1,
+        "storage": None,
+        "models_dir": None,
+        "demo": False,
+        "ingest_on_startup": False,
+    }
     base.update(overrides)
     return argparse.Namespace(**base)
 
 
 def _mcp_args(**overrides) -> argparse.Namespace:
-    base = dict(
-        storage=None,
-        models_dir=None,
-        demo=False,
-        ingest_on_startup=False,
-    )
+    base = {
+        "storage": None,
+        "models_dir": None,
+        "demo": False,
+        "ingest_on_startup": False,
+    }
     base.update(overrides)
     return argparse.Namespace(**base)
 
@@ -375,7 +375,7 @@ class TestOrchestrator:
         storage = MagicMock()
         storage.list_datasources = AsyncMock(return_value=list(names))
 
-        async def _get(name: str):
+        async def _get(name: str):  # NOSONAR(S7503) — must be `async def` to be a valid AsyncMock.side_effect
             if name == "b":
                 raise RuntimeError("invalid YAML in datasources/b.yaml")
             return _ds(name)
@@ -484,6 +484,7 @@ class TestCliFlagPlumbing:
         monkeypatch.setattr(cli, "_run_serve", lambda a: captured.append(a))
         monkeypatch.setattr(sys, "argv", ["slayer", "serve"])
         cli.main()
+        assert len(captured) == 1
         assert captured[0].ingest_on_startup is False
 
     def test_argparse_default_is_false_mcp(self, monkeypatch):
@@ -491,6 +492,7 @@ class TestCliFlagPlumbing:
         monkeypatch.setattr(cli, "_run_mcp", lambda a: captured.append(a))
         monkeypatch.setattr(sys, "argv", ["slayer", "mcp"])
         cli.main()
+        assert len(captured) == 1
         assert captured[0].ingest_on_startup is False
 
     def test_serve_flag_threads_to_create_app(self, monkeypatch):
@@ -648,7 +650,7 @@ class TestProgrammaticKwarg:
     def test_create_app_with_kwarg_triggers_orchestrator(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):
+        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -673,7 +675,7 @@ class TestProgrammaticKwarg:
     def test_create_app_without_kwarg_does_not_trigger(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):
+        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -694,7 +696,7 @@ class TestProgrammaticKwarg:
     def test_create_mcp_server_with_kwarg_triggers_orchestrator(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):
+        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
@@ -718,7 +720,7 @@ class TestProgrammaticKwarg:
     def test_create_mcp_server_without_kwarg_does_not_trigger(self, monkeypatch):
         calls: list = []
 
-        async def fake_orchestrator(*, storage, stream=None):
+        async def fake_orchestrator(*, storage, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
             calls.append((storage, stream))
             return StartupIngestSummary()
 
