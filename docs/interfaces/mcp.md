@@ -13,8 +13,10 @@ The agent spawns SLayer as a subprocess and communicates via stdin/stdout. You d
 **Claude Code setup:**
 
 ```bash
-claude mcp add slayer -- slayer mcp --storage ./slayer_data
+claude mcp add slayer -- slayer mcp --ingest-on-startup --storage ./slayer_data
 ```
+
+`--ingest-on-startup` runs idempotent auto-ingestion across every configured datasource before the stdio channel opens. Drop the flag (or set `SLAYER_INGEST_ON_STARTUP=0`) to defer ingestion to a manual `ingest_datasource_models` call.
 
 If `slayer` is installed in a virtualenv (e.g. via Poetry), use the full path to the executable so the agent can find it regardless of working directory:
 
@@ -33,10 +35,12 @@ MCP over HTTP via Server-Sent Events. You run `slayer serve` yourself — it exp
 
 ```bash
 # 1. Start the server
-slayer serve --storage ./slayer_data
+slayer serve --ingest-on-startup --storage ./slayer_data
 # REST API at http://localhost:5143/
 # MCP SSE at http://localhost:5143/mcp/sse
 ```
+
+For container / systemd contexts where the CLI command isn't easy to modify, set `SLAYER_INGEST_ON_STARTUP=1` in the process environment — same effect as the flag.
 
 Then, in a separate terminal, register the remote endpoint with your agent:
 

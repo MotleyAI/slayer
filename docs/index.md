@@ -49,7 +49,7 @@ One query, and SLayer handles:
 
 ## What SLayer does
 
-- **[Auto-ingestion](concepts/ingestion.md)** — Point it at a database, it introspects the schema, detects foreign keys, and generates models with joins. No manual YAML needed to get started ([tutorial](examples/03_auto_ingest/auto_ingest.md)).
+- **[Auto-ingestion](concepts/ingestion.md)** — Point it at a database, it introspects the schema, detects foreign keys, and generates models with joins. No manual YAML needed to get started ([tutorial](examples/03_auto_ingest/auto_ingest.md)). Re-run the same idempotent pass on every server boot with `slayer serve --ingest-on-startup` / `slayer mcp --ingest-on-startup`.
 - **Aggregation at query time** — Measures are expressions, not pre-baked aggregates. `"revenue:sum"`, `"revenue:median"`, `"price:weighted_avg(weight=quantity)"`. Built-in and [custom aggregations](examples/07_aggregations/aggregations.md) with parameters.
 - **Composable transforms** — `cumsum`, `change`, `change_pct`, `time_shift`, `rank` / `percent_rank` / `dense_rank` / `ntile`, `lag`, `lead` — all nestable: `"change(cumsum(revenue:sum))"` just works ([tutorial](examples/04_time/time.md)).
 - **Cross-model measures** — Query measures from [joined models](examples/05_joined_measures/joined_measures.md) with dot syntax: `"customers.score:avg"`. Joins are auto-resolved by walking the model graph ([tutorial](examples/05_joins/joins.md)).

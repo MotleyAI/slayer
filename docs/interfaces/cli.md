@@ -16,6 +16,8 @@ slayer serve --storage slayer.db
 
 If unset, SLayer uses a platform-appropriate path: `~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows. Override with `$SLAYER_STORAGE`.
 
+Another environment variable, `SLAYER_INGEST_ON_STARTUP`, mirrors the `--ingest-on-startup` flag on `slayer serve` / `slayer mcp` — truthy values (`1`, `true`, `yes`, case-insensitive) enable boot-time idempotent auto-ingestion across every configured datasource. See [Ingesting at Startup](../concepts/ingestion.md#ingesting-at-startup).
+
 The legacy `--models-dir` flag still works but is deprecated in favor of `--storage`.
 
 ## Commands
@@ -36,6 +38,7 @@ slayer serve --storage slayer.db
 | `--port` | `5143` | Port number |
 | `--storage` | platform-appropriate path | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; requires the `duckdb` extra and `jafgen`. |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before the port opens. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
 ### `slayer mcp`
 
@@ -55,6 +58,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 |------|---------|-------------|
 | `--storage` | platform-appropriate path | Storage path (directory for YAML, `.db` file for SQLite) |
 | `--demo` | off | Spin up the bundled Jaffle Shop DuckDB datasource and ingest its models on startup. Idempotent; requires the `duckdb` extra and `jafgen`. |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
 ### `slayer query`
 

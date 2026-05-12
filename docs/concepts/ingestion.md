@@ -142,6 +142,76 @@ This avoids table alias collisions and allows querying both paths simultaneously
 
 If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warning and falls back to simple models without rollup joins.
 
+## Ingesting at Startup
+
+`slayer serve` and `slayer mcp` both accept `--ingest-on-startup`, an
+**opt-in** flag that walks every configured datasource and runs the same
+idempotent ingestion pass described in [Idempotent
+Re-Ingestion](#idempotent-re-ingestion) **before** the port opens / before
+stdio JSON-RPC starts. Mirrors the existing `--demo` boot hook, so both
+flags compose: `--demo` runs first (creating the Jaffle Shop datasource),
+then the startup-ingest pass runs over every datasource including the
+freshly-created demo.
+
+### CLI
+
+```bash
+slayer serve --ingest-on-startup
+slayer mcp --ingest-on-startup
+slayer serve --demo --ingest-on-startup     # demo first, then ingest all DSes
+```
+
+### Environment variable
+
+`SLAYER_INGEST_ON_STARTUP=<truthy>` enables the same behaviour. Truthy =
+`1`, `true`, `yes` (case-insensitive). Anything else (including unset, `0`,
+`false`, empty) is off. An explicit `--ingest-on-startup` wins over the
+env var when both are set.
+
+### Programmatic (embedders)
+
+```python
+from slayer.api.server import create_app
+from slayer.mcp.server import create_mcp_server
+
+app = create_app(storage=storage, ingest_on_startup=True)
+mcp = create_mcp_server(storage=storage, ingest_on_startup=True)
+```
+
+Same "models are fresh by the time the constructor returns" guarantee the
+CLI gets.
+
+### Error semantics
+
+- **One datasource fails** (the ingest call raises): caught, friendly-formatted, accumulated, server starts anyway.
+- **Per-table errors inside a single datasource** (`result.errors` non-empty): printed; that datasource still counts as "succeeded" because the call itself returned.
+- **`storage.list_datasources()` raises**: propagates — server does not start. Boot should not proceed with broken storage.
+- **Zero datasources**: prints `Ingest-on-startup: no datasources configured` and starts normally.
+
+### Drift handling
+
+`to_delete` entries from each per-datasource result are printed via the
+standard drift renderer and accumulated into the return value's
+`drift_pending` list, but **never auto-applied**. Destructive cleanup
+remains gated behind `slayer validate-models --force-clean [--yes]`. See
+[Schema Drift](schema-drift.md).
+
+### Output
+
+All boot-ingest output goes to **stderr** for both `slayer serve` and
+`slayer mcp` — `mcp` uses stdio JSON-RPC and any byte on stdout would
+corrupt the channel. Final line:
+
+```
+Ingest-on-startup: N/M datasources ingested
+```
+
+or, when at least one failed:
+
+```
+Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
+```
+
 ## Idempotent Re-Ingestion
 
 `slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
