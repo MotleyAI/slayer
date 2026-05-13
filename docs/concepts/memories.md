@@ -147,11 +147,14 @@ For retrieval, see [`search`](search.md) (MCP `search`, REST `POST
 
 ## Storage layout
 
-YAML uses `memories.yaml` and `counters.yaml` files alongside the
-existing model and datasource folders. SQLite uses a `memories` table
-plus a `memory_entities` index table for the entity-overlap filter,
-and a single `memory_seq` row in `id_counters`.
+YAML uses a single `memories.yaml` file alongside the model and
+datasource folders. SQLite uses a `memories` table plus a
+`memory_entities` index table for the entity-overlap filter.
 
-IDs are monotonic positive ints and never reused: once `42` is
-allocated, the next `save_memory` returns `43` even if `42` was
-deleted.
+IDs are positive ints that increase monotonically while the corpus
+grows. The next id is derived from the existing corpus directly
+(`last_row.id + 1` for YAML, `SELECT MAX(id) + 1 FROM memories` for
+SQLite) — there is no separate counter store (DEV-1405). Ids of
+deleted memories may be reused by future saves; `delete_memory`
+already cascades to drop the matching embedding row, so reuse never
+strands data.

@@ -207,19 +207,28 @@ sql-mode and query-backed models are silently skipped in v1.
 
 ## Embedding sidecar design notes
 
-- **Stored**, not rebuilt per call. Rows live in the
-  `embeddings` table (SQLite) or `embeddings.yaml` (YAML), keyed by
-  `(canonical_id, embedding_model_name)`. Search loads the corpus
+- **Stored**, not rebuilt per call. Rows live in an indexed `embeddings`
+  SQLite table — in the main `.db` file for `SQLiteStorage`, or at
+  `<base_dir>/embeddings.db` for `YAMLStorage` (DEV-1405). Keyed by
+  `(canonical_id, embedding_model_name)`. Both backends share the same
+  SQL through a `SidecarEmbeddingStore` helper. Search loads the corpus
   matrix fresh per call and runs cosine similarity in numpy.
 - Same render pipeline as tantivy (`slayer/search/render.py`) — every
   doc that goes into the tantivy index also feeds the embedding text.
 - Refresh is **inline** on the same write-side edges as
   `Column.sampled`: ingest, `edit_model`, `save_memory`. SHA256 content
-  hash makes idempotent re-runs cheap.
-- **Cascade** semantics: `delete_model` drops every embedding under
-  `<ds>.<model>%` (model doc + columns + measures + aggregations).
-  `delete_memory` drops the matching `memory:<id>` row.
-  `delete_datasource` drops every row under `<ds>%`.
+  hash makes idempotent re-runs cheap. The hot path
+  (`EmbeddingService._apply_pending`) issues one batched
+  `get_embeddings_for_canonical_ids` for the hash-skip filter and one
+  batched `save_embeddings` for the persist step (DEV-1405) — refresh
+  cost is independent of subtree size.
+- **Cascade** semantics (DEV-1405 fix): `delete_embeddings_for_canonical`
+  matches the canonical id exactly OR as a strict dotted-path descendant
+  (`<root>.<...>`) — never as a character prefix. So `delete_memory(4)`
+  removes only `memory:4` (not `memory:42`, `memory:43`, …);
+  `delete_datasource("orders")` does not touch a sibling datasource
+  named `orders_archive`; `delete_model("orders", "customers")` does not
+  touch a sibling `customers_v2`.
 - Optional pip extra: `pip install motley-slayer[embedding_search]`
   installs `litellm` + `numpy`. When omitted, the embedding channel
   emits a one-line warning and contributes nothing.

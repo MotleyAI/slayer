@@ -10,6 +10,7 @@ auto-pruned when no matching learning-shaped memory exists. The
 
 import os
 import shutil
+import sqlite3
 import tempfile
 from typing import Any, Generator, Optional
 
@@ -51,11 +52,18 @@ def _reset_storage(storage: YAMLStorage) -> None:
     for f in (
         "priority.yaml",
         "memories.yaml",
-        "counters.yaml",
+        "embeddings.yaml.legacy",
+        "counters.yaml.legacy",
     ):
         p = os.path.join(storage.base_dir, f)
         if os.path.exists(p):
             os.remove(p)
+    # See _reset_storage in test_memories_mcp.py — clear rows in place
+    # rather than deleting the SidecarEmbeddingStore's open db file.
+    emb_path = os.path.join(storage.base_dir, "embeddings.db")
+    if os.path.exists(emb_path):
+        with sqlite3.connect(emb_path) as conn:
+            conn.execute("DELETE FROM embeddings")
 
 
 @pytest.fixture

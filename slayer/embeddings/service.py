@@ -67,6 +67,11 @@ class _PendingRefresh:
 
     __slots__ = ("canonical_id", "entity_kind", "text", "content_hash")
 
+    canonical_id: str
+    entity_kind: EntityKind
+    text: str
+    content_hash: str
+
     def __init__(
         self,
         *,
@@ -212,7 +217,13 @@ class EmbeddingService:
     async def _apply_pending(
         self, pending: List[_PendingRefresh],
     ) -> List[str]:
-        """Hash-skip, batch-embed, and persist. Returns warning strings."""
+        """Hash-skip, batch-embed, and persist. Returns warning strings.
+
+        DEV-1405: hot-path uses two batched storage round-trips per call —
+        one ``get_embeddings_for_canonical_ids`` for the hash-skip filter,
+        one ``save_embeddings`` for the persist step. The previous code
+        did M point ``get_embedding`` + M point ``save_embedding`` calls.
+        """
         if not pending:
             return []
         stale, fresh_count = await self._filter_stale(pending)
@@ -221,6 +232,7 @@ class EmbeddingService:
         texts = [p.text for p in stale]
         vectors = await embed_batch(texts, model=self._model_name)
         warnings: List[str] = []
+        rows: List[Embedding] = []
         for p, vec in zip(stale, vectors):
             if vec is None:
                 warnings.append(
@@ -229,17 +241,20 @@ class EmbeddingService:
                     f"tantivy + BM25)."
                 )
                 continue
+            rows.append(Embedding(
+                canonical_id=p.canonical_id,
+                embedding_model_name=self._model_name,
+                entity_kind=p.entity_kind,
+                content_hash=p.content_hash,
+                embedding=vec,
+            ))
+        if rows:
             try:
-                await self._storage.save_embedding(Embedding(
-                    canonical_id=p.canonical_id,
-                    embedding_model_name=self._model_name,
-                    entity_kind=p.entity_kind,
-                    content_hash=p.content_hash,
-                    embedding=vec,
-                ))
+                await self._storage.save_embeddings(rows)
             except Exception as exc:  # NOSONAR(S112) — best-effort persistence
                 warnings.append(
-                    f"embedding persist failed for {p.canonical_id}: {exc}"
+                    f"embedding batch persist failed "
+                    f"({len(rows)} rows): {exc}"
                 )
         _log.debug(
             "EmbeddingService: refreshed=%d stale=%d total=%d warnings=%d",
@@ -252,16 +267,19 @@ class EmbeddingService:
     ) -> Tuple[List[_PendingRefresh], int]:
         """Drop pending entries whose stored content_hash already matches.
 
-        Returns ``(stale_entries, fresh_skipped_count)``.
+        Returns ``(stale_entries, fresh_skipped_count)``. DEV-1405: one
+        batched ``get_embeddings_for_canonical_ids`` call replaces the
+        previous M-iteration point-read loop.
         """
+        existing = await self._storage.get_embeddings_for_canonical_ids(
+            canonical_ids=[p.canonical_id for p in pending],
+            embedding_model_name=self._model_name,
+        )
         stale: List[_PendingRefresh] = []
         fresh = 0
         for p in pending:
-            existing = await self._storage.get_embedding(
-                canonical_id=p.canonical_id,
-                embedding_model_name=self._model_name,
-            )
-            if existing is not None and existing.content_hash == p.content_hash:
+            match = existing.get(p.canonical_id)
+            if match is not None and match.content_hash == p.content_hash:
                 fresh += 1
                 continue
             stale.append(p)
