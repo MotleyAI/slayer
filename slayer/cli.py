@@ -544,6 +544,16 @@ examples:
         help="Free-text query for the tantivy full-text channel.",
     )
     search_parser.add_argument(
+        "--datasource",
+        default=None,
+        help=(
+            "Scope memories + entities to this datasource. Entity hits "
+            "limited to docs rooted at the datasource (exact or dotted "
+            "descendant); memories surface when any tagged entity is "
+            "rooted there."
+        ),
+    )
+    search_parser.add_argument(
         "--max-memories",
         type=int,
         default=5,
@@ -750,6 +760,7 @@ def _run_search_query(args, storage) -> None:
             entities=args.entities,
             query=query_input,
             question=args.question,
+            datasource=args.datasource,
             max_memories=args.max_memories,
             max_example_queries=args.max_example_queries,
             max_entities=args.max_entities,

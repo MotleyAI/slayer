@@ -36,6 +36,7 @@ from slayer.embeddings import client as embedding_client
 from slayer.memories.models import Memory
 from slayer.memories.ranker import bm25_rank
 from slayer.memories.resolver import (
+    canonical_id_rooted_at,
     extract_entities_from_query,
     resolve_entity,
 )
@@ -274,6 +275,7 @@ class SearchService:
         entities: Optional[List[str]] = None,
         query: Optional[Union[SlayerQuery, dict]] = None,
         question: Optional[str] = None,
+        datasource: Optional[str] = None,
         max_memories: int = 5,
         max_example_queries: int = 2,
         max_entities: int = 5,
@@ -286,6 +288,15 @@ class SearchService:
             )
         if max_entities < 0:
             raise ValueError(f"max_entities must be >= 0; got {max_entities}.")
+        # DEV-1409: validate ``datasource`` before any corpus walk so
+        # typos surface fast. Costs one ``list_datasources()`` round-trip
+        # — both backends back this with an indexed query.
+        if datasource is not None:
+            known = sorted(await self._storage.list_datasources())
+            if datasource not in known:
+                raise ValueError(
+                    f"datasource {datasource!r} not found; known: {known}."
+                )
 
         canonical_input_entities, warnings = await self._resolve_inputs(
             entities=entities, query=query,
@@ -296,6 +307,7 @@ class SearchService:
         # Recency fallback for the all-empty case.
         if not channel_1_active and not question_active:
             return await self._recency_fallback(
+                datasource=datasource,
                 max_memories=max_memories,
                 max_example_queries=max_example_queries,
                 warnings=warnings,
@@ -311,13 +323,27 @@ class SearchService:
         all_memories: List[Memory] = []
         if channel_1_active or question_active:
             all_memories = await self._storage.list_memories(entities=None)
+            # DEV-1409 pre-filter: keep memories with at least one entity
+            # rooted at the requested datasource. Both BM25 (channel 1)
+            # and the embedding cosine (channel 3) consume this narrowed
+            # list, so IDF / matrix shape reflect the filtered subset.
+            if datasource is not None:
+                all_memories = [
+                    m for m in all_memories
+                    if any(
+                        canonical_id_rooted_at(e, datasource)
+                        for e in m.entities
+                    )
+                ]
 
         # Build the in-memory corpus once when question is active — both
         # channels 2 and 3 read from it (channel 2 for tantivy search,
         # channel 3 to recover hit text by canonical_id).
         corpus: Optional[Corpus] = None
         if question_active:
-            all_models, datasources = await self._collect_index_corpus()
+            all_models, datasources = await self._collect_index_corpus(
+                datasource=datasource,
+            )
             corpus = build_in_memory_corpus(
                 memories=all_memories,
                 models=all_models,
@@ -348,6 +374,8 @@ class SearchService:
             corpus=corpus,
             over_fetch=over_fetch_budget,
             question_active=question_active,
+            datasource=datasource,
+            eligible_memory_canonicals={f"memory:{m.id}" for m in all_memories},
         )
         warnings = _dedup(warnings + channel_3_warnings)
 
@@ -428,16 +456,29 @@ class SearchService:
         max_memories: int,
         max_example_queries: int,
         warnings: List[str],
+        datasource: Optional[str] = None,
     ) -> SearchResponse:
         """Empty-input branch: partition all memories by recency into the
         learning-only bucket (``memories``, capped by ``max_memories``)
         and the query-bearing bucket (``example_queries``, capped by
-        ``max_example_queries``)."""
+        ``max_example_queries``).
+
+        DEV-1409: when ``datasource`` is set, the same memory pre-filter
+        used by the main search path applies — only memories with at
+        least one entity rooted at the requested datasource are eligible.
+        """
         warnings.append(
             "no entities, query, or question supplied; returning "
             "newest memories by recency."
         )
         recency_memories = await self._storage.list_memories(entities=None)
+        if datasource is not None:
+            recency_memories = [
+                m for m in recency_memories
+                if any(
+                    canonical_id_rooted_at(e, datasource) for e in m.entities
+                )
+            ]
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
         memory_hits: List[MemoryHit] = []
         example_query_hits: List[ExampleQueryHit] = []
@@ -520,6 +561,8 @@ class SearchService:
         corpus: Optional[Corpus],
         over_fetch: int,
         question_active: bool,
+        datasource: Optional[str] = None,
+        eligible_memory_canonicals: Optional[Set[str]] = None,
     ) -> Tuple[List[int], List[str], List[str]]:
         """Embedding-similarity channel (DEV-1386). Returns
         ``(memory_ranking, entity_ranking_canonicals, warnings)``.
@@ -530,6 +573,19 @@ class SearchService:
         * the ``embedding_search`` extra is not installed,
         * the active model has no embedding rows in storage,
         * the query embedding call fails.
+
+        DEV-1409: when ``datasource`` is set, the corpus is pre-filtered
+        before the matrix build so cosine similarity is computed only
+        against:
+
+        * entity rows (``entity_kind != 'memory'``) rooted at the
+          requested datasource (exact match or dotted-path descendant),
+        * memory rows whose ``canonical_id`` appears in the supplied
+          ``eligible_memory_canonicals`` set (already datasource-filtered
+          upstream).
+
+        Both `rows[idx]` indexing and the matrix stay aligned because
+        the filter happens before `np.array(...)`.
         """
         if not question_active or corpus is None:
             return [], [], []
@@ -547,6 +603,17 @@ class SearchService:
 
         service = EmbeddingService(storage=self._storage)
         rows = await service.fetch_corpus()
+        if datasource is not None:
+            allowed_memories = eligible_memory_canonicals or set()
+            rows = [
+                r for r in rows
+                if (
+                    (r.entity_kind == "memory"
+                        and r.canonical_id in allowed_memories)
+                    or (r.entity_kind != "memory"
+                        and canonical_id_rooted_at(r.canonical_id, datasource))
+                )
+            ]
         if not rows:
             return [], [], [
                 f"embedding channel skipped: no embedding rows for model "
@@ -597,12 +664,25 @@ class SearchService:
 
     async def _collect_index_corpus(
         self,
+        *,
+        datasource: Optional[str] = None,
     ) -> Tuple[List[SlayerModel], List[str]]:
-        """Walk every datasource + every model into the in-memory corpus."""
+        """Walk datasources + models into the in-memory corpus.
+
+        DEV-1409: when ``datasource`` is set, only models in that one
+        datasource are walked, and only that datasource's doc lands in
+        the returned list. Validation that ``datasource`` is known
+        happens upstream in ``SearchService.search`` so this method
+        stays cheap.
+        """
         datasources = await self._storage.list_datasources()
+        if datasource is not None:
+            datasources = [d for d in datasources if d == datasource]
         models: List[SlayerModel] = []
         identities = await self._storage._list_all_model_identities()
         for ds, name in identities:
+            if datasource is not None and ds != datasource:
+                continue
             m = await self._storage.get_model(name, data_source=ds)
             if m is not None:
                 models.append(m)

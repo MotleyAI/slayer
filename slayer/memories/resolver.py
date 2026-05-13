@@ -61,6 +61,35 @@ _FILTER_TOKEN_BLACKLIST: frozenset[str] = frozenset({
 })
 
 
+def canonical_id_rooted_at(canonical_id: str, datasource: str) -> bool:
+    """Return ``True`` iff ``canonical_id`` belongs to ``datasource``
+    under the dotted-namespace rule (DEV-1409).
+
+    The rule mirrors the cascade-delete semantics established in DEV-1405:
+    a canonical id is rooted at ``datasource`` when it is exactly the
+    datasource name, OR a strict dotted-path descendant
+    (``<datasource>.<...>``). Datasource names cannot contain ``.``
+    (enforced by ``DatasourceConfig.name`` and ``SlayerModel.data_source``
+    validators), so the prefix match is unambiguous.
+
+    ``memory:<int>`` canonical ids are datasource-agnostic — they never
+    match any datasource, even one named ``memory``. Memory eligibility
+    under a datasource filter is computed at the service layer by
+    walking the memory's ``entities`` list and checking each entry with
+    this helper.
+
+    An empty ``datasource`` is rejected upstream by the validators; the
+    helper still degrades gracefully (returns ``False`` for any input).
+    """
+    if not datasource:
+        return False
+    if canonical_id.startswith("memory:"):
+        return False
+    return canonical_id == datasource or canonical_id.startswith(
+        f"{datasource}."
+    )
+
+
 class EntityResolution(BaseModel):
     """Output of ``resolve_entity`` and ``extract_entities_from_query``.
 

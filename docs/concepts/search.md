@@ -132,6 +132,37 @@ search(
 | CLI  | `slayer search --entity <e> --question "..." [--format json]` |
 | Python client | `await client.search(entities=[...], question="...")` |
 
+### `datasource` filter (DEV-1409)
+
+All four surfaces accept an optional `datasource: Optional[str] = None`
+argument. When set, every channel pre-filters its corpus to that one
+datasource:
+
+- **Entity hits** (channels 2 and 3) include only docs whose
+  `canonical_id` is rooted at the requested datasource — exact name
+  match (`<ds>`) or strict dotted-path descendant (`<ds>.<model>`,
+  `<ds>.<model>.<leaf>`). Character-prefix matches do NOT qualify, so
+  `datasource="prod"` excludes a sibling datasource named `prod_v2`.
+- **Memory hits** (channels 1, 2, 3, and the recency fallback) include
+  only memories whose `entities` list has at least one entry rooted at
+  the requested datasource. A memory that references both `prod.*` and
+  `staging.*` surfaces from each datasource when each is filtered
+  independently; an untagged memory drops out under any filter.
+- BM25 and tantivy IDF statistics reflect the filtered subset only —
+  pre-filter, not post-filter. The embedding cosine corpus (channel 3)
+  is filtered before the numpy matrix is built, so cosine scores are
+  computed only against eligible rows.
+
+Unknown datasource → `ValueError` (HTTP 400 on REST, MCP-formatted error
+on the MCP tool). Validation runs before any corpus walk so typos
+surface fast.
+
+`canonical_id` rooting uses `slayer.memories.resolver.canonical_id_rooted_at`,
+which encodes the same dotted-namespace rule the embedding cascade-delete
+already enforces (DEV-1405). Datasource names cannot contain `.` (rejected
+by `DatasourceConfig.name` + `SlayerModel.data_source` validators), so the
+prefix match is unambiguous.
+
 ### Behaviour matrix
 
 | `entities`/`query` | `question` | Result |

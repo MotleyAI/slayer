@@ -246,6 +246,7 @@ class SlayerClient:
         entities: Optional[List[str]] = None,
         query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
         question: Optional[str] = None,
+        datasource: Optional[str] = None,
         max_memories: int = 5,
         max_example_queries: int = 2,
         max_entities: int = 5,
@@ -259,6 +260,13 @@ class SlayerClient:
         configured provider API key). Memory rankings from all active
         channels and entity rankings from channels 2 and 3 are fused via
         Reciprocal Rank Fusion (``k=60``).
+
+        ``datasource`` (DEV-1409, optional): when set, scope memories and
+        entities to that one datasource. Entity hits are limited to docs
+        rooted at the datasource (exact match or dotted-path descendant).
+        Memories surface when any of their tagged entities is rooted at
+        the datasource. Unknown datasource raises ``ValueError`` (HTTP
+        400 on the remote path).
         """
         # Local imports: slayer.search.service transitively imports tantivy,
         # which is not part of the client extras (httpx + pandas). Remote-only
@@ -277,6 +285,7 @@ class SlayerClient:
                 entities=entities,
                 query=coerced_query,
                 question=question,
+                datasource=datasource,
                 max_memories=max_memories,
                 max_example_queries=max_example_queries,
                 max_entities=max_entities,
@@ -292,6 +301,8 @@ class SlayerClient:
             body["query"] = coerced_query
         if question is not None:
             body["question"] = question
+        if datasource is not None:
+            body["datasource"] = datasource
         result = await self._request(method="POST", path="/search", json=body)
         return SearchResponse.model_validate(result)
 

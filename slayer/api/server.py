@@ -111,6 +111,7 @@ class SearchRequest(BaseModel):
     entities: Optional[List[str]] = None
     query: Optional[Any] = None
     question: Optional[str] = None
+    datasource: Optional[str] = None
     max_memories: int = 5
     max_example_queries: int = 2
     max_entities: int = 5
@@ -612,6 +613,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 entities=request.entities,
                 query=request.query,
                 question=request.question,
+                datasource=request.datasource,
                 max_memories=request.max_memories,
                 max_example_queries=request.max_example_queries,
                 max_entities=request.max_entities,
