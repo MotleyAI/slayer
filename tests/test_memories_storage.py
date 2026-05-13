@@ -23,7 +23,7 @@ from typing import Iterator
 import pytest
 
 from slayer.core.errors import MemoryNotFoundError
-from slayer.core.models import ModelMeasure
+from slayer.core.models import ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
@@ -470,16 +470,13 @@ class TestModelDataSourceFormat:
     codex round 2)."""
 
     def test_data_source_rejects_leading_whitespace(self) -> None:
-        from slayer.core.models import SlayerModel
         with pytest.raises(ValueError, match="leading/trailing whitespace"):
             SlayerModel(name="m", sql_table="t", data_source=" prod")
 
     def test_data_source_rejects_trailing_whitespace(self) -> None:
-        from slayer.core.models import SlayerModel
         with pytest.raises(ValueError, match="leading/trailing whitespace"):
             SlayerModel(name="m", sql_table="t", data_source="prod ")
 
     def test_data_source_rejects_nul(self) -> None:
-        from slayer.core.models import SlayerModel
         with pytest.raises(ValueError, match="NUL"):
             SlayerModel(name="m", sql_table="t", data_source="prod\x00")

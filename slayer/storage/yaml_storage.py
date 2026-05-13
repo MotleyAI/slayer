@@ -226,22 +226,21 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _next_memory_seq(self) -> int:
         """DEV-1405: derive the next id straight from ``memories.yaml``.
-        Rows are stored in id-insertion order (``_save_memory_row`` filters
-        by id, then appends), so the last entry carries the highest id
-        currently present. Ids of deleted memories are reused — there is
-        no separate counter file."""
+        Returns ``max(int_ids) + 1`` over the current rows (or ``1`` for
+        an empty file). Ids of deleted memories may be reused — there is
+        no separate counter file.
+
+        Note: the SQLite backend reaches the same invariant via
+        ``SELECT MAX(id) + 1``; we don't rely on ``rows[-1]`` here because
+        ``_save_memory_row``'s filter-and-append upsert pattern (and any
+        hand-edit of the file) can leave the tail row out of id order.
+        """
         rows = self._read_yaml_list(self._memories_path)
-        if not rows:
-            return 1
-        last_id = rows[-1].get("id")
-        if not isinstance(last_id, int):
-            # Defensive: if the file was hand-edited and lost ordering,
-            # fall back to MAX across the corpus.
-            last_id = max(
-                (r["id"] for r in rows if isinstance(r.get("id"), int)),
-                default=0,
-            )
-        return last_id + 1
+        max_id = max(
+            (r["id"] for r in rows if isinstance(r.get("id"), int)),
+            default=0,
+        )
+        return max_id + 1
 
     async def _save_memory_row(self, memory: Memory) -> None:
         rows = self._read_yaml_list(self._memories_path)
