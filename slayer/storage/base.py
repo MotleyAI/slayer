@@ -274,6 +274,10 @@ class StorageBackend(ABC):
         orphans referencing a missing datasource config. Re-creating the
         datasource and re-running ``slayer ingest`` repopulates embeddings.
         """
+        # DEV-1405: sanitize the raw name before it composes a filesystem
+        # path (YAMLStorage) or a cascade LIKE prefix. Mirrors the
+        # validation done on the save side by ``DatasourceConfig.name``.
+        _validate_path_component(name, kind="datasource name")
         deleted = await self._delete_datasource_row(name)
         if deleted:
             await self.delete_embeddings_for_canonical(

@@ -416,3 +416,70 @@ async def test_sqlite_concurrent_save_memory_assigns_unique_ids(
         for m in results:
             loaded = await store.get_memory(m.id)
             assert loaded.learning == m.learning
+
+
+# ---------------------------------------------------------------------------
+# Datasource raw-string-API validation (DEV-1405 codex review round 2)
+# ---------------------------------------------------------------------------
+
+
+class TestDatasourceRawStringValidation:
+    """REGRESSION (DEV-1405 codex round 2): ``get_datasource`` and
+    ``delete_datasource`` accept raw strings; without an explicit
+    ``_validate_path_component`` call the YAML backend could compose
+    ``datasources/<name>.yaml`` from a name containing path separators
+    or NUL, and ``delete_datasource('prod')`` could cascade
+    inappropriately if `.` had slipped past."""
+
+    @pytest.mark.parametrize("bad", [
+        "../etc",
+        "with/slash",
+        "with\\backslash",
+        "with\x00nul",
+        "trailing ",
+        " leading",
+        "",
+        "with.dot",
+    ])
+    async def test_get_datasource_rejects_bad_name(
+        self, storage: StorageBackend, bad: str,
+    ) -> None:
+        with pytest.raises(ValueError):
+            await storage.get_datasource(bad)
+
+    @pytest.mark.parametrize("bad", [
+        "../etc",
+        "with/slash",
+        "with\\backslash",
+        "with\x00nul",
+        "trailing ",
+        " leading",
+        "",
+        "with.dot",
+    ])
+    async def test_delete_datasource_rejects_bad_name(
+        self, storage: StorageBackend, bad: str,
+    ) -> None:
+        with pytest.raises(ValueError):
+            await storage.delete_datasource(bad)
+
+
+class TestModelDataSourceFormat:
+    """``SlayerModel.data_source`` must reject the same set as
+    ``DatasourceConfig.name`` and the storage-layer validator (DEV-1405
+    codex round 2)."""
+
+    def test_data_source_rejects_leading_whitespace(self) -> None:
+        from slayer.core.models import SlayerModel
+        with pytest.raises(ValueError, match="leading/trailing whitespace"):
+            SlayerModel(name="m", sql_table="t", data_source=" prod")
+
+    def test_data_source_rejects_trailing_whitespace(self) -> None:
+        from slayer.core.models import SlayerModel
+        with pytest.raises(ValueError, match="leading/trailing whitespace"):
+            SlayerModel(name="m", sql_table="t", data_source="prod ")
+
+    def test_data_source_rejects_nul(self) -> None:
+        from slayer.core.models import SlayerModel
+        with pytest.raises(ValueError, match="NUL"):
+            SlayerModel(name="m", sql_table="t", data_source="prod\x00")

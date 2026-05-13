@@ -363,7 +363,19 @@ class SlayerModel(BaseModel):
         # Format-only checks (run on every input). Emptiness is enforced in
         # ``_require_data_source_unless_query_backed`` below so query-backed
         # models can be constructed before their cache populator fills in
-        # ``data_source`` from the resolved virtual model.
+        # ``data_source`` from the resolved virtual model. Whitespace-strip
+        # mismatch and NUL are rejected here so the rule mirrors the
+        # ``DatasourceConfig.name`` validator and the storage-layer
+        # ``_validate_path_component``.
+        if v and v.strip() != v:
+            raise ValueError(
+                f"Model 'data_source' must not have leading/trailing "
+                f"whitespace; got {v!r}."
+            )
+        if "\x00" in v:
+            raise ValueError(
+                f"Model 'data_source' must not contain NUL bytes; got {v!r}."
+            )
         if "/" in v or "\\" in v:
             raise ValueError(
                 f"Model 'data_source' must not contain path separators "

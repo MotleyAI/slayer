@@ -30,7 +30,7 @@ from pydantic import ValidationError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend, _validate_path_component
 from slayer.storage.sidecar_embedding_store import SidecarEmbeddingStore
 from slayer.storage.v4_migration import migrate_yaml_layout
 
@@ -158,6 +158,8 @@ class YAMLStorage(StorageBackend):
             yaml.dump(data, f, sort_keys=False)
 
     async def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
+        # DEV-1405: sanitize before composing the filesystem path.
+        _validate_path_component(name, kind="datasource name")
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
         if not os.path.exists(path):
             return None

@@ -16,7 +16,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend, _validate_path_component
 from slayer.storage.sidecar_embedding_store import SidecarEmbeddingStore
 from slayer.storage.v4_migration import migrate_sqlite_schema
 
@@ -241,6 +241,11 @@ class SQLiteStorage(StorageBackend):
         await asyncio.to_thread(self._save_datasource_sync, datasource)
 
     async def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
+        # DEV-1405: sanitize the raw name. Mirrors the YAML backend; the
+        # SQLite lookup is parameterised so injection isn't the risk —
+        # validation here keeps the public ABC contract uniform across
+        # backends.
+        _validate_path_component(name, kind="datasource name")
         raw = await asyncio.to_thread(self._get_datasource_sync, name)
         if raw is None:
             return None
