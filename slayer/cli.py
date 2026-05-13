@@ -16,6 +16,10 @@ from slayer.core.errors import (
     MemoryNotFoundError,
 )
 from slayer.core.models import SlayerModel
+from slayer.engine.ingestion import (
+    _print_ingest_addition,
+    _print_ingest_drift_and_errors,
+)
 from slayer.engine.profiling import (
     refresh_all_table_backed_sampled,
     refresh_table_backed_model_sampled,
@@ -34,6 +38,25 @@ _STORAGE_HELP = (
     "Storage path: directory for YAML storage, or .db/.sqlite file for SQLite storage "
     f"(default: {_STORAGE_DEFAULT})"
 )
+_INGEST_ON_STARTUP_HELP = (
+    "Walk every configured datasource and run idempotent auto-ingestion before "
+    "starting the server. Per-datasource errors are logged to stderr and never "
+    "abort startup. See docs/concepts/ingestion.md."
+)
+
+
+def _env_ingest_on_startup() -> bool:
+    """Truthy check for the ``SLAYER_INGEST_ON_STARTUP`` env var.
+
+    Truthy values (case-insensitive, with surrounding whitespace stripped):
+    ``1``, ``true``, ``yes``. Anything else — including unset, empty,
+    ``0``, ``false``, ``no``, ``garbage`` — returns False.
+    """
+    return os.environ.get("SLAYER_INGEST_ON_STARTUP", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 class RefreshSamplesResult(BaseModel):
@@ -113,6 +136,11 @@ examples:
         action="store_true",
         help="Generate and ingest the bundled Jaffle Shop demo dataset before starting (idempotent).",
     )
+    serve_parser.add_argument(
+        "--ingest-on-startup",
+        action="store_true",
+        help=_INGEST_ON_STARTUP_HELP,
+    )
     _add_storage_arg(serve_parser)
 
     # ── mcp ───────────────────────────────────────────────────────────
@@ -136,6 +164,11 @@ examples:
         "--demo",
         action="store_true",
         help="Generate and ingest the bundled Jaffle Shop demo dataset before starting (idempotent).",
+    )
+    mcp_parser.add_argument(
+        "--ingest-on-startup",
+        action="store_true",
+        help=_INGEST_ON_STARTUP_HELP,
     )
     _add_storage_arg(mcp_parser)
 
@@ -990,8 +1023,10 @@ def _run_serve(args):
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
-
-    app = create_app(storage=storage)
+    ingest_on_startup = (
+        getattr(args, "ingest_on_startup", False) or _env_ingest_on_startup()
+    )
+    app = create_app(storage=storage, ingest_on_startup=ingest_on_startup)
 
     import uvicorn
 
@@ -1004,36 +1039,11 @@ def _run_mcp(args):
     storage = _resolve_storage(args)
     if getattr(args, "demo", False):
         _prepare_demo(args, storage)
-
-    mcp = create_mcp_server(storage=storage)
+    ingest_on_startup = (
+        getattr(args, "ingest_on_startup", False) or _env_ingest_on_startup()
+    )
+    mcp = create_mcp_server(storage=storage, ingest_on_startup=ingest_on_startup)
     mcp.run()
-
-
-def _print_ingest_addition(addition) -> None:
-    if addition.created:
-        print(
-            f"Created: {addition.model_name} ({len(addition.new_columns)} columns)"
-        )
-        return
-    if not (addition.new_columns or addition.new_joins):
-        return
-    details = []
-    if addition.new_columns:
-        details.append(f"+columns: {', '.join(addition.new_columns)}")
-    if addition.new_joins:
-        details.append(f"+joins: {', '.join(addition.new_joins)}")
-    print(f"Updated: {addition.model_name} ({'; '.join(details)})")
-
-
-def _print_ingest_drift_and_errors(result) -> None:
-    if result.to_delete:
-        print("\nPending drift (run `slayer validate-models` to inspect):")
-        for entry in result.to_delete:
-            print(f"  - {entry.tool}: {entry.model_name}")
-    if result.errors:
-        print(f"\nErrors ({len(result.errors)}):")
-        for err in result.errors:
-            print(f"  - {err.model_name}: {err.error}")
 
 
 def _parse_csv_arg(value):

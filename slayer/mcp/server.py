@@ -21,6 +21,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import (
     _collect_dim_profile,
     _format_dim_profile_value,
@@ -89,32 +90,6 @@ def _get_schemas(ds: DatasourceConfig) -> list[str]:
         return schemas
     except Exception:
         return []
-
-
-def _friendly_db_error(exc: Exception) -> str:
-    """Convert a database exception into a user-friendly message with hints."""
-    msg = str(exc)
-    # Extract the core error from SQLAlchemy wrapper
-    if hasattr(exc, "orig") and exc.orig:
-        msg = str(exc.orig)
-
-    hints = []
-    msg_lower = msg.lower()
-    if "no password supplied" in msg_lower or "password authentication failed" in msg_lower:
-        hints.append("Check that username and password are correct.")
-    elif "does not exist" in msg_lower and "database" in msg_lower:
-        hints.append("Verify the database name is correct.")
-    elif "could not translate host" in msg_lower or "name or service not known" in msg_lower:
-        hints.append("Check that the host address is correct.")
-    elif "connection refused" in msg_lower:
-        hints.append("Check that the database server is running and the port is correct.")
-    elif "timeout" in msg_lower:
-        hints.append("The database server is not responding. Check host/port and network access.")
-
-    result = f"Database error: {msg}"
-    if hints:
-        result += "\nHint: " + " ".join(hints)
-    return result
 
 
 def _fetch_tables(
@@ -800,7 +775,20 @@ def _model_to_summary(model: SlayerModel) -> dict:
     }
 
 
-def create_mcp_server(storage: StorageBackend):
+def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
+    storage: StorageBackend,
+    *,
+    ingest_on_startup: bool = False,
+):
+    if ingest_on_startup:
+        import sys
+
+        from slayer.async_utils import run_sync
+        from slayer.engine.ingestion import ingest_all_datasources_idempotent
+
+        run_sync(
+            ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
+        )
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:

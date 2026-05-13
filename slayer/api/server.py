@@ -123,11 +123,27 @@ def _slayer_version() -> str:
         return "0.0.0+unknown"
 
 
-def create_app(storage: StorageBackend) -> FastAPI:
+def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity is the cumulative inline closure body of every @app.<route> handler. Splitting would require dependency-injecting `engine`/`storage`/`mcp` into a separate module — out of scope for incremental PRs.
+    storage: StorageBackend,
+    *,
+    ingest_on_startup: bool = False,
+) -> FastAPI:
+    if ingest_on_startup:
+        import sys
+
+        from slayer.async_utils import run_sync
+        from slayer.engine.ingestion import ingest_all_datasources_idempotent
+
+        run_sync(
+            ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
+        )
     app = FastAPI(title="SLayer", version=_slayer_version())
     engine = SlayerQueryEngine(storage=storage)
 
-    # Mount MCP server over SSE at /mcp
+    # Mount MCP server over SSE at /mcp. The embedded server intentionally
+    # does NOT receive `ingest_on_startup` — orchestration happens once,
+    # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
+    # the orchestrator twice.
     mcp = create_mcp_server(storage=storage)
     mcp_app = mcp.sse_app()
     app.mount("/mcp", mcp_app)

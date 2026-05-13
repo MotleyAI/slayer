@@ -32,7 +32,13 @@ username: analyst
 password: ${DB_PASSWORD}
 ```
 
-Ingest models from the schema:
+The recommended one-shot is to start the server with `--ingest-on-startup`, which walks every configured datasource on boot and runs idempotent auto-ingestion before the port opens:
+
+```bash
+slayer serve --ingest-on-startup
+```
+
+Or ingest manually (re-runnable without restarting the server):
 
 ```bash
 slayer ingest --datasource my_pg
@@ -119,7 +125,7 @@ curl http://localhost:5143/health
 curl http://localhost:5143/models
 ```
 
-If `/models` returns an empty list, run `slayer ingest --datasource my_pg` first.
+If `/models` returns an empty list, restart with `slayer serve --ingest-on-startup` or run `slayer ingest --datasource my_pg`.
 
 ## Using from other languages
 

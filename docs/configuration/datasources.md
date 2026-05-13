@@ -93,6 +93,10 @@ SQL generation is covered by unit tests, but not verified against live instances
 !!! note
     Both `username` and `user` field names are accepted. The `user` alias is automatically mapped to `username` for compatibility with common database tooling conventions.
 
+## Ingesting at Startup
+
+To run idempotent auto-ingestion across every configured datasource each time `slayer serve` or `slayer mcp` boots, pass `--ingest-on-startup` (or set `SLAYER_INGEST_ON_STARTUP=1`). See [Ingesting at Startup](../concepts/ingestion.md#ingesting-at-startup) for the full contract.
+
 ## Connection Testing
 
 When creating a datasource via MCP (`create_datasource`) or `describe_datasource`, SLayer automatically tests the connection and reports success or failure with actionable error hints.

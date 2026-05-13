@@ -144,4 +144,18 @@ result = engine.execute_sync(query={"source_model": "orders", "measures": ["*:co
 print(f"{result.row_count} row(s), columns: {result.columns}")
 ```
 
+## Embedded REST / MCP servers
+
+If you're mounting SLayer's REST or MCP surface inside your own process and want models freshly ingested by the time the server starts handling requests, pass `ingest_on_startup=True` to the constructor:
+
+```python
+from slayer.api.server import create_app
+from slayer.mcp.server import create_mcp_server
+
+app = create_app(storage=storage, ingest_on_startup=True)
+mcp = create_mcp_server(storage=storage, ingest_on_startup=True)
+```
+
+The constructor runs idempotent auto-ingestion across every configured datasource **before returning** the app/server object. Same opt-in / continue-on-failure / read-only-drift semantics as the CLI flag. See [Ingesting at Startup](../concepts/ingestion.md#ingesting-at-startup).
+
 See the [Python Client Reference](../reference/python-client.md) for the full API.

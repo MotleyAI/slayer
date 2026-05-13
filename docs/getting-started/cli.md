@@ -137,6 +137,9 @@ If you also want a REST API or MCP endpoint:
 ```bash
 slayer serve                           # REST API at http://localhost:5143
 slayer serve --storage slayer.db       # Using SQLite storage
+slayer serve --ingest-on-startup       # Run idempotent ingest over every configured datasource before opening the port — pairs well with YAML-drop datasource configs
 ```
+
+`--ingest-on-startup` also works on `slayer mcp`. See [Auto-Ingestion → Ingesting at Startup](../concepts/ingestion.md#ingesting-at-startup).
 
 See the [CLI Reference](../reference/cli.md) for all commands and flags.

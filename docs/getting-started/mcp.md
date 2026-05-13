@@ -13,13 +13,17 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) — the fa
 Register SLayer as an MCP server — Claude Code will spawn it automatically when needed:
 
 ```bash
-claude mcp add slayer -- uvx --from motley-slayer slayer mcp
+claude mcp add slayer -- uvx --from 'motley-slayer[embedding_search]' slayer mcp --ingest-on-startup
 ```
 
-For databases other than SQLite, add the driver extra (see [full list](../configuration/datasources.md#database-drivers)):
+`--ingest-on-startup` walks every configured datasource on boot and runs idempotent auto-ingestion before the MCP channel opens, so models are available on the agent's first tool call. Drop it to defer ingestion to a manual `ingest_datasource_models` call.
+
+The `embedding_search` extra enables semantic search over models and memories. When it's installed **and** a provider API key is in the environment (`OPENAI_API_KEY` by default; override the embedding model with `SLAYER_EMBEDDING_MODEL=voyage/voyage-3` + `VOYAGE_API_KEY`, etc.), the boot-time ingest pass also refreshes per-entity embeddings — hash-skipped, so steady-state boots make zero embedding API calls. Without the extra (or without a provider key), search and ingest still work; the embedding channel is silently disabled.
+
+For databases other than SQLite, add the driver extra alongside (see [full list](../configuration/datasources.md#database-drivers)):
 
 ```bash
-claude mcp add slayer -- uvx --from 'motley-slayer[postgres]' slayer mcp
+claude mcp add slayer -- uvx --from 'motley-slayer[postgres,embedding_search]' slayer mcp --ingest-on-startup
 ```
 
 ### Other agents (JSON config)
@@ -31,13 +35,16 @@ Most MCP-compatible agents accept a JSON server configuration. Add this to your 
   "mcpServers": {
     "slayer": {
       "command": "uvx",
-      "args": ["--from", "motley-slayer[postgres]", "slayer", "mcp"]
+      "args": ["--from", "motley-slayer[postgres,embedding_search]", "slayer", "mcp", "--ingest-on-startup"],
+      "env": {
+        "OPENAI_API_KEY": "sk-..."
+      }
     }
   }
 }
 ```
 
-Replace `postgres` with your database driver, or use `motley-slayer[all]` for all supported databases.
+Replace `postgres` with your database driver, or use `motley-slayer[all]` for all supported databases (every driver plus `embedding_search`).
 
 ### Remote / shared server
 
@@ -70,7 +77,9 @@ schema_name: public
 
 Datasource configs are **hot-reloaded** — you can add or edit YAML files while the server is running, and the next MCP tool call will pick up the changes. No restart needed.
 
-Once the datasource file is in place, ask your agent:
+Once the datasource file is in place, the recommended setup runs MCP with `--ingest-on-startup` (above), which walks every configured datasource on every boot and runs idempotent auto-ingestion before the MCP channel opens. Models are then available on the agent's first tool call — no `ingest_datasource_models` call required.
+
+If you didn't start with `--ingest-on-startup`, fall back to asking your agent:
 
 > "Ingest models from the mydb datasource and show me what's available"
 
@@ -87,7 +96,7 @@ Ask your agent:
 The agent should call `list_datasources` and then `models_summary(datasource_name="mydb")` and return a list of your tables/models. If it says "no models found", check that:
 
 1. The `--storage` path matches where your datasource YAML files are
-2. Models have been ingested (via `ingest_datasource_models` or `create_datasource` with auto-ingest)
+2. Models have been ingested (via `slayer mcp --ingest-on-startup`, `ingest_datasource_models`, or `create_datasource` with auto-ingest)
 3. Environment variables referenced in the datasource config are set
 
 ## Alternative: permanent install
@@ -95,6 +104,6 @@ The agent should call `list_datasources` and then `models_summary(datasource_nam
 If you prefer a traditional install instead of `uvx`:
 
 ```bash
-uv tool install 'motley-slayer[postgres]'
-claude mcp add slayer -- slayer mcp
+uv tool install 'motley-slayer[postgres,embedding_search]'
+claude mcp add slayer -- slayer mcp --ingest-on-startup
 ```

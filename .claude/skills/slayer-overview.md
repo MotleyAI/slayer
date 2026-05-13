@@ -12,7 +12,7 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 - **SQLGenerator** — takes an EnrichedQuery (not SlayerQuery) and converts it to SQL via sqlglot (dialect-aware: postgres, mysql, bigquery, etc.)
 - **SlayerSQLClient** — executes SQL via SQLAlchemy with retry logic and statement timeouts
 - **Storage** — YAML or SQLite backends for model and datasource configs
-- **Ingestion** — auto-generates models from DB schema with rollup-style FK joins (denormalized LEFT JOINs)
+- **Ingestion** — auto-generates models from DB schema with rollup-style FK joins (denormalized LEFT JOINs). It can be triggered manually (`slayer ingest`, `ingest_datasource_models`, `POST /ingest`) or **on every server boot** via `slayer serve --ingest-on-startup` / `slayer mcp --ingest-on-startup` (also `SLAYER_INGEST_ON_STARTUP=1`, or `create_app/create_mcp_server(ingest_on_startup=True)` programmatically). It is idempotent and continues on per-datasource failures.
 - **Interfaces** — MCP server (stdio via `slayer mcp`, SSE via `slayer serve` at `/mcp/sse`), REST API (FastAPI on port 5143), Python SDK
 
 ## Key Models
