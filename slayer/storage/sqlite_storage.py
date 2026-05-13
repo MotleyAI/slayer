@@ -10,14 +10,16 @@ runs at open time to upgrade legacy v3 single-PK databases in place.
 import asyncio
 import json
 import sqlite3
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend, _validate_path_component
-from slayer.storage.sidecar_embedding_store import SidecarEmbeddingStore
+from slayer.storage.sidecar_embedding_store import (
+    SidecarEmbeddingsMixin,
+    SidecarEmbeddingStore,
+)
 from slayer.storage.v4_migration import migrate_sqlite_schema
 
 
@@ -25,7 +27,7 @@ _PRIORITY_KEY = "datasource_priority"
 _PRAGMA_FOREIGN_KEYS_ON = "PRAGMA foreign_keys = ON"
 
 
-class SQLiteStorage(StorageBackend):
+class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     def __init__(self, db_path: str):
         self.db_path = db_path
         # Idempotent: rebuilds a v3 ``models`` table if needed; no-op on v4.
@@ -418,49 +420,7 @@ class SQLiteStorage(StorageBackend):
     async def _delete_memory_row(self, memory_id: int) -> bool:
         return await asyncio.to_thread(self._delete_memory_sync, memory_id)
 
-    # ---- embeddings (DEV-1386, refactored DEV-1405) -----------------------
-    #
-    # All embedding I/O delegates to ``self._embeddings_store``, the
-    # :class:`SidecarEmbeddingStore` helper. The helper owns the
-    # ``embeddings`` table inside the same SQLite file as everything
-    # else; the SQL lives in one place so the YAML backend (which points
-    # its own helper at a separate ``embeddings.db``) shares the impl.
-
-    async def save_embedding(self, row: Embedding) -> None:
-        await self._embeddings_store.save(row)
-
-    async def save_embeddings(self, rows: List[Embedding]) -> None:
-        await self._embeddings_store.save_many(list(rows))
-
-    async def get_embedding(
-        self, *, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Embedding]:
-        return await self._embeddings_store.get(
-            canonical_id=canonical_id,
-            embedding_model_name=embedding_model_name,
-        )
-
-    async def get_embeddings_for_canonical_ids(
-        self,
-        *,
-        canonical_ids: List[str],
-        embedding_model_name: str,
-    ) -> Dict[str, Embedding]:
-        return await self._embeddings_store.get_many(
-            canonical_ids=list(canonical_ids),
-            embedding_model_name=embedding_model_name,
-        )
-
-    async def list_embeddings(
-        self, *, embedding_model_name: str,
-    ) -> List[Embedding]:
-        return await self._embeddings_store.list_for_model(
-            embedding_model_name=embedding_model_name,
-        )
-
-    async def delete_embeddings_for_canonical(
-        self, *, canonical_id_prefix: str,
-    ) -> int:
-        return await self._embeddings_store.delete_for_canonical(
-            canonical_id_prefix=canonical_id_prefix,
-        )
+    # Embedding CRUD lives in :class:`SidecarEmbeddingsMixin`, which
+    # forwards to ``self._embeddings_store`` set in ``__init__`` above.
+    # The mixin owns the SQL once and both backends consume it — see
+    # ``slayer/storage/sidecar_embedding_store.py``.

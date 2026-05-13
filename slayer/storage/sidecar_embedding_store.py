@@ -225,4 +225,59 @@ class SidecarEmbeddingStore:
         )
 
 
-__all__ = ["SidecarEmbeddingStore"]
+class SidecarEmbeddingsMixin:
+    """Mixin providing the embedding CRUD surface by forwarding to
+    ``self._embeddings_store``.
+
+    Both :class:`slayer.storage.sqlite_storage.SQLiteStorage` and
+    :class:`slayer.storage.yaml_storage.YAMLStorage` use this mixin so
+    the six abstract :class:`~slayer.storage.base.StorageBackend`
+    embedding methods (four single-row + two batched) implement once,
+    not twice. The mixin assumes the consuming class assigns
+    ``self._embeddings_store`` to a :class:`SidecarEmbeddingStore` in
+    its ``__init__``.
+    """
+
+    _embeddings_store: SidecarEmbeddingStore
+
+    async def save_embedding(self, row: Embedding) -> None:
+        await self._embeddings_store.save(row)
+
+    async def save_embeddings(self, rows: List[Embedding]) -> None:
+        await self._embeddings_store.save_many(list(rows))
+
+    async def get_embedding(
+        self, *, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Embedding]:
+        return await self._embeddings_store.get(
+            canonical_id=canonical_id,
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ) -> Dict[str, Embedding]:
+        return await self._embeddings_store.get_many(
+            canonical_ids=list(canonical_ids),
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def list_embeddings(
+        self, *, embedding_model_name: str,
+    ) -> List[Embedding]:
+        return await self._embeddings_store.list_for_model(
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def delete_embeddings_for_canonical(
+        self, *, canonical_id_prefix: str,
+    ) -> int:
+        return await self._embeddings_store.delete_for_canonical(
+            canonical_id_prefix=canonical_id_prefix,
+        )
+
+
+__all__ = ["SidecarEmbeddingStore", "SidecarEmbeddingsMixin"]
