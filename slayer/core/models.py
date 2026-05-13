@@ -369,6 +369,16 @@ class SlayerModel(BaseModel):
                 f"Model 'data_source' must not contain path separators "
                 f"('/' or '\\'); got {v!r}."
             )
+        # DEV-1405: dot is the canonical-id namespace delimiter
+        # (``<ds>.<model>.<leaf>``). Allowing dots in a data_source name
+        # would let ``delete_datasource('prod')`` cascade-nuke embeddings
+        # belonging to a sibling datasource named ``prod.legacy``.
+        if "." in v:
+            raise ValueError(
+                f"Model 'data_source' must not contain '.'; "
+                f"dots are the canonical-id namespace delimiter "
+                f"(``<ds>.<model>.<leaf>``). Got {v!r}."
+            )
         return v
 
     @model_validator(mode="after")
@@ -624,6 +634,44 @@ class DatasourceConfig(BaseModel):
         if isinstance(data, dict) and "user" in data and "username" not in data:
             data["username"] = data.pop("user")
         return data
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        # DEV-1405: datasource names are the leading segment of every
+        # canonical-id (``<ds>``, ``<ds>.<model>``, ``<ds>.<model>.<leaf>``)
+        # and become a path component in YAML storage
+        # (``datasources/<name>.yaml``, ``models/<name>/...``). They must
+        # therefore reject:
+        #   - path separators / NUL (filesystem safety, mirrors
+        #     ``_validate_path_component`` at the storage layer)
+        #   - ``.`` (canonical-id namespace delimiter: ``prod`` vs ``prod.db``
+        #     would otherwise collide in cascade-delete prefix matches)
+        #   - whitespace-only / empty (storage primary key)
+        # ``__`` is intentionally NOT rejected: datasource names never become
+        # SQL table aliases, so the join-path-alias reservation that applies
+        # to model and query names doesn't apply here.
+        if not v or not v.strip():
+            raise ValueError(
+                f"Datasource 'name' must be a non-empty string; got {v!r}."
+            )
+        if v.strip() != v:
+            raise ValueError(
+                f"Datasource 'name' must not have leading/trailing whitespace; "
+                f"got {v!r}."
+            )
+        for ch in ("/", "\\", "\x00"):
+            if ch in v:
+                raise ValueError(
+                    f"Datasource 'name' must not contain {ch!r}; got {v!r}."
+                )
+        if "." in v:
+            raise ValueError(
+                f"Datasource 'name' must not contain '.'; dots are the "
+                f"canonical-id namespace delimiter "
+                f"(``<ds>.<model>.<leaf>``). Got {v!r}."
+            )
+        return v
 
     def get_connection_string(self) -> str:
         if self.connection_string:

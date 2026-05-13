@@ -421,7 +421,7 @@ async def test_yaml_init_renames_legacy_embeddings_yaml() -> None:
     to ``embeddings.yaml.legacy`` on init. The new sidecar is empty."""
     with tempfile.TemporaryDirectory() as tmp:
         legacy_path = os.path.join(tmp, "embeddings.yaml")
-        with open(legacy_path, "w") as f:
+        with open(legacy_path, "w") as f:  # NOSONAR(S7493) — test setup: legacy file write before YAMLStorage init.
             f.write("- canonical_id: stale\n")
         store = YAMLStorage(base_dir=tmp)
         # File renamed.
@@ -434,7 +434,7 @@ async def test_yaml_init_renames_legacy_embeddings_yaml() -> None:
         assert rows == []
 
 
-async def test_yaml_init_renames_legacy_counters_yaml() -> None:
+def test_yaml_init_renames_legacy_counters_yaml() -> None:
     """A pre-existing ``counters.yaml`` is renamed to
     ``counters.yaml.legacy`` on init."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -446,7 +446,7 @@ async def test_yaml_init_renames_legacy_counters_yaml() -> None:
         assert os.path.exists(os.path.join(tmp, "counters.yaml.legacy"))
 
 
-async def test_yaml_init_does_not_overwrite_existing_legacy() -> None:
+def test_yaml_init_does_not_overwrite_existing_legacy() -> None:
     """Idempotent: if ``.legacy`` already exists, leave the current file
     alone — don't clobber the existing backup."""
     with tempfile.TemporaryDirectory() as tmp:

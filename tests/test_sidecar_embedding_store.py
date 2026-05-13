@@ -158,9 +158,25 @@ async def test_save_many_persists_all(store: SidecarEmbeddingStore) -> None:
     assert {r.canonical_id for r in listed} == {f"e{i}" for i in range(5)}
 
 
-async def test_save_many_empty_is_noop(store: SidecarEmbeddingStore) -> None:
+async def test_save_many_empty_is_noop(
+    store: SidecarEmbeddingStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Empty input must not connect to SQLite, must not raise."""
+    from slayer.storage import sidecar_embedding_store as _mod
+
+    real_connect = _mod.sqlite3.connect
+    connect_calls: List[tuple] = []
+
+    def _spy(*args, **kwargs):
+        connect_calls.append(args)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(_mod.sqlite3, "connect", _spy)
     await store.save_many([])
+    # Short-circuit: no connection opened.
+    assert connect_calls == []
+    # Outcome: no rows were written either.
     listed = await store.list_for_model(
         embedding_model_name="openai/test-embedding",
     )
@@ -220,16 +236,49 @@ async def test_get_many_filters_by_model_name(
     assert out_b["x"].embedding_model_name == "openai/b"
 
 
+async def test_get_many_chunks_large_id_lists(
+    store: SidecarEmbeddingStore,
+) -> None:
+    """REGRESSION (CodeRabbit DEV-1405): get_many must chunk the IN
+    clause so it never exceeds SQLite's MAX_VARIABLE_NUMBER (32766 on
+    most builds). Use 2000 ids — well above the 900 chunk size — and
+    verify every id round-trips intact."""
+    rows = [
+        _embed(canonical_id=f"e{i}", text_hash=f"h{i}")
+        for i in range(2000)
+    ]
+    await store.save_many(rows)
+    out = await store.get_many(
+        canonical_ids=[f"e{i}" for i in range(2000)],
+        embedding_model_name="openai/test-embedding",
+    )
+    assert len(out) == 2000
+    assert out["e0"].content_hash == "h0"
+    assert out["e1999"].content_hash == "h1999"
+
+
 async def test_get_many_empty_input_returns_empty(
     store: SidecarEmbeddingStore,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``canonical_ids=[]`` must short-circuit without hitting SQLite."""
     await store.save(_embed(canonical_id="x"))
+    from slayer.storage import sidecar_embedding_store as _mod
+
+    real_connect = _mod.sqlite3.connect
+    connect_calls: List[tuple] = []
+
+    def _spy(*args, **kwargs):
+        connect_calls.append(args)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(_mod.sqlite3, "connect", _spy)
     out = await store.get_many(
         canonical_ids=[],
         embedding_model_name="openai/test-embedding",
     )
     assert out == {}
+    assert connect_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -352,9 +401,11 @@ async def test_delete_escapes_like_wildcards(
     """Wildcard literals in canonical ids would be invalid input today,
     but the LIKE-escape contract is worth pinning. A prefix containing a
     literal ``%`` must not match arbitrary characters."""
-    # Canonical ids are constrained at the grammar level so these would
-    # never legitimately exist; we save them with sqlite3 directly to
-    # bypass any validation the public API might add later.
+    # The helper currently exposes no validator on canonical_id, so the
+    # public ``save_many`` will accept these "wildcard" strings as-is.
+    # That's exactly the input we want: the test pins that ``%``/``_``
+    # are escaped in the LIKE pattern so ``a%b`` matches only ``a%b``
+    # (and its strict ``.``-descendants), never ``aXb``.
     rows = [
         _embed(canonical_id="a%b"),
         _embed(canonical_id="aXb"),

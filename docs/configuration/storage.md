@@ -60,7 +60,7 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 storage = SQLiteStorage(db_path="./slayer.db")
 ```
 
-Tables: `models`, `datasources`, `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), `id_counters` (monotonic positive-int memory id allocator), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`).
+Tables: `models`, `datasources`, `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
 
 ## Storage Resolution
 

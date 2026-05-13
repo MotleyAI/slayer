@@ -116,20 +116,30 @@ class SidecarEmbeddingStore:
             ).fetchone()
         return row
 
+    # SQLite's host-parameter limit is 32766 on 3.32+ builds, 250000 on
+    # the newest ones — but third-party callers may pass arbitrarily long
+    # ``canonical_ids`` lists through the public API. Chunking the IN
+    # clause well below the worst-case limit keeps the query safe under
+    # every reasonable SQLite build.
+    _GET_MANY_CHUNK_SIZE = 900
+
     def _get_many_sync(
         self,
         canonical_ids: List[str],
         embedding_model_name: str,
     ) -> List[Tuple[str, str, str, str, str, str]]:
-        placeholders = ",".join("?" * len(canonical_ids))
+        rows: List[Tuple[str, str, str, str, str, str]] = []
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT canonical_id, embedding_model_name, entity_kind, "
-                "content_hash, embedding, created_at "
-                "FROM embeddings "
-                f"WHERE embedding_model_name = ? AND canonical_id IN ({placeholders})",
-                (embedding_model_name, *canonical_ids),
-            ).fetchall()
+            for start in range(0, len(canonical_ids), self._GET_MANY_CHUNK_SIZE):
+                chunk = canonical_ids[start : start + self._GET_MANY_CHUNK_SIZE]
+                placeholders = ",".join("?" * len(chunk))
+                rows.extend(conn.execute(
+                    "SELECT canonical_id, embedding_model_name, entity_kind, "
+                    "content_hash, embedding, created_at "
+                    "FROM embeddings "
+                    f"WHERE embedding_model_name = ? AND canonical_id IN ({placeholders})",
+                    (embedding_model_name, *chunk),
+                ).fetchall())
         return rows
 
     def _list_sync(

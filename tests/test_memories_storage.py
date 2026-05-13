@@ -15,6 +15,7 @@ CRUD + a one-line ``_next_memory_seq`` derived from the existing
 ``memories`` corpus.
 """
 
+import asyncio
 import os
 import tempfile
 from typing import Iterator
@@ -382,3 +383,36 @@ class TestPersistedShape:
             "mydb.orders",
             "mydb.customers",
         ]
+
+
+# ---------------------------------------------------------------------------
+# Concurrent save_memory atomicity (DEV-1405 codex review)
+# ---------------------------------------------------------------------------
+
+
+async def test_sqlite_concurrent_save_memory_assigns_unique_ids(
+) -> None:
+    """REGRESSION (DEV-1405 / codex review): two concurrent ``save_memory``
+    calls on SQLite must produce two distinct ids. The pre-fix code did
+    ``SELECT MAX(id) + 1`` followed by a separate ``INSERT``; under
+    concurrent calls both could read the same MAX and the later
+    ``INSERT OR REPLACE`` would silently clobber the earlier row. The
+    fixed flow runs the id reservation and the insert inside a single
+    SQLite transaction (``INSERT ... RETURNING id``) so the write lock
+    serialises them."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test.db")
+        store = SQLiteStorage(db_path=db_path)
+        # Fire N concurrent saves.
+        n = 25
+        results = await asyncio.gather(*[
+            store.save_memory(learning=f"m{i}", entities=["mydb.orders"])
+            for i in range(n)
+        ])
+        ids = [m.id for m in results]
+        # Every id must be unique.
+        assert len(set(ids)) == n, f"id collision: {ids}"
+        # Every memory must be retrievable with its own learning intact.
+        for m in results:
+            loaded = await store.get_memory(m.id)
+            assert loaded.learning == m.learning

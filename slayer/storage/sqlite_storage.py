@@ -13,6 +13,7 @@ import sqlite3
 from typing import Dict, List, Optional, Tuple
 
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
@@ -259,22 +260,74 @@ class SQLiteStorage(StorageBackend):
         await asyncio.to_thread(self._set_priority_sync, list(priority))
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
+    #
+    # DEV-1405: ids are derived from the ``memories`` table itself, not
+    # from a dedicated counter table. ``save_memory`` runs the insert
+    # inside a single transaction with ``INSERT ... RETURNING id`` so the
+    # id assignment is atomic with the write — SQLite serializes write
+    # transactions, so two concurrent ``save_memory`` calls can never
+    # both reserve the same id (which would happen if we read
+    # ``MAX(id) + 1`` then issued a separate insert).
+    #
+    # Any legacy ``id_counters`` table on a pre-DEV-1405 DB is left in
+    # place as harmless dead data; nothing reads it.
 
-    # DEV-1405: ids are derived from the ``memories`` table itself —
-    # ``SELECT MAX(id) + 1`` — instead of a dedicated counter table. The
-    # value is O(1) on the integer PK B-tree. Any legacy ``id_counters``
-    # table on a pre-DEV-1405 DB is left in place as harmless dead data;
-    # nothing reads it.
-
-    def _next_memory_seq_sync(self) -> int:
+    def _save_memory_atomic_sync(
+        self,
+        learning: str,
+        entities: List[str],
+        query: Optional[SlayerQuery],
+    ) -> Memory:
+        """Reserve the next id and persist the new memory inside one
+        SQLite transaction. Returns the persisted :class:`Memory` with
+        the DB-assigned ``id``."""
         with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(id), 0) + 1 FROM memories"
-            ).fetchone()
-        return int(row[0])
+            conn.execute("PRAGMA foreign_keys = ON")
+            # Reserve an id atomically. SQLite's ``INTEGER PRIMARY KEY``
+            # is a rowid alias; inserting NULL assigns the next free id
+            # inside the write lock (max(rowid) + 1 semantics; reuses
+            # ids of tail-deleted rows per DEV-1405).
+            cursor = conn.execute(
+                "INSERT INTO memories (data) VALUES ('') RETURNING id"
+            )
+            row = cursor.fetchone()
+            memory_id = int(row[0])
+            memory = Memory(
+                id=memory_id,
+                learning=learning,
+                entities=list(entities),
+                query=query,
+            )
+            conn.execute(
+                "UPDATE memories SET data = ? WHERE id = ?",
+                (json.dumps(memory.model_dump(mode="json")), memory_id),
+            )
+            for entity in entities:
+                conn.execute(
+                    "INSERT OR IGNORE INTO memory_entities "
+                    "(memory_id, entity) VALUES (?, ?)",
+                    (memory_id, entity),
+                )
+        return memory
 
-    async def _next_memory_seq(self) -> int:
-        return await asyncio.to_thread(self._next_memory_seq_sync)
+    async def save_memory(
+        self,
+        *,
+        learning: str,
+        entities: List[str],
+        query: Optional[SlayerQuery] = None,
+    ) -> Memory:
+        return await asyncio.to_thread(
+            self._save_memory_atomic_sync,
+            learning, list(entities), query,
+        )
+
+    # ``_save_memory_row`` and ``_next_memory_seq`` are kept to satisfy
+    # the ABC contract (third-party code or migrations that bypass the
+    # public ``save_memory`` API still expect these primitives). Both
+    # implementations match the documented contract and would themselves
+    # be racy under concurrent writes — callers should use the public
+    # ``save_memory`` above, which holds SQLite's write lock atomically.
 
     def _save_memory_sync(self, memory: Memory) -> None:
         data = json.dumps(memory.model_dump(mode="json"))
@@ -297,6 +350,16 @@ class SQLiteStorage(StorageBackend):
 
     async def _save_memory_row(self, memory: Memory) -> None:
         await asyncio.to_thread(self._save_memory_sync, memory)
+
+    def _next_memory_seq_sync(self) -> int:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM memories"
+            ).fetchone()
+        return int(row[0])
+
+    async def _next_memory_seq(self) -> int:
+        return await asyncio.to_thread(self._next_memory_seq_sync)
 
     def _get_memory_sync(self, memory_id: int) -> Optional[str]:
         with sqlite3.connect(self.db_path) as conn:

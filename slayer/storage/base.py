@@ -54,23 +54,28 @@ def default_storage_path() -> str:
     return str(base / "slayer")
 
 
-_PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00")
+_PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00", ".")
 
 
 def _validate_path_component(value: str, *, kind: str) -> None:
-    """Reject strings that could traverse out of the storage tree.
+    """Reject strings that could traverse out of the storage tree or
+    collide with canonical-id namespace boundaries.
 
     Used at the public ``get_model``/``delete_model`` boundaries to
     sanitize user-controlled strings *before* a backend composes them
     into a filesystem path or SQL key. Mirrors the validators on the
-    ``SlayerModel`` Pydantic class — those guard the save path; this
-    guards the read/delete paths where Pydantic validation is bypassed
-    (since callers pass raw strings, not model instances).
+    ``SlayerModel`` and ``DatasourceConfig`` Pydantic classes — those
+    guard the save path; this guards the read/delete paths where Pydantic
+    validation is bypassed (since callers pass raw strings, not model
+    instances).
 
     Rejects: empty / whitespace-only, ``..``, any path separator
-    (``/``, ``\\``), and embedded NULs. Lives in ``StorageBackend`` so
-    every backend gets the same defense without duplication
-    (per the backend-agnostic memory rule).
+    (``/``, ``\\``), embedded NULs, and ``.`` (DEV-1405: dots are the
+    canonical-id namespace delimiter — allowing ``prod.db`` as a
+    datasource name would let ``delete_datasource('prod')`` cascade-nuke
+    embeddings rooted at ``prod.db.*``). Lives in ``StorageBackend`` so
+    every backend gets the same defense without duplication (per the
+    backend-agnostic memory rule).
     """
     if not isinstance(value, str) or not value or not value.strip():
         raise ValueError(
