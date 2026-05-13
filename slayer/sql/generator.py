@@ -1174,8 +1174,16 @@ class SQLGenerator:
             select = select.where(where_clause)
 
         # Group by when there are aggregations, cross-model measures exist,
-        # or isolated measures were skipped (to deduplicate the dimension spine)
-        needs_group_by = has_aggregation or bool(enriched.cross_model_measures) or skip_isolated
+        # isolated measures were skipped (to deduplicate the dimension spine),
+        # or the query is dim-only (auto-dedup distinct dim/time-dim tuples
+        # — applied before LIMIT so a row cap can't drop unique tuples).
+        dim_only_dedup = bool(group_by_columns) and not enriched.measures
+        needs_group_by = (
+            has_aggregation
+            or bool(enriched.cross_model_measures)
+            or skip_isolated
+            or dim_only_dedup
+        )
         if needs_group_by and group_by_columns:
             for gb in group_by_columns:
                 select = select.group_by(gb)

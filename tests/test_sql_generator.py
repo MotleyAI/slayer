@@ -156,11 +156,46 @@ class TestBasicQueries:
         with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
             await _generate(generator, query, orders_model)
 
-    async def test_dimensions_only(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+    async def test_dim_only_query_deduplicates(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """A dim-only query (no measures) auto-deduplicates via GROUP BY.
+
+        The ``GROUP BY`` must appear before ``LIMIT`` — otherwise a row
+        cap can silently drop unique tuples that only surface past row N.
+        """
+        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")], limit=100)
         sql = await _generate(generator, query, orders_model)
+        upper = sql.upper()
         assert "orders.status" in sql
-        assert "GROUP BY" not in sql  # No aggregation, no GROUP BY
+        assert "GROUP BY" in upper
+        assert upper.index("GROUP BY") < upper.index("LIMIT 100")
+
+    async def test_time_dim_only_query_deduplicates(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """Time-dimension-only queries also auto-deduplicate."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "GROUP BY" in sql
+
+    async def test_dim_with_measure_emits_single_group_by(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """The dim-only path must not double-emit GROUP BY when measures aggregate."""
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "SUM(" in sql
+        assert sql.upper().count("GROUP BY") == 1
 
     async def test_dimension_with_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(

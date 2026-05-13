@@ -41,6 +41,16 @@ Each entry in `dimensions` is either a bare string (the canonical short form for
 
 For computed columns (SQL expressions like CASE), use [ModelExtension](#modelextension) on the query's `source_model` field. For derived metrics, use [formulas](formulas.md) in `measures`.
 
+### Dim-only queries deduplicate
+
+A query with no measures and at least one dimension or time-dimension returns the **distinct combinations** of those dimensions, not the raw underlying-row stream. SLayer emits `GROUP BY` over all dim/time-dim aliases before applying `LIMIT`, so a row cap can't silently drop unique tuples that only appear past `limit` rows.
+
+```json
+{"source_model": "orders", "dimensions": ["status"], "limit": 100}
+```
+
+Emits `SELECT orders.status FROM orders GROUP BY orders.status LIMIT 100`.
+
 ## TimeDimension
 
 A time dimension with a required granularity and an optional date range. Supports an optional `label` for human-readable output. To use a time column without truncation, add it as a regular dimension instead.
