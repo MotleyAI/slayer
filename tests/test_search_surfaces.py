@@ -201,8 +201,9 @@ def test_cli_search_refresh_samples_subcommand_help(monkeypatch, capsys) -> None
     assert code == 0
 
 
-def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
-    """End-to-end: storage + search subcommand."""
+def _seed_cli_storage(tmp_path) -> str:
+    """Set up a one-datasource, one-model, one-memory storage tree and
+    return its directory. Shared by the CLI-search surface tests."""
     import asyncio
     storage_dir = str(tmp_path / "storage")
     storage = resolve_storage(storage_dir)
@@ -219,6 +220,12 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
         )
 
     asyncio.run(_seed())
+    return storage_dir
+
+
+def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
+    """End-to-end: storage + search subcommand."""
+    storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
         [
             "search",
@@ -370,22 +377,7 @@ def test_rest_post_search_unknown_datasource_returns_400(tmp_path) -> None:
 
 def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch, capsys) -> None:
     """``slayer search --datasource X`` parses cleanly."""
-    import asyncio
-    storage_dir = str(tmp_path / "storage")
-    storage = resolve_storage(storage_dir)
-
-    async def _seed():
-        await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
-            name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
-        ))
-        await storage.save_memory(
-            learning="amount_paid is net of refunds.",
-            entities=["warehouse.orders.amount_paid"],
-        )
-
-    asyncio.run(_seed())
+    storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
         [
             "search",

@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
+from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.memories.ranker import bm25_rank
 from slayer.memories.resolver import (
@@ -236,6 +237,65 @@ def _fuse_memory_hits(
     return learnings, examples
 
 
+def _filter_memories_by_datasource(
+    memories: List["Memory"], datasource: Optional[str],
+) -> List["Memory"]:
+    """DEV-1409: keep memories with at least one entity rooted at
+    ``datasource``. ``datasource=None`` is a no-op identity filter so
+    callers can call this unconditionally."""
+    if datasource is None:
+        return memories
+    return [
+        m for m in memories
+        if any(canonical_id_rooted_at(e, datasource) for e in m.entities)
+    ]
+
+
+def _filter_embedding_corpus_by_datasource(
+    rows: List["Embedding"],
+    *,
+    datasource: str,
+    eligible_memory_canonicals: Set[str],
+) -> List["Embedding"]:
+    """DEV-1409: narrow the embedding corpus to rows that survive a
+    datasource filter. Memory rows (``entity_kind == 'memory'``) must
+    appear in the supplied ``eligible_memory_canonicals`` set (already
+    datasource-filtered upstream); entity rows must be rooted at
+    ``datasource`` per the dotted-namespace rule."""
+    return [
+        r for r in rows
+        if (
+            (r.entity_kind == "memory"
+                and r.canonical_id in eligible_memory_canonicals)
+            or (r.entity_kind != "memory"
+                and canonical_id_rooted_at(r.canonical_id, datasource))
+        )
+    ]
+
+
+def _split_embedding_pairs(
+    pairs: List[Tuple[int, float]],
+    rows: List["Embedding"],
+) -> Tuple[List[int], List[str]]:
+    """Split ``(row_idx, score)`` pairs from cosine top-k into
+    ``(memory_ranking, entity_ranking)``. Skips memory rows whose
+    ``canonical_id`` doesn't parse back to a valid int — those would
+    only appear if a backend smuggled in a malformed row."""
+    memory_ranking: List[int] = []
+    entity_ranking: List[str] = []
+    for idx, _score in pairs:
+        row = rows[idx]
+        if row.entity_kind == "memory":
+            try:
+                memory_id = int(row.canonical_id.split(":", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            memory_ranking.append(memory_id)
+        else:
+            entity_ranking.append(row.canonical_id)
+    return memory_ranking, entity_ranking
+
+
 def _fuse_entity_hits(
     *,
     rankings: List[List[str]],
@@ -269,6 +329,20 @@ class SearchService:
     def __init__(self, *, storage: StorageBackend) -> None:
         self._storage = storage
 
+    async def _validate_datasource_known(
+        self, datasource: Optional[str],
+    ) -> None:
+        """DEV-1409: reject typos in ``datasource`` before any corpus
+        walk. One ``list_datasources()`` round-trip; both backends back
+        this with an indexed query so the cost is bounded."""
+        if datasource is None:
+            return
+        known = sorted(await self._storage.list_datasources())
+        if datasource not in known:
+            raise ValueError(
+                f"datasource {datasource!r} not found; known: {known}."
+            )
+
     async def search(
         self,
         *,
@@ -288,15 +362,7 @@ class SearchService:
             )
         if max_entities < 0:
             raise ValueError(f"max_entities must be >= 0; got {max_entities}.")
-        # DEV-1409: validate ``datasource`` before any corpus walk so
-        # typos surface fast. Costs one ``list_datasources()`` round-trip
-        # — both backends back this with an indexed query.
-        if datasource is not None:
-            known = sorted(await self._storage.list_datasources())
-            if datasource not in known:
-                raise ValueError(
-                    f"datasource {datasource!r} not found; known: {known}."
-                )
+        await self._validate_datasource_known(datasource)
 
         canonical_input_entities, warnings = await self._resolve_inputs(
             entities=entities, query=query,
@@ -319,22 +385,16 @@ class SearchService:
             max_memories + max_example_queries, max_entities,
         ) * _OVER_FETCH_MULTIPLIER
 
-        # Single memory-corpus fetch shared by all channels.
+        # Single memory-corpus fetch shared by all channels. Pre-filtered
+        # by ``datasource`` so BM25 (channel 1) and the embedding cosine
+        # (channel 3) consume the narrowed list — IDF / matrix shape
+        # reflect the filtered subset (DEV-1409).
         all_memories: List[Memory] = []
         if channel_1_active or question_active:
-            all_memories = await self._storage.list_memories(entities=None)
-            # DEV-1409 pre-filter: keep memories with at least one entity
-            # rooted at the requested datasource. Both BM25 (channel 1)
-            # and the embedding cosine (channel 3) consume this narrowed
-            # list, so IDF / matrix shape reflect the filtered subset.
-            if datasource is not None:
-                all_memories = [
-                    m for m in all_memories
-                    if any(
-                        canonical_id_rooted_at(e, datasource)
-                        for e in m.entities
-                    )
-                ]
+            all_memories = _filter_memories_by_datasource(
+                await self._storage.list_memories(entities=None),
+                datasource,
+            )
 
         # Build the in-memory corpus once when question is active — both
         # channels 2 and 3 read from it (channel 2 for tantivy search,
@@ -471,14 +531,10 @@ class SearchService:
             "no entities, query, or question supplied; returning "
             "newest memories by recency."
         )
-        recency_memories = await self._storage.list_memories(entities=None)
-        if datasource is not None:
-            recency_memories = [
-                m for m in recency_memories
-                if any(
-                    canonical_id_rooted_at(e, datasource) for e in m.entities
-                )
-            ]
+        recency_memories = _filter_memories_by_datasource(
+            await self._storage.list_memories(entities=None),
+            datasource,
+        )
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
         memory_hits: List[MemoryHit] = []
         example_query_hits: List[ExampleQueryHit] = []
@@ -604,16 +660,11 @@ class SearchService:
         service = EmbeddingService(storage=self._storage)
         rows = await service.fetch_corpus()
         if datasource is not None:
-            allowed_memories = eligible_memory_canonicals or set()
-            rows = [
-                r for r in rows
-                if (
-                    (r.entity_kind == "memory"
-                        and r.canonical_id in allowed_memories)
-                    or (r.entity_kind != "memory"
-                        and canonical_id_rooted_at(r.canonical_id, datasource))
-                )
-            ]
+            rows = _filter_embedding_corpus_by_datasource(
+                rows,
+                datasource=datasource,
+                eligible_memory_canonicals=eligible_memory_canonicals or set(),
+            )
         if not rows:
             return [], [], [
                 f"embedding channel skipped: no embedding rows for model "
@@ -644,22 +695,12 @@ class SearchService:
                 f"Re-run `slayer ingest` to refresh embeddings against "
                 f"the current model.",
             ]
-        matrix = normalise_matrix(matrix)
-        query_arr = normalise(query_vec)
-        pairs = top_k_cosine(query=query_arr, matrix=matrix, k=over_fetch)
-
-        memory_ranking: List[int] = []
-        entity_ranking: List[str] = []
-        for idx, _score in pairs:
-            row = rows[idx]
-            if row.entity_kind == "memory":
-                try:
-                    memory_id = int(row.canonical_id.split(":", 1)[1])
-                except (IndexError, ValueError):
-                    continue
-                memory_ranking.append(memory_id)
-            else:
-                entity_ranking.append(row.canonical_id)
+        pairs = top_k_cosine(
+            query=normalise(query_vec),
+            matrix=normalise_matrix(matrix),
+            k=over_fetch,
+        )
+        memory_ranking, entity_ranking = _split_embedding_pairs(pairs, rows)
         return memory_ranking, entity_ranking, []
 
     async def _collect_index_corpus(
