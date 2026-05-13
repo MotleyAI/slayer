@@ -1,3 +1,8 @@
 """SLayer — a lightweight semantic layer for AI agents."""
 
-__version__ = "0.1.0rc2"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("motley-slayer")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
