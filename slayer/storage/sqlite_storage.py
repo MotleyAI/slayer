@@ -325,7 +325,9 @@ class SQLiteStorage(StorageBackend):
     ) -> Memory:
         return await asyncio.to_thread(
             self._save_memory_atomic_sync,
-            learning, list(entities), query,
+            learning=learning,
+            entities=list(entities),
+            query=query,
         )
 
     # ``_save_memory_row`` and ``_next_memory_seq`` are kept to satisfy

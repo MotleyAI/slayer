@@ -256,12 +256,12 @@ class TestSlayerModel:
 
     def test_dimension_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in dimension names."""
-        with pytest.raises(ValueError, match="must not contain '.'"):
+        with pytest.raises(ValueError, match=r"must not contain '\.'"):
             Column(name="customers.name")
 
     def test_measure_name_rejects_dot(self) -> None:
         """Dots are path syntax, not allowed in measure names."""
-        with pytest.raises(ValueError, match="must not contain '.'"):
+        with pytest.raises(ValueError, match=r"must not contain '\.'"):
             Column(name="customers.name_sum", sql="name", type=DataType.DOUBLE)
 
     def test_dimension_name_without_dot_allowed(self) -> None:
@@ -275,7 +275,7 @@ class TestSlayerModel:
     def test_model_data_source_rejects_dot(self) -> None:
         """DEV-1405: dots in data_source would let a sibling datasource
         ``prod.legacy`` collide with cascade-delete of ``prod``."""
-        with pytest.raises(ValueError, match="must not contain '.'"):
+        with pytest.raises(ValueError, match=r"must not contain '\.'"):
             SlayerModel(
                 name="orders", sql_table="t", data_source="prod.legacy",
             )
@@ -284,7 +284,7 @@ class TestSlayerModel:
         """DEV-1405: dots in DatasourceConfig.name break canonical-id
         namespace boundaries."""
         from slayer.core.models import DatasourceConfig
-        with pytest.raises(ValueError, match="must not contain '.'"):
+        with pytest.raises(ValueError, match=r"must not contain '\.'"):
             DatasourceConfig(name="prod.legacy", type="postgres")
 
     def test_datasource_name_allows_double_underscore(self) -> None:
