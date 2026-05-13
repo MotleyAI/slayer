@@ -265,8 +265,15 @@ class SlayerClient:
         entities to that one datasource. Entity hits are limited to docs
         rooted at the datasource (exact match or dotted-path descendant).
         Memories surface when any of their tagged entities is rooted at
-        the datasource. Unknown datasource raises ``ValueError`` (HTTP
-        400 on the remote path).
+        the datasource.
+
+        Error contract for an unknown ``datasource``:
+
+        * **Local mode** (constructed with ``storage=...``): the in-process
+          ``SearchService.search`` raises ``ValueError`` synchronously.
+        * **Remote mode** (constructed with ``base_url=...``): the server
+          returns HTTP 400 and ``httpx``'s ``raise_for_status`` raises an
+          ``HTTPStatusError`` here — it does NOT propagate as ``ValueError``.
         """
         # Local imports: slayer.search.service transitively imports tantivy,
         # which is not part of the client extras (httpx + pandas). Remote-only

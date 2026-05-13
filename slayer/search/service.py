@@ -247,7 +247,10 @@ def _filter_memories_by_datasource(
         return memories
     return [
         m for m in memories
-        if any(canonical_id_rooted_at(e, datasource) for e in m.entities)
+        if any(
+            canonical_id_rooted_at(canonical_id=e, datasource=datasource)
+            for e in m.entities
+        )
     ]
 
 
@@ -268,7 +271,9 @@ def _filter_embedding_corpus_by_datasource(
             (r.entity_kind == "memory"
                 and r.canonical_id in eligible_memory_canonicals)
             or (r.entity_kind != "memory"
-                and canonical_id_rooted_at(r.canonical_id, datasource))
+                and canonical_id_rooted_at(
+                    canonical_id=r.canonical_id, datasource=datasource,
+                ))
         )
     ]
 

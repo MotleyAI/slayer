@@ -379,14 +379,15 @@ def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch, capsys) -> No
     """``slayer search --datasource X`` parses cleanly."""
     storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
-        [
+        args=[
             "search",
             "--storage", storage_dir,
             "--entity", "warehouse.orders.amount_paid",
             "--datasource", "warehouse",
             "--format", "json",
         ],
-        monkeypatch, capsys,
+        monkeypatch=monkeypatch,
+        capsys=capsys,
     )
     assert code == 0
     payload = json.loads(out)

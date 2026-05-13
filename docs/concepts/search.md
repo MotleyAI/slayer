@@ -119,6 +119,7 @@ search(
     entities: Optional[List[str]] = None,
     query: Optional[Union[SlayerQuery, dict]] = None,
     question: Optional[str] = None,
+    datasource: Optional[str] = None,
     max_memories: int = 5,
     max_example_queries: int = 2,
     max_entities: int = 5,
