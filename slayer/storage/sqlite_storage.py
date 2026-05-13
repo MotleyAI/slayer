@@ -22,6 +22,7 @@ from slayer.storage.v4_migration import migrate_sqlite_schema
 
 
 _PRIORITY_KEY = "datasource_priority"
+_PRAGMA_FOREIGN_KEYS_ON = "PRAGMA foreign_keys = ON"
 
 
 class SQLiteStorage(StorageBackend):
@@ -287,7 +288,7 @@ class SQLiteStorage(StorageBackend):
         SQLite transaction. Returns the persisted :class:`Memory` with
         the DB-assigned ``id``."""
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             # Reserve an id atomically. SQLite's ``INTEGER PRIMARY KEY``
             # is a rowid alias; inserting NULL assigns the next free id
             # inside the write lock (max(rowid) + 1 semantics; reuses
@@ -337,7 +338,7 @@ class SQLiteStorage(StorageBackend):
     def _save_memory_sync(self, memory: Memory) -> None:
         data = json.dumps(memory.model_dump(mode="json"))
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             conn.execute(
                 "INSERT OR REPLACE INTO memories (id, data) VALUES (?, ?)",
                 (memory.id, data),
@@ -406,7 +407,7 @@ class SQLiteStorage(StorageBackend):
 
     def _delete_memory_sync(self, memory_id: int) -> bool:
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             cursor = conn.execute(
                 "DELETE FROM memories WHERE id = ?", (memory_id,)
             )
