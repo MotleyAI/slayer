@@ -201,8 +201,9 @@ def test_cli_search_refresh_samples_subcommand_help(monkeypatch, capsys) -> None
     assert code == 0
 
 
-def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
-    """End-to-end: storage + search subcommand."""
+def _seed_cli_storage(tmp_path) -> str:
+    """Set up a one-datasource, one-model, one-memory storage tree and
+    return its directory. Shared by the CLI-search surface tests."""
     import asyncio
     storage_dir = str(tmp_path / "storage")
     storage = resolve_storage(storage_dir)
@@ -219,6 +220,12 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
         )
 
     asyncio.run(_seed())
+    return storage_dir
+
+
+def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
+    """End-to-end: storage + search subcommand."""
+    storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
         [
             "search",
@@ -282,4 +289,123 @@ async def test_client_search_round_trip(
     assert all(isinstance(e, EntityHit) for e in response.entities)
     assert len(response.memories) >= 1
     assert "warehouse.orders.amount_paid" in response.memories[0].matched_entities
+    assert "warehouse.orders.amount_paid" in response.resolved_input_entities
+
+
+# ---------------------------------------------------------------------------
+# datasource filter (DEV-1409) — one test per surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mcp_search_accepts_datasource_arg(
+    storage_with_corpus: StorageBackend,
+) -> None:
+    """MCP ``search`` tool accepts the new ``datasource`` argument."""
+    from slayer.mcp.server import create_mcp_server
+    mcp = create_mcp_server(storage=storage_with_corpus)
+    result_text = await _call_mcp_tool(
+        mcp=mcp,
+        name="search",
+        arguments={
+            "entities": ["warehouse.orders.amount_paid"],
+            "datasource": "warehouse",
+        },
+    )
+    # Round-trips a populated response.
+    assert "Error" not in result_text
+
+
+@pytest.mark.asyncio
+async def test_mcp_search_unknown_datasource_returns_error(
+    storage_with_corpus: StorageBackend,
+) -> None:
+    from slayer.mcp.server import create_mcp_server
+    mcp = create_mcp_server(storage=storage_with_corpus)
+    result_text = await _call_mcp_tool(
+        mcp=mcp,
+        name="search",
+        arguments={
+            "entities": ["warehouse.orders.amount_paid"],
+            "datasource": "does_not_exist",
+        },
+    )
+    assert "Error" in result_text
+    assert "does_not_exist" in result_text
+
+
+def test_rest_post_search_accepts_datasource(tmp_path) -> None:
+    """POST /search accepts ``datasource`` in the JSON body."""
+    from slayer.api.server import create_app
+    import asyncio
+    storage = resolve_storage(str(tmp_path / "storage"))
+
+    async def _seed():
+        await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="warehouse",
+            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+        ))
+
+    asyncio.run(_seed())
+    app = create_app(storage=storage)
+    client = TestClient(app)
+    res = client.post("/search", json={
+        "entities": ["warehouse.orders.amount_paid"],
+        "datasource": "warehouse",
+    })
+    assert res.status_code == 200
+
+
+def test_rest_post_search_unknown_datasource_returns_400(tmp_path) -> None:
+    from slayer.api.server import create_app
+    import asyncio
+    storage = resolve_storage(str(tmp_path / "storage"))
+
+    async def _seed():
+        await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
+
+    asyncio.run(_seed())
+    app = create_app(storage=storage)
+    client = TestClient(app)
+    res = client.post("/search", json={
+        "entities": ["warehouse.orders.amount_paid"],
+        "datasource": "does_not_exist",
+    })
+    assert res.status_code == 400
+
+
+def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch, capsys) -> None:
+    """``slayer search --datasource X`` parses cleanly."""
+    storage_dir = _seed_cli_storage(tmp_path)
+    code, out = _run_cli(
+        args=[
+            "search",
+            "--storage", storage_dir,
+            "--entity", "warehouse.orders.amount_paid",
+            "--datasource", "warehouse",
+            "--format", "json",
+        ],
+        monkeypatch=monkeypatch,
+        capsys=capsys,
+    )
+    assert code == 0
+    payload = json.loads(out)
+    assert "memories" in payload
+
+
+@pytest.mark.asyncio
+async def test_client_search_accepts_datasource(
+    storage_with_corpus: StorageBackend,
+) -> None:
+    """``SlayerClient.search`` accepts ``datasource=`` and forwards it
+    to the service."""
+    from slayer.client.slayer_client import SlayerClient
+
+    client = SlayerClient(storage=storage_with_corpus)
+    response = await client.search(
+        entities=["warehouse.orders.amount_paid"],
+        datasource="warehouse",
+        max_example_queries=2,
+    )
     assert "warehouse.orders.amount_paid" in response.resolved_input_entities

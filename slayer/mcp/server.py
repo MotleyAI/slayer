@@ -2609,6 +2609,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         entities: Optional[List[str]] = None,
         query: Any = None,
         question: Optional[str] = None,
+        datasource: Optional[str] = None,
         max_memories: int = 5,
         max_example_queries: int = 2,
         max_entities: int = 5,
@@ -2652,6 +2653,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             query: Optional ``SlayerQuery`` (dict). Entities are
                 auto-extracted to broaden channel-1 input.
             question: Free-text query for the tantivy full-text channel.
+            datasource: Optional datasource name. When set, scope all
+                three channels to that one datasource. Entity hits are
+                limited to docs rooted at the datasource (exact match
+                or dotted-path descendant). Memories surface when any
+                of their tagged entities is rooted at the datasource —
+                a memory spanning multiple datasources surfaces from
+                each. BM25 / IDF stats reflect only the filtered subset.
+                Unknown datasource raises ``ValueError``.
             max_memories: Cap on returned learning-only memory hits
                 (default 5).
             max_example_queries: Cap on returned query-bearing memory
@@ -2663,6 +2672,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 entities=entities,
                 query=query,
                 question=question,
+                datasource=datasource,
                 max_memories=max_memories,
                 max_example_queries=max_example_queries,
                 max_entities=max_entities,
