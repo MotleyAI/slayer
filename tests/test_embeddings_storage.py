@@ -23,7 +23,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.embeddings.models import Embedding
+from slayer.embeddings.models import Embedding, EntityKind
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -42,7 +42,7 @@ def _embed(
     *,
     canonical_id: str,
     model: str = "openai/test-embedding",
-    kind: str = "memory",
+    kind: EntityKind = "memory",
     text_hash: str = "h0",
     vector: List[float] | None = None,
 ) -> Embedding:
@@ -201,14 +201,15 @@ async def test_delete_model_cascades_subtree_embeddings(
     )
     await storage.save_model(model)
 
-    for cid, kind in [
+    seeds: List[tuple[str, EntityKind]] = [
         ("dsx.orders", "model"),
         ("dsx.orders.id", "column"),
         ("dsx.orders.rev", "measure"),
         ("dsx.orders.custom_agg", "aggregation"),
         ("dsx.customers", "model"),
         ("other.orders", "model"),
-    ]:
+    ]
+    for cid, kind in seeds:
         await storage.save_embedding(_embed(canonical_id=cid, kind=kind))
 
     await storage.delete_model("orders", data_source="dsx")
@@ -231,13 +232,14 @@ async def test_delete_datasource_cascades_descendants(
         name="dsx", type="postgres", host="h", database="d",
     )
     await storage.save_datasource(ds)
-    for cid, kind in [
+    seeds: List[tuple[str, EntityKind]] = [
         ("dsx", "datasource"),
         ("dsx.orders", "model"),
         ("dsx.orders.id", "column"),
         ("other", "datasource"),
         ("other.orders", "model"),
-    ]:
+    ]
+    for cid, kind in seeds:
         await storage.save_embedding(_embed(canonical_id=cid, kind=kind))
 
     await storage.delete_datasource("dsx")
@@ -248,3 +250,217 @@ async def test_delete_datasource_cascades_descendants(
         )
     }
     assert remaining == {"other", "other.orders"}
+
+
+# ---------------------------------------------------------------------------
+# Prefix-greedy delete regressions (DEV-1405)
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_for_canonical_does_not_match_numeric_siblings(
+    storage: StorageBackend,
+) -> None:
+    """REGRESSION (DEV-1405): the previous LIKE 'memory:4%' pattern
+    nuked memory:42, memory:43, memory:400 along with memory:4. The
+    fix matches exact id OR strict ``.``-descendant — memory ids never
+    have descendants, so only memory:4 must go."""
+    for cid in ("memory:4", "memory:42", "memory:43", "memory:400"):
+        await storage.save_embedding(_embed(canonical_id=cid))
+    removed = await storage.delete_embeddings_for_canonical(
+        canonical_id_prefix="memory:4",
+    )
+    assert removed == 1
+    remaining = {
+        r.canonical_id for r in await storage.list_embeddings(
+            embedding_model_name="openai/test-embedding",
+        )
+    }
+    assert remaining == {"memory:42", "memory:43", "memory:400"}
+
+
+async def test_delete_for_canonical_does_not_match_char_sibling_ds(
+    storage: StorageBackend,
+) -> None:
+    """REGRESSION (DEV-1405): deleting ds ``orders`` must not nuke
+    ``orders_archive`` or ``orders123``."""
+    for cid in (
+        "orders",
+        "orders.foo",
+        "orders.foo.bar",
+        "orders_archive",
+        "orders_archive.foo",
+        "orders123",
+    ):
+        await storage.save_embedding(_embed(canonical_id=cid))
+    removed = await storage.delete_embeddings_for_canonical(
+        canonical_id_prefix="orders",
+    )
+    assert removed == 3
+    remaining = {
+        r.canonical_id for r in await storage.list_embeddings(
+            embedding_model_name="openai/test-embedding",
+        )
+    }
+    assert remaining == {
+        "orders_archive", "orders_archive.foo", "orders123",
+    }
+
+
+async def test_delete_for_canonical_does_not_match_char_sibling_model(
+    storage: StorageBackend,
+) -> None:
+    """REGRESSION (DEV-1405): deleting model ``orders.customers`` must
+    not nuke ``orders.customers_v2``."""
+    for cid in (
+        "orders.customers",
+        "orders.customers.id",
+        "orders.customers_v2",
+        "orders.customers_v2.id",
+    ):
+        await storage.save_embedding(_embed(canonical_id=cid))
+    removed = await storage.delete_embeddings_for_canonical(
+        canonical_id_prefix="orders.customers",
+    )
+    assert removed == 2
+    remaining = {
+        r.canonical_id for r in await storage.list_embeddings(
+            embedding_model_name="openai/test-embedding",
+        )
+    }
+    assert remaining == {"orders.customers_v2", "orders.customers_v2.id"}
+
+
+# ---------------------------------------------------------------------------
+# Batched APIs (DEV-1405)
+# ---------------------------------------------------------------------------
+
+
+async def test_save_embeddings_round_trip(storage: StorageBackend) -> None:
+    """The batched save API persists every row; subsequent list_embeddings
+    returns them all."""
+    rows = [
+        _embed(canonical_id=f"e{i}", text_hash=f"h{i}", vector=[float(i)] * 3)
+        for i in range(5)
+    ]
+    await storage.save_embeddings(rows)
+    listed = await storage.list_embeddings(
+        embedding_model_name="openai/test-embedding",
+    )
+    assert {r.canonical_id for r in listed} == {f"e{i}" for i in range(5)}
+
+
+async def test_save_embeddings_empty_is_noop(storage: StorageBackend) -> None:
+    await storage.save_embeddings([])
+    assert await storage.list_embeddings(
+        embedding_model_name="openai/test-embedding",
+    ) == []
+
+
+async def test_get_embeddings_for_canonical_ids_returns_dict(
+    storage: StorageBackend,
+) -> None:
+    await storage.save_embeddings([
+        _embed(canonical_id="a", text_hash="ha"),
+        _embed(canonical_id="b", text_hash="hb"),
+        _embed(canonical_id="c", text_hash="hc"),
+    ])
+    out = await storage.get_embeddings_for_canonical_ids(
+        canonical_ids=["a", "c", "missing"],
+        embedding_model_name="openai/test-embedding",
+    )
+    assert set(out.keys()) == {"a", "c"}
+    assert out["a"].content_hash == "ha"
+    assert out["c"].content_hash == "hc"
+
+
+async def test_get_embeddings_for_canonical_ids_empty_returns_empty(
+    storage: StorageBackend,
+) -> None:
+    await storage.save_embedding(_embed(canonical_id="x"))
+    out = await storage.get_embeddings_for_canonical_ids(
+        canonical_ids=[],
+        embedding_model_name="openai/test-embedding",
+    )
+    assert out == {}
+
+
+async def test_get_embeddings_for_canonical_ids_filters_by_model(
+    storage: StorageBackend,
+) -> None:
+    """A canonical_id under model A must not surface in a request for
+    model B."""
+    await storage.save_embedding(_embed(canonical_id="x", model="openai/a"))
+    await storage.save_embedding(_embed(canonical_id="x", model="openai/b"))
+    out_a = await storage.get_embeddings_for_canonical_ids(
+        canonical_ids=["x"], embedding_model_name="openai/a",
+    )
+    out_b = await storage.get_embeddings_for_canonical_ids(
+        canonical_ids=["x"], embedding_model_name="openai/b",
+    )
+    assert out_a["x"].embedding_model_name == "openai/a"
+    assert out_b["x"].embedding_model_name == "openai/b"
+
+
+# ---------------------------------------------------------------------------
+# YAML-specific: sidecar file layout + legacy rename
+# ---------------------------------------------------------------------------
+
+
+async def test_yaml_init_creates_embeddings_db() -> None:
+    """YAMLStorage must persist embeddings to ``<base_dir>/embeddings.db``
+    (the SQLite sidecar), not ``embeddings.yaml`` (DEV-1405)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = YAMLStorage(base_dir=tmp)
+        await store.save_embedding(_embed(canonical_id="memory:1"))
+        assert os.path.exists(os.path.join(tmp, "embeddings.db"))
+        assert not os.path.exists(os.path.join(tmp, "embeddings.yaml"))
+
+
+async def test_yaml_init_renames_legacy_embeddings_yaml() -> None:
+    """A pre-existing ``embeddings.yaml`` from a prior version is renamed
+    to ``embeddings.yaml.legacy`` on init. The new sidecar is empty."""
+    with tempfile.TemporaryDirectory() as tmp:
+        legacy_path = os.path.join(tmp, "embeddings.yaml")
+        with open(legacy_path, "w") as f:
+            f.write("- canonical_id: stale\n")
+        store = YAMLStorage(base_dir=tmp)
+        # File renamed.
+        assert not os.path.exists(legacy_path)
+        assert os.path.exists(os.path.join(tmp, "embeddings.yaml.legacy"))
+        # Sidecar exists and is empty.
+        rows = await store.list_embeddings(
+            embedding_model_name="openai/test-embedding",
+        )
+        assert rows == []
+
+
+async def test_yaml_init_renames_legacy_counters_yaml() -> None:
+    """A pre-existing ``counters.yaml`` is renamed to
+    ``counters.yaml.legacy`` on init."""
+    with tempfile.TemporaryDirectory() as tmp:
+        legacy_path = os.path.join(tmp, "counters.yaml")
+        with open(legacy_path, "w") as f:
+            f.write("memory_seq: 99\n")
+        YAMLStorage(base_dir=tmp)
+        assert not os.path.exists(legacy_path)
+        assert os.path.exists(os.path.join(tmp, "counters.yaml.legacy"))
+
+
+async def test_yaml_init_does_not_overwrite_existing_legacy() -> None:
+    """Idempotent: if ``.legacy`` already exists, leave the current file
+    alone — don't clobber the existing backup."""
+    with tempfile.TemporaryDirectory() as tmp:
+        legacy_path = os.path.join(tmp, "embeddings.yaml.legacy")
+        current_path = os.path.join(tmp, "embeddings.yaml")
+        with open(legacy_path, "w") as f:
+            f.write("- canonical_id: first-backup\n")
+        with open(current_path, "w") as f:
+            f.write("- canonical_id: second-attempt\n")
+        YAMLStorage(base_dir=tmp)
+        # Backup is preserved untouched.
+        with open(legacy_path) as f:
+            assert "first-backup" in f.read()
+        # Current file is left in place too (no destructive action).
+        assert os.path.exists(current_path)
+        with open(current_path) as f:
+            assert "second-attempt" in f.read()

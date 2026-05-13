@@ -8,6 +8,17 @@ list — used to disambiguate bare-name lookups — is stored at
 On open, ``migrate_yaml_layout`` walks the legacy flat layout and moves each
 file into the new subdirectory. See ``slayer/storage/v4_migration.py`` for the
 contract details.
+
+DEV-1405: embedding rows now live in a SQLite sidecar at
+``<base_dir>/embeddings.db`` (via :class:`SidecarEmbeddingStore`) instead of
+a single ``embeddings.yaml`` whose whole-file-rewrite-on-save bottlenecked
+``slayer ingest``. Any pre-DEV-1405 ``embeddings.yaml`` is silently renamed
+to ``embeddings.yaml.legacy`` on first open; re-run ``slayer ingest`` (or
+rely on ``--ingest-on-startup``) to repopulate ``embeddings.db``. Memory ids
+are now derived from ``memories.yaml`` itself (``last_row.id + 1``), so the
+companion ``counters.yaml`` file is no longer used; it is similarly renamed
+to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
+``.legacy`` file already exists at upgrade time, both files are left alone.
 """
 
 import os
@@ -20,7 +31,11 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.sidecar_embedding_store import SidecarEmbeddingStore
 from slayer.storage.v4_migration import migrate_yaml_layout
+
+
+_LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")
 
 
 class YAMLStorage(StorageBackend):
@@ -30,12 +45,22 @@ class YAMLStorage(StorageBackend):
         self.datasources_dir = os.path.join(base_dir, "datasources")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
         self._memories_path = os.path.join(base_dir, "memories.yaml")
-        self._counters_path = os.path.join(base_dir, "counters.yaml")
-        self._embeddings_path = os.path.join(base_dir, "embeddings.yaml")
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
         # Idempotent — moves any pre-v4 flat files into <data_source>/ subdirs.
         migrate_yaml_layout(base_dir)
+        # Idempotent — rename pre-DEV-1405 sidecar files out of the way.
+        # If a ``.legacy`` companion already exists (user upgraded twice or
+        # manually restored), leave both files in place so we never clobber
+        # an existing backup.
+        for filename in _LEGACY_RENAMES:
+            current = os.path.join(base_dir, filename)
+            legacy = os.path.join(base_dir, filename + ".legacy")
+            if os.path.exists(current) and not os.path.exists(legacy):
+                os.rename(current, legacy)
+        self._embeddings_store = SidecarEmbeddingStore(
+            db_path=os.path.join(base_dir, "embeddings.db"),
+        )
 
     # ---- internal helpers --------------------------------------------------
 
@@ -195,39 +220,24 @@ class YAMLStorage(StorageBackend):
         with open(path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump(rows, f, sort_keys=False)
 
-    def _read_counters(self) -> Dict[str, int]:
-        if not os.path.exists(self._counters_path):
-            return {}
-        with open(self._counters_path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            data = yaml.safe_load(f) or {}
-        if not isinstance(data, dict):
-            return {}
-        return {str(k): int(v) for k, v in data.items() if isinstance(v, int)}
-
-    def _write_counters(self, counters: Dict[str, int]) -> None:
-        with open(self._counters_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump(dict(counters), f, sort_keys=False)
-
-    def _max_memory_id(self) -> int:
-        max_id = 0
-        for row in self._read_yaml_list(self._memories_path):
-            row_id = row.get("id")
-            if isinstance(row_id, int) and row_id > max_id:
-                max_id = row_id
-        return max_id
-
     async def _next_memory_seq(self) -> int:
-        counters = self._read_counters()
-        # Recover from a missing/wiped counters.yaml: if memories.yaml
-        # already has rows, the next allocation must skip past them so
-        # _save_memory_row never replaces an existing record.
-        base = counters.get("memory_seq")
-        if base is None:
-            base = self._max_memory_id()
-        seq = base + 1
-        counters["memory_seq"] = seq
-        self._write_counters(counters)
-        return seq
+        """DEV-1405: derive the next id straight from ``memories.yaml``.
+        Rows are stored in id-insertion order (``_save_memory_row`` filters
+        by id, then appends), so the last entry carries the highest id
+        currently present. Ids of deleted memories are reused — there is
+        no separate counter file."""
+        rows = self._read_yaml_list(self._memories_path)
+        if not rows:
+            return 1
+        last_id = rows[-1].get("id")
+        if not isinstance(last_id, int):
+            # Defensive: if the file was hand-edited and lost ordering,
+            # fall back to MAX across the corpus.
+            last_id = max(
+                (r["id"] for r in rows if isinstance(r.get("id"), int)),
+                default=0,
+            )
+        return last_id + 1
 
     async def _save_memory_row(self, memory: Memory) -> None:
         rows = self._read_yaml_list(self._memories_path)
@@ -261,48 +271,49 @@ class YAMLStorage(StorageBackend):
         self._write_yaml_list(self._memories_path, kept)
         return True
 
-    # ---- embeddings (DEV-1386) -------------------------------------------
-
-    def _embedding_key(self, row: Dict[str, Any]) -> Tuple[str, str]:
-        return (
-            str(row.get("canonical_id", "")),
-            str(row.get("embedding_model_name", "")),
-        )
+    # ---- embeddings (DEV-1386, refactored DEV-1405) -----------------------
+    #
+    # The whole-file-rewrite-on-save pattern that lived here is gone —
+    # embedding rows now live in a SQLite sidecar at
+    # ``<base_dir>/embeddings.db`` owned by ``self._embeddings_store``.
+    # The SQL itself lives in :class:`SidecarEmbeddingStore`; YAMLStorage
+    # only forwards the abstract :class:`StorageBackend` methods.
 
     async def save_embedding(self, row: Embedding) -> None:
-        rows = self._read_yaml_list(self._embeddings_path)
-        target_key = (row.canonical_id, row.embedding_model_name)
-        kept = [r for r in rows if self._embedding_key(r) != target_key]
-        kept.append(row.model_dump(mode="json"))
-        self._write_yaml_list(self._embeddings_path, kept)
+        await self._embeddings_store.save(row)
+
+    async def save_embeddings(self, rows: List[Embedding]) -> None:
+        await self._embeddings_store.save_many(list(rows))
 
     async def get_embedding(
         self, *, canonical_id: str, embedding_model_name: str,
     ) -> Optional[Embedding]:
-        target_key = (canonical_id, embedding_model_name)
-        for row in self._read_yaml_list(self._embeddings_path):
-            if self._embedding_key(row) == target_key:
-                return Embedding.model_validate(row)
-        return None
+        return await self._embeddings_store.get(
+            canonical_id=canonical_id,
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ) -> Dict[str, Embedding]:
+        return await self._embeddings_store.get_many(
+            canonical_ids=list(canonical_ids),
+            embedding_model_name=embedding_model_name,
+        )
 
     async def list_embeddings(
         self, *, embedding_model_name: str,
     ) -> List[Embedding]:
-        out: List[Embedding] = []
-        for row in self._read_yaml_list(self._embeddings_path):
-            if str(row.get("embedding_model_name", "")) == embedding_model_name:
-                out.append(Embedding.model_validate(row))
-        return out
+        return await self._embeddings_store.list_for_model(
+            embedding_model_name=embedding_model_name,
+        )
 
     async def delete_embeddings_for_canonical(
         self, *, canonical_id_prefix: str,
     ) -> int:
-        rows = self._read_yaml_list(self._embeddings_path)
-        kept = [
-            r for r in rows
-            if not str(r.get("canonical_id", "")).startswith(canonical_id_prefix)
-        ]
-        removed = len(rows) - len(kept)
-        if removed > 0:
-            self._write_yaml_list(self._embeddings_path, kept)
-        return removed
+        return await self._embeddings_store.delete_for_canonical(
+            canonical_id_prefix=canonical_id_prefix,
+        )

@@ -395,10 +395,14 @@ class StorageBackend(ABC):
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
     #
-    # Monotonic positive-int ids, no reuse on delete, and the missing-row
-    # → ``MemoryNotFoundError`` policy live on this class so they can
-    # never diverge between backends. Backends only implement the row-
-    # shaped CRUD primitives + the seq counter below.
+    # Positive-int ids derived from the current ``memories`` corpus
+    # (DEV-1405). Ids increase monotonically while the corpus only grows;
+    # ids belonging to deleted memories may be reused by future saves.
+    # Cascade-on-delete in ``delete_memory`` removes any embedding rows
+    # under the freed id, so reuse strands no data. The missing-row →
+    # ``MemoryNotFoundError`` policy lives on this class so it can never
+    # diverge between backends. Backends only implement the row-shaped
+    # CRUD primitives + the next-seq derivation below.
 
     @abstractmethod
     async def _save_memory_row(self, memory: Memory) -> None:
@@ -424,9 +428,10 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def _next_memory_seq(self) -> int:
-        """Atomically allocate and return the next memory sequence
-        integer. Counter is monotonically increasing — deleted ids are
-        never reused."""
+        """Return the next positive int memory id, strictly above any id
+        currently held by the corpus. Backends derive this from
+        ``memories.yaml`` / the ``memories`` table directly; deleted ids
+        may be reused (DEV-1405)."""
 
     async def save_memory(
         self,
@@ -495,14 +500,50 @@ class StorageBackend(ABC):
     async def delete_embeddings_for_canonical(
         self, *, canonical_id_prefix: str,
     ) -> int:
-        """Cascade-delete embedding rows whose ``canonical_id`` starts with
-        ``canonical_id_prefix``. Returns the row-count deleted.
+        """Cascade-delete embedding rows whose ``canonical_id`` is exactly
+        ``canonical_id_prefix`` or is a strict descendant under the
+        dotted-path namespace (``canonical_id_prefix + "." + …``). Never
+        a character prefix — ``"orders"`` does not match
+        ``"orders_archive"``; ``"memory:4"`` does not match ``"memory:42"``.
+        Returns the row-count deleted.
 
-        Used by ``delete_model`` (prefix ``"<ds>.<model>"`` cascades to
-        child column / measure / aggregation embeddings), ``delete_memory``
-        (prefix ``"memory:<id>"`` — exact match for one row), and
-        ``delete_datasource`` (prefix ``"<ds>"``).
+        Used by ``delete_model`` (root ``"<ds>.<model>"`` matches the
+        model doc and every column / measure / aggregation under it),
+        ``delete_memory`` (root ``"memory:<id>"`` — exact match for one
+        row, no descendants), and ``delete_datasource`` (root ``"<ds>"``
+        — the datasource doc plus every descendant).
         """
+
+    # Batched read/write helpers (DEV-1405). Default implementations call
+    # the single-row methods M times so any third-party backend keeps
+    # working unchanged; the bundled backends override these to issue one
+    # round-trip via :class:`SidecarEmbeddingStore`.
+
+    async def save_embeddings(self, rows: List[Embedding]) -> None:
+        """Persist many embedding rows in one round-trip. Default
+        implementation calls :meth:`save_embedding` for each row."""
+        for row in rows:
+            await self.save_embedding(row)
+
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ) -> Dict[str, "Embedding"]:
+        """Fetch every embedding row in ``canonical_ids`` under the given
+        ``embedding_model_name`` in one round-trip. Returns a dict keyed
+        by ``canonical_id``; missing ids are simply absent from the dict.
+        Default implementation calls :meth:`get_embedding` for each id."""
+        out: Dict[str, Embedding] = {}
+        for canonical_id in canonical_ids:
+            row = await self.get_embedding(
+                canonical_id=canonical_id,
+                embedding_model_name=embedding_model_name,
+            )
+            if row is not None:
+                out[canonical_id] = row
+        return out
 
 
 # ---------------------------------------------------------------------------

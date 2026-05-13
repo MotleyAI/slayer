@@ -17,6 +17,7 @@ MCP test suite.
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 from typing import Any, Generator, Optional
 
@@ -60,11 +61,20 @@ def _reset_storage(storage: YAMLStorage) -> None:
     for f in (
         "priority.yaml",
         "memories.yaml",
-        "counters.yaml",
+        "embeddings.yaml.legacy",
+        "counters.yaml.legacy",
     ):
         p = os.path.join(storage.base_dir, f)
         if os.path.exists(p):
             os.remove(p)
+    # ``embeddings.db`` is opened by ``storage._embeddings_store``; clear
+    # rows in place rather than deleting the file (which would leave the
+    # SidecarEmbeddingStore pointing at a now-empty path without its
+    # CREATE TABLE having been run).
+    emb_path = os.path.join(storage.base_dir, "embeddings.db")
+    if os.path.exists(emb_path):
+        with sqlite3.connect(emb_path) as conn:
+            conn.execute("DELETE FROM embeddings")
 
 
 @pytest.fixture

@@ -2,15 +2,17 @@
 
 A ``Memory`` is a single row carrying ``learning`` (free-form text),
 ``entities`` (canonical strings) and an optional ``query`` (a
-``SlayerQuery``). One unified counter allocates monotonic positive
-integer ids; deleted ids are never reused. Both YAMLStorage and
-SQLiteStorage must satisfy the same contract — fixtures parameterise
-each test against both.
+``SlayerQuery``). Ids are positive ints; they increase monotonically as
+the corpus grows, but ids belonging to deleted memories may be reused
+by future saves (DEV-1405 removed the dedicated counter). Both
+YAMLStorage and SQLiteStorage must satisfy the same contract — fixtures
+parameterise each test against both.
 
 Tests exercise the public ABC API: ``save_memory``, ``get_memory``,
-``list_memories``, ``delete_memory``. The ID format / monotonicity /
-intersection-filter logic lives on the ABC so backends only implement
-row-shaped CRUD + the seq counter.
+``list_memories``, ``delete_memory``. The ID format / intersection-
+filter logic lives on the ABC so backends only implement row-shaped
+CRUD + a one-line ``_next_memory_seq`` derived from the existing
+``memories`` corpus.
 """
 
 import os
@@ -200,11 +202,18 @@ class TestListMemories:
 
 
 # ---------------------------------------------------------------------------
-# IDs — monotonic, no reuse, persisted across reopens
+# IDs — monotonic-while-corpus-grows, derived from the existing rows
 # ---------------------------------------------------------------------------
 
 
 class TestMemoryIds:
+    async def test_id_starts_at_one(
+        self, storage: StorageBackend
+    ) -> None:
+        """Empty corpus → first save gets id 1 (DEV-1405 edge case)."""
+        m = await storage.save_memory(learning="a", entities=["mydb.orders"])
+        assert m.id == 1
+
     async def test_id_monotonic_across_saves(
         self, storage: StorageBackend
     ) -> None:
@@ -213,22 +222,48 @@ class TestMemoryIds:
         c = await storage.save_memory(learning="c", entities=["mydb.orders"])
         assert (a.id, b.id, c.id) == (1, 2, 3)
 
-    async def test_id_not_reused_after_delete(
-        self, storage: StorageBackend
+    async def test_id_reused_after_tail_delete(
+        self,
+        storage: StorageBackend,
     ) -> None:
+        """DEV-1405: ids of deleted memories may be reused. Deleting the
+        most recently allocated id frees it for the next save."""
         a = await storage.save_memory(learning="a", entities=["mydb.orders"])
         b = await storage.save_memory(learning="b", entities=["mydb.orders"])
         await storage.delete_memory(b.id)
         c = await storage.save_memory(learning="c", entities=["mydb.orders"])
-        assert (a.id, b.id, c.id) == (1, 2, 3)
+        # c reuses b's freed id.
+        assert (a.id, b.id, c.id) == (1, 2, 2)
+        # Reuse points at the new record, not the deleted one.
+        loaded = await storage.get_memory(c.id)
+        assert loaded.learning == "c"
+
+    async def test_new_save_never_collides_with_existing_id(
+        self, storage: StorageBackend
+    ) -> None:
+        """Reuse only happens against *freed* ids. A new save must never
+        return an id currently owned by an existing row — i.e. the
+        next-id derivation is strictly above the current max."""
+        a = await storage.save_memory(learning="a", entities=["mydb.orders"])
+        b = await storage.save_memory(learning="b", entities=["mydb.orders"])
+        c = await storage.save_memory(learning="c", entities=["mydb.orders"])
+        # Delete a hole in the middle.
+        await storage.delete_memory(b.id)
+        # Existing rows: {a.id=1, c.id=3}. Next save must NOT pick 1 or 3.
+        d = await storage.save_memory(learning="d", entities=["mydb.orders"])
+        existing = {m.id for m in await storage.list_memories()}
+        assert d.id not in (a.id, c.id)
+        assert d.id in existing
+        # Spelled out: d.id is strictly above max(remaining ids before save).
+        assert d.id == 4
 
     async def test_id_unified_across_query_and_no_query(
         self,
         storage: StorageBackend,
         sample_query: SlayerQuery,
     ) -> None:
-        # Single counter — saving a learning-only memory then a
-        # query-bearing one walks the same monotonic int sequence.
+        # Saving a learning-only memory then a query-bearing one walks
+        # the same monotonic int sequence — no separate counter per kind.
         a = await storage.save_memory(learning="a", entities=["mydb.orders"])
         b = await storage.save_memory(
             learning="b",
@@ -238,9 +273,12 @@ class TestMemoryIds:
         c = await storage.save_memory(learning="c", entities=["mydb.orders"])
         assert (a.id, b.id, c.id) == (1, 2, 3)
 
-    async def test_id_counter_persists_across_backend_reopen(
+    async def test_id_persists_across_backend_reopen(
         self,
     ) -> None:
+        """After reopen, the next save's id continues above the highest
+        existing memory id. DEV-1405: the value is derived from the
+        memories corpus itself, not from a separate counter file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             yaml_dir = os.path.join(tmpdir, "yaml")
             os.makedirs(yaml_dir)
@@ -265,34 +303,34 @@ class TestMemoryIds:
             )
             assert third.id == 3
 
-    async def test_yaml_seq_recovers_when_counters_file_missing(
+    async def test_id_derived_when_no_counter_file_exists(
         self,
     ) -> None:
-        """If counters.yaml is wiped but memories.yaml still has rows,
-        the next allocation must skip past existing ids — not restart at
-        1 and overwrite memory 1 via _save_memory_row's id-replace."""
+        """DEV-1405: ``counters.yaml`` is no longer used — the next id is
+        always derived from the current state of ``memories.yaml``. This
+        used to be the recovery path; it's now the only path."""
         with tempfile.TemporaryDirectory() as tmpdir:
             ys = YAMLStorage(base_dir=tmpdir)
             await ys.save_memory(learning="a", entities=["mydb.orders"])
             await ys.save_memory(learning="b", entities=["mydb.orders"])
-            os.remove(os.path.join(tmpdir, "counters.yaml"))
+            # No counters.yaml is created on the new code path.
+            assert not os.path.exists(os.path.join(tmpdir, "counters.yaml"))
             del ys
             ys2 = YAMLStorage(base_dir=tmpdir)
             third = await ys2.save_memory(
                 learning="c", entities=["mydb.orders"]
             )
             assert third.id == 3
-            # All three rows must still exist — no id collision.
             ids = sorted(m.id for m in await ys2.list_memories())
             assert ids == [1, 2, 3]
 
-    async def test_sqlite_seq_seeds_from_max_id_when_counter_missing(
+    async def test_sqlite_seq_derives_from_memories_max(
         self,
     ) -> None:
-        """If id_counters has no row for memory_seq but memories has
-        rows (e.g. someone restored memories without the counter row),
-        seq must seed from MAX(id) — not return 1 and let
-        _save_memory_sync clobber memory 1 via INSERT OR REPLACE."""
+        """DEV-1405: ``id_counters`` is no longer touched — next id comes
+        from ``SELECT MAX(id) + 1 FROM memories``. Pre-existing
+        ``id_counters`` rows are harmless dead data; the seq derivation
+        ignores them entirely."""
         import sqlite3
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -300,12 +338,21 @@ class TestMemoryIds:
             ss = SQLiteStorage(db_path=db_path)
             await ss.save_memory(learning="a", entities=["mydb.orders"])
             await ss.save_memory(learning="b", entities=["mydb.orders"])
-            # Wipe just the counter row, leaving the memories rows.
+            # If id_counters table still exists from a legacy schema,
+            # planting a misleading row in it must not affect future
+            # allocations — we read MAX(id) from memories now.
             with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    "DELETE FROM id_counters WHERE counter_name = ?",
-                    ("memory_seq",),
-                )
+                tables = {
+                    r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                if "id_counters" in tables:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO id_counters "
+                        "(counter_name, last_value) VALUES (?, ?)",
+                        ("memory_seq", 99),
+                    )
             del ss
             ss2 = SQLiteStorage(db_path=db_path)
             third = await ss2.save_memory(

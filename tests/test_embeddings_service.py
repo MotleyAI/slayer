@@ -9,7 +9,7 @@ via ``monkeypatch`` on ``embed_batch``.
 from __future__ import annotations
 
 import tempfile
-from typing import List, Optional
+from typing import List, Optional, cast
 
 import pytest
 
@@ -18,6 +18,7 @@ from slayer.core.models import Aggregation, Column, ModelMeasure, SlayerModel
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.service import EmbeddingService
 from slayer.memories.models import Memory
+from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -278,3 +279,106 @@ async def test_fetch_corpus_filters_by_active_model_name(
     rows_b = await service_b.fetch_corpus()
     assert len(rows_a) == 1 and rows_a[0].embedding_model_name == "openai/a"
     assert len(rows_b) == 1 and rows_b[0].embedding_model_name == "openai/b"
+
+
+# ---------------------------------------------------------------------------
+# Batched storage hot-path (DEV-1405)
+# ---------------------------------------------------------------------------
+
+
+class _CountingStorage:
+    """Wrap a storage backend to count how many times the embedding
+    hot-path methods are called. Used to pin that ``_apply_pending`` does
+    exactly ONE ``get_embeddings_for_canonical_ids`` and ONE
+    ``save_embeddings`` per invocation (DEV-1405)."""
+
+    def __init__(self, inner: YAMLStorage) -> None:
+        self._inner = inner
+        self.get_many_calls = 0
+        self.save_many_calls = 0
+        self.single_get_calls = 0
+        self.single_save_calls = 0
+
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ):
+        self.get_many_calls += 1
+        return await self._inner.get_embeddings_for_canonical_ids(
+            canonical_ids=canonical_ids,
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def save_embeddings(self, rows) -> None:
+        self.save_many_calls += 1
+        await self._inner.save_embeddings(rows)
+
+    async def get_embedding(self, **kwargs):
+        self.single_get_calls += 1
+        return await self._inner.get_embedding(**kwargs)
+
+    async def save_embedding(self, row) -> None:
+        self.single_save_calls += 1
+        await self._inner.save_embedding(row)
+
+    # Pass-through for every other attribute access (list_embeddings,
+    # delete_*, get_model, …) — EmbeddingService doesn't touch them in
+    # _apply_pending, but defensive forward keeps the wrapper transparent.
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
+
+async def test_apply_pending_uses_batched_storage_calls(
+    storage: YAMLStorage,
+    stub_available: None,
+    recording_embed: _RecordingEmbedBatch,
+) -> None:
+    """DEV-1405: ``_apply_pending`` must funnel every per-entity round-
+    trip into one ``get_embeddings_for_canonical_ids`` (M point reads → 1
+    batch read) and one ``save_embeddings`` (M point writes → 1 batch
+    write). Counting the calls pins the perf-critical contract."""
+    counting = _CountingStorage(storage)
+    service = EmbeddingService(
+        storage=cast(StorageBackend, counting), model_name="openai/x",
+    )
+    model = _make_model()  # 5 visible entities: model + 2 cols + 1 measure + 1 agg
+    await service.refresh_model_subtree(model)
+
+    assert counting.get_many_calls == 1
+    assert counting.save_many_calls == 1
+    # Hot-path must NOT fall back to per-row calls.
+    assert counting.single_get_calls == 0
+    assert counting.single_save_calls == 0
+
+
+async def test_apply_pending_persists_partial_batch_on_some_embed_failures(
+    storage: YAMLStorage,
+    stub_available: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One ``None`` in the embed batch must still leave the surviving
+    rows persisted via a single ``save_embeddings`` call."""
+
+    async def partial_failure(  # NOSONAR(S7503)
+        texts: List[str], *, model: Optional[str] = None,
+    ) -> List[Optional[List[float]]]:
+        # Fail the first row, succeed the rest.
+        return [None] + [[0.1, 0.2, 0.3]] * (len(texts) - 1)
+
+    monkeypatch.setattr(
+        "slayer.embeddings.service.embed_batch", partial_failure,
+    )
+    counting = _CountingStorage(storage)
+    service = EmbeddingService(
+        storage=cast(StorageBackend, counting), model_name="openai/x",
+    )
+    model = _make_model()
+    warnings = await service.refresh_model_subtree(model)
+
+    assert len(warnings) == 1
+    assert counting.save_many_calls == 1
+    listed = await storage.list_embeddings(embedding_model_name="openai/x")
+    # 4 out of 5 entities survive the failure.
+    assert len(listed) == 4

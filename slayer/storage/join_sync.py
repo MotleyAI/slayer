@@ -12,7 +12,7 @@ v4 (DEV-1330): join targets are resolved within the parent model's
 ``data_source`` only — cross-datasource joins are never auto-mirrored.
 """
 
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
@@ -256,11 +256,25 @@ class JoinSyncStorage(StorageBackend):
     async def save_embedding(self, row: Embedding) -> None:
         await self._inner.save_embedding(row)
 
+    async def save_embeddings(self, rows: List[Embedding]) -> None:
+        await self._inner.save_embeddings(rows)
+
     async def get_embedding(
         self, *, canonical_id: str, embedding_model_name: str,
     ) -> Optional[Embedding]:
         return await self._inner.get_embedding(
             canonical_id=canonical_id,
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ) -> Dict[str, Embedding]:
+        return await self._inner.get_embeddings_for_canonical_ids(
+            canonical_ids=canonical_ids,
             embedding_model_name=embedding_model_name,
         )
 

@@ -16,6 +16,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.sidecar_embedding_store import SidecarEmbeddingStore
 from slayer.storage.v4_migration import migrate_sqlite_schema
 
 
@@ -28,6 +29,10 @@ class SQLiteStorage(StorageBackend):
         # Idempotent: rebuilds a v3 ``models`` table if needed; no-op on v4.
         migrate_sqlite_schema(db_path)
         self._init_db()
+        # DEV-1386 / DEV-1405: the embeddings sidecar owns its own table
+        # + index. CREATE-IF-NOT-EXISTS makes co-existence with our own
+        # schema trivial.
+        self._embeddings_store = SidecarEmbeddingStore(db_path=self.db_path)
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -68,28 +73,6 @@ class SQLiteStorage(StorageBackend):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_entities_entity "
                 "ON memory_entities(entity)"
-            )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS id_counters (
-                    counter_name TEXT PRIMARY KEY,
-                    last_value INTEGER NOT NULL
-                )
-            """)
-            # DEV-1386: embeddings sidecar table.
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    canonical_id TEXT NOT NULL,
-                    embedding_model_name TEXT NOT NULL,
-                    entity_kind TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    embedding TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY (canonical_id, embedding_model_name)
-                )
-            """)
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_embeddings_model "
-                "ON embeddings(embedding_model_name)"
             )
 
     # --- Sync helpers (run in thread to avoid blocking the event loop) ---
@@ -277,48 +260,21 @@ class SQLiteStorage(StorageBackend):
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
 
-    # Per-counter recovery seed: when ``id_counters`` has no row for the
-    # given counter but the data table already has rows (e.g. someone
-    # restored ``memories`` from a backup without the matching counters
-    # row), seed ``last_value`` from ``MAX(id)`` so the next allocation
-    # skips past existing rows. Otherwise ``_save_memory_sync``'s
-    # INSERT OR REPLACE would clobber memory id 1.
-    _COUNTER_SEED_TABLES: Dict[str, str] = {"memory_seq": "memories"}
+    # DEV-1405: ids are derived from the ``memories`` table itself —
+    # ``SELECT MAX(id) + 1`` — instead of a dedicated counter table. The
+    # value is O(1) on the integer PK B-tree. Any legacy ``id_counters``
+    # table on a pre-DEV-1405 DB is left in place as harmless dead data;
+    # nothing reads it.
 
-    def _seed_counter_sync(
-        self, conn: sqlite3.Connection, counter_name: str
-    ) -> None:
-        existing = conn.execute(
-            "SELECT 1 FROM id_counters WHERE counter_name = ?",
-            (counter_name,),
-        ).fetchone()
-        if existing is not None:
-            return
-        seed = 0
-        table = self._COUNTER_SEED_TABLES.get(counter_name)
-        if table is not None:
-            row = conn.execute(
-                f"SELECT COALESCE(MAX(id), 0) FROM {table}"
-            ).fetchone()
-            seed = int(row[0]) if row else 0
-        conn.execute(
-            "INSERT INTO id_counters (counter_name, last_value) "
-            "VALUES (?, ?)",
-            (counter_name, seed),
-        )
-
-    def _next_seq_sync(self, counter_name: str) -> int:
+    def _next_memory_seq_sync(self) -> int:
         with sqlite3.connect(self.db_path) as conn:
-            self._seed_counter_sync(conn, counter_name)
             row = conn.execute(
-                "UPDATE id_counters SET last_value = last_value + 1 "
-                "WHERE counter_name = ? RETURNING last_value",
-                (counter_name,),
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM memories"
             ).fetchone()
         return int(row[0])
 
     async def _next_memory_seq(self) -> int:
-        return await asyncio.to_thread(self._next_seq_sync, "memory_seq")
+        return await asyncio.to_thread(self._next_memory_seq_sync)
 
     def _save_memory_sync(self, memory: Memory) -> None:
         data = json.dumps(memory.model_dump(mode="json"))
@@ -391,104 +347,49 @@ class SQLiteStorage(StorageBackend):
     async def _delete_memory_row(self, memory_id: int) -> bool:
         return await asyncio.to_thread(self._delete_memory_sync, memory_id)
 
-    # ---- embeddings (DEV-1386) -------------------------------------------
-
-    def _save_embedding_sync(self, row: Embedding) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO embeddings "
-                "(canonical_id, embedding_model_name, entity_kind, "
-                "content_hash, embedding, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    row.canonical_id,
-                    row.embedding_model_name,
-                    row.entity_kind,
-                    row.content_hash,
-                    json.dumps(row.embedding),
-                    row.created_at.isoformat(),
-                ),
-            )
+    # ---- embeddings (DEV-1386, refactored DEV-1405) -----------------------
+    #
+    # All embedding I/O delegates to ``self._embeddings_store``, the
+    # :class:`SidecarEmbeddingStore` helper. The helper owns the
+    # ``embeddings`` table inside the same SQLite file as everything
+    # else; the SQL lives in one place so the YAML backend (which points
+    # its own helper at a separate ``embeddings.db``) shares the impl.
 
     async def save_embedding(self, row: Embedding) -> None:
-        await asyncio.to_thread(self._save_embedding_sync, row)
+        await self._embeddings_store.save(row)
 
-    def _get_embedding_sync(
-        self, canonical_id: str, embedding_model_name: str,
-    ) -> Optional[Tuple]:
-        with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT canonical_id, embedding_model_name, entity_kind, "
-                "content_hash, embedding, created_at "
-                "FROM embeddings "
-                "WHERE canonical_id = ? AND embedding_model_name = ?",
-                (canonical_id, embedding_model_name),
-            ).fetchone()
-        return row
+    async def save_embeddings(self, rows: List[Embedding]) -> None:
+        await self._embeddings_store.save_many(list(rows))
 
     async def get_embedding(
         self, *, canonical_id: str, embedding_model_name: str,
     ) -> Optional[Embedding]:
-        raw = await asyncio.to_thread(
-            self._get_embedding_sync, canonical_id, embedding_model_name,
+        return await self._embeddings_store.get(
+            canonical_id=canonical_id,
+            embedding_model_name=embedding_model_name,
         )
-        if raw is None:
-            return None
-        return Embedding.model_validate({
-            "canonical_id": raw[0],
-            "embedding_model_name": raw[1],
-            "entity_kind": raw[2],
-            "content_hash": raw[3],
-            "embedding": json.loads(raw[4]),
-            "created_at": raw[5],
-        })
 
-    def _list_embeddings_sync(self, embedding_model_name: str) -> List[Tuple]:
-        with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT canonical_id, embedding_model_name, entity_kind, "
-                "content_hash, embedding, created_at "
-                "FROM embeddings "
-                "WHERE embedding_model_name = ? "
-                "ORDER BY canonical_id",
-                (embedding_model_name,),
-            ).fetchall()
-        return rows
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ) -> Dict[str, Embedding]:
+        return await self._embeddings_store.get_many(
+            canonical_ids=list(canonical_ids),
+            embedding_model_name=embedding_model_name,
+        )
 
     async def list_embeddings(
         self, *, embedding_model_name: str,
     ) -> List[Embedding]:
-        raws = await asyncio.to_thread(
-            self._list_embeddings_sync, embedding_model_name,
+        return await self._embeddings_store.list_for_model(
+            embedding_model_name=embedding_model_name,
         )
-        return [
-            Embedding.model_validate({
-                "canonical_id": r[0],
-                "embedding_model_name": r[1],
-                "entity_kind": r[2],
-                "content_hash": r[3],
-                "embedding": json.loads(r[4]),
-                "created_at": r[5],
-            })
-            for r in raws
-        ]
-
-    def _delete_embeddings_by_prefix_sync(self, prefix: str) -> int:
-        with sqlite3.connect(self.db_path) as conn:
-            # SQLite LIKE uses ``%`` for wildcards. ``GLOB`` would be
-            # case-sensitive but doesn't support escaping; canonical ids
-            # never legitimately contain ``%`` or ``_`` so we escape both
-            # to be safe and use ESCAPE.
-            escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            cursor = conn.execute(
-                "DELETE FROM embeddings WHERE canonical_id LIKE ? ESCAPE '\\'",
-                (escaped + "%",),
-            )
-            return int(cursor.rowcount or 0)
 
     async def delete_embeddings_for_canonical(
         self, *, canonical_id_prefix: str,
     ) -> int:
-        return await asyncio.to_thread(
-            self._delete_embeddings_by_prefix_sync, canonical_id_prefix,
+        return await self._embeddings_store.delete_for_canonical(
+            canonical_id_prefix=canonical_id_prefix,
         )
