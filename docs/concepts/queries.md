@@ -454,7 +454,11 @@ Sibling stages can also reference each other — any non-final stage may use a *
 ]
 ```
 
-Forward references and self references are rejected with a clear error — a stage may only resolve to stages defined earlier in the list.
+**Order doesn't matter for runtime lists.** Stages can be submitted in any order — the engine auto-sorts them topologically so every stage appears after the siblings it references. The **last entry** of the input list is always the entry point / DAG root (its result is what's returned); only the non-final entries are reordered. Cycles and self-references are rejected with a clear error naming the offending stages. A non-final stage may not reference the root (the root must be the dependency sink). Stages that aren't reachable from the root are accepted as utility sub-queries — they're silently dropped from the emitted SQL.
+
+`SlayerModel.source_queries` (stored, YAML-defined) keeps stricter top-to-bottom rules: any reference must point to a stage defined *earlier* in the list, so the file reads top-to-bottom as the execution order.
+
+**Surface coverage.** Query lists work via `engine.execute(query=[...])` (Python SDK), the CLI (`slayer query @file.json` accepts both a single object and a top-level list), and the MCP tool `query_nested(queries=[...])`. The single-stage MCP tool `query` and the REST `POST /query` endpoint accept a single query only — for the multi-stage shape from REST, save the list as a query-backed model (`POST /models` with `source_queries`) and run it by name.
 
 ### ModelExtension
 
