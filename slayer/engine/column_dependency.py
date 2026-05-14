@@ -17,7 +17,8 @@ catches anything missed here.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from collections import deque
+from typing import TYPE_CHECKING, Deque, Dict, List, Optional, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -80,6 +81,37 @@ def _resolve_target_for_ref(
     return current
 
 
+def _resolve_single_column(
+    *,
+    node: exp.Column,
+    host: SlayerModel,
+    reachable: Dict[str, SlayerModel],
+    root_ids: Set[int],
+) -> Optional[Tuple[str, str]]:
+    """Resolve one ``exp.Column`` node to a (model_name, column_name) dep,
+    or ``None`` if the node is out of scope.
+
+    Filters applied: non-root-scope nodes, multi-part qualifiers
+    (``catalog.db.table.col``), aliases that don't resolve through the
+    host's join chain, and targets whose column is missing or trivial-base.
+    """
+    if id(node) not in root_ids:
+        return None
+    if node.args.get("db") or node.args.get("catalog"):
+        return None
+    table_id = node.args.get("table")
+    table_alias = table_id.name if table_id is not None else None
+    target = _resolve_target_for_ref(
+        table_alias=table_alias, host=host, reachable=reachable,
+    )
+    if target is None:
+        return None
+    target_col = target.get_column(node.name)
+    if target_col is None or _is_trivial_base(column=target_col):
+        return None
+    return (target.name, target_col.name)
+
+
 def _column_dependencies(
     *,
     column: Column,
@@ -105,23 +137,64 @@ def _column_dependencies(
     root_ids = _root_scope_column_ids(parsed=parsed)
     deps: List[Tuple[str, str]] = []
     for node in parsed.find_all(exp.Column):
-        if id(node) not in root_ids:
-            continue
-        # Multi-part qualifiers (catalog.db.table.col) are out of contract.
-        if node.args.get("db") or node.args.get("catalog"):
-            continue
-        table_id = node.args.get("table")
-        table_alias = table_id.name if table_id is not None else None
-        target = _resolve_target_for_ref(
-            table_alias=table_alias, host=host, reachable=reachable,
+        resolved = _resolve_single_column(
+            node=node, host=host, reachable=reachable, root_ids=root_ids,
         )
-        if target is None:
-            continue
-        target_col = target.get_column(node.name)
-        if target_col is None or _is_trivial_base(column=target_col):
-            continue
-        deps.append((target.name, target_col.name))
+        if resolved is not None:
+            deps.append(resolved)
     return deps
+
+
+def _node_dependencies(
+    *,
+    node: Tuple[str, str],
+    reachable: Dict[str, SlayerModel],
+) -> List[Tuple[str, str]]:
+    """Return the dependency edges leaving ``node = (model_name, col_name)``.
+    Empty list when the model or column is missing — those are dead-ends,
+    not errors.
+    """
+    model_name, col_name = node
+    host = reachable.get(model_name)
+    if host is None:
+        return []
+    col = host.get_column(col_name)
+    if col is None:
+        return []
+    return _column_dependencies(column=col, host=host, reachable=reachable)
+
+
+def _dfs_visit(
+    *,
+    node: Tuple[str, str],
+    reachable: Dict[str, SlayerModel],
+    on_stack: List[Tuple[str, str]],
+    on_stack_set: Set[Tuple[str, str]],
+    visited: Set[Tuple[str, str]],
+) -> Optional[List[Tuple[str, str]]]:
+    """Recursive DFS visit. Returns the first cycle reachable from
+    ``node``, or ``None``. Mutates ``on_stack`` / ``on_stack_set`` /
+    ``visited`` in place — the caller initialises them empty and
+    discards them on return.
+    """
+    if node in on_stack_set:
+        idx = on_stack.index(node)
+        return [*on_stack[idx:], node]
+    if node in visited:
+        return None
+    on_stack.append(node)
+    on_stack_set.add(node)
+    for dep in _node_dependencies(node=node, reachable=reachable):
+        found = _dfs_visit(
+            node=dep, reachable=reachable,
+            on_stack=on_stack, on_stack_set=on_stack_set, visited=visited,
+        )
+        if found is not None:
+            return found
+    on_stack.pop()
+    on_stack_set.discard(node)
+    visited.add(node)
+    return None
 
 
 def _detect_cycle_dfs(
@@ -133,35 +206,10 @@ def _detect_cycle_dfs(
     cycle found as an ordered list (start may appear at both ends if the
     cycle closes through it), or ``None`` if the subgraph is acyclic.
     """
-    on_stack: List[Tuple[str, str]] = []
-    on_stack_set: Set[Tuple[str, str]] = set()
-    visited: Set[Tuple[str, str]] = set()
-
-    def go(node: Tuple[str, str]) -> Optional[List[Tuple[str, str]]]:
-        if node in on_stack_set:
-            idx = on_stack.index(node)
-            return [*on_stack[idx:], node]
-        if node in visited:
-            return None
-        on_stack.append(node)
-        on_stack_set.add(node)
-        model_name, col_name = node
-        host = reachable.get(model_name)
-        if host is not None:
-            col = host.get_column(col_name)
-            if col is not None:
-                for dep in _column_dependencies(
-                    column=col, host=host, reachable=reachable,
-                ):
-                    found = go(dep)
-                    if found is not None:
-                        return found
-        on_stack.pop()
-        on_stack_set.discard(node)
-        visited.add(node)
-        return None
-
-    return go(start)
+    return _dfs_visit(
+        node=start, reachable=reachable,
+        on_stack=[], on_stack_set=set(), visited=set(),
+    )
 
 
 async def _prefetch_reachable_models(
@@ -175,9 +223,9 @@ async def _prefetch_reachable_models(
     are silently omitted — save-time is best-effort.
     """
     out: Dict[str, SlayerModel] = {model.name: model}
-    queue: List[SlayerModel] = [model]
+    queue: Deque[SlayerModel] = deque([model])
     while queue:
-        current = queue.pop(0)
+        current = queue.popleft()
         for join in current.joins:
             target_name = join.target_model
             if target_name in out:
