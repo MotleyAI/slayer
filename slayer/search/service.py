@@ -146,15 +146,20 @@ def _dedup(items: List[str]) -> List[str]:
 def _backfill_memory_by_id(
     *,
     memory_by_id: dict,
-    all_memories: List["Memory"],
+    all_memories_by_id: dict[int, "Memory"],
     mem_ids,
 ) -> None:
     """For each id in ``mem_ids`` not already in ``memory_by_id``, look it
-    up in ``all_memories`` and insert it. Mutates ``memory_by_id``."""
+    up in ``all_memories_by_id`` and insert it. Mutates ``memory_by_id``.
+
+    Takes a precomputed id→Memory dict (not the raw list) so per-call
+    backfill stays O(N) instead of O(N²) when every channel returns the
+    full memory corpus (DEV-1414).
+    """
     for mem_id in mem_ids:
         if mem_id in memory_by_id:
             continue
-        mem = next((m for m in all_memories if m.id == mem_id), None)
+        mem = all_memories_by_id.get(mem_id)
         if mem is not None:
             memory_by_id[mem_id] = mem
 
@@ -431,20 +436,22 @@ class SearchService:
         warnings = _dedup(warnings + channel_3_warnings)
 
         # Backfill memory_by_id from every channel so RRF can resolve
-        # any memory hit downstream.
+        # any memory hit downstream. Build the id→Memory dict once so
+        # the three backfills stay O(N) overall (DEV-1414).
+        all_memories_by_id = {m.id: m for m in all_memories}
         _backfill_memory_by_id(
             memory_by_id=memory_by_id,
-            all_memories=all_memories,
+            all_memories_by_id=all_memories_by_id,
             mem_ids=channel_1_memory_ranking,
         )
         _backfill_memory_by_id(
             memory_by_id=memory_by_id,
-            all_memories=all_memories,
+            all_memories_by_id=all_memories_by_id,
             mem_ids=index_hits_by_memory_id.keys(),
         )
         _backfill_memory_by_id(
             memory_by_id=memory_by_id,
-            all_memories=all_memories,
+            all_memories_by_id=all_memories_by_id,
             mem_ids=channel_3_memory_ranking,
         )
 
@@ -662,6 +669,14 @@ class SearchService:
         * memory rows whose ``canonical_id`` appears in the supplied
           ``eligible_memory_canonicals`` set (already datasource-filtered
           upstream).
+
+        DEV-1414: rows whose ``canonical_id`` is not in the live tantivy
+        corpus (stale memory ids, hidden / deleted entities) are dropped
+        before the matrix build. Otherwise stale rows would consume
+        cosine rank positions and degrade live docs' RRF scores —
+        invariant under cap changes (so the per-bucket contract still
+        holds) but surprising and lossy. The filter keeps the channel's
+        candidate set aligned with channel 2's tantivy corpus.
         """
         if not question_active or corpus is None:
             return [], [], []
@@ -685,6 +700,13 @@ class SearchService:
                 datasource=datasource,
                 eligible_memory_canonicals=eligible_memory_canonicals or set(),
             )
+        # Drop sidecar rows that don't correspond to anything in the
+        # live tantivy corpus (DEV-1414). Memory rows are keyed
+        # ``memory:<int>`` in storage and as the corpus's
+        # ``canonical_to_kind`` key; entity rows share the canonical
+        # string directly. Both shapes match by single dict lookup.
+        live_canonicals = corpus.canonical_to_kind.keys()
+        rows = [r for r in rows if r.canonical_id in live_canonicals]
         if not rows:
             return [], [], [
                 f"embedding channel skipped: no embedding rows for model "

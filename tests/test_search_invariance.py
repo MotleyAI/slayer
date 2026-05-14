@@ -17,6 +17,7 @@ would shift even though the question and ``max_memories`` were fixed.
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 from typing import AsyncIterator, List, Optional
 
@@ -477,11 +478,18 @@ async def storage_with_embeddings(
         monkeypatch.setattr(embedding_client, "is_available", lambda: True)
 
         # Deterministic embeddings: hash the rendered text into a tiny
-        # vector so ranks vary across docs but are reproducible.
+        # vector so ranks vary across docs but are reproducible across
+        # interpreter runs (Python's built-in ``hash`` is randomised
+        # per process, so use sha256 here).
         def _vec(text: str) -> List[float]:
-            return [
-                (hash((text, i)) & 0xFFFF) / 65535.0 for i in range(8)
-            ]
+            out: List[float] = []
+            for i in range(8):
+                digest = hashlib.sha256(
+                    f"{text}|{i}".encode("utf-8"),
+                ).digest()
+                # First two bytes give a stable 16-bit unsigned int.
+                out.append(((digest[0] << 8) | digest[1]) / 65535.0)
+            return out
 
         async def stub_embed_batch(  # NOSONAR(S7503) — stub matches embed_batch async signature
             texts: List[str], *, model: Optional[str] = None,
