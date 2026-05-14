@@ -95,7 +95,9 @@ joins:
 
 At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to local-model chains (a column on the source model referencing another derived column on the same model) and to multi-hop join paths (use the `__`-delimited form, e.g., `B__C.x_derived`, when crossing more than one join).
 
-Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are detected at enrichment time and raise a clear `ValueError`. The same expansion is applied to filters and to colon-aggregated measures, so `"B.foo_normalized:sum"` produces `SUM(B.foo_raw / 100.0)`.
+Same-model references may be written **bare** (just the column name) or qualified with the host alias — both forms expand the same way. So given `bucket.sql = "raw_a / 10"`, a sibling `rn.sql = "ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)"` correctly expands `bucket` to the inlined body. Bare references inside a nested scope (sub-query, `UNION` branch, CTE, `VALUES`) are NOT inlined — those identifiers belong to the inner rowset, not the host model — so `Column.sql = "(SELECT MAX(score) FROM other) + score"` inlines the outer `score` but leaves the inner one alone.
+
+Cycles in the reference graph (e.g., `c1.sql = "c2 + 1"` and `c2.sql = "c1 - 1"`) are rejected at `save_model` time and raise `ColumnCycleError` (which subclasses both `SlayerError` and `ValueError`) with the cycle path in the message — so a broken chain never reaches a query. The compile-time guard remains as defence in depth. Save-time validation stays within the model's `data_source`; unresolved cross-datasource refs are silently skipped. The same expansion is applied to filters and to colon-aggregated measures, so `"B.foo_normalized:sum"` produces `SUM(B.foo_raw / 100.0)`.
 
 ### Column Data Types
 

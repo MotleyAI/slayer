@@ -165,7 +165,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # --- Async interface ---
 
-    async def save_model(self, model: SlayerModel) -> None:
+    async def _save_model_impl(self, model: SlayerModel) -> None:
         await asyncio.to_thread(self._save_model_sync, model)
 
     async def _list_all_model_identities(self) -> List[Tuple[str, str]]:

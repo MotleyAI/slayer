@@ -7,7 +7,7 @@ message format is decided by the layer that raises it.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any, List, Tuple
 
 if TYPE_CHECKING:
     from slayer.engine.schema_drift import ToDeleteEntry  # noqa: F401
@@ -93,3 +93,20 @@ class SchemaDriftError(SlayerError):
             f"pending delete(s)."
         )
         self.__cause__ = original
+
+
+class ColumnCycleError(SlayerError, ValueError):
+    """Raised when a derived ``Column.sql`` chain contains a cycle (DEV-1410).
+
+    Carries the cycle as an ordered list of ``(model_name, column_name)``
+    tuples reflecting the recursion order in which the cycle was discovered.
+
+    Multi-inherits ``ValueError`` so existing call sites that catch
+    ``ValueError`` (or use ``pytest.raises(ValueError)`` for the legacy
+    compile-time cycle raise) continue to work unchanged.
+    """
+
+    def __init__(self, cycle: List[Tuple[str, str]]) -> None:
+        self.cycle: List[Tuple[str, str]] = list(cycle)
+        chain = " → ".join(f"{m}.{c}" for m, c in self.cycle)
+        super().__init__(f"Circular column reference detected: {chain}")
