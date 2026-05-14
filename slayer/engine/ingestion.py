@@ -11,7 +11,7 @@ import asyncio
 import logging
 import sys
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Optional, Set, TextIO, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, TextIO, Tuple
 
 import sqlalchemy as sa
 from pydantic import BaseModel, Field
@@ -21,7 +21,15 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.memories.resolver import canonical_id_rooted_at
 from slayer.storage.base import StorageBackend
+
+if TYPE_CHECKING:
+    # The runtime import lives inside ``_refresh_datasource_embeddings``
+    # so the embeddings module stays off the cold-start import graph
+    # when the optional extra isn't installed.
+    from slayer.embeddings.service import EmbeddingService
+
 
 logger = logging.getLogger(__name__)
 
@@ -1009,9 +1017,15 @@ async def ingest_datasource_idempotent(
     embedding_errors = await _refresh_datasource_embeddings(
         datasource_name=datasource.name, storage=storage,
     )
-    for err in embedding_errors:
+    for model_name, err in embedding_errors:
+        # DEV-1416: each helper inside ``_refresh_datasource_embeddings``
+        # attaches the canonical entity tag (``<ds>.<model>``,
+        # ``memory:<id>``, or ``""`` for the datasource doc) so a
+        # startup log inspection can distinguish memory failures from
+        # model / datasource-doc failures at a glance — no string
+        # sniffing of free-form warning text.
         errors.append(IngestionError(
-            model_name="",
+            model_name=model_name,
             data_source=datasource.name,
             error=f"embedding refresh: {err}",
         ))
@@ -1194,42 +1208,125 @@ async def ingest_all_datasources_idempotent(
     return summary
 
 
-async def _refresh_datasource_embeddings(
-    *, datasource_name: str, storage: StorageBackend,
-) -> List[str]:
-    """Walk every model in the datasource + the datasource doc itself
-    through ``EmbeddingService.refresh_*``. Best-effort: returns warning
-    strings; never raises."""
-    # Local import to avoid pulling embeddings into ingestion's import
-    # graph on a cold start without the optional extra installed.
-    from slayer.embeddings.service import EmbeddingService
+async def _refresh_models_for_datasource(
+    *,
+    datasource_name: str,
+    storage: StorageBackend,
+    service: "EmbeddingService",
+) -> Tuple[List[Tuple[str, str]], List[SlayerModel]]:
+    """Refresh embeddings for every visible model in the datasource.
 
-    service = EmbeddingService(storage=storage)
-    warnings: List[str] = []
-    models_in_ds: List = []
+    Returns ``(warnings, models_in_ds)``. Each warning is tagged with
+    the model's ``<ds>.<name>`` so the orchestrator can route it to the
+    right ``IngestionError.model_name``. ``models_in_ds`` is forwarded
+    to the datasource-doc refresh that follows.
+    """
+    warnings: List[Tuple[str, str]] = []
+    models_in_ds: List[SlayerModel] = []
     try:
         identities = await storage._list_all_model_identities()
     except Exception as exc:  # noqa: BLE001 — defensive
-        return [f"{datasource_name}: {exc}"]
+        return [("", f"{datasource_name}: {exc}")], models_in_ds
     for ds, name in identities:
         if ds != datasource_name:
             continue
+        tag = f"{ds}.{name}"
         try:
             m = await storage.get_model(name, data_source=ds)
         except Exception as exc:  # noqa: BLE001 — defensive per-model
-            warnings.append(f"{ds}.{name}: {exc}")
+            warnings.append((tag, str(exc)))
             continue
         if m is None:
             continue
         models_in_ds.append(m)
         try:
-            warnings.extend(await service.refresh_model_subtree(m))
+            subtree_warnings = await service.refresh_model_subtree(m)
         except Exception as exc:  # noqa: BLE001 — defensive per-model
-            warnings.append(f"{ds}.{name}: {exc}")
+            subtree_warnings = [str(exc)]
+        for w in subtree_warnings:
+            warnings.append((tag, w))
+    return warnings, models_in_ds
+
+
+async def _refresh_datasource_doc(
+    *,
+    datasource_name: str,
+    models: List[SlayerModel],
+    service: "EmbeddingService",
+) -> List[Tuple[str, str]]:
+    """Refresh the datasource doc embedding. Warnings are tagged with
+    an empty ``model_name`` since the doc has no specific entity name."""
     try:
-        warnings.extend(await service.refresh_datasource(
-            name=datasource_name, models=models_in_ds,
-        ))
+        doc_warnings = await service.refresh_datasource(
+            name=datasource_name, models=models,
+        )
     except Exception as exc:  # noqa: BLE001 — defensive
-        warnings.append(f"{datasource_name} (datasource doc): {exc}")
+        return [("", f"{datasource_name} (datasource doc): {exc}")]
+    return [("", w) for w in doc_warnings]
+
+
+async def _refresh_memories_for_datasource(
+    *,
+    datasource_name: str,
+    storage: StorageBackend,
+    service: "EmbeddingService",
+) -> List[Tuple[str, str]]:
+    """Refresh embeddings for every memory whose canonical entities are
+    rooted at this datasource. Each warning is tagged with
+    ``memory:<id>`` so a startup log inspection can distinguish memory
+    failures from datasource-doc / model failures at a glance.
+
+    A memory linked to entities in datasources A and B is touched in
+    both passes; hash-skip inside ``_apply_pending`` makes the second
+    call a no-op.
+    """
+    try:
+        memories = await storage.list_memories()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        return [("", f"{datasource_name} (memories): {exc}")]
+    warnings: List[Tuple[str, str]] = []
+    for memory in memories:
+        if not any(
+            canonical_id_rooted_at(e, datasource_name)
+            for e in memory.entities
+        ):
+            continue
+        tag = f"memory:{memory.id}"
+        try:
+            memory_warnings = await service.refresh_memory(memory)
+        except Exception as exc:  # noqa: BLE001 — defensive per-memory
+            memory_warnings = [str(exc)]
+        for w in memory_warnings:
+            warnings.append((tag, w))
     return warnings
+
+
+async def _refresh_datasource_embeddings(
+    *, datasource_name: str, storage: StorageBackend,
+) -> List[Tuple[str, str]]:
+    """Refresh persisted embeddings for everything reachable from this
+    datasource: every visible model + its visible children, the
+    datasource doc itself, and every memory whose canonical entities
+    are rooted at the datasource.
+
+    Best-effort: returns ``(model_name, error_text)`` tuples; never
+    raises. ``model_name`` is the canonical entity tag
+    (``<ds>.<model>``, ``memory:<id>``, or ``""`` for the datasource
+    doc) used by ``ingest_datasource_idempotent`` to route per-entity
+    failures to the matching ``IngestionError``.
+    """
+    # Local import to avoid pulling embeddings into ingestion's import
+    # graph on a cold start without the optional extra installed.
+    from slayer.embeddings.service import EmbeddingService
+
+    service = EmbeddingService(storage=storage)
+    model_warnings, models_in_ds = await _refresh_models_for_datasource(
+        datasource_name=datasource_name, storage=storage, service=service,
+    )
+    doc_warnings = await _refresh_datasource_doc(
+        datasource_name=datasource_name, models=models_in_ds, service=service,
+    )
+    memory_warnings = await _refresh_memories_for_datasource(
+        datasource_name=datasource_name, storage=storage, service=service,
+    )
+    return model_warnings + doc_warnings + memory_warnings

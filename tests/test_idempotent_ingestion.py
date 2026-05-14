@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List, Optional
 
 import pytest
 
@@ -28,7 +28,11 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
-from slayer.engine.ingestion import ingest_datasource_idempotent
+from slayer.embeddings import client as embedding_client
+from slayer.engine.ingestion import (
+    _refresh_datasource_embeddings,
+    ingest_datasource_idempotent,
+)
 from slayer.engine.schema_drift import (
     IdempotentIngestResult,
     ModelAddition,
@@ -372,6 +376,270 @@ class TestErrorIsolation:
         # One success (b_new), one failure (a_new)
         assert _addition_for("b_new", result.additions) is not None
         assert any(e.model_name == "a_new" for e in result.errors)
+
+
+class TestMemoryEmbeddingRefresh:
+    """DEV-1416: `_refresh_datasource_embeddings` must walk memories whose
+    entities are rooted at the datasource, in addition to models and the
+    datasource doc. Failures attribute to the offending memory by id."""
+
+    @staticmethod
+    def _enable_channel(monkeypatch: pytest.MonkeyPatch) -> List[List[str]]:
+        """Override the conftest autouse fixture for this test. Returns a
+        list that captures every ``embed_batch`` call's text payload."""
+        monkeypatch.setattr(embedding_client, "is_available", lambda: True)
+        calls: List[List[str]] = []
+
+        async def fake_embed_batch(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
+            texts: List[str], *, model: Optional[str] = None,
+        ) -> List[Optional[List[float]]]:
+            calls.append(list(texts))
+            return [[0.1, 0.2, 0.3] for _ in texts]
+
+        monkeypatch.setattr(
+            "slayer.embeddings.service.embed_batch", fake_embed_batch,
+        )
+        return calls
+
+    async def test_refreshes_only_memories_rooted_at_datasource(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        storage, ds, _ = await _setup(workspace)
+        # Second datasource for negative-case memories. We don't actually
+        # ingest it — it just needs to exist as a config for the entity
+        # strings to be distinguishable from `ds`.
+        other = DatasourceConfig(name="other_ds", type="sqlite", database=":memory:")
+        await storage.save_datasource(other)
+
+        m_in_ds = await storage.save_memory(
+            learning="rooted at ds",
+            entities=[f"{ds.name}.orders.amount"],
+        )
+        m_in_other = await storage.save_memory(
+            learning="rooted at other_ds only",
+            entities=["other_ds.customers.name"],
+        )
+        m_spanning = await storage.save_memory(
+            learning="spans both",
+            entities=[f"{ds.name}.customers.region", "other_ds.regions.country"],
+        )
+
+        self._enable_channel(monkeypatch)
+
+        warnings = await _refresh_datasource_embeddings(
+            datasource_name=ds.name, storage=storage,
+        )
+        assert warnings == []
+
+        rows = await storage.list_embeddings(
+            embedding_model_name=embedding_client.current_model(),
+        )
+        memory_ids = {
+            r.canonical_id for r in rows if r.entity_kind == "memory"
+        }
+        assert f"memory:{m_in_ds.id}" in memory_ids
+        assert f"memory:{m_spanning.id}" in memory_ids
+        assert f"memory:{m_in_other.id}" not in memory_ids
+
+    async def test_second_pass_is_noop_when_content_unchanged(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        storage, ds, _ = await _setup(workspace)
+        saved = await storage.save_memory(
+            learning="stable",
+            entities=[f"{ds.name}.orders.amount"],
+        )
+        calls = self._enable_channel(monkeypatch)
+
+        await _refresh_datasource_embeddings(
+            datasource_name=ds.name, storage=storage,
+        )
+        first_pass_call_count = len(calls)
+        first_pass_total_texts = sum(len(c) for c in calls)
+
+        # No content changed → no new embed calls.
+        await _refresh_datasource_embeddings(
+            datasource_name=ds.name, storage=storage,
+        )
+        assert len(calls) == first_pass_call_count
+        assert sum(len(c) for c in calls) == first_pass_total_texts
+
+        # And the memory row is present after both passes.
+        rows = await storage.list_embeddings(
+            embedding_model_name=embedding_client.current_model(),
+        )
+        assert any(
+            r.canonical_id == f"memory:{saved.id}" for r in rows
+        )
+
+    async def test_per_memory_failure_surfaces_with_memory_id_in_ingest_result(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        storage, ds, _ = await _setup(workspace)
+        saved = await storage.save_memory(
+            learning="will fail to embed",
+            entities=[f"{ds.name}.orders.amount"],
+        )
+        self._enable_channel(monkeypatch)
+
+        # Force `refresh_memory` to return the per-row failure warning
+        # shape that `_apply_pending` would normally emit when
+        # `embed_batch` returns None.
+        async def failing_refresh(self, memory):  # NOSONAR(S7503) — replaces async refresh_memory
+            return [
+                f"embedding refresh failed for memory:{memory.id}; "
+                f"skipped (search will still find this entity via tantivy + BM25)."
+            ]
+
+        monkeypatch.setattr(
+            "slayer.embeddings.service.EmbeddingService.refresh_memory",
+            failing_refresh,
+        )
+
+        result = await ingest_datasource_idempotent(
+            datasource=ds, storage=storage,
+        )
+        memory_errors = [
+            e for e in result.errors
+            if e.model_name == f"memory:{saved.id}"
+        ]
+        assert memory_errors, (
+            f"expected an IngestionError with "
+            f"model_name='memory:{saved.id}'; got {result.errors!r}"
+        )
+        assert memory_errors[0].data_source == ds.name
+        assert memory_errors[0].error.startswith("embedding refresh:")
+        assert f"memory:{saved.id}" in memory_errors[0].error
+
+    async def test_refresh_memory_raise_is_caught_and_tagged(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The defensive try/except in the memory loop must convert a
+        raise from ``refresh_memory`` into a tagged ``(model_name,
+        error_text)`` tuple — never propagate."""
+        storage, ds, _ = await _setup(workspace)
+        saved = await storage.save_memory(
+            learning="raises on refresh",
+            entities=[f"{ds.name}.orders.amount"],
+        )
+        self._enable_channel(monkeypatch)
+
+        async def raising_refresh(self, memory):  # NOSONAR(S7503) — replaces async refresh_memory
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(
+            "slayer.embeddings.service.EmbeddingService.refresh_memory",
+            raising_refresh,
+        )
+
+        warnings = await _refresh_datasource_embeddings(
+            datasource_name=ds.name, storage=storage,
+        )
+        assert any(
+            model_name == f"memory:{saved.id}" and "boom" in err
+            for model_name, err in warnings
+        ), warnings
+
+    async def test_extra_not_installed_silent_noop_on_memory_path(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When ``is_available()`` returns False (extra not installed or
+        no API key), the memory loop must be silent — no warnings, no
+        embedding rows."""
+        storage, ds, _ = await _setup(workspace)
+        await storage.save_memory(
+            learning="unused", entities=[f"{ds.name}.orders.amount"],
+        )
+        # The autouse `_disable_embedding_channel_by_default` fixture
+        # already forces is_available=False; assert explicitly for
+        # clarity.
+        assert embedding_client.is_available() is False
+
+        called: List[List[str]] = []
+
+        async def should_not_be_called(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
+            texts: List[str], *, model: Optional[str] = None,
+        ) -> List[Optional[List[float]]]:
+            called.append(list(texts))
+            return [None for _ in texts]
+
+        monkeypatch.setattr(
+            "slayer.embeddings.service.embed_batch", should_not_be_called,
+        )
+
+        warnings = await _refresh_datasource_embeddings(
+            datasource_name=ds.name, storage=storage,
+        )
+        assert warnings == []
+        assert called == []
+        rows = await storage.list_embeddings(
+            embedding_model_name=embedding_client.current_model(),
+        )
+        assert [r for r in rows if r.entity_kind == "memory"] == []
+
+    async def test_save_embeddings_failure_during_memory_persist_attributes_to_memory_id(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Codex Finding 1: when ``save_embeddings`` raises while
+        persisting a memory's embedding, the resulting warning carries
+        the memory's canonical id so ``ingest_datasource_idempotent``
+        can route the failure to ``IngestionError(model_name="memory:<id>")``
+        rather than the unattributed ``model_name=""`` bucket."""
+        storage, ds, _ = await _setup(workspace)
+        saved = await storage.save_memory(
+            learning="row that will fail to persist",
+            entities=[f"{ds.name}.orders.amount"],
+        )
+        self._enable_channel(monkeypatch)
+
+        # Patch the storage backend so save_embeddings raises only for
+        # the memory canonical id; model + datasource-doc rows persist
+        # normally so we can pin that this is the only failure.
+        original_save = storage.save_embeddings
+
+        async def selective_save(rows):
+            if any(r.canonical_id == f"memory:{saved.id}" for r in rows):
+                raise RuntimeError("disk full")
+            await original_save(rows)
+
+        monkeypatch.setattr(storage, "save_embeddings", selective_save)
+
+        result = await ingest_datasource_idempotent(
+            datasource=ds, storage=storage,
+        )
+        memory_errors = [
+            e for e in result.errors
+            if e.model_name == f"memory:{saved.id}"
+        ]
+        assert memory_errors, (
+            f"expected an IngestionError with "
+            f"model_name='memory:{saved.id}'; got {result.errors!r}"
+        )
+        assert "disk full" in memory_errors[0].error
+        assert f"memory:{saved.id}" in memory_errors[0].error
+
+    async def test_list_memories_failure_warns_and_continues(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A raise inside ``storage.list_memories`` must be captured as a
+        single warning tuple — the datasource pass must still complete
+        without propagating."""
+        storage, ds, _ = await _setup(workspace)
+        self._enable_channel(monkeypatch)
+
+        async def boom(self, *, entities=None):  # NOSONAR(S7503) — async list_memories signature
+            raise RuntimeError("memories table missing")
+
+        monkeypatch.setattr(
+            "slayer.storage.base.StorageBackend.list_memories", boom,
+        )
+
+        warnings = await _refresh_datasource_embeddings(
+            datasource_name=ds.name, storage=storage,
+        )
+        assert any(
+            "memories table missing" in err for _, err in warnings
+        ), warnings
 
 
 class TestExcludeTables:

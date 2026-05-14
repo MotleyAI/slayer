@@ -267,7 +267,12 @@ sql-mode and query-backed models are silently skipped in v1.
   (`EmbeddingService._apply_pending`) issues one batched
   `get_embeddings_for_canonical_ids` for the hash-skip filter and one
   batched `save_embeddings` for the persist step (DEV-1405) — refresh
-  cost is independent of subtree size.
+  cost is independent of subtree size. **Memories** are included in the
+  `slayer ingest` / `--ingest-on-startup` per-datasource refresh
+  (DEV-1416), filtered to memories with at least one canonical entity
+  rooted at the current datasource — so `embeddings.db` can be repaired
+  by re-running ingest, no separate `slayer embeddings refresh` step
+  required.
 - **Cascade** semantics (DEV-1405 fix): `delete_embeddings_for_canonical`
   matches the canonical id exactly OR as a strict dotted-path descendant
   (`<root>.<...>`) — never as a character prefix. So `delete_memory(4)`
