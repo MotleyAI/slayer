@@ -574,31 +574,12 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
     column ``foo_normalized = foo_raw / 100.0``, expansion must qualify the
     inner ``foo_raw`` to B, not leave it ambiguous."""
     engine, storage = _engine_with_storage(tmp_path)
-    # Override the standard fixture so A also has ``foo_raw``.
-    model_b = SlayerModel(
-        name="B",
-        data_source="test",
-        sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
-            Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.DOUBLE),
-        ],
+    # Route through the standard A/B fixture, injecting an extra
+    # ``foo_raw`` onto A so it collides with B's column of the same name.
+    model_a = await _save_a_b(
+        storage,
+        a_columns=[Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE)],
     )
-    await storage.save_model(model_b)
-    model_a = SlayerModel(
-        name="A",
-        data_source="test",
-        sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="bar", sql="bar", type=DataType.DOUBLE),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),  # same name on A!
-        ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
-    )
-    await storage.save_model(model_a)
     query = SlayerQuery(
         source_model="A",
         dimensions=[ColumnRef(name="foo_normalized", model="B")],

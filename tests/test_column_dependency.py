@@ -10,6 +10,8 @@ template method) so it fires for every save path uniformly — direct
 create/edit, and the migration write-back (the migration path passes
 ``_validate=False`` so legacy cyclic data remains loadable).
 """
+from typing import Tuple
+
 import pytest
 
 from slayer.core.enums import DataType
@@ -25,6 +27,81 @@ def _yaml_storage(tmp_path) -> YAMLStorage:
 
 def _sqlite_storage(tmp_path) -> SQLiteStorage:
     return SQLiteStorage(db_path=str(tmp_path / "storage.db"))
+
+
+# Fixture factories — the cross-model cycle tests below all need variants
+# of two model graphs (A↔B and A→B→C), so the boilerplate is hoisted out.
+
+
+def _model_a_to_b(*, foo_sql: str) -> SlayerModel:
+    """A model with a single derived column ``foo`` joined to a target B."""
+    return SlayerModel(
+        name="A",
+        data_source="ds",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+            Column(name="foo", sql=foo_sql, type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+    )
+
+
+def _abc_chain(
+    *,
+    a_foo_sql: str,
+    c_x_sql: str,
+    c_joins_back_to_a: bool = False,
+) -> Tuple[SlayerModel, SlayerModel, SlayerModel]:
+    """The canonical A → B → C three-model scaffold used by the strict
+    alias-walk tests. ``foo`` on A and ``x`` on C are derived; their
+    expressions are the per-test variable.
+
+    ``c_joins_back_to_a`` adds an ``a_id`` column + a C→A join, which
+    closes a back-edge needed to make a cycle through C.x reachable.
+    """
+    c_columns = [
+        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        Column(name="x", sql=c_x_sql, type=DataType.DOUBLE),
+    ]
+    c_joins = []
+    if c_joins_back_to_a:
+        c_columns.insert(
+            1, Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
+        )
+        c_joins.append(
+            ModelJoin(target_model="A", join_pairs=[["a_id", "id"]]),
+        )
+    model_c = SlayerModel(
+        name="C",
+        data_source="ds",
+        sql_table="C",
+        columns=c_columns,
+        joins=c_joins,
+    )
+    model_b = SlayerModel(
+        name="B",
+        data_source="ds",
+        sql_table="B",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c_id", sql="c_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
+    )
+    model_a = SlayerModel(
+        name="A",
+        data_source="ds",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+            Column(name="foo", sql=a_foo_sql, type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+    )
+    return model_a, model_b, model_c
 
 
 # ---------------------------------------------------------------------------
@@ -183,19 +260,8 @@ async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_
     the cycle (B's reachable graph includes A and A.foo's ref into B.bar)."""
     storage = _yaml_storage(tmp_path)
     # A → B (the ModelJoin is required so the cycle is reachable via joins).
-    model_a = SlayerModel(
-        name="A",
-        data_source="ds",
-        sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="foo", sql="B.bar + 1", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
-    )
     # B does not exist yet — unresolved B.bar ref is silently skipped.
-    await storage.save_model(model_a)
+    await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
     # Now save B with a back-ref to A.foo, completing the cycle.
     model_b = SlayerModel(
         name="B",
@@ -217,19 +283,8 @@ async def test_save_model_tolerates_unresolved_joined_ref(tmp_path) -> None:
     save-time validation is best-effort and silently skips unresolvable
     refs. (The compile-time guard catches the broken ref at query time.)"""
     storage = _yaml_storage(tmp_path)
-    model_a = SlayerModel(
-        name="A",
-        data_source="ds",
-        sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="foo", sql="B.bar + 1", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
-    )
     # No exception expected.
-    await storage.save_model(model_a)
+    await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
 
 
 async def test_save_model_ignores_indirect_join_target_in_cycle_detection(
@@ -241,44 +296,13 @@ async def test_save_model_ignores_indirect_join_target_in_cycle_detection(
     leaves ``C.x`` alone, so the save-time validator must too — even when
     C is reachable from A's join graph BFS."""
     storage = _yaml_storage(tmp_path)
-    model_c = SlayerModel(
-        name="C",
-        data_source="ds",
-        sql_table="C",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            # Derived col that, if treated as an A-reachable dep, would
-            # complete a cycle through A.foo. The strict walk must not
-            # match it: A has no direct join to C.
-            Column(name="x", sql="A.foo + 1", type=DataType.DOUBLE),
-        ],
+    # If the strict walk treated ``C.x`` on A as a dep, this would close a
+    # cycle (A.foo → C.x → A.foo). It must not — A has no direct A→C join.
+    model_a, model_b, model_c = _abc_chain(
+        a_foo_sql="C.x + 1", c_x_sql="A.foo + 1",
     )
     await storage.save_model(model_c, _validate=False)  # C alone has unresolvable A.foo
-    model_b = SlayerModel(
-        name="B",
-        data_source="ds",
-        sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c_id", sql="c_id", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
-    )
     await storage.save_model(model_b)
-    # A joins B only, NOT C. ``A.foo = "C.x + 1"`` references C without
-    # a direct A→C join — strict alias resolution leaves it alone, so
-    # no cycle (A.foo → ??? — never reaches C.x).
-    model_a = SlayerModel(
-        name="A",
-        data_source="ds",
-        sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="foo", sql="C.x + 1", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
-    )
     # No cycle raised — the indirect-reach ref is not a strict dependency.
     await storage.save_model(model_a)
 
@@ -291,42 +315,14 @@ async def test_save_model_detects_cycle_via_canonical_multihop_path_alias(
     walking each hop through the join chain. A.foo references B__C.x;
     C.x references A.foo via a back-walk; the cycle must be detected."""
     storage = _yaml_storage(tmp_path)
-    model_c = SlayerModel(
-        name="C",
-        data_source="ds",
-        sql_table="C",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
-            Column(name="x", sql="A.foo + 1", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="A", join_pairs=[["a_id", "id"]])],
+    # A → B → C; A.foo references B__C.x via canonical multi-hop path.
+    # C.x has the back-reference into A.foo (C joins A), so saving A
+    # completes a cycle.
+    model_a, model_b, model_c = _abc_chain(
+        a_foo_sql="B__C.x + 1", c_x_sql="A.foo + 1", c_joins_back_to_a=True,
     )
     await storage.save_model(model_c, _validate=False)  # A doesn't exist yet
-    model_b = SlayerModel(
-        name="B",
-        data_source="ds",
-        sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c_id", sql="c_id", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
-    )
     await storage.save_model(model_b)
-    # A → B → C; A.foo references B__C.x via canonical multi-hop path.
-    # C.x has the back-reference, so saving A completes a cycle.
-    model_a = SlayerModel(
-        name="A",
-        data_source="ds",
-        sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="foo", sql="B__C.x + 1", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
-    )
     with pytest.raises(ColumnCycleError) as exc_info:
         await storage.save_model(model_a)
     msg = str(exc_info.value)
