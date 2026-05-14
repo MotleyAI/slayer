@@ -301,6 +301,33 @@ def _memory_id_from_canonical(canonical_id: str) -> Optional[int]:
         return None
 
 
+def _rank_embedding_kind(
+    *,
+    rows: List["Embedding"],
+    normalised_query,
+    np,
+    normalise_matrix,
+    top_k_cosine,
+) -> List[str]:
+    """Rank one kind of embedding rows by cosine similarity to the
+    pre-normalised query vector. Returns the rows' ``canonical_id``
+    strings in descending similarity order. Empty input → empty list.
+
+    Pulls the per-kind matrix build + cosine call out of
+    ``SearchService._run_channel_3`` so each kind's ranking is a single
+    line in the caller (DEV-1414 — keeps channel 3 below the
+    cognitive-complexity gate)."""
+    if not rows:
+        return []
+    matrix = np.array([r.embedding for r in rows], dtype=np.float32)
+    pairs = top_k_cosine(
+        query=normalised_query,
+        matrix=normalise_matrix(matrix),
+        k=len(rows),
+    )
+    return [rows[idx].canonical_id for idx, _score in pairs]
+
+
 def _fuse_entity_hits(
     *,
     rankings: List[List[str]],
@@ -742,35 +769,25 @@ class SearchService:
         memory_rows = [r for r in rows if r.entity_kind == "memory"]
         entity_rows = [r for r in rows if r.entity_kind != "memory"]
         normalised_query = normalise(query_vec)
-
+        ranked_memory_canonicals = _rank_embedding_kind(
+            rows=memory_rows,
+            normalised_query=normalised_query,
+            np=np,
+            normalise_matrix=normalise_matrix,
+            top_k_cosine=top_k_cosine,
+        )
         memory_ranking: List[int] = []
-        if memory_rows:
-            memory_matrix = np.array(
-                [r.embedding for r in memory_rows], dtype=np.float32,
-            )
-            for idx, _score in top_k_cosine(
-                query=normalised_query,
-                matrix=normalise_matrix(memory_matrix),
-                k=len(memory_rows),
-            ):
-                memory_id = _memory_id_from_canonical(
-                    memory_rows[idx].canonical_id,
-                )
-                if memory_id is not None:
-                    memory_ranking.append(memory_id)
-
-        entity_ranking: List[str] = []
-        if entity_rows:
-            entity_matrix = np.array(
-                [r.embedding for r in entity_rows], dtype=np.float32,
-            )
-            for idx, _score in top_k_cosine(
-                query=normalised_query,
-                matrix=normalise_matrix(entity_matrix),
-                k=len(entity_rows),
-            ):
-                entity_ranking.append(entity_rows[idx].canonical_id)
-
+        for canonical in ranked_memory_canonicals:
+            memory_id = _memory_id_from_canonical(canonical)
+            if memory_id is not None:
+                memory_ranking.append(memory_id)
+        entity_ranking = _rank_embedding_kind(
+            rows=entity_rows,
+            normalised_query=normalised_query,
+            np=np,
+            normalise_matrix=normalise_matrix,
+            top_k_cosine=top_k_cosine,
+        )
         return memory_ranking, entity_ranking, []
 
     async def _collect_index_corpus(

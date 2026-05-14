@@ -242,6 +242,31 @@ def build_in_memory_corpus(
 # ---------------------------------------------------------------------------
 
 
+def _apply_kind_filter(
+    *,
+    query: "tantivy.Query",
+    schema: "tantivy.Schema",
+    kind_filter: Optional[str],
+    exclude_kind: Optional[str],
+) -> "tantivy.Query":
+    """Wrap ``query`` in a boolean query that ``Must`` includes (or
+    ``MustNot`` excludes) docs whose ``kind`` field exactly equals the
+    supplied value. Returns ``query`` unchanged when neither argument
+    is set. The caller has already validated mutual exclusivity."""
+    if kind_filter is None and exclude_kind is None:
+        return query
+    target = kind_filter if kind_filter is not None else exclude_kind
+    occur = (
+        tantivy.Occur.Must if kind_filter is not None
+        else tantivy.Occur.MustNot
+    )
+    kind_term = tantivy.Query.term_query(schema, "kind", target)
+    return tantivy.Query.boolean_query([
+        (tantivy.Occur.Must, query),
+        (occur, kind_term),
+    ])
+
+
 def search_index(
     *,
     index: tantivy.Index,
@@ -285,24 +310,12 @@ def search_index(
         query = index.parse_query(question, fields)
     except (ValueError, RuntimeError):
         return []
-    if kind_filter is not None or exclude_kind is not None:
-        schema = index.schema
-        if kind_filter is not None:
-            kind_term = tantivy.Query.term_query(
-                schema, "kind", kind_filter,
-            )
-            query = tantivy.Query.boolean_query([
-                (tantivy.Occur.Must, query),
-                (tantivy.Occur.Must, kind_term),
-            ])
-        else:
-            kind_term = tantivy.Query.term_query(
-                schema, "kind", exclude_kind,
-            )
-            query = tantivy.Query.boolean_query([
-                (tantivy.Occur.Must, query),
-                (tantivy.Occur.MustNot, kind_term),
-            ])
+    query = _apply_kind_filter(
+        query=query,
+        schema=index.schema,
+        kind_filter=kind_filter,
+        exclude_kind=exclude_kind,
+    )
     searcher = index.searcher()
     raw_hits = searcher.search(query, limit).hits
     out: List[IndexHit] = []

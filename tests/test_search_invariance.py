@@ -151,6 +151,29 @@ def _make_models() -> List[SlayerModel]:
     ]
 
 
+def _entities_for_topic(topic: str) -> List[str]:
+    """Pick canonical entity tags for a learning-topic string. Pulled
+    out of ``_seed_invariance_corpus`` so each branch stays separate
+    from the seeding loop's control flow."""
+    if "amount_paid" in topic or "paid" in topic or "revenue" in topic:
+        return ["warehouse.orders.amount_paid"]
+    if "email" in topic or "anonymous" in topic:
+        return ["warehouse.customers.email"]
+    if "ship" in topic or "warehouse" in topic:
+        return ["warehouse.warehouses"]
+    if "customer" in topic and "tier" in topic:
+        return ["warehouse.customers.customer_tier"]
+    if "customer" in topic:
+        return ["warehouse.customers"]
+    if "status" in topic:
+        return ["warehouse.orders.status"]
+    if "discount" in topic:
+        return ["warehouse.orders.discount_code"]
+    if "checkout" in topic or "fraud" in topic:
+        return ["warehouse.orders"]
+    return ["warehouse"]
+
+
 async def _seed_invariance_corpus(storage: StorageBackend) -> None:
     """Seed a corpus large enough to exercise the bottom-cliff cases that
     used to leak through the shared over_fetch budget."""
@@ -160,32 +183,11 @@ async def _seed_invariance_corpus(storage: StorageBackend) -> None:
     for model in _make_models():
         await storage.save_model(model)
 
-    # 20 learning-only memories.
+    # 20+ learning-only memories tagged by topic.
     for i, topic in enumerate(_LEARNING_TOPICS):
-        # Spread entity tags so different memories surface for different
-        # questions.
-        entities: List[str]
-        if "amount_paid" in topic or "paid" in topic or "revenue" in topic:
-            entities = ["warehouse.orders.amount_paid"]
-        elif "email" in topic or "anonymous" in topic:
-            entities = ["warehouse.customers.email"]
-        elif "ship" in topic or "warehouse" in topic:
-            entities = ["warehouse.warehouses"]
-        elif "customer" in topic and "tier" in topic:
-            entities = ["warehouse.customers.customer_tier"]
-        elif "customer" in topic:
-            entities = ["warehouse.customers"]
-        elif "status" in topic:
-            entities = ["warehouse.orders.status"]
-        elif "discount" in topic:
-            entities = ["warehouse.orders.discount_code"]
-        elif "checkout" in topic or "fraud" in topic:
-            entities = ["warehouse.orders"]
-        else:
-            entities = ["warehouse"]
         await storage.save_memory(
             learning=f"KB{i:02d}: {topic}.",
-            entities=entities,
+            entities=_entities_for_topic(topic),
         )
 
     # 8 query-bearing memories — drive the example_queries bucket.
