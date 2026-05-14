@@ -305,6 +305,47 @@ class TestSlayerModel:
         with pytest.raises(ValueError, match="non-empty string"):
             DatasourceConfig(name="", type="postgres")
 
+    def test_datasource_name_rejects_colon(self) -> None:
+        """Colon is reserved as the DSL aggregation separator
+        (``revenue:sum``) and the ``memory:<int>`` canonical-id prefix.
+        Allowing it in a datasource name would let ``memory:42`` collide
+        with the memory canonical-id namespace."""
+        from slayer.core.models import DatasourceConfig
+        with pytest.raises(ValueError, match="must not contain ':'"):
+            DatasourceConfig(name="memory:42", type="sqlite")
+
+    def test_model_data_source_rejects_colon(self) -> None:
+        """A model's ``data_source`` shares the same canonical-id
+        namespace constraints as ``DatasourceConfig.name``."""
+        with pytest.raises(ValueError, match="must not contain ':'"):
+            SlayerModel(name="orders", sql_table="t", data_source="memory:42")
+
+    def test_model_name_rejects_colon(self) -> None:
+        """Colon is reserved as the DSL aggregation separator
+        (``revenue:sum``) — model names sharing the shape would collide
+        with formula parsing."""
+        with pytest.raises(ValueError, match="must not contain ':'"):
+            SlayerModel(name="rev:sum", sql_table="t", data_source="ds")
+
+    def test_query_name_rejects_colon(self) -> None:
+        """SlayerQuery names share the same naming space as SlayerModel
+        names (a query can be persisted as a query-backed model), so the
+        same rejection rules apply."""
+        with pytest.raises(ValueError, match="must not contain ':'"):
+            SlayerQuery(name="rev:sum", source_model="orders")
+
+    def test_query_name_rejects_dot(self) -> None:
+        """Dotted SlayerQuery names would collide with the dotted-path
+        reference syntax used in queries."""
+        with pytest.raises(ValueError, match=r"must not contain '\.'"):
+            SlayerQuery(name="prod.summary", source_model="orders")
+
+    def test_column_name_rejects_colon(self) -> None:
+        """Column names containing ``:`` would collide with the
+        aggregation colon syntax (``revenue:sum``)."""
+        with pytest.raises(ValueError, match="must not contain ':'"):
+            Column(name="rev:sum")
+
 
 class TestWithinListDuplicateNames:
     """Duplicate names within ``columns`` or within ``measures`` are rejected.

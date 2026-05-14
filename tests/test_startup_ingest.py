@@ -858,7 +858,7 @@ class TestMemoryEmbeddingsOnStartup:
                 embedding_client, "is_available", lambda: True,
             )
 
-            async def fake_embed_batch(
+            async def fake_embed_batch(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
                 texts: List[str], *, model: Optional[str] = None,
             ) -> List[Optional[List[float]]]:
                 return [[0.1, 0.2, 0.3] for _ in texts]

@@ -390,7 +390,7 @@ class TestMemoryEmbeddingRefresh:
         monkeypatch.setattr(embedding_client, "is_available", lambda: True)
         calls: List[List[str]] = []
 
-        async def fake_embed_batch(
+        async def fake_embed_batch(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
             texts: List[str], *, model: Optional[str] = None,
         ) -> List[Optional[List[float]]]:
             calls.append(list(texts))
@@ -515,8 +515,8 @@ class TestMemoryEmbeddingRefresh:
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The defensive try/except in the memory loop must convert a
-        raise from ``refresh_memory`` into a tagged warning string —
-        never propagate."""
+        raise from ``refresh_memory`` into a tagged ``(model_name,
+        error_text)`` tuple — never propagate."""
         storage, ds, _ = await _setup(workspace)
         saved = await storage.save_memory(
             learning="raises on refresh",
@@ -536,7 +536,8 @@ class TestMemoryEmbeddingRefresh:
             datasource_name=ds.name, storage=storage,
         )
         assert any(
-            f"memory:{saved.id}" in w and "boom" in w for w in warnings
+            model_name == f"memory:{saved.id}" and "boom" in err
+            for model_name, err in warnings
         ), warnings
 
     async def test_extra_not_installed_silent_noop_on_memory_path(
@@ -556,7 +557,7 @@ class TestMemoryEmbeddingRefresh:
 
         called: List[List[str]] = []
 
-        async def should_not_be_called(
+        async def should_not_be_called(  # NOSONAR(S7503) — must be `async def` to match the patched embed_batch signature
             texts: List[str], *, model: Optional[str] = None,
         ) -> List[Optional[List[float]]]:
             called.append(list(texts))
@@ -576,11 +577,52 @@ class TestMemoryEmbeddingRefresh:
         )
         assert [r for r in rows if r.entity_kind == "memory"] == []
 
+    async def test_save_embeddings_failure_during_memory_persist_attributes_to_memory_id(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Codex Finding 1: when ``save_embeddings`` raises while
+        persisting a memory's embedding, the resulting warning carries
+        the memory's canonical id so ``ingest_datasource_idempotent``
+        can route the failure to ``IngestionError(model_name="memory:<id>")``
+        rather than the unattributed ``model_name=""`` bucket."""
+        storage, ds, _ = await _setup(workspace)
+        saved = await storage.save_memory(
+            learning="row that will fail to persist",
+            entities=[f"{ds.name}.orders.amount"],
+        )
+        self._enable_channel(monkeypatch)
+
+        # Patch the storage backend so save_embeddings raises only for
+        # the memory canonical id; model + datasource-doc rows persist
+        # normally so we can pin that this is the only failure.
+        original_save = storage.save_embeddings
+
+        async def selective_save(rows):
+            if any(r.canonical_id == f"memory:{saved.id}" for r in rows):
+                raise RuntimeError("disk full")
+            await original_save(rows)
+
+        monkeypatch.setattr(storage, "save_embeddings", selective_save)
+
+        result = await ingest_datasource_idempotent(
+            datasource=ds, storage=storage,
+        )
+        memory_errors = [
+            e for e in result.errors
+            if e.model_name == f"memory:{saved.id}"
+        ]
+        assert memory_errors, (
+            f"expected an IngestionError with "
+            f"model_name='memory:{saved.id}'; got {result.errors!r}"
+        )
+        assert "disk full" in memory_errors[0].error
+        assert f"memory:{saved.id}" in memory_errors[0].error
+
     async def test_list_memories_failure_warns_and_continues(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A raise inside ``storage.list_memories`` must be captured as a
-        single warning string — the datasource pass must still complete
+        single warning tuple — the datasource pass must still complete
         without propagating."""
         storage, ds, _ = await _setup(workspace)
         self._enable_channel(monkeypatch)
@@ -596,7 +638,7 @@ class TestMemoryEmbeddingRefresh:
             datasource_name=ds.name, storage=storage,
         )
         assert any(
-            "memories table missing" in w for w in warnings
+            "memories table missing" in err for _, err in warnings
         ), warnings
 
 

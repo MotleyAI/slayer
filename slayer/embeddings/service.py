@@ -252,9 +252,14 @@ class EmbeddingService:
             try:
                 await self._storage.save_embeddings(rows)
             except Exception as exc:  # NOSONAR(S112) — best-effort persistence
+                # Include canonical ids so a caller doing failure
+                # attribution by entity (e.g. ``ingest_datasource_idempotent``
+                # tagging memory failures as ``model_name="memory:<id>"``)
+                # can see which rows did not land.
+                canonical_ids = ", ".join(r.canonical_id for r in rows)
                 warnings.append(
-                    f"embedding batch persist failed "
-                    f"({len(rows)} rows): {exc}"
+                    f"embedding batch persist failed for "
+                    f"{len(rows)} row(s) [{canonical_ids}]: {exc}"
                 )
         _log.debug(
             "EmbeddingService: refreshed=%d stale=%d total=%d warnings=%d",
