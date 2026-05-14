@@ -9,6 +9,7 @@ Flow:
 
 import asyncio
 import logging
+import re
 import sys
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Set, TextIO, Tuple
@@ -21,7 +22,11 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.memories.resolver import canonical_id_rooted_at
 from slayer.storage.base import StorageBackend
+
+
+_MEMORY_REF_RE = re.compile(r"\bmemory:\d+\b")
 
 logger = logging.getLogger(__name__)
 
@@ -1010,8 +1015,17 @@ async def ingest_datasource_idempotent(
         datasource_name=datasource.name, storage=storage,
     )
     for err in embedding_errors:
+        # DEV-1416: per-memory warnings carry ``memory:<id>`` in the
+        # string (either from EmbeddingService's own per-row failure
+        # template or from the defensive try/except inside
+        # ``_refresh_datasource_embeddings``). Surface the id as
+        # ``model_name`` so a startup log inspection can distinguish
+        # memory failures from model / datasource-doc failures at a
+        # glance.
+        match = _MEMORY_REF_RE.search(err)
+        model_name = match.group(0) if match is not None else ""
         errors.append(IngestionError(
-            model_name="",
+            model_name=model_name,
             data_source=datasource.name,
             error=f"embedding refresh: {err}",
         ))
@@ -1232,4 +1246,24 @@ async def _refresh_datasource_embeddings(
         ))
     except Exception as exc:  # noqa: BLE001 — defensive
         warnings.append(f"{datasource_name} (datasource doc): {exc}")
+
+    # DEV-1416: refresh embeddings for every memory whose canonical
+    # entities are rooted at this datasource. A memory linked to entities
+    # in datasources A and B is touched in both passes; hash-skip inside
+    # ``_apply_pending`` makes the second call a no-op.
+    try:
+        memories = await storage.list_memories()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        return warnings + [f"{datasource_name} (memories): {exc}"]
+    for memory in memories:
+        if not any(
+            canonical_id_rooted_at(e, datasource_name)
+            for e in memory.entities
+        ):
+            continue
+        try:
+            memory_warnings = await service.refresh_memory(memory)
+        except Exception as exc:  # noqa: BLE001 — defensive per-memory
+            memory_warnings = [f"memory:{memory.id}: {exc}"]
+        warnings.extend(memory_warnings)
     return warnings

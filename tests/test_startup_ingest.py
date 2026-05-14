@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import argparse
 import io
+import sqlite3
 import sys
+import tempfile
 import types
+from pathlib import Path
 from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,6 +29,7 @@ import pytest
 
 from slayer import cli
 from slayer.core.models import DatasourceConfig
+from slayer.embeddings import client as embedding_client
 from slayer.engine import ingestion as ingestion_module
 from slayer.engine.ingestion import (
     StartupIngestSummary,
@@ -37,6 +41,7 @@ from slayer.engine.schema_drift import (
     ModelAddition,
     WholeModelDelete,
 )
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 # ─────────────────────────────────────────────────────────────────────────────  # NOSONAR(S125) — section separator, not commented-out code
@@ -806,3 +811,74 @@ class TestListDatasourcesRaiseAtBoot:
             cli._run_mcp(_mcp_args(ingest_on_startup=True))
 
         assert not any(c[0] == "mcp_run" for c in capture)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEV-1416 — memory embeddings refresh on --ingest-on-startup
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestMemoryEmbeddingsOnStartup:
+    """End-to-end smoke test: a stale `embeddings.db` (zero memory rows)
+    gets populated by a single `--ingest-on-startup` pass through the
+    real `ingest_all_datasources_idempotent` orchestrator."""
+
+    async def test_orchestrator_refreshes_memory_embeddings_for_each_datasource(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db_path = str(tmp_path / "live.db")
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE orders (
+                    id INTEGER PRIMARY KEY,
+                    amount REAL NOT NULL
+                );
+                INSERT INTO orders VALUES (1, 100.0);
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+            ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
+            await storage.save_datasource(ds)
+
+            saved = await storage.save_memory(
+                learning="orders.amount is in USD cents",
+                entities=[f"{ds.name}.orders.amount"],
+            )
+
+            # Enable the embedding channel (overriding the conftest
+            # autouse fixture which forces is_available=False) and stub
+            # embed_batch.
+            monkeypatch.setattr(
+                embedding_client, "is_available", lambda: True,
+            )
+
+            async def fake_embed_batch(
+                texts: List[str], *, model: Optional[str] = None,
+            ) -> List[Optional[List[float]]]:
+                return [[0.1, 0.2, 0.3] for _ in texts]
+
+            monkeypatch.setattr(
+                "slayer.embeddings.service.embed_batch", fake_embed_batch,
+            )
+
+            stream = io.StringIO()
+            summary = await ingest_all_datasources_idempotent(
+                storage=storage, stream=stream,
+            )
+            assert summary.succeeded == ["ds"]
+            assert summary.failures == []
+
+            rows = await storage.list_embeddings(
+                embedding_model_name=embedding_client.current_model(),
+            )
+            assert any(
+                r.canonical_id == f"memory:{saved.id}"
+                and r.entity_kind == "memory"
+                for r in rows
+            ), f"memory embedding not written; rows={[r.canonical_id for r in rows]}"
