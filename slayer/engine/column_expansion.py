@@ -71,10 +71,16 @@ def _root_scope_column_ids(*, parsed: exp.Expression) -> Set[int]:
     wrapper_cols = list(wrapper.find_all(exp.Column))
     parsed_cols = list(parsed.find_all(exp.Column))
     if len(wrapper_cols) != len(parsed_cols):
-        # Defensive: if pairing breaks, treat every column as root-scope
-        # (matches today's "walk everywhere" behaviour). This should not
-        # happen — wrapper just adds an outer SELECT around a deep copy.
-        return {id(c) for c in parsed_cols}
+        # Fail closed: if the positional pairing between the wrapper copy
+        # and the original tree ever drifts, treat NO column as root-scope.
+        # That suppresses derived-column inlining entirely for this
+        # fragment, which is conservative (the compile-time guard still
+        # catches cycles, and a missed inline merely shows up as the
+        # historical bare-name auto-qualification — never as a silent
+        # cross-scope splice). This branch is unreachable today; the
+        # wrapper just wraps a deep copy and ``find_all`` walks in
+        # document order.
+        return set()
     root_ids: Set[int] = set()
     for w_col, p_col in zip(wrapper_cols, parsed_cols):
         node: Optional[exp.Expression] = w_col.parent

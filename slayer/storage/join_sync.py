@@ -118,17 +118,15 @@ class JoinSyncStorage(StorageBackend):
 
     async def _save_model_impl(self, model: SlayerModel) -> None:
         """Decorator-level save: delegate the actual write to the inner
-        backend (which itself runs the cycle-detection template method
-        before its own ``_save_model_impl``), then keep inner-join mirrors
-        in sync. Overriding ``_save_model_impl`` rather than ``save_model``
-        keeps cycle validation at the public layer single-pass — the
-        ``StorageBackend.save_model`` template runs validation on this
-        decorator before invoking ``_save_model_impl``.
+        backend, then keep inner-join mirrors in sync. Cycle validation
+        runs ONCE — at the outer layer, via the ``StorageBackend.save_model``
+        template method on this decorator — and is then suppressed on the
+        inner write via ``_validate=False`` so it is not redundantly
+        re-checked. Overriding ``_save_model_impl`` (rather than
+        ``save_model``) is what keeps that single-pass invariant.
         """
         await self._ensure_reconciled()
         old = await self._inner.get_model(model.name, data_source=model.data_source)
-        # The inner backend's ``save_model`` is also a template method — we
-        # already validated at the outer layer, so skip re-validation here.
         await self._inner.save_model(model, _validate=False)
 
         # Mirror outward: ensure reverse inner joins exist / are up-to-date.

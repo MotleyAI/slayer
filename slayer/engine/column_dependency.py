@@ -45,17 +45,39 @@ def _resolve_target_for_ref(
 ) -> Optional[SlayerModel]:
     """Return the model that a column reference resolves to, or ``None``.
 
-    ``table_alias`` is ``None`` for bare refs (resolve to ``host``), the
-    host's name for self-qualified refs, or a join target. ``reachable`` is
-    the host plus prefetched joined models — anything not in this dict is
-    treated as out of scope (CTE alias, external table, cross-datasource
-    target, or a join target whose model isn't persisted yet).
+    Mirrors the runtime alias resolution in
+    :func:`slayer.engine.column_expansion._walk_path_to_target` so the
+    save-time validator and the compile-time expander agree on which
+    references count. ``table_alias`` may be:
+
+    - ``None``: bare identifier → resolves to ``host``.
+    - The host's own name: resolves to ``host``.
+    - A single-hop join target name (``"B"``): resolves to
+      ``reachable["B"]`` iff ``host`` has a direct join to ``B``.
+    - A canonical ``__``-delimited path (``"B__C"``): walks each hop
+      through the chain of joins, requiring a direct join at every step.
+
+    Anything that doesn't resolve through this strict walk is out of
+    scope (CTE alias, external table, indirect-but-not-joined target).
+    Returns ``None`` to signal "leave alone".
     """
-    if table_alias is None:
+    if table_alias is None or table_alias == host.name:
         return host
-    if table_alias == host.name:
-        return host
-    return reachable.get(table_alias)
+    parts = (
+        table_alias.split("__") if "__" in table_alias else [table_alias]
+    )
+    current = host
+    for hop in parts:
+        join = next(
+            (j for j in current.joins if j.target_model == hop), None,
+        )
+        if join is None:
+            return None
+        nxt = reachable.get(hop)
+        if nxt is None:
+            return None
+        current = nxt
+    return current
 
 
 def _column_dependencies(
