@@ -112,6 +112,20 @@ Entity rankings from channels 2 and 3 are RRF-fused the same way.
 Channel 1 contributes to the memory ranking only (it operates on
 memory entity tags, not on entity docs).
 
+### Per-bucket ranking invariance (DEV-1414)
+
+Each channel produces a **full per-kind ranking** — channel 2 runs as
+two kind-filtered tantivy queries (one over memory docs only, one over
+entity docs only), and channel 3 partitions the embedding corpus by
+`entity_kind` and ranks each side independently. There is no shared
+candidate-pool budget across kinds, so for a fixed
+`(question, datasource, max_X)` the membership and order of the
+returned `X` bucket (`memories` / `example_queries` / `entities`) is a
+pure function of the corpus + question + that one cap. Varying the
+other two caps cannot move an id in or out of the returned list nor
+reorder it. The `max_*` caps are pure post-fusion slice operations on
+the three independent ranked lists.
+
 ## Tool surface
 
 ```python

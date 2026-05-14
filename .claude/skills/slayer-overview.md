@@ -32,7 +32,7 @@ Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (inc
 Ingestion: `ingest_datasource_models`
 Schema drift: `validate_models` (read-only diff against live schema; surfaces `SchemaDriftError` cleanups)
 Memory write side: `save_memory`, `forget_memory` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
-Search: `search` (three-channel: entity-overlap BM25 over memories + tantivy full-text over memories ∪ entities + optional dense embedding similarity, RRF-fused; embeddings require the `embedding_search` extra and degrade gracefully when unavailable; partitions query-bearing memories into `example_queries` — see [search.md](../../docs/concepts/search.md))
+Search: `search` (three-channel: entity-overlap BM25 over memories + tantivy full-text + optional dense embedding similarity, RRF-fused per kind so each output bucket — `memories` / `example_queries` / `entities` — has membership/order invariant under the other buckets' caps; embeddings require the `embedding_search` extra and degrade gracefully when unavailable; partitions query-bearing memories into `example_queries` — see [search.md](../../docs/concepts/search.md))
 
 ## Package Structure
 

@@ -250,9 +250,13 @@ class SlayerQueryEngine:
         come strictly before ``stage_name``.
 
         When a non-final stage of a ``source_queries`` list is being
-        resolved, only its *prior* siblings are visible to it — this rule
-        keeps the DAG acyclic (forward references and self references are
-        rejected with a clear error in ``_resolve_model_inner``).
+        resolved, only its *prior* siblings are visible to it. This keeps
+        the DAG acyclic. Runtime query lists pre-sort via
+        :meth:`_topologically_order_queries` so the insertion order here
+        is already a valid topological order; ``SlayerModel.source_queries``
+        retains strict-order semantics and relies on this slice plus the
+        forward-reference error in ``_resolve_model_inner`` to catch
+        out-of-order references.
 
         Returns ``named_queries`` unchanged when ``stage_name`` is None or
         absent from the dict (e.g. the final stage, or an externally-named
@@ -266,6 +270,192 @@ class SlayerQueryEngine:
                 return out
             out[k] = v
         return out
+
+    @staticmethod
+    def _extract_sibling_refs(query: "SlayerQuery", against: set) -> set:
+        """Names from ``query.source_model`` / inline joins that match ``against``.
+
+        Walks the three shapes ``source_model`` can take — plain string,
+        dict (``ModelExtension`` or inline ``SlayerModel``), or typed
+        instance — and collects every name that resolves against the
+        ``against`` set. Used by both the dependency-graph builder and
+        the self-reference / root-as-sink validators.
+        """
+        out: set = set()
+        sm = query.source_model
+        if isinstance(sm, str):
+            if sm in against:
+                out.add(sm)
+            return out
+        # Dict shape — disambiguate ModelExtension vs inline SlayerModel
+        # by presence of ``source_name``.
+        if isinstance(sm, dict):
+            src = sm.get("source_name")
+            if isinstance(src, str) and src in against:
+                out.add(src)
+            for j in sm.get("joins") or []:
+                tgt = j.get("target_model") if isinstance(j, dict) else getattr(j, "target_model", None)
+                if isinstance(tgt, str) and tgt in against:
+                    out.add(tgt)
+            return out
+        # Typed ModelExtension / SlayerModel: source_name lives on
+        # ModelExtension only; SlayerModel.name is the inline model's
+        # own identifier, not a reference.
+        src = getattr(sm, "source_name", None)
+        if isinstance(src, str) and src in against:
+            out.add(src)
+        for j in getattr(sm, "joins", None) or []:
+            tgt = getattr(j, "target_model", None)
+            if isinstance(tgt, str) and tgt in against:
+                out.add(tgt)
+        return out
+
+    @staticmethod
+    def _index_query_list_by_name(
+        rest: List["SlayerQuery"], root: "SlayerQuery",
+    ) -> Dict[str, "SlayerQuery"]:
+        """Build ``{name: query}`` for non-final entries, validating that
+        every non-final entry has a unique name and that the root's
+        name (if any) doesn't collide.
+        """
+        rest_by_name: Dict[str, "SlayerQuery"] = {}
+        for q in rest:
+            if not q.name:
+                raise ValueError(
+                    "Every non-final entry in a query list must have a "
+                    "'name' (siblings reference each other by name)."
+                )
+            if q.name in rest_by_name:
+                raise ValueError(f"Duplicate stage name '{q.name}' in query list.")
+            rest_by_name[q.name] = q
+        if root.name and root.name in rest_by_name:
+            raise ValueError(
+                f"Stage name '{root.name}' is duplicated: the final entry "
+                f"shares a name with an earlier entry."
+            )
+        return rest_by_name
+
+    @classmethod
+    def _validate_query_list_invariants(
+        cls,
+        queries: List["SlayerQuery"],
+        rest: List["SlayerQuery"],
+        root: "SlayerQuery",
+        sibling_names: set,
+    ) -> None:
+        """Reject self-references and any sibling that depends on the root.
+
+        Self-references are caught for every entry (including the root).
+        Root-as-sink: no non-final stage may reference the root by name.
+        """
+        for q in queries:
+            if q.name and q.name in cls._extract_sibling_refs(q, {q.name} | sibling_names):
+                raise ValueError(
+                    f"Stage '{q.name}' references itself — self-references "
+                    f"are not allowed."
+                )
+        if root.name:
+            referrers = sorted(
+                q.name for q in rest if root.name in cls._extract_sibling_refs(q, {root.name})
+            )
+            if referrers:
+                raise ValueError(
+                    f"The final entry '{root.name}' is the DAG root and must "
+                    f"not be referenced by other stages. Referenced by: "
+                    f"{referrers}."
+                )
+
+    @classmethod
+    def _build_dependency_graph(
+        cls,
+        rest_by_name: Dict[str, "SlayerQuery"],
+        sibling_names: set,
+    ) -> tuple:
+        """Build the (in_degree, dependents) adjacency for Kahn's.
+
+        Edge direction: prerequisite → dependent. ``in_degree[X]`` is
+        the count of siblings ``X`` depends on; ``dependents[X]`` is the
+        list of siblings that depend on ``X``.
+        """
+        in_degree: Dict[str, int] = dict.fromkeys(rest_by_name, 0)
+        dependents: Dict[str, List[str]] = {name: [] for name in rest_by_name}
+        for name, q in rest_by_name.items():
+            for prereq in cls._extract_sibling_refs(q, sibling_names):
+                dependents[prereq].append(name)
+                in_degree[name] += 1
+        return in_degree, dependents
+
+    @staticmethod
+    def _kahn_sort(
+        in_degree: Dict[str, int],
+        dependents: Dict[str, List[str]],
+    ) -> List[str]:
+        """Topologically sort by Kahn's algorithm. Cycle → ValueError.
+
+        Mutates ``in_degree`` in place; callers shouldn't reuse it.
+        The frontier is kept sorted for deterministic output order across
+        runs.
+        """
+        frontier: List[str] = sorted(n for n, d in in_degree.items() if d == 0)
+        sorted_names: List[str] = []
+        while frontier:
+            n = frontier.pop(0)
+            sorted_names.append(n)
+            unlocked: List[str] = []
+            for dep in dependents[n]:
+                in_degree[dep] -= 1
+                if in_degree[dep] == 0:
+                    unlocked.append(dep)
+            frontier.extend(sorted(unlocked))
+        if len(sorted_names) < len(in_degree):
+            cycle = sorted(set(in_degree) - set(sorted_names))
+            raise ValueError(
+                f"Cycle in query list: stages {cycle} form a cyclic "
+                f"dependency. The reference graph must be acyclic."
+            )
+        return sorted_names
+
+    @classmethod
+    def _topologically_order_queries(
+        cls,
+        queries: List["SlayerQuery"],
+    ) -> List["SlayerQuery"]:
+        """Re-order a runtime query list so every stage appears after the
+        siblings it references via ``source_model`` or
+        ``joins.target_model``. Lets callers submit a DAG in any order —
+        cycles and self-references are rejected; the input order itself
+        no longer needs to be a valid topological order.
+
+        The last entry of the input is the entry point / DAG root: its
+        result is what ``execute`` returns. It stays last; only the
+        non-final entries are reordered. Stages that aren't reachable
+        from the root are accepted as utility sub-queries — they flow
+        through the sort like any other node and remain in the
+        ``named_queries`` dict (the SQL generator emits them only if
+        something references them).
+
+        Hand-rolled Kahn's algorithm; no ``graphlib`` dependency. The
+        actual work is delegated to four single-purpose helpers
+        (:meth:`_index_query_list_by_name`,
+        :meth:`_validate_query_list_invariants`,
+        :meth:`_build_dependency_graph`, :meth:`_kahn_sort`) so this
+        orchestrator stays under the cognitive-complexity gate.
+
+        Raises ``ValueError`` on: missing ``name`` on any non-final
+        entry; duplicate stage names; self-references; the root being
+        depended on by any other stage; or a cycle among non-final
+        stages.
+        """
+        if len(queries) <= 1:
+            return list(queries)
+        rest = list(queries[:-1])
+        root = queries[-1]
+        rest_by_name = cls._index_query_list_by_name(rest, root)
+        sibling_names: set = set(rest_by_name)
+        cls._validate_query_list_invariants(queries, rest, root, sibling_names)
+        in_degree, dependents = cls._build_dependency_graph(rest_by_name, sibling_names)
+        sorted_names = cls._kahn_sort(in_degree, dependents)
+        return [rest_by_name[n] for n in sorted_names] + [root]
 
     async def execute(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
@@ -292,14 +482,18 @@ class SlayerQueryEngine:
 
         # Accept dicts and validate them into SlayerQuery objects
         if isinstance(query, list):
+            if not query:
+                raise ValueError(
+                    "'query' must be a non-empty list when passing staged queries."
+                )
             queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
+            # Auto-sort: caller submits a DAG in any order; we reorder so
+            # every stage appears after the siblings it references. The
+            # last entry stays last as the entry point. Validates names,
+            # duplicates, self-refs, root-as-sink, and cycles up front.
+            queries = self._topologically_order_queries(queries)
             query = queries[-1]
-            named_queries = {}
-            for q in queries[:-1]:
-                if q.name:
-                    if q.name in named_queries:
-                        raise ValueError(f"Duplicate query name '{q.name}' in query list")
-                    named_queries[q.name] = q
+            named_queries = {q.name: q for q in queries[:-1] if q.name}
         else:
             if isinstance(query, dict):
                 query = SlayerQuery.model_validate(query)

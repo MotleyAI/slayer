@@ -11,11 +11,15 @@ Covers:
 * The `canonical` field supports exact-match lookup of canonical entity
   strings.
 * The `kind` field supports filtering memory vs entity hits at query time.
+* `search_index` accepts a `kind_filter` / `exclude_kind` parameter for
+  per-kind queries (DEV-1414).
 """
 
 from __future__ import annotations
 
 from typing import List
+
+import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
@@ -180,3 +184,121 @@ def test_memory_id_round_trips_as_integer() -> None:
     hits = search_index(index=idx, question="anonymous checkouts", limit=10)
     memory_hits = [h for h in hits if h.kind == "memory"]
     assert any(h.memory_id == 2 for h in memory_hits)
+
+
+# ---------------------------------------------------------------------------
+# DEV-1414: per-kind filtering for invariant per-bucket ranking
+# ---------------------------------------------------------------------------
+
+
+def test_kind_filter_memory_returns_only_memory_hits() -> None:
+    """`kind_filter="memory"` must restrict results to memory-kind docs
+    only, even when other-kind docs would otherwise outscore them."""
+    idx = build_in_memory_index(
+        memories=_make_memories(),
+        models=_make_models(),
+        datasources=["warehouse"],
+    )
+    hits = search_index(
+        index=idx, question="customer", limit=50, kind_filter="memory",
+    )
+    assert hits, "expected at least one memory hit"
+    assert all(h.kind == "memory" for h in hits)
+
+
+def test_kind_filter_model_returns_only_model_hits() -> None:
+    idx = build_in_memory_index(
+        memories=_make_memories(),
+        models=_make_models(),
+        datasources=["warehouse"],
+    )
+    hits = search_index(
+        index=idx, question="customer", limit=50, kind_filter="model",
+    )
+    assert hits, "expected at least one model hit"
+    assert all(h.kind == "model" for h in hits)
+
+
+def test_exclude_kind_memory_returns_only_non_memory_hits() -> None:
+    """`exclude_kind="memory"` must return entity (datasource/model/column/
+    measure/aggregation) hits and no memory hits."""
+    idx = build_in_memory_index(
+        memories=_make_memories(),
+        models=_make_models(),
+        datasources=["warehouse"],
+    )
+    hits = search_index(
+        index=idx, question="customer", limit=50, exclude_kind="memory",
+    )
+    assert hits, "expected at least one entity hit"
+    assert all(h.kind != "memory" for h in hits)
+
+
+def test_kind_filter_and_exclude_kind_are_mutually_exclusive() -> None:
+    idx = build_in_memory_index(
+        memories=_make_memories(),
+        models=_make_models(),
+        datasources=["warehouse"],
+    )
+    with pytest.raises(ValueError):
+        search_index(
+            index=idx,
+            question="customer",
+            kind_filter="memory",
+            exclude_kind="memory",
+        )
+
+
+def test_kind_filtered_query_preserves_relative_score_order() -> None:
+    """The filter is a pure subset operation, not a re-scoring. For
+    every pair of memory docs (a, b), their relative order under
+    `kind_filter="memory"` must match their relative order in an
+    unfiltered query against the same `question`."""
+    idx = build_in_memory_index(
+        memories=_make_memories(),
+        models=_make_models(),
+        datasources=["warehouse"],
+    )
+    unfiltered = search_index(index=idx, question="customer", limit=50)
+    memory_only = search_index(
+        index=idx, question="customer", limit=50, kind_filter="memory",
+    )
+    unfiltered_memory_order = [
+        h.id for h in unfiltered if h.kind == "memory"
+    ]
+    memory_only_order = [h.id for h in memory_only]
+    assert memory_only_order == unfiltered_memory_order
+
+
+def test_exclude_kind_query_preserves_relative_score_order() -> None:
+    """Symmetric: `exclude_kind="memory"` preserves the relative order of
+    non-memory hits as they appear in the unfiltered query."""
+    idx = build_in_memory_index(
+        memories=_make_memories(),
+        models=_make_models(),
+        datasources=["warehouse"],
+    )
+    unfiltered = search_index(index=idx, question="customer", limit=50)
+    non_memory = search_index(
+        index=idx, question="customer", limit=50, exclude_kind="memory",
+    )
+    unfiltered_entity_order = [
+        h.id for h in unfiltered if h.kind != "memory"
+    ]
+    non_memory_order = [h.id for h in non_memory]
+    assert non_memory_order == unfiltered_entity_order
+
+
+def test_kind_filter_limit_clamps_to_kind_subset() -> None:
+    """`limit` continues to cap the number of returned hits; with
+    `kind_filter` set, the cap applies to the kind-restricted result list."""
+    idx = build_in_memory_index(
+        memories=_make_memories(),
+        models=_make_models(),
+        datasources=["warehouse"],
+    )
+    hits = search_index(
+        index=idx, question="customer", limit=1, kind_filter="memory",
+    )
+    assert len(hits) <= 1
+    assert all(h.kind == "memory" for h in hits)

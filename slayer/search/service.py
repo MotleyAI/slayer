@@ -4,20 +4,31 @@
   (``slayer.memories.ranker.bm25_rank``). Skipped when neither
   ``entities`` nor ``query`` is supplied. Contributes only to the memory
   ranking.
-* **Channel 2** — tantivy full-text over memories ∪ entities. Skipped
-  when ``question`` is empty. Contributes to both the memory ranking
-  and the entity ranking.
-* **Channel 3** — dense embedding similarity over memories ∪ entities
-  (DEV-1386). Skipped when ``question`` is empty, when the
-  ``embedding_search`` extra is not installed, when the query
-  embedding call fails, or when there are no embedding rows for the
-  active model name. Contributes to both the memory ranking and the
-  entity ranking.
+* **Channel 2** — tantivy full-text. Skipped when ``question`` is
+  empty. Runs as TWO kind-filtered queries per call (DEV-1414): one
+  with ``kind_filter="memory"`` for the memory ranking, one with
+  ``exclude_kind="memory"`` for the entity ranking. Each query ranks
+  the full per-kind subset of the corpus — no over-fetch truncation.
+* **Channel 3** — dense embedding similarity (DEV-1386). Skipped when
+  ``question`` is empty, when the ``embedding_search`` extra is not
+  installed, when the query embedding call fails, or when there are
+  no embedding rows for the active model name. The persisted embedding
+  rows are partitioned by ``entity_kind`` (DEV-1414): memory rows feed
+  the memory ranking, non-memory rows feed the entity ranking. Each
+  partition is ranked in full.
 
 Memory rankings from every active channel are fused via RRF
 (``k = 60``). Entity rankings from channels 2 and 3 are fused the same
 way. Channel 1 does not contribute to entity ranking (it operates on
 memory entity tags, not on entity docs).
+
+Per-bucket invariance (DEV-1414): because each channel produces a full
+per-kind ranking — never truncated by a shared candidate-pool budget —
+the membership and order of every output bucket (``memories``,
+``example_queries``, ``entities``) is a pure function of the corpus,
+the question, the datasource filter, and that bucket's own cap. Varying
+the other two caps cannot move ids in or out of the returned list nor
+reorder it.
 
 Empty input (no entities, no query, no question) falls back to recency:
 newest ``max_memories`` learning-only memories + newest
@@ -52,7 +63,6 @@ from slayer.storage.base import StorageBackend
 
 
 _RRF_K = 60
-_OVER_FETCH_MULTIPLIER = 5
 
 
 # ---------------------------------------------------------------------------
@@ -133,35 +143,23 @@ def _dedup(items: List[str]) -> List[str]:
     return out
 
 
-def _split_tantivy_hits(
-    hits: List[IndexHit],
-) -> Tuple[List[int], List[IndexHit], dict[int, IndexHit]]:
-    """Sort tantivy hits into the memory ranking, the entity-hit list, and
-    a memory-id→hit lookup."""
-    memory_ranking: List[int] = []
-    entity_hits: List[IndexHit] = []
-    by_memory_id: dict[int, IndexHit] = {}
-    for hit in hits:
-        if hit.kind == "memory" and hit.memory_id is not None:
-            memory_ranking.append(hit.memory_id)
-            by_memory_id[hit.memory_id] = hit
-        else:
-            entity_hits.append(hit)
-    return memory_ranking, entity_hits, by_memory_id
-
-
 def _backfill_memory_by_id(
     *,
     memory_by_id: dict,
-    all_memories: List["Memory"],
+    all_memories_by_id: dict[int, "Memory"],
     mem_ids,
 ) -> None:
     """For each id in ``mem_ids`` not already in ``memory_by_id``, look it
-    up in ``all_memories`` and insert it. Mutates ``memory_by_id``."""
+    up in ``all_memories_by_id`` and insert it. Mutates ``memory_by_id``.
+
+    Takes a precomputed id→Memory dict (not the raw list) so per-call
+    backfill stays O(N) instead of O(N²) when every channel returns the
+    full memory corpus (DEV-1414).
+    """
     for mem_id in mem_ids:
         if mem_id in memory_by_id:
             continue
-        mem = next((m for m in all_memories if m.id == mem_id), None)
+        mem = all_memories_by_id.get(mem_id)
         if mem is not None:
             memory_by_id[mem_id] = mem
 
@@ -278,27 +276,56 @@ def _filter_embedding_corpus_by_datasource(
     ]
 
 
-def _split_embedding_pairs(
-    pairs: List[Tuple[int, float]],
-    rows: List["Embedding"],
-) -> Tuple[List[int], List[str]]:
-    """Split ``(row_idx, score)`` pairs from cosine top-k into
-    ``(memory_ranking, entity_ranking)``. Skips memory rows whose
-    ``canonical_id`` doesn't parse back to a valid int — those would
-    only appear if a backend smuggled in a malformed row."""
-    memory_ranking: List[int] = []
-    entity_ranking: List[str] = []
-    for idx, _score in pairs:
-        row = rows[idx]
-        if row.entity_kind == "memory":
-            try:
-                memory_id = int(row.canonical_id.split(":", 1)[1])
-            except (IndexError, ValueError):
-                continue
-            memory_ranking.append(memory_id)
+def _count_corpus_kinds(corpus: Corpus) -> Tuple[int, int]:
+    """Return ``(memory_count, entity_count)`` for a built corpus. Used
+    by channel 2 to pass ``limit = full per-kind corpus size`` to each
+    kind-filtered tantivy query so neither kind's ranking is truncated
+    (DEV-1414)."""
+    memory_count = 0
+    entity_count = 0
+    for kind in corpus.canonical_to_kind.values():
+        if kind == "memory":
+            memory_count += 1
         else:
-            entity_ranking.append(row.canonical_id)
-    return memory_ranking, entity_ranking
+            entity_count += 1
+    return memory_count, entity_count
+
+
+def _memory_id_from_canonical(canonical_id: str) -> Optional[int]:
+    """Parse a memory row's canonical id back into the int memory id.
+    Returns ``None`` if the format is malformed — only possible if a
+    backend smuggled in a non-conforming row."""
+    try:
+        return int(canonical_id.split(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def _rank_embedding_kind(
+    *,
+    rows: List["Embedding"],
+    normalised_query,
+    np,
+    normalise_matrix,
+    top_k_cosine,
+) -> List[str]:
+    """Rank one kind of embedding rows by cosine similarity to the
+    pre-normalised query vector. Returns the rows' ``canonical_id``
+    strings in descending similarity order. Empty input → empty list.
+
+    Pulls the per-kind matrix build + cosine call out of
+    ``SearchService._run_channel_3`` so each kind's ranking is a single
+    line in the caller (DEV-1414 — keeps channel 3 below the
+    cognitive-complexity gate)."""
+    if not rows:
+        return []
+    matrix = np.array([r.embedding for r in rows], dtype=np.float32)
+    pairs = top_k_cosine(
+        query=normalised_query,
+        matrix=normalise_matrix(matrix),
+        k=len(rows),
+    )
+    return [rows[idx].canonical_id for idx, _score in pairs]
 
 
 def _fuse_entity_hits(
@@ -384,12 +411,6 @@ class SearchService:
                 warnings=warnings,
             )
 
-        # Over-fetch must cover the worst case where every fused hit lands
-        # in the same bucket (all learnings, or all example queries).
-        over_fetch_budget = max(
-            max_memories + max_example_queries, max_entities,
-        ) * _OVER_FETCH_MULTIPLIER
-
         # Single memory-corpus fetch shared by all channels. Pre-filtered
         # by ``datasource`` so BM25 (channel 1) and the embedding cosine
         # (channel 3) consume the narrowed list — IDF / matrix shape
@@ -418,7 +439,6 @@ class SearchService:
         channel_1_memory_ranking, memory_by_id = self._run_channel_1(
             canonical_input_entities=canonical_input_entities,
             all_memories=all_memories,
-            over_fetch=over_fetch_budget,
             channel_1_active=channel_1_active,
         )
         (
@@ -428,7 +448,6 @@ class SearchService:
         ) = self._run_channel_2(
             corpus=corpus,
             question=question,
-            over_fetch=over_fetch_budget,
         )
         (
             channel_3_memory_ranking,
@@ -437,7 +456,6 @@ class SearchService:
         ) = await self._run_channel_3(
             question=question,
             corpus=corpus,
-            over_fetch=over_fetch_budget,
             question_active=question_active,
             datasource=datasource,
             eligible_memory_canonicals={f"memory:{m.id}" for m in all_memories},
@@ -445,20 +463,22 @@ class SearchService:
         warnings = _dedup(warnings + channel_3_warnings)
 
         # Backfill memory_by_id from every channel so RRF can resolve
-        # any memory hit downstream.
+        # any memory hit downstream. Build the id→Memory dict once so
+        # the three backfills stay O(N) overall (DEV-1414).
+        all_memories_by_id = {m.id: m for m in all_memories}
         _backfill_memory_by_id(
             memory_by_id=memory_by_id,
-            all_memories=all_memories,
+            all_memories_by_id=all_memories_by_id,
             mem_ids=channel_1_memory_ranking,
         )
         _backfill_memory_by_id(
             memory_by_id=memory_by_id,
-            all_memories=all_memories,
+            all_memories_by_id=all_memories_by_id,
             mem_ids=index_hits_by_memory_id.keys(),
         )
         _backfill_memory_by_id(
             memory_by_id=memory_by_id,
-            all_memories=all_memories,
+            all_memories_by_id=all_memories_by_id,
             mem_ids=channel_3_memory_ranking,
         )
 
@@ -576,10 +596,10 @@ class SearchService:
         *,
         canonical_input_entities: List[str],
         all_memories: List[Memory],
-        over_fetch: int,
         channel_1_active: bool,
     ) -> Tuple[List[int], dict[int, Memory]]:
-        """Entity-overlap BM25 channel."""
+        """Entity-overlap BM25 channel. Ranks the full memory corpus —
+        no candidate-pool truncation (DEV-1414)."""
         channel_1_memory_ranking: List[int] = []
         memory_by_id: dict[int, Memory] = {}
         if channel_1_active and canonical_input_entities:
@@ -587,7 +607,7 @@ class SearchService:
                 memories=all_memories,
                 query_entities=canonical_input_entities,
             )
-            for memory, _score in ranked[:over_fetch]:
+            for memory, _score in ranked:
                 memory_by_id[memory.id] = memory
                 channel_1_memory_ranking.append(memory.id)
         return channel_1_memory_ranking, memory_by_id
@@ -597,21 +617,50 @@ class SearchService:
         *,
         corpus: Optional[Corpus],
         question: Optional[str],
-        over_fetch: int,
     ) -> Tuple[List[int], List[str], dict[int, IndexHit]]:
-        """Tantivy full-text channel. Returns
-        ``(memory_ranking, entity_ranking_canonicals, by_memory_id_hits)``.
-        Empty when ``corpus`` or ``question`` is missing."""
+        """Tantivy full-text channel.
+
+        DEV-1414: runs as TWO kind-filtered queries — one over memory
+        docs only, one over entity docs only — so the per-kind ranking
+        is a pure function of the corpus + question, never affected by
+        the other kind's cap. The ``limit`` for each call is the size of
+        the corresponding kind in the corpus, so each query returns the
+        complete per-kind ranking.
+
+        Returns ``(memory_ranking, entity_ranking_canonicals,
+        by_memory_id_hits)``. Empty when ``corpus`` or ``question`` is
+        missing.
+        """
         if corpus is None or not question or not question.strip():
             return [], [], {}
-        tantivy_hits = search_index(
-            index=corpus.index, question=question, limit=over_fetch,
+        memory_count, entity_count = _count_corpus_kinds(corpus)
+        memory_hits = (
+            search_index(
+                index=corpus.index,
+                question=question,
+                limit=memory_count,
+                kind_filter="memory",
+            )
+            if memory_count > 0
+            else []
         )
-        (
-            memory_ranking,
-            entity_hits,
-            by_memory_id,
-        ) = _split_tantivy_hits(tantivy_hits)
+        entity_hits = (
+            search_index(
+                index=corpus.index,
+                question=question,
+                limit=entity_count,
+                exclude_kind="memory",
+            )
+            if entity_count > 0
+            else []
+        )
+        memory_ranking: List[int] = []
+        by_memory_id: dict[int, IndexHit] = {}
+        for hit in memory_hits:
+            if hit.memory_id is None:
+                continue
+            memory_ranking.append(hit.memory_id)
+            by_memory_id[hit.memory_id] = hit
         entity_ranking = [h.id for h in entity_hits]
         return memory_ranking, entity_ranking, by_memory_id
 
@@ -620,13 +669,16 @@ class SearchService:
         *,
         question: Optional[str],
         corpus: Optional[Corpus],
-        over_fetch: int,
         question_active: bool,
         datasource: Optional[str] = None,
         eligible_memory_canonicals: Optional[Set[str]] = None,
     ) -> Tuple[List[int], List[str], List[str]]:
         """Embedding-similarity channel (DEV-1386). Returns
         ``(memory_ranking, entity_ranking_canonicals, warnings)``.
+
+        DEV-1414: the corpus is partitioned by ``entity_kind`` and each
+        kind is ranked in full via two cosine calls. The per-kind
+        ranking is a pure function of the corpus + question.
 
         Skipped (with a warning) when:
 
@@ -645,8 +697,13 @@ class SearchService:
           ``eligible_memory_canonicals`` set (already datasource-filtered
           upstream).
 
-        Both `rows[idx]` indexing and the matrix stay aligned because
-        the filter happens before `np.array(...)`.
+        DEV-1414: rows whose ``canonical_id`` is not in the live tantivy
+        corpus (stale memory ids, hidden / deleted entities) are dropped
+        before the matrix build. Otherwise stale rows would consume
+        cosine rank positions and degrade live docs' RRF scores —
+        invariant under cap changes (so the per-bucket contract still
+        holds) but surprising and lossy. The filter keeps the channel's
+        candidate set aligned with channel 2's tantivy corpus.
         """
         if not question_active or corpus is None:
             return [], [], []
@@ -670,6 +727,13 @@ class SearchService:
                 datasource=datasource,
                 eligible_memory_canonicals=eligible_memory_canonicals or set(),
             )
+        # Drop sidecar rows that don't correspond to anything in the
+        # live tantivy corpus (DEV-1414). Memory rows are keyed
+        # ``memory:<int>`` in storage and as the corpus's
+        # ``canonical_to_kind`` key; entity rows share the canonical
+        # string directly. Both shapes match by single dict lookup.
+        live_canonicals = corpus.canonical_to_kind.keys()
+        rows = [r for r in rows if r.canonical_id in live_canonicals]
         if not rows:
             return [], [], [
                 f"embedding channel skipped: no embedding rows for model "
@@ -692,20 +756,38 @@ class SearchService:
             return [], [], [
                 "embedding channel skipped: query embedding failed.",
             ]
-        matrix = np.array([r.embedding for r in rows], dtype=np.float32)
-        if matrix.shape[1] != len(query_vec):
+        # All persisted rows share the active model's dim; sample any
+        # row to detect a stale-dim corpus before partitioning.
+        if len(rows[0].embedding) != len(query_vec):
             return [], [], [
                 f"embedding channel skipped: dim mismatch "
-                f"(query={len(query_vec)}, corpus={matrix.shape[1]}). "
+                f"(query={len(query_vec)}, corpus={len(rows[0].embedding)}). "
                 f"Re-run `slayer ingest` to refresh embeddings against "
                 f"the current model.",
             ]
-        pairs = top_k_cosine(
-            query=normalise(query_vec),
-            matrix=normalise_matrix(matrix),
-            k=over_fetch,
+
+        memory_rows = [r for r in rows if r.entity_kind == "memory"]
+        entity_rows = [r for r in rows if r.entity_kind != "memory"]
+        normalised_query = normalise(query_vec)
+        ranked_memory_canonicals = _rank_embedding_kind(
+            rows=memory_rows,
+            normalised_query=normalised_query,
+            np=np,
+            normalise_matrix=normalise_matrix,
+            top_k_cosine=top_k_cosine,
         )
-        memory_ranking, entity_ranking = _split_embedding_pairs(pairs, rows)
+        memory_ranking: List[int] = []
+        for canonical in ranked_memory_canonicals:
+            memory_id = _memory_id_from_canonical(canonical)
+            if memory_id is not None:
+                memory_ranking.append(memory_id)
+        entity_ranking = _rank_embedding_kind(
+            rows=entity_rows,
+            normalised_query=normalised_query,
+            np=np,
+            normalise_matrix=normalise_matrix,
+            top_k_cosine=top_k_cosine,
+        )
         return memory_ranking, entity_ranking, []
 
     async def _collect_index_corpus(

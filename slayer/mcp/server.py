@@ -956,6 +956,87 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 return _friendly_db_error(e)
             raise
 
+    @mcp.tool()
+    async def query_nested(
+        queries: List[Dict[str, Any]],
+        variables: Optional[Dict[str, Any]] = None,
+        show_sql: bool = False,
+        dry_run: bool = False,
+        explain: bool = False,
+        format: str = "markdown",
+    ) -> str:
+        """Run a multi-stage query as a DAG. Use this when one stage depends on the output of another.
+
+        ``queries`` is a list of query dicts forming a DAG. Each entry has the
+        same shape as the regular ``query`` tool's arguments
+        (``source_model``, ``measures``, ``dimensions``, ``filters``,
+        ``time_dimensions``, ``order``, ``limit``, ``offset``,
+        ``whole_periods_only``) plus an optional ``name``. Stages reference
+        each other by name via ``source_model: "<sibling_name>"`` or
+        ``joins.target_model``.
+
+        Order doesn't matter — the engine auto-sorts so every stage
+        appears after the siblings it references. The **last entry of
+        the input is always the entry point / DAG root** (its result is
+        what's returned); only the non-final entries are reordered.
+        Every non-final entry must have a ``name``. Cycles,
+        self-references, and a non-final stage referencing the root are
+        rejected with a clear error. Stages that aren't reachable from
+        the root are accepted as utility sub-queries — they're silently
+        dropped from the emitted SQL.
+
+        Args:
+            queries: Ordered list of stage dicts. Earlier stages must be
+                named; the last stage is the one whose rows return.
+            variables: Variable values for ``{var}`` placeholder
+                substitution in filters. Runtime kwarg precedence:
+                ``runtime > stage.variables > outer query.variables >
+                model.query_variables``.
+            show_sql: When true, include the generated SQL in the response.
+            dry_run: When true, generate the SQL without executing it.
+            explain: When true, run EXPLAIN ANALYZE and return the plan.
+            format: ``markdown`` (default), ``json``, or ``csv``.
+
+        Example:
+            queries=[
+                {"name": "monthly", "source_model": "orders",
+                 "measures": [{"formula": "*:count"}, {"formula": "revenue:sum"}],
+                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
+                {"source_model": "monthly", "measures": [{"formula": "*:count"}]}
+            ]
+
+        For a single-stage query, prefer the regular ``query`` tool — its
+        typed arguments give a more discoverable schema.
+        """
+        try:
+            fmt = format.lower().strip()
+            if fmt not in ("json", "csv", "markdown"):
+                raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
+            if not queries:
+                raise ValueError("'queries' must be a non-empty list of query dicts.")
+            result = await engine.execute(
+                query=list(queries),
+                variables=variables,
+                dry_run=dry_run,
+                explain=explain,
+            )
+            if dry_run:
+                return f"SQL:\n{result.sql}"
+            if explain:
+                output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
+                output += _format_output(result=result, fmt=fmt)
+                return output
+            output = _format_output(result=result, fmt=fmt)
+            if show_sql and result.sql:
+                output = f"SQL:\n{result.sql}\n\n{output}"
+            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
+                output += "\n\n" + _format_attributes(attributes=result.attributes)
+            return output
+        except Exception as e:
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                return _friendly_db_error(e)
+            raise
+
     # -----------------------------------------------------------------------
     # Model discovery
     # -----------------------------------------------------------------------
