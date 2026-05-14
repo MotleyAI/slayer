@@ -97,9 +97,9 @@ def _require_non_empty_trimmed(v: str, context: str) -> None:
 def _validate_model_name(name: str, context: str) -> str:
     """Reject model/query names containing ``__``, ``.``, or ``:``."""
     label = f"{context} name"
-    _NO_DUNDER.check(name, label)
-    _NO_DOT.check(name, label)
-    _NO_COLON.check(name, label)
+    _NO_DUNDER.check(name=name, context=label)
+    _NO_DOT.check(name=name, context=label)
+    _NO_COLON.check(name=name, context=label)
     return name
 
 
@@ -110,8 +110,8 @@ def _validate_column_name(name: str, context: str) -> str:
     models created by ``_query_as_model`` (e.g., ``stores__name``).
     """
     label = f"{context} name"
-    _NO_DOT.check(name, label)
-    _NO_COLON.check(name, label)
+    _NO_DOT.check(name=name, context=label)
+    _NO_COLON.check(name=name, context=label)
     return name
 
 
@@ -428,11 +428,11 @@ class SlayerModel(BaseModel):
                 f"whitespace; got {v!r}."
             )
         label = "Model 'data_source'"
-        _NO_NUL.check(v, label)
-        _NO_FWD_SLASH.check(v, label)
-        _NO_BACK_SLASH.check(v, label)
-        _NO_DOT.check(v, label)
-        _NO_COLON.check(v, label)
+        _NO_NUL.check(name=v, context=label)
+        _NO_FWD_SLASH.check(name=v, context=label)
+        _NO_BACK_SLASH.check(name=v, context=label)
+        _NO_DOT.check(name=v, context=label)
+        _NO_COLON.check(name=v, context=label)
         return v
 
     @model_validator(mode="after")
@@ -703,12 +703,12 @@ class DatasourceConfig(BaseModel):
         # become SQL table aliases, so the join-path-alias reservation
         # that applies to model and query names doesn't apply here.
         label = "Datasource 'name'"
-        _require_non_empty_trimmed(v, label)
-        _NO_NUL.check(v, label)
-        _NO_FWD_SLASH.check(v, label)
-        _NO_BACK_SLASH.check(v, label)
-        _NO_DOT.check(v, label)
-        _NO_COLON.check(v, label)
+        _require_non_empty_trimmed(v=v, context=label)
+        _NO_NUL.check(name=v, context=label)
+        _NO_FWD_SLASH.check(name=v, context=label)
+        _NO_BACK_SLASH.check(name=v, context=label)
+        _NO_DOT.check(name=v, context=label)
+        _NO_COLON.check(name=v, context=label)
         return v
 
     def get_connection_string(self) -> str:
