@@ -42,7 +42,7 @@ class YAMLStorage(StorageBackend):
 
     # ---- model CRUD --------------------------------------------------------
 
-    async def save_model(self, model: SlayerModel) -> None:
+    async def _save_model_impl(self, model: SlayerModel) -> None:
         target_dir = os.path.join(self.models_dir, model.data_source)
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")

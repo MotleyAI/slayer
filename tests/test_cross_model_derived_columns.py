@@ -1234,7 +1234,10 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
             Column(name="b", sql="orders.a - 1", type=DataType.DOUBLE),
         ],
     )
-    await storage.save_model(orders)
+    # DEV-1410 added save-time cycle validation; this test pre-dates it and
+    # specifically exercises COMPILE-TIME detection through ``_enrich``, so
+    # skip the save-time check to construct the cyclic state on disk.
+    await storage.save_model(orders, _validate=False)
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         source_model="orders",
@@ -1288,3 +1291,483 @@ async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
         f"is not being threaded into _collect_paths_from_local_column_chain. "
         f"resolved_joins: {enriched.resolved_joins}"
     )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1410: bare-identifier ``Column.sql`` references to sibling DERIVED
+# columns on the same model. The qualified form ``A.c1`` already inlines via
+# the existing expander; bare ``c1`` used to auto-qualify to ``A.c1`` and
+# stop — emitting a reference to a column the physical table does not have.
+# These tests pin the new behavior: bare refs to derived siblings inline
+# parenthesized, identical to the qualified form, with full scope awareness.
+# ---------------------------------------------------------------------------
+
+
+async def test_dev1410_local_bare_ref_to_local_derived(tmp_path) -> None:
+    """Bare ref ``c1`` (no ``A.`` prefix) to a derived sibling column must
+    inline the sibling's sql, not auto-qualify to ``A.c1``."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="c1", sql="raw_a + 1", type=DataType.DOUBLE),
+            Column(name="c2", sql="c1 * 2", type=DataType.DOUBLE),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="c2")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    assert _no_bare_derived_ref(norm, "A", "c1"), (
+        f"Bare-ref c1 leaked into SQL as A.c1:\n{sql}"
+    )
+    # Inlined: (A.raw_a + 1) * 2 — the inner raw_a still gets qualified.
+    assert "A.raw_a + 1" in norm, f"raw_a not qualified:\n{sql}"
+    assert "* 2" in norm, f"outer arithmetic missing:\n{sql}"
+
+
+async def test_dev1410_local_bare_ref_three_deep(tmp_path) -> None:
+    """Three-deep chain of bare-ref derived columns expands fully."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="c1", sql="raw_a + 1", type=DataType.DOUBLE),
+            Column(name="c2", sql="c1 + 10", type=DataType.DOUBLE),
+            Column(name="c3", sql="c2 + 100", type=DataType.DOUBLE),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="c3")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    assert _no_bare_derived_ref(norm, "A", "c1")
+    assert _no_bare_derived_ref(norm, "A", "c2")
+    assert _no_bare_derived_ref(norm, "A", "c3")
+    assert "A.raw_a + 1" in norm
+    assert "+ 10" in norm
+    assert "+ 100" in norm
+
+
+async def test_dev1410_local_bare_ref_mixed_with_base(tmp_path) -> None:
+    """A bare ref to a derived column mixed with a bare ref to a base column.
+    The base ref qualifies; the derived ref inlines."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="derived_b", sql="raw_a * 2", type=DataType.DOUBLE),
+            Column(name="mixed", sql="raw_a + derived_b", type=DataType.DOUBLE),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="mixed")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    assert _no_bare_derived_ref(norm, "A", "derived_b"), (
+        f"Bare derived_b leaked into SQL:\n{sql}"
+    )
+    # Base raw_a qualifies; derived_b inlines.
+    assert "A.raw_a +" in norm
+    assert "A.raw_a * 2" in norm  # the inlined body
+
+
+async def test_dev1410_local_bare_ref_inside_case_coalesce_nullif_cast(tmp_path) -> None:
+    """Bare refs inside CASE / COALESCE / NULLIF / CAST get inlined cleanly,
+    with parenthesization preserving NULL and short-circuit semantics."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="x", sql="x", type=DataType.DOUBLE),
+            Column(name="score", sql="x * 10", type=DataType.DOUBLE),
+            Column(
+                name="case_use",
+                sql="CASE WHEN score > 50 THEN 1 ELSE 0 END",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="coalesce_use",
+                sql="COALESCE(score, 0)",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="nullif_use",
+                sql="NULLIF(score, 0)",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="cast_use",
+                sql="CAST(score AS REAL)",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    for col in ("case_use", "coalesce_use", "nullif_use", "cast_use"):
+        query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name=col)])
+        sql = await _gen_sql(engine, query, model_a)
+        norm = _norm(sql)
+        assert _no_bare_derived_ref(norm, "A", "score"), (
+            f"score leaked as A.score in {col}:\n{sql}"
+        )
+        assert "A.x * 10" in norm, f"score body not inlined in {col}:\n{sql}"
+
+
+async def test_dev1410_local_bare_ref_to_derived_inside_subquery_left_alone(
+    tmp_path,
+) -> None:
+    """A bare reference to a derived column inside a SCALAR SUB-QUERY in
+    Column.sql must NOT be inlined — the subquery has its own scope and the
+    bare name there could mean an inner column of a different table."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="score", sql="raw_a * 10", type=DataType.DOUBLE),
+            # Bare ``score`` at root scope inlines; bare ``score`` inside the
+            # subquery references the unrelated table's ``score`` column and
+            # MUST be left alone.
+            Column(
+                name="mixed",
+                sql="(SELECT MAX(score) FROM unrelated_table) + score",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="mixed")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # Root-scope ``score`` (rightmost operand) is inlined: A.raw_a * 10
+    # appears exactly once (the inner subquery's score is left alone).
+    assert "MAX(score)" in norm, (
+        f"Subquery-scope bare ``score`` was rewritten or removed:\n{sql}"
+    )
+    assert "A.raw_a * 10" in norm, (
+        f"Root-scope ``score`` was not inlined:\n{sql}"
+    )
+
+
+async def test_dev1410_qualified_ref_to_derived_inside_subquery_left_alone(
+    tmp_path,
+) -> None:
+    """Codex collision case: a subquery aliases a different table as ``B``,
+    and SLayer has a joined model ``B`` with a derived column ``foo_normalized``.
+    Inside the subquery, ``B.foo_normalized`` refers to the subquery's table,
+    NOT SLayer's model B — the inliner must leave it alone."""
+    engine, storage = _engine_with_storage(tmp_path)
+    model_a = await _save_a_b(
+        storage,
+        a_columns=[
+            Column(
+                name="collide",
+                sql=(
+                    "(SELECT 1 FROM some_other_table B "
+                    "WHERE B.foo_normalized = 1) + bar"
+                ),
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="collide")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # Subquery-scope B.foo_normalized must NOT be rewritten to the inlined
+    # B.foo_raw / 100.0 form — the subquery's ``B`` is unrelated.
+    assert "B.foo_normalized" in norm, (
+        f"Subquery-scope qualified derived ref was incorrectly rewritten:\n{sql}"
+    )
+    assert "B.foo_raw / 100.0" not in norm, (
+        f"Subquery-scope qualified derived ref was incorrectly inlined:\n{sql}"
+    )
+
+
+async def test_dev1410_local_bare_ref_to_derived_inside_window_over_partition_inlined(
+    tmp_path,
+) -> None:
+    """Window OVER(...) is NOT a nested scope: column refs inside the OVER
+    clause belong to the root scope and MUST be inlined when they name a
+    derived column."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="bucket", sql="raw_a / 10", type=DataType.DOUBLE),
+            # bare ``bucket`` used in the OVER PARTITION BY — root-scope.
+            Column(
+                name="rn",
+                sql="ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="rn")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    assert _no_bare_derived_ref(norm, "A", "bucket"), (
+        f"OVER-clause bare derived ref not inlined:\n{sql}"
+    )
+    assert "A.raw_a / 10" in norm, f"bucket body not inlined:\n{sql}"
+
+
+async def test_dev1410_local_bare_ref_to_derived_inside_union_left_alone(
+    tmp_path,
+) -> None:
+    """SetOperation (UNION) is a nested scope: bare derived refs inside one
+    branch must NOT be inlined under the host model's expansion rules."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="score", sql="raw_a + 1", type=DataType.DOUBLE),
+            Column(
+                name="union_use",
+                sql="(SELECT score FROM other UNION SELECT 0) + score",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="union_use")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # The subquery's ``score`` (inside UNION) is left alone.
+    assert "SELECT score FROM" in norm or "SELECT score FROM other" in norm, (
+        f"UNION-branch bare ref was rewritten:\n{sql}"
+    )
+    # Root-scope ``score`` (rightmost) is inlined.
+    assert "A.raw_a + 1" in norm, f"Root-scope score body not inlined:\n{sql}"
+
+
+async def test_dev1410_local_bare_ref_to_derived_inside_values_left_alone(
+    tmp_path,
+) -> None:
+    """A VALUES clause is a nested scope: bare names inside it MUST NOT be
+    inlined as host-model derived refs."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="score", sql="raw_a + 1", type=DataType.DOUBLE),
+            # Bare ``score`` inside a sub-SELECT with VALUES is a column of
+            # the VALUES rowset, not A.score.
+            Column(
+                name="values_use",
+                sql=(
+                    "(SELECT score FROM (VALUES (1), (2)) AS v(score) LIMIT 1) "
+                    "+ score"
+                ),
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="values_use")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # Root-scope ``score`` is inlined.
+    assert "A.raw_a + 1" in norm, (
+        f"Root-scope score body not inlined:\n{sql}"
+    )
+    # Subquery's ``score`` left bare (refers to the VALUES alias).
+    assert "SELECT score FROM" in norm, (
+        f"VALUES-scope bare ref was rewritten:\n{sql}"
+    )
+
+
+async def test_dev1410_local_bare_ref_to_string_literal_lookalike_left_alone(
+    tmp_path,
+) -> None:
+    """A string literal whose contents happen to match a derived column name
+    must NOT be inlined — string literals are not column refs."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+            Column(name="score", sql="raw_a + 1", type=DataType.DOUBLE),
+            Column(
+                name="label",
+                sql="'score=' || CAST(score AS TEXT)",
+                type=DataType.TEXT,
+            ),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="label")])
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    # The literal 'score=' (with the equals sign) stays intact.
+    assert "'score='" in norm, (
+        f"String literal 'score=' was mangled:\n{sql}"
+    )
+    # The CAST(score AS TEXT) actually inlines: CAST((A.raw_a + 1) AS TEXT)
+    # — verify the body shows up at least once.
+    assert "A.raw_a + 1" in norm, f"score body not inlined:\n{sql}"
+
+
+async def test_dev1410_local_bare_ref_with_double_underscore_name(tmp_path) -> None:
+    """JSON-leaf shape: auto-ingested JSON-extracted columns get names like
+    ``dwelling_specs__Room_Count`` (double-underscore separates the JSON
+    path from the leaf). A bare reference to such a name must resolve and
+    inline like any other derived column."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="infrastructure",
+        data_source="households",
+        sql_table="infrastructure",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="dwelling_specs", sql="dwelling_specs", type=DataType.TEXT),
+            Column(
+                # The double-underscore in the NAME (path-from-leaf separator
+                # for auto-ingested JSON leaves) is the focus of this test.
+                # The body is a deliberately simple arithmetic expression so
+                # the assertion does not depend on dialect-specific JSON
+                # function renames; the JSON-extract version is covered by
+                # the DEV-1410 exact-repro test through CASE-WHEN bodies.
+                name="dwelling_specs__Room_Count",
+                sql="dwelling_specs * 1.0",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="room_count_doubled",
+                sql="dwelling_specs__Room_Count * 2",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    query = SlayerQuery(
+        source_model="infrastructure",
+        dimensions=[ColumnRef(name="room_count_doubled")],
+    )
+    sql = await _gen_sql(engine, query, model_a)
+    norm = _norm(sql)
+    assert _no_bare_derived_ref(norm, "infrastructure", "dwelling_specs__Room_Count"), (
+        f"Double-underscore-named derived col leaked into SQL:\n{sql}"
+    )
+    # Inlined body with inner ref qualified to host alias.
+    assert "infrastructure.dwelling_specs * 1.0" in norm, (
+        f"Body not inlined with qualified inner ref:\n{sql}"
+    )
+
+
+async def test_dev1410_local_bare_ref_cycle_raises_at_compile_time(tmp_path) -> None:
+    """A bare-ref cycle (c1 → c2 → c1, both bare, no ``A.`` prefix) raises
+    ColumnCycleError at compile time with the cycle chain in the message.
+    The error must also be catchable as ValueError (dual-inheritance for
+    backwards compat with existing call sites)."""
+    from slayer.core.errors import ColumnCycleError
+
+    engine, _ = _engine_with_storage(tmp_path)
+    model_a = SlayerModel(
+        name="A",
+        data_source="test",
+        sql_table="A",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="c1", sql="c2 + 1", type=DataType.DOUBLE),
+            Column(name="c2", sql="c1 - 1", type=DataType.DOUBLE),
+        ],
+    )
+    query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="c1")])
+    with pytest.raises(ColumnCycleError) as exc_info:
+        await _gen_sql(engine, query, model_a)
+    # Backwards compat: existing call sites that catch ValueError still work.
+    assert isinstance(exc_info.value, ValueError)
+    # Cycle path in recursion order.
+    assert "A.c2 → A.c1 → A.c2" in str(exc_info.value), (
+        f"Cycle chain not in recursion order: {exc_info.value}"
+    )
+
+
+async def test_dev1410_exact_repro(tmp_path) -> None:
+    """Exact reproduction of the DEV-1410 Linear-issue bug: an
+    ``infrastructure`` model with three CASE-WHEN derived columns
+    (wateraccess_score, roadsurface_score, parkavail_score) and a composite
+    ``iqs`` averaging them with bare-name refs. Before the fix, querying
+    ``iqs`` would emit ``CAST(infrastructure.wateraccess_score AS REAL)``
+    and fail at execution because the physical table has no such column.
+    After the fix, the CASE bodies are inlined."""
+    engine, _ = _engine_with_storage(tmp_path)
+    model = SlayerModel(
+        name="infrastructure",
+        data_source="households",
+        sql_table="infrastructure",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="wateraccess", sql="wateraccess", type=DataType.TEXT),
+            Column(name="roadsurface", sql="roadsurface", type=DataType.TEXT),
+            Column(name="parkavail", sql="parkavail", type=DataType.TEXT),
+            Column(
+                name="wateraccess_score",
+                sql="CASE WHEN LOWER(TRIM(wateraccess)) LIKE 'yes%' THEN 4 ELSE 1 END",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="roadsurface_score",
+                sql=(
+                    "CASE WHEN LOWER(roadsurface) LIKE '%asphalt%' "
+                    "OR LOWER(roadsurface) LIKE '%concrete%' THEN 4 ELSE 1 END"
+                ),
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="parkavail_score",
+                sql="CASE WHEN LOWER(parkavail) LIKE '%not%' THEN 1 ELSE 4 END",
+                type=DataType.DOUBLE,
+            ),
+            Column(
+                name="iqs",
+                sql=(
+                    "(CAST(wateraccess_score AS REAL) "
+                    "+ CAST(roadsurface_score AS REAL) "
+                    "+ CAST(parkavail_score AS REAL)) / 3.0"
+                ),
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    query = SlayerQuery(
+        source_model="infrastructure", dimensions=[ColumnRef(name="iqs")]
+    )
+    sql = await _gen_sql(engine, query, model)
+    norm = _norm(sql)
+    # No bare reference to the derived column on the physical table.
+    for derived in ("wateraccess_score", "roadsurface_score", "parkavail_score"):
+        assert _no_bare_derived_ref(norm, "infrastructure", derived), (
+            f"Derived column ``{derived}`` leaked as physical column ref:\n{sql}"
+        )
+    # CASE bodies inlined with inner refs qualified to host alias.
+    assert "infrastructure.wateraccess" in norm
+    assert "infrastructure.roadsurface" in norm
+    assert "infrastructure.parkavail" in norm
+    # Parse the result as SQLite to confirm it's syntactically valid.
+    sqlglot.parse_one(sql, dialect="sqlite")

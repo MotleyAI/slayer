@@ -107,8 +107,35 @@ class StorageBackend(ABC):
 
     # ---- model CRUD (composite key) ----------------------------------------
 
+    async def save_model(
+        self, model: SlayerModel, *, _validate: bool = True,
+    ) -> None:
+        """Persist a model.
+
+        Runs save-time validation (currently DEV-1410 derived-column cycle
+        detection) and then delegates to the backend-specific
+        :meth:`_save_model_impl`. The ``_validate=False`` escape hatch is
+        for trusted internal callers — currently only the migration
+        write-back in :meth:`_migrate_and_refine_on_load` — that must
+        persist legacy data which may not pass current invariants.
+
+        Validation rules live in this base class so every backend gets
+        them uniformly without duplication; concrete backends must NOT
+        override this method.
+        """
+        if _validate:
+            from slayer.engine.column_dependency import validate_no_column_cycles
+            await validate_no_column_cycles(model=model, storage=self)
+        await self._save_model_impl(model)
+
     @abstractmethod
-    async def save_model(self, model: SlayerModel) -> None: ...
+    async def _save_model_impl(self, model: SlayerModel) -> None:
+        """Backend-specific write of ``model`` to durable storage.
+
+        Concrete backends implement only this method, not ``save_model``.
+        Shared validation lives in :meth:`save_model` (the template
+        method).
+        """
 
     @abstractmethod
     async def _list_all_model_identities(self) -> List[Tuple[str, str]]:
@@ -200,7 +227,11 @@ class StorageBackend(ABC):
                     refine_dict_with_live_schema(data, ds)
         model = SlayerModel.model_validate(data)
         if write_back:
-            await self.save_model(model)
+            # DEV-1410: legacy on-disk models may contain derived-column
+            # cycles that current save-time validation would reject. The
+            # migration write-back must not re-validate; otherwise users
+            # could not load a broken legacy model to repair it.
+            await self.save_model(model, _validate=False)
         return model
 
     # ---- datasource CRUD ---------------------------------------------------
