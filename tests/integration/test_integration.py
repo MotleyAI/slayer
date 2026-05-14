@@ -1610,17 +1610,17 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
 
 async def test_circular_query_reference_raises(integration_env):
     """Mutually-referential named queries should error clearly. The
-    sibling-stage scoping (DEV-1340) rejects ``a → b`` as a forward
-    reference at the first hop, before the cycle could form, so the
-    error names the offending stage and explains the rule rather than
-    surfacing a generic "Circular reference" trace.
+    runtime list path auto-sorts via Kahn's algorithm (DEV-1340 follow-up);
+    when two stages reference each other neither can ever drop to in-degree
+    zero, so the cycle surfaces as a ``ValueError`` naming both stages and
+    explaining the rule rather than a generic "Circular reference" trace.
     """
     engine = integration_env
 
     q1 = SlayerQuery(name="a", source_model="b", measures=[ModelMeasure(formula="*:count")])
     q2 = SlayerQuery(name="b", source_model="a", measures=[ModelMeasure(formula="*:count")])
     main = SlayerQuery(source_model="a", measures=[ModelMeasure(formula="*:count")])
-    with pytest.raises(ValueError, match=r"forward references are not allowed|Circular reference"):
+    with pytest.raises(ValueError, match=r"[Cc]ycle in query list|cyclic dependency"):
         await engine.execute(query=[q1, q2, main])
 
 

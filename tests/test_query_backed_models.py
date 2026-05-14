@@ -1164,15 +1164,15 @@ class TestSiblingStageJoins:
         finally:
             tmp.cleanup()
 
-    async def test_named_stage_forward_ref_raises_clear_error(self) -> None:
-        """Stage ``a`` references stage ``b`` that comes later — must error
-        with a clear message naming both stages and saying the ref is
-        forward, later, or not prior. Eliminates the generic
-        ``Model 'b' not found`` that today is indistinguishable from a
-        misspelled stored-model reference.
-        """
-        import re
+    async def test_runtime_list_dag_auto_sorted(self) -> None:
+        """Caller submits stages in non-topological order — engine auto-sorts.
 
+        Stage ``a`` references stage ``b`` via ``joins.target_model``,
+        but ``b`` is defined later in the input list. Pre-auto-sort this
+        was rejected as a forward reference; now the engine reorders to
+        ``[b, a, final]`` and emits valid SQL. The last entry of the
+        input stays last (DAG root).
+        """
         engine, tmp = await self._engine()
         try:
             queries = [
@@ -1196,11 +1196,136 @@ class TestSiblingStageJoins:
                     "dimensions": ["name"],
                 }),
             ]
-            with pytest.raises(ValueError) as excinfo:
+            # Auto-sort succeeds where strict-order would have rejected
+            # this as a forward reference. Both inner stages surface in
+            # the emitted SQL.
+            resp = await engine.execute(queries, dry_run=True)
+            assert resp.sql is not None
+            sql_lower = resp.sql.lower()
+            assert "orders_t" in sql_lower, resp.sql
+            assert "customers_t" in sql_lower, resp.sql
+            assert "amount_sum" in sql_lower or "_count" in sql_lower, resp.sql
+        finally:
+            tmp.cleanup()
+
+    async def test_cycle_in_runtime_list_raises(self) -> None:
+        """Mutual reference between two stages must raise with a clear
+        cycle error naming the cycle members.
+        """
+        engine, tmp = await self._engine()
+        try:
+            queries = [
+                SlayerQuery.model_validate({
+                    "name": "a",
+                    "source_model": {
+                        "source_name": "customers",
+                        "joins": [{"target_model": "b", "join_pairs": [["id", "id"]]}],
+                    },
+                    "dimensions": ["name"],
+                }),
+                SlayerQuery.model_validate({
+                    "name": "b",
+                    "source_model": {
+                        "source_name": "customers",
+                        "joins": [{"target_model": "a", "join_pairs": [["id", "id"]]}],
+                    },
+                    "dimensions": ["name"],
+                }),
+                SlayerQuery.model_validate({
+                    "source_model": "a",
+                    "dimensions": ["name"],
+                }),
+            ]
+            with pytest.raises(ValueError, match=r"[Cc]ycle"):
                 await engine.execute(queries, dry_run=True)
-            msg = str(excinfo.value)
-            assert "'a'" in msg and "'b'" in msg, msg
-            assert re.search(r"forward|later|prior", msg, re.IGNORECASE), msg
+        finally:
+            tmp.cleanup()
+
+    async def test_unused_utility_stage_is_kept(self) -> None:
+        """A named utility stage that nothing references is allowed.
+
+        The engine accepts the extra stage (no error) — it's effectively
+        dead code in the emitted SQL since nothing resolves it, but
+        validation passes so the caller can keep a library of utility
+        sub-queries alongside the primary one.
+        """
+        engine, tmp = await self._engine()
+        try:
+            queries = [
+                SlayerQuery(
+                    name="utility",  # never referenced
+                    source_model="orders",
+                    measures=[{"formula": "amount:max"}],
+                ),
+                SlayerQuery(
+                    name="kpis",
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["customer_id"],
+                ),
+                SlayerQuery.model_validate({
+                    "source_model": "kpis",
+                    "dimensions": ["customer_id"],
+                }),
+            ]
+            resp = await engine.execute(queries, dry_run=True)
+            assert resp.sql is not None
+            # The reachable stage (kpis) must surface.
+            assert "amount" in resp.sql.lower()
+        finally:
+            tmp.cleanup()
+
+    async def test_root_referenced_by_sibling_raises(self) -> None:
+        """A non-final stage referencing the root must raise — root must
+        be the dependency sink, not a CTE that other stages depend on.
+        """
+        engine, tmp = await self._engine()
+        try:
+            queries = [
+                SlayerQuery.model_validate({
+                    "name": "util",
+                    "source_model": "primary",  # references the root by name
+                    "dimensions": ["customer_id"],
+                }),
+                SlayerQuery(
+                    name="primary",  # the root
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["customer_id"],
+                ),
+            ]
+            with pytest.raises(ValueError, match=r"DAG root|must not be referenced"):
+                await engine.execute(queries, dry_run=True)
+        finally:
+            tmp.cleanup()
+
+    async def test_empty_query_list_raises_validation_error(self) -> None:
+        """Empty list must surface a clean ValueError, not IndexError."""
+        engine, tmp = await self._engine()
+        try:
+            with pytest.raises(ValueError, match=r"non-empty list"):
+                await engine.execute([], dry_run=True)
+        finally:
+            tmp.cleanup()
+
+    async def test_unnamed_non_final_stage_raises(self) -> None:
+        """A non-final entry without a ``name`` is unreachable by design
+        (siblings reference each other by name) and must raise clearly.
+        """
+        engine, tmp = await self._engine()
+        try:
+            queries = [
+                SlayerQuery(  # no name on a non-final entry
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                ),
+                SlayerQuery(
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                ),
+            ]
+            with pytest.raises(ValueError, match=r"must have a 'name'"):
+                await engine.execute(queries, dry_run=True)
         finally:
             tmp.cleanup()
 

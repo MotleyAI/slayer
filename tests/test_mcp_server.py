@@ -2883,6 +2883,116 @@ class TestQueryAcceptsInlineSourceModel:
         assert "things" in result.lower()
 
 
+class TestQueryNested:
+    """MCP ``query_nested`` tool — DAG list of stages where earlier
+    entries are named sub-queries that later entries can reference via
+    ``source_model: "<sibling_name>"``. Mirrors ``engine.execute(list)``
+    1:1; the regular ``query`` tool stays single-stage.
+    """
+
+    async def _setup_orders(self, storage: YAMLStorage) -> None:
+        await storage.save_datasource(DatasourceConfig(
+            name="test", type="sqlite", database=":memory:"
+        ))
+        await storage.save_model(SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+        ))
+
+    async def test_two_stage_dag_dry_run(self, mcp_server, storage: YAMLStorage) -> None:
+        """Stage 2 references prior named sibling 'monthly' via source_model."""
+        await self._setup_orders(storage)
+        result = await _call(mcp_server, name="query_nested", arguments={
+            "queries": [
+                {
+                    "name": "monthly",
+                    "source_model": "orders",
+                    "measures": [{"formula": "amount:sum"}],
+                    "time_dimensions": [
+                        {"dimension": "created_at", "granularity": "month"},
+                    ],
+                },
+                {
+                    "source_model": "monthly",
+                    "measures": [{"formula": "amount_sum:avg"}],
+                },
+            ],
+            "dry_run": True,
+        })
+        assert "SQL:" in result
+        # The earlier stage emits a CTE / sub-select named after its alias,
+        # and the outer stage's AVG aggregation must surface.
+        assert "AVG(" in result.upper()
+
+    async def test_empty_list_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._setup_orders(storage)
+        with pytest.raises(ToolError, match="non-empty list"):
+            await _call(mcp_server, name="query_nested", arguments={
+                "queries": [],
+                "dry_run": True,
+            })
+
+    async def test_out_of_order_dag_works(self, mcp_server, storage: YAMLStorage) -> None:
+        """Caller submits stages in non-topological order — engine auto-sorts.
+
+        Order here: 'a' references 'b' (forward in the input list), but
+        'b' has no deps. Topo-sort produces [b, a, final], and the SQL
+        emits cleanly.
+        """
+        await self._setup_orders(storage)
+        result = await _call(mcp_server, name="query_nested", arguments={
+            "queries": [
+                {
+                    "name": "a",
+                    "source_model": "b",
+                    "measures": [{"formula": "amount_sum:avg"}],
+                },
+                {
+                    "name": "b",
+                    "source_model": "orders",
+                    "measures": [{"formula": "amount:sum"}],
+                },
+                {
+                    "source_model": "a",
+                    "measures": [{"formula": "amount_sum_avg:max"}],
+                },
+            ],
+            "dry_run": True,
+        })
+        assert "SQL:" in result
+        assert "MAX(" in result.upper()
+
+    async def test_cycle_raises(self, mcp_server, storage: YAMLStorage) -> None:
+        """A cycle between stages must surface a clear error naming the cycle members."""
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._setup_orders(storage)
+        with pytest.raises(ToolError, match=r"[Cc]ycle"):
+            await _call(mcp_server, name="query_nested", arguments={
+                "queries": [
+                    {"name": "a", "source_model": "b", "measures": [{"formula": "amount:sum"}]},
+                    {"name": "b", "source_model": "a", "measures": [{"formula": "amount:sum"}]},
+                    {"source_model": "orders", "measures": [{"formula": "amount:sum"}]},
+                ],
+                "dry_run": True,
+            })
+
+    async def test_invalid_format_rejected(self, mcp_server, storage: YAMLStorage) -> None:
+        from mcp.server.fastmcp.exceptions import ToolError
+        await self._setup_orders(storage)
+        with pytest.raises(ToolError, match="Invalid format"):
+            await _call(mcp_server, name="query_nested", arguments={
+                "queries": [
+                    {"source_model": "orders", "measures": [{"formula": "*:count"}]},
+                ],
+                "format": "xml",
+            })
+
+
 class TestDatasources:
     async def test_list_empty(self, mcp_server) -> None:
         result = await _call(mcp_server, name="list_datasources")
