@@ -395,6 +395,171 @@ class TestQueryBackedModelsAPI:
         assert resp.status_code == 400
 
 
+class TestQueryListBody:
+    """POST /query accepts a multi-stage DAG via ``{"queries": [...]}``.
+
+    Mirrors ``engine.execute(query=[...])`` and the MCP ``query_nested``
+    tool: earlier entries are named sub-queries, the last entry is the
+    DAG root, order doesn't matter (engine auto-sorts), cycles and
+    self-references are rejected with 400.
+    """
+
+    @staticmethod
+    def _setup_orders(client: TestClient) -> None:
+        # Use POST endpoints to keep storage state consistent with the client.
+        resp = client.post("/datasources", json={
+            "name": "ds_list", "type": "sqlite", "database": ":memory:",
+        })
+        assert resp.status_code in (200, 201), resp.text
+        resp = client.post("/models", json={
+            "name": "orders",
+            "data_source": "ds_list",
+            "sql_table": "orders",
+            "columns": [
+                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+                {"name": "status", "sql": "status", "type": "TEXT"},
+                {"name": "customer_id", "sql": "customer_id", "type": "DOUBLE"},
+            ],
+        })
+        assert resp.status_code in (200, 201), resp.text
+
+    def test_two_stage_dag_dry_run(self, client: TestClient) -> None:
+        """``{"queries": [stage1, stage2], "dry_run": true}`` runs through
+        the engine list path and returns the generated SQL.
+        """
+        self._setup_orders(client)
+        resp = client.post("/query", json={
+            "queries": [
+                {
+                    "name": "by_customer",
+                    "source_model": "orders",
+                    "measures": [{"formula": "amount:sum"}],
+                    "dimensions": [{"name": "customer_id"}],
+                },
+                {
+                    "source_model": "by_customer",
+                    "measures": [{"formula": "amount_sum:avg"}],
+                },
+            ],
+            "dry_run": True,
+        })
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["sql"] is not None
+        assert "avg(" in body["sql"].lower()
+
+    def test_out_of_order_dag_auto_sorts(self, client: TestClient) -> None:
+        """Stages can be submitted in any order — the engine auto-sorts."""
+        self._setup_orders(client)
+        resp = client.post("/query", json={
+            "queries": [
+                # ``a`` depends on ``b`` but is defined first — auto-sort moves
+                # ``b`` ahead so the SQL emits cleanly.
+                {
+                    "name": "a",
+                    "source_model": "b",
+                    "measures": [{"formula": "amount_sum:avg"}],
+                },
+                {
+                    "name": "b",
+                    "source_model": "orders",
+                    "measures": [{"formula": "amount:sum"}],
+                    "dimensions": [{"name": "customer_id"}],
+                },
+                {
+                    "source_model": "a",
+                    "measures": [{"formula": "amount_sum_avg:max"}],
+                },
+            ],
+            "dry_run": True,
+        })
+        assert resp.status_code == 200, resp.text
+        assert "max(" in resp.json()["sql"].lower()
+
+    def test_empty_queries_rejected(self, client: TestClient) -> None:
+        resp = client.post("/query", json={"queries": []})
+        assert resp.status_code == 400
+        assert "non-empty" in resp.json()["detail"].lower()
+
+    def test_cycle_rejected(self, client: TestClient) -> None:
+        """A cycle between stages must surface as 400 with a cycle message."""
+        self._setup_orders(client)
+        resp = client.post("/query", json={
+            "queries": [
+                {"name": "a", "source_model": "b", "measures": [{"formula": "amount:sum"}]},
+                {"name": "b", "source_model": "a", "measures": [{"formula": "amount:sum"}]},
+                {"source_model": "orders", "measures": [{"formula": "amount:sum"}]},
+            ],
+            "dry_run": True,
+        })
+        assert resp.status_code == 400
+        assert "cycle" in resp.json()["detail"].lower()
+
+
+class TestQueryInlineSourceModel:
+    """POST /query accepts ``source_model`` as a string OR a dict (inline
+    ``ModelExtension`` / ``SlayerModel``), matching the MCP ``query`` tool
+    and ``SlayerQuery.source_model`` polymorphism.
+    """
+
+    @staticmethod
+    def _setup_orders(client: TestClient) -> None:
+        resp = client.post("/datasources", json={
+            "name": "ds_inline", "type": "sqlite", "database": ":memory:",
+        })
+        assert resp.status_code in (200, 201), resp.text
+        resp = client.post("/models", json={
+            "name": "orders",
+            "data_source": "ds_inline",
+            "sql_table": "orders",
+            "columns": [
+                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+            ],
+        })
+        assert resp.status_code in (200, 201), resp.text
+
+    def test_inline_model_extension_dict(self, client: TestClient) -> None:
+        """``source_model: {"source_name": "orders", "columns": [...]}``
+        extends the stored model with an extra column for this one query.
+        """
+        self._setup_orders(client)
+        resp = client.post("/query", json={
+            "source_model": {
+                "source_name": "orders",
+                "columns": [
+                    {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
+                ],
+            },
+            "measures": [{"formula": "double_amount:sum"}],
+            "dry_run": True,
+        })
+        assert resp.status_code == 200, resp.text
+        sql = resp.json()["sql"].lower()
+        assert "amount * 2" in sql or "amount*2" in sql
+
+    def test_inline_slayer_model_dict(self, client: TestClient) -> None:
+        """``source_model: {"name": ..., "sql_table": ..., ...}`` defines
+        an ad-hoc model for this one query.
+        """
+        # Datasource only — table need not exist for dry_run.
+        resp = client.post("/datasources", json={
+            "name": "ds_adhoc", "type": "sqlite", "database": ":memory:",
+        })
+        assert resp.status_code in (200, 201), resp.text
+        resp = client.post("/query", json={
+            "source_model": {
+                "name": "ad_hoc",
+                "sql_table": "things",
+                "data_source": "ds_adhoc",
+                "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
+            },
+            "measures": [{"formula": "x:sum"}],
+            "dry_run": True,
+        })
+        assert resp.status_code == 200, resp.text
+        assert "things" in resp.json()["sql"].lower()
+
+
 class TestOpenAPI400Documentation:
     """Endpoints that raise HTTPException(400) should declare it in OpenAPI
     so generated SDKs surface the error shape (Sonar S8415).
