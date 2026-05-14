@@ -91,6 +91,15 @@ examples:
     )
     _add_storage_arg(serve_parser)
 
+    # ── flight-serve ──────────────────────────────────────────────────
+    # DEV-1390: Arrow Flight SQL endpoint, wire-compatible with the
+    # dbt Semantic Layer JDBC driver.
+    from slayer.flight.cli import add_flight_serve_subparser
+    add_flight_serve_subparser(subparsers)
+    # Storage flag is shared with the rest of the subcommands.
+    flight_parser = subparsers._name_parser_map["flight-serve"]
+    _add_storage_arg(flight_parser)
+
     # ── mcp ───────────────────────────────────────────────────────────
     mcp_parser = subparsers.add_parser(
         "mcp",
@@ -511,6 +520,9 @@ examples:
 
     if args.command == "serve":
         _run_serve(args)
+    elif args.command == "flight-serve":
+        from slayer.flight.cli import run_flight_serve
+        run_flight_serve(args, resolve_storage=_resolve_storage, prepare_demo=_prepare_demo)
     elif args.command == "mcp":
         _run_mcp(args)
     elif args.command == "query":
