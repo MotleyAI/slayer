@@ -192,7 +192,15 @@ def build_in_memory_corpus(
     """
     schema = _build_schema()
     index = tantivy.Index(schema=schema)
-    writer = index.writer()
+    # `num_threads=1` pins doc-id assignment to insertion order so the
+    # tantivy tiebreak (lower internal doc id wins on equal scores) is
+    # deterministic across rebuilds (DEV-1414). The default
+    # ``num_threads=0`` lets tantivy auto-pick a thread count, and with
+    # multiple writer threads the order in which threads commit their
+    # local segments determines doc-id assignment — which is
+    # non-deterministic for small in-RAM corpora that finish
+    # processing within microseconds.
+    writer = index.writer(num_threads=1)
 
     visible_models = [m for m in models if not m.hidden]
     pairs = _collect_render_pairs(
@@ -234,12 +242,39 @@ def build_in_memory_corpus(
 # ---------------------------------------------------------------------------
 
 
+def _apply_kind_filter(
+    *,
+    query: "tantivy.Query",
+    schema: "tantivy.Schema",
+    kind_filter: Optional[str],
+    exclude_kind: Optional[str],
+) -> "tantivy.Query":
+    """Wrap ``query`` in a boolean query that ``Must`` includes (or
+    ``MustNot`` excludes) docs whose ``kind`` field exactly equals the
+    supplied value. Returns ``query`` unchanged when neither argument
+    is set. The caller has already validated mutual exclusivity."""
+    if kind_filter is None and exclude_kind is None:
+        return query
+    target = kind_filter if kind_filter is not None else exclude_kind
+    occur = (
+        tantivy.Occur.Must if kind_filter is not None
+        else tantivy.Occur.MustNot
+    )
+    kind_term = tantivy.Query.term_query(schema, "kind", target)
+    return tantivy.Query.boolean_query([
+        (tantivy.Occur.Must, query),
+        (occur, kind_term),
+    ])
+
+
 def search_index(
     *,
     index: tantivy.Index,
     question: str,
     limit: int = 20,
     fields: Optional[List[str]] = None,
+    kind_filter: Optional[str] = None,
+    exclude_kind: Optional[str] = None,
 ) -> List[IndexHit]:
     """Run a tantivy query against ``index``.
 
@@ -250,10 +285,23 @@ def search_index(
         limit: Max hits to return.
         fields: Which schema fields to query against (default: ``["text"]``).
             Pass ``["canonical"]`` for an exact-match canonical lookup.
+        kind_filter: When set, restrict results to docs whose ``kind``
+            field exactly equals this value (e.g. ``"memory"``,
+            ``"model"``). Combined with the text query via ``Must``.
+        exclude_kind: When set, exclude docs whose ``kind`` field equals
+            this value. Combined with the text query via ``MustNot``.
+        ``kind_filter`` and ``exclude_kind`` are mutually exclusive
+        (DEV-1414): one is for keeping a single kind, the other for
+        dropping a single kind. Pass at most one.
 
     Returns:
         List of :class:`IndexHit` in score-desc order.
     """
+    if kind_filter is not None and exclude_kind is not None:
+        raise ValueError(
+            "kind_filter and exclude_kind are mutually exclusive; pass "
+            "at most one."
+        )
     if not question or not question.strip():
         return []
     if fields is None:
@@ -262,6 +310,12 @@ def search_index(
         query = index.parse_query(question, fields)
     except (ValueError, RuntimeError):
         return []
+    query = _apply_kind_filter(
+        query=query,
+        schema=index.schema,
+        kind_filter=kind_filter,
+        exclude_kind=exclude_kind,
+    )
     searcher = index.searcher()
     raw_hits = searcher.search(query, limit).hits
     out: List[IndexHit] = []
