@@ -458,7 +458,14 @@ Sibling stages can also reference each other — any non-final stage may use a *
 
 `SlayerModel.source_queries` (stored, YAML-defined) keeps stricter top-to-bottom rules: any reference must point to a stage defined *earlier* in the list, so the file reads top-to-bottom as the execution order.
 
-**Surface coverage.** Query lists work via `engine.execute(query=[...])` (Python SDK), the CLI (`slayer query @file.json` accepts both a single object and a top-level list), and the MCP tool `query_nested(queries=[...])`. The single-stage MCP tool `query` and the REST `POST /query` endpoint accept a single query only — for the multi-stage shape from REST, save the list as a query-backed model (`POST /models` with `source_queries`) and run it by name.
+**Surface coverage.** Query lists work via every surface:
+
+- Python SDK: `engine.execute(query=[...])`.
+- CLI: `slayer query @file.json` — accepts both a single object and a top-level list.
+- MCP: the `query_nested` tool, `queries=[...]` argument.
+- REST: `POST /query` with body `{"queries": [...], "variables": {...}, "dry_run": ..., "explain": ...}` (the single-query body shape is also still accepted).
+
+The single-stage MCP tool `query` stays single-query only — use it when the typed per-field schema fits a one-shot query; reach for `query_nested` for multi-stage.
 
 ### ModelExtension
 

@@ -2,7 +2,7 @@
 
 import logging
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -31,7 +31,13 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: Optional[str] = None  # Run-by-name: backing query for a query-backed model
-    source_model: Optional[str] = None
+    # ``source_model`` accepts a string (stored model name) or a dict
+    # — the dict form is an inline ``ModelExtension`` (``{"source_name":
+    # "<model>", "columns": [...], "joins": [...]}``) or an inline
+    # ``SlayerModel`` (``{"name": "...", "sql_table": "...", "data_source":
+    # "...", "columns": [...]}``). The full polymorphism is handled by
+    # ``SlayerQuery.model_validate`` downstream.
+    source_model: Optional[Union[str, Dict[str, Any]]] = None
     measures: Optional[List[Dict[str, Any]]] = None
     dimensions: Optional[List[Dict[str, Any]]] = None
     time_dimensions: Optional[List[Dict[str, Any]]] = None
@@ -43,6 +49,24 @@ class QueryRequest(BaseModel):
     dry_run: Optional[bool] = None
     explain: Optional[bool] = None
     variables: Optional[Dict[str, Any]] = None
+
+
+class QueryListRequest(BaseModel):
+    """Body shape for multi-stage DAG queries at ``POST /query``.
+
+    ``queries`` is a non-empty list of query dicts forming a DAG —
+    same shape as ``engine.execute(query=[...])`` and the MCP
+    ``query_nested`` tool. Order doesn't matter; the engine auto-sorts.
+    Top-level ``variables`` / ``dry_run`` / ``explain`` apply to the
+    whole execution.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    queries: List[Dict[str, Any]]
+    variables: Optional[Dict[str, Any]] = None
+    dry_run: Optional[bool] = None
+    explain: Optional[bool] = None
 
 
 class FieldMetadataResponse(BaseModel):
@@ -168,13 +192,33 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             },
         },
     )
-    async def query(request: QueryRequest) -> QueryResponse:
+    async def query(
+        request: Union[QueryRequest, QueryListRequest],
+    ) -> QueryResponse:
         try:
+            # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
+            # "dry_run": ..., "explain": ...}``. Mirrors the MCP
+            # ``query_nested`` tool and ``engine.execute(query=[...])``.
+            # Engine auto-sorts the list and validates DAG invariants.
+            if isinstance(request, QueryListRequest):
+                if not request.queries:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="'queries' must be a non-empty list.",
+                    )
+                dry_run = bool(request.dry_run)
+                explain = bool(request.explain)
+                result = await engine.execute(
+                    query=list(request.queries),
+                    variables=request.variables or {},
+                    dry_run=dry_run,
+                    explain=explain,
+                )
             # Run-by-name: ``{"name": "<model>", "variables": {...}}``
             # routes through ``engine.execute(str)`` so the model's stored
             # backing query runs directly. Cannot be combined with
             # ``source_model`` or other query fields.
-            if request.name is not None:
+            elif request.name is not None:
                 disallowed = [
                     f for f in (
                         request.source_model, request.measures, request.dimensions,
