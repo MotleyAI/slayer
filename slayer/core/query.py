@@ -319,13 +319,16 @@ class SlayerQuery(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def _validate_no_dunder_in_name(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and "__" in v:
-            raise ValueError(
-                f"Query name '{v}' must not contain '__'. "
-                f"Double underscores are reserved for join path aliases in generated SQL."
-            )
-        return v
+    def _validate_query_name(cls, v: Optional[str]) -> Optional[str]:
+        # Share the same rejection rules as SlayerModel.name —
+        # SlayerQuery names occupy the same naming space when persisted
+        # as query-backed models. Rejects ``__`` (join-path alias
+        # separator), ``.`` (dotted reference syntax), and ``:`` (DSL
+        # aggregation separator).
+        if v is None:
+            return v
+        from slayer.core.models import _validate_model_name
+        return _validate_model_name(v, "Query")
     dimensions: Annotated[Optional[List[ColumnRef]], BeforeValidator(_coerce_dimensions)] = None
     time_dimensions: Optional[List[TimeDimension]] = None
     main_time_dimension: Optional[str] = None  # Explicit time dimension for transforms (overrides auto-detection)

@@ -63,3 +63,5 @@ Result keys include the full path from the source model: `items.orders.customers
 ---
 
 See the [companion notebook](auto_ingest_nb.ipynb) for runnable code demonstrating auto-ingestion end to end.
+
+> **Tip:** When running a long-lived REST or MCP server, you can re-run the same idempotent ingestion every boot with `slayer serve --ingest-on-startup` / `slayer mcp --ingest-on-startup` — useful for YAML-drop datasource workflows. See [Ingesting at Startup](../../concepts/ingestion.md#ingesting-at-startup).

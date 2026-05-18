@@ -22,6 +22,8 @@ A `SlayerQuery` is a JSON/dict object. The same shape works across the REST API,
 
 `order[].column` is the short alias (`count`, `revenue_sum`) — not the colon form.
 
+**Dim-only queries deduplicate.** A query with no measures and at least one dimension or time-dimension auto-emits `GROUP BY <dim/td aliases>` and returns the distinct combinations. The `GROUP BY` is applied before `LIMIT`, so a row cap can't silently drop unique tuples. There is no opt-out — if you want the raw row stream, query the underlying table outside the semantic layer.
+
 ## Measures — colon aggregation
 
 Each entry in `measures` is either a bare formula string or a `{"formula": ..., "name": ..., "label": ...}` dict. Aggregation is chosen at query time using **colon syntax**:
@@ -63,6 +65,8 @@ Result column naming: `revenue:sum` → `orders.revenue_sum` (colon becomes unde
 **Operators**: `=`, `<>`, `>`, `>=`, `<`, `<=`, `IN`, `IS NULL`, `IS NOT NULL`, `LIKE`, `NOT LIKE`
 
 **Boolean logic**: `AND`, `OR`, `NOT`
+
+**String-hygiene scalars** (DEV-1378, lowercase only): `lower`, `upper`, `trim`, `replace`, `substr`, `instr`, `length`, `concat`. Plus the SQL `||` operator (folded into `concat(...)`). Examples: `"lower(status) = 'active'"`, `"length(replace(x, ',', '')) > 0"`, `"substr(s, 1, instr(s, ',') - 1) = 'first'"`, `"first || ' ' || last = 'jane doe'"`. Calls outside this allowlist (`json_extract`, `coalesce`, …) belong in `Column.sql` / `Column.filter` / `SlayerModel.filters` (Mode A SQL), not query filters.
 
 **Filtering on computed measures**: `"change(revenue:sum) > 0"`, `"last(change(revenue:sum)) < 0"`. Applied as post-filters on the outer query.
 
@@ -149,6 +153,10 @@ Pass a list of queries — earlier queries are named sub-queries; the last is th
   }
 ]
 ```
+
+Order doesn't matter for runtime lists — the engine auto-sorts so every stage appears after the siblings it references. The **last entry stays last** as the entry point. Cycles, self-references, and a non-final stage referencing the root are rejected; unreachable utility stages are accepted (silently dropped from the emitted SQL).
+
+Surfaces: Python SDK `engine.execute(query=[...])`; CLI `slayer query @file.json` (accepts both single object and top-level list); MCP `query_nested(queries=[...])`; REST `POST /query` with body `{"queries": [...], "variables": {...}, "dry_run": ..., "explain": ...}` (the single-query body shape is also still accepted). The single-stage MCP `query` tool stays single-query only — use it when the typed per-field schema fits a one-shot query. `SlayerModel.source_queries` itself keeps strict top-to-bottom order; runtime lists are the only DAG-auto-sort surface.
 
 ## Result format
 

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage import migrations as _mig
 from slayer.storage.type_refinement import (
@@ -53,23 +54,28 @@ def default_storage_path() -> str:
     return str(base / "slayer")
 
 
-_PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00")
+_PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00", ".")
 
 
 def _validate_path_component(value: str, *, kind: str) -> None:
-    """Reject strings that could traverse out of the storage tree.
+    """Reject strings that could traverse out of the storage tree or
+    collide with canonical-id namespace boundaries.
 
     Used at the public ``get_model``/``delete_model`` boundaries to
     sanitize user-controlled strings *before* a backend composes them
     into a filesystem path or SQL key. Mirrors the validators on the
-    ``SlayerModel`` Pydantic class — those guard the save path; this
-    guards the read/delete paths where Pydantic validation is bypassed
-    (since callers pass raw strings, not model instances).
+    ``SlayerModel`` and ``DatasourceConfig`` Pydantic classes — those
+    guard the save path; this guards the read/delete paths where Pydantic
+    validation is bypassed (since callers pass raw strings, not model
+    instances).
 
     Rejects: empty / whitespace-only, ``..``, any path separator
-    (``/``, ``\\``), and embedded NULs. Lives in ``StorageBackend`` so
-    every backend gets the same defense without duplication
-    (per the backend-agnostic memory rule).
+    (``/``, ``\\``), embedded NULs, and ``.`` (DEV-1405: dots are the
+    canonical-id namespace delimiter — allowing ``prod.db`` as a
+    datasource name would let ``delete_datasource('prod')`` cascade-nuke
+    embeddings rooted at ``prod.db.*``). Lives in ``StorageBackend`` so
+    every backend gets the same defense without duplication (per the
+    backend-agnostic memory rule).
     """
     if not isinstance(value, str) or not value or not value.strip():
         raise ValueError(
@@ -107,8 +113,35 @@ class StorageBackend(ABC):
 
     # ---- model CRUD (composite key) ----------------------------------------
 
+    async def save_model(
+        self, model: SlayerModel, *, _validate: bool = True,
+    ) -> None:
+        """Persist a model.
+
+        Runs save-time validation (currently DEV-1410 derived-column cycle
+        detection) and then delegates to the backend-specific
+        :meth:`_save_model_impl`. The ``_validate=False`` escape hatch is
+        for trusted internal callers — currently only the migration
+        write-back in :meth:`_migrate_and_refine_on_load` — that must
+        persist legacy data which may not pass current invariants.
+
+        Validation rules live in this base class so every backend gets
+        them uniformly without duplication; concrete backends must NOT
+        override this method.
+        """
+        if _validate:
+            from slayer.engine.column_dependency import validate_no_column_cycles
+            await validate_no_column_cycles(model=model, storage=self)
+        await self._save_model_impl(model)
+
     @abstractmethod
-    async def save_model(self, model: SlayerModel) -> None: ...
+    async def _save_model_impl(self, model: SlayerModel) -> None:
+        """Backend-specific write of ``model`` to durable storage.
+
+        Concrete backends implement only this method, not ``save_model``.
+        Shared validation lives in :meth:`save_model` (the template
+        method).
+        """
 
     @abstractmethod
     async def _list_all_model_identities(self) -> List[Tuple[str, str]]:
@@ -126,12 +159,55 @@ class StorageBackend(ABC):
         data_source: Optional[str] = None,
     ) -> Optional[SlayerModel]: ...
 
-    @abstractmethod
     async def delete_model(
         self,
         name: str,
         data_source: Optional[str] = None,
-    ) -> bool: ...
+    ) -> bool:
+        """Delete one model by ``(data_source, name)`` and cascade-delete
+        every embedding row tagged with that model's canonical prefix.
+
+        Bare ``name`` resolves through the priority list (see
+        ``_resolve_target_or_none``). Returns ``False`` when no model matches
+        — no cascade is attempted in that case.
+        """
+        target = await self._resolve_target_or_none(name, data_source=data_source)
+        if target is None:
+            return False
+        resolved_data_source, resolved_name = target
+        deleted = await self._delete_model_row(
+            data_source=resolved_data_source, name=resolved_name,
+        )
+        if deleted:
+            await self.delete_embeddings_for_canonical(
+                canonical_id_prefix=f"{resolved_data_source}.{resolved_name}",
+            )
+        return deleted
+
+    @abstractmethod
+    async def _delete_model_row(
+        self, *, data_source: str, name: str,
+    ) -> bool:
+        """Delete the persisted row for ``(data_source, name)``. Returns
+        ``True`` if a row was removed, ``False`` when the identity did not
+        exist. Embedding cascade is handled by the public ``delete_model``
+        wrapper on the ABC; backends only do the row I/O here."""
+
+    @abstractmethod
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        """Patch a single column's ``sampled`` field in-place (DEV-1375).
+
+        Avoids a full ``save_model`` per refresh — read-modify-write the
+        single field, leave every other field untouched. Raises
+        ``ValueError`` when the model or column doesn't exist.
+        """
 
     # ---- shared model lookup / load helpers --------------------------------
 
@@ -200,7 +276,11 @@ class StorageBackend(ABC):
                     refine_dict_with_live_schema(data, ds)
         model = SlayerModel.model_validate(data)
         if write_back:
-            await self.save_model(model)
+            # DEV-1410: legacy on-disk models may contain derived-column
+            # cycles that current save-time validation would reject. The
+            # migration write-back must not re-validate; otherwise users
+            # could not load a broken legacy model to repair it.
+            await self.save_model(model, _validate=False)
         return model
 
     # ---- datasource CRUD ---------------------------------------------------
@@ -214,8 +294,33 @@ class StorageBackend(ABC):
     @abstractmethod
     async def list_datasources(self) -> List[str]: ...
 
+    async def delete_datasource(self, name: str) -> bool:
+        """Delete the datasource config and cascade-delete every embedding
+        row tagged with the datasource's canonical prefix (the datasource
+        doc itself, plus every model / column / measure / aggregation
+        embedding under it).
+
+        Models that lived in the deleted datasource are *not* themselves
+        deleted by this call (matches pre-DEV-1386 behaviour); they become
+        orphans referencing a missing datasource config. Re-creating the
+        datasource and re-running ``slayer ingest`` repopulates embeddings.
+        """
+        # DEV-1405: sanitize the raw name before it composes a filesystem
+        # path (YAMLStorage) or a cascade LIKE prefix. Mirrors the
+        # validation done on the save side by ``DatasourceConfig.name``.
+        _validate_path_component(name, kind="datasource name")
+        deleted = await self._delete_datasource_row(name)
+        if deleted:
+            await self.delete_embeddings_for_canonical(
+                canonical_id_prefix=name,
+            )
+        return deleted
+
     @abstractmethod
-    async def delete_datasource(self, name: str) -> bool: ...
+    async def _delete_datasource_row(self, name: str) -> bool:
+        """Delete the datasource config row. Returns ``True`` when a row
+        was removed. Embedding cascade is handled by the public
+        ``delete_datasource`` wrapper on the ABC."""
 
     # ---- datasource priority (bare-name disambiguation) -------------------
 
@@ -330,10 +435,14 @@ class StorageBackend(ABC):
 
     # ---- memories (DEV-1357 v2) -------------------------------------------
     #
-    # Monotonic positive-int ids, no reuse on delete, and the missing-row
-    # → ``MemoryNotFoundError`` policy live on this class so they can
-    # never diverge between backends. Backends only implement the row-
-    # shaped CRUD primitives + the seq counter below.
+    # Positive-int ids derived from the current ``memories`` corpus
+    # (DEV-1405). Ids increase monotonically while the corpus only grows;
+    # ids belonging to deleted memories may be reused by future saves.
+    # Cascade-on-delete in ``delete_memory`` removes any embedding rows
+    # under the freed id, so reuse strands no data. The missing-row →
+    # ``MemoryNotFoundError`` policy lives on this class so it can never
+    # diverge between backends. Backends only implement the row-shaped
+    # CRUD primitives + the next-seq derivation below.
 
     @abstractmethod
     async def _save_memory_row(self, memory: Memory) -> None:
@@ -359,9 +468,10 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def _next_memory_seq(self) -> int:
-        """Atomically allocate and return the next memory sequence
-        integer. Counter is monotonically increasing — deleted ids are
-        never reused."""
+        """Return the next positive int memory id, strictly above any id
+        currently held by the corpus. Backends derive this from
+        ``memories.yaml`` / the ``memories`` table directly; deleted ids
+        may be reused (DEV-1405)."""
 
     async def save_memory(
         self,
@@ -395,6 +505,85 @@ class StorageBackend(ABC):
     async def delete_memory(self, memory_id: int) -> None:
         if not await self._delete_memory_row(memory_id):
             raise MemoryNotFoundError(memory_id)
+        # Cascade: drop any embedding rows tagged with this memory's
+        # canonical id so an orphan embedding never survives its source.
+        await self.delete_embeddings_for_canonical(
+            canonical_id_prefix=f"memory:{memory_id}",
+        )
+
+    # ---- embeddings sidecar (DEV-1386) ------------------------------------
+    #
+    # One row per ``(canonical_id, embedding_model_name)`` pair. The active
+    # ``embedding_model_name`` (from ``SLAYER_EMBEDDING_MODEL``) selects
+    # which rows the search service actually reads — changing the env var
+    # leaves prior rows in place but inert.
+
+    @abstractmethod
+    async def save_embedding(self, row: Embedding) -> None:
+        """Upsert one embedding row keyed by
+        ``(canonical_id, embedding_model_name)``."""
+
+    @abstractmethod
+    async def get_embedding(
+        self, *, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Embedding]:
+        """Fetch one embedding row; ``None`` when no row matches."""
+
+    @abstractmethod
+    async def list_embeddings(
+        self, *, embedding_model_name: str,
+    ) -> List[Embedding]:
+        """Return every row for ``embedding_model_name``. Used by the
+        search service to load the entire corpus into a numpy matrix."""
+
+    @abstractmethod
+    async def delete_embeddings_for_canonical(
+        self, *, canonical_id_prefix: str,
+    ) -> int:
+        """Cascade-delete embedding rows whose ``canonical_id`` is exactly
+        ``canonical_id_prefix`` or is a strict descendant under the
+        dotted-path namespace (``canonical_id_prefix + "." + …``). Never
+        a character prefix — ``"orders"`` does not match
+        ``"orders_archive"``; ``"memory:4"`` does not match ``"memory:42"``.
+        Returns the row-count deleted.
+
+        Used by ``delete_model`` (root ``"<ds>.<model>"`` matches the
+        model doc and every column / measure / aggregation under it),
+        ``delete_memory`` (root ``"memory:<id>"`` — exact match for one
+        row, no descendants), and ``delete_datasource`` (root ``"<ds>"``
+        — the datasource doc plus every descendant).
+        """
+
+    # Batched read/write helpers (DEV-1405). Default implementations call
+    # the single-row methods M times so any third-party backend keeps
+    # working unchanged; the bundled backends override these to issue one
+    # round-trip via :class:`SidecarEmbeddingStore`.
+
+    async def save_embeddings(self, rows: List[Embedding]) -> None:
+        """Persist many embedding rows in one round-trip. Default
+        implementation calls :meth:`save_embedding` for each row."""
+        for row in rows:
+            await self.save_embedding(row)
+
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ) -> Dict[str, "Embedding"]:
+        """Fetch every embedding row in ``canonical_ids`` under the given
+        ``embedding_model_name`` in one round-trip. Returns a dict keyed
+        by ``canonical_id``; missing ids are simply absent from the dict.
+        Default implementation calls :meth:`get_embedding` for each id."""
+        out: Dict[str, Embedding] = {}
+        for canonical_id in canonical_ids:
+            row = await self.get_embedding(
+                canonical_id=canonical_id,
+                embedding_model_name=embedding_model_name,
+            )
+            if row is not None:
+                out[canonical_id] = row
+        return out
 
 
 # ---------------------------------------------------------------------------

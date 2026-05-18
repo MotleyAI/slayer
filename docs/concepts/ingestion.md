@@ -142,6 +142,85 @@ This avoids table alias collisions and allows querying both paths simultaneously
 
 If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warning and falls back to simple models without rollup joins.
 
+## Ingesting at Startup
+
+`slayer serve` and `slayer mcp` both accept `--ingest-on-startup`, an
+**opt-in** flag that walks every configured datasource and runs the same
+idempotent ingestion pass described in [Idempotent
+Re-Ingestion](#idempotent-re-ingestion) **before** the port opens / before
+stdio JSON-RPC starts. Mirrors the existing `--demo` boot hook, so both
+flags compose: `--demo` runs first (creating the Jaffle Shop datasource),
+then the startup-ingest pass runs over every datasource including the
+freshly-created demo.
+
+Each per-datasource pass refreshes embeddings for the datasource doc,
+every visible model + its visible children, **and every memory whose
+canonical entities are rooted at the datasource** (DEV-1416). A stale
+`embeddings.db` (created without an `OPENAI_API_KEY`, or after a manual
+`memories.yaml` edit) is therefore repaired by the next
+`--ingest-on-startup` with no extra step. Per-memory embed failures
+surface as `IngestionError(model_name="memory:<id>", …)` in the
+result's `errors` list.
+
+### CLI
+
+```bash
+slayer serve --ingest-on-startup
+slayer mcp --ingest-on-startup
+slayer serve --demo --ingest-on-startup     # demo first, then ingest all DSes
+```
+
+### Environment variable
+
+`SLAYER_INGEST_ON_STARTUP=<truthy>` enables the same behaviour. Truthy =
+`1`, `true`, `yes` (case-insensitive). Anything else (including unset, `0`,
+`false`, empty) is off. An explicit `--ingest-on-startup` wins over the
+env var when both are set.
+
+### Programmatic (embedders)
+
+```python
+from slayer.api.server import create_app
+from slayer.mcp.server import create_mcp_server
+
+app = create_app(storage=storage, ingest_on_startup=True)
+mcp = create_mcp_server(storage=storage, ingest_on_startup=True)
+```
+
+Same "models are fresh by the time the constructor returns" guarantee the
+CLI gets.
+
+### Error semantics
+
+- **One datasource fails** (the ingest call raises): caught, friendly-formatted, accumulated, server starts anyway.
+- **Per-table errors inside a single datasource** (`result.errors` non-empty): printed; that datasource still counts as "succeeded" because the call itself returned.
+- **`storage.list_datasources()` raises**: propagates — server does not start. Boot should not proceed with broken storage.
+- **Zero datasources**: prints `Ingest-on-startup: no datasources configured` and starts normally.
+
+### Drift handling
+
+`to_delete` entries from each per-datasource result are printed via the
+standard drift renderer and accumulated into the return value's
+`drift_pending` list, but **never auto-applied**. Destructive cleanup
+remains gated behind `slayer validate-models --force-clean [--yes]`. See
+[Schema Drift](schema-drift.md).
+
+### Output
+
+All boot-ingest output goes to **stderr** for both `slayer serve` and
+`slayer mcp` — `mcp` uses stdio JSON-RPC and any byte on stdout would
+corrupt the channel. Final line:
+
+```text
+Ingest-on-startup: N/M datasources ingested
+```
+
+or, when at least one failed:
+
+```text
+Ingest-on-startup: N/M datasources ingested (K failed: name1, name2)
+```
+
 ## Idempotent Re-Ingestion
 
 `slayer ingest` (and the equivalent MCP / REST entry points) is idempotent by default — re-runs are safe. For each in-scope live table:
@@ -151,5 +230,14 @@ If the FK graph contains cycles (e.g., `A → B → A`), ingestion logs a warnin
 - **Existing `sql`-mode or query-backed model with the matching name** → skipped silently; those are user-authored.
 
 After the additive pass, `validate_models` runs against the in-scope models and the result is merged into the response (`IdempotentIngestResult.to_delete`). Type-bucket drift on existing columns surfaces there — apply via `slayer validate-models --force-clean`, then re-ingest to pick up the new live type. See [Schema Drift](schema-drift.md) for the full diff / cascade contract.
+
+### Search side effects
+
+After validation, every ingest also refreshes the search corpus for the touched datasource:
+
+- **Sample values** (`Column.sampled`) — re-profiled for every non-hidden, non-PK column on every table-backed model in the datasource. The cached snapshot is consumed by the tantivy search index and by `inspect_model`. See [Search](search.md#sample-value-cache).
+- **Embedding rows** — when the `embedding_search` extra is installed and a usable provider API key is in the environment, the embedding refresh re-runs for the datasource doc plus every visible model + its visible children. `SLAYER_EMBEDDING_MODEL` is an *optional* override of the default (`openai/text-embedding-3-small`); setting it is not required. The SHA256 `content_hash` on each row means re-ingests are cheap when nothing changed. See [Search](search.md#channel-3--dense-embedding-similarity).
+
+Both refreshes are best-effort: per-entity runtime failures land in `IdempotentIngestResult.errors` as friendly strings, never aborting ingestion. When the `embedding_search` extra is not installed or no API key is configured for the active embedding model, the embedding pass is silently skipped — the user-visible signal lives on the next `search` response.
 
 `include_tables` / `exclude_tables` constrain the additive pass plus the `sql_table`-mode subset of validation: a `sql_table`-mode model whose table is excluded is left out of both. `sql`-mode and query-backed models in the same datasource are still passed through `validate_models` regardless of the table filter — they are not tied to a specific table name. Run `validate_models` directly (no `--include`/`--exclude`) to validate only those modes.

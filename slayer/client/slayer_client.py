@@ -1,15 +1,17 @@
 """Python client for SLayer API."""
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import FieldMetadata, ResponseAttributes, SlayerResponse
 from slayer.memories.models import (
     ForgetMemoryResponse,
-    RecallResponse,
     SaveMemoryResponse,
 )
+
+if TYPE_CHECKING:
+    from slayer.search.service import SearchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -236,28 +238,80 @@ class SlayerClient:
         )
         return ForgetMemoryResponse.model_validate(result)
 
-    async def recall_memories(
+    # ----- Search API (DEV-1375) -----
+
+    async def search(
         self,
         *,
-        about: Union[List[str], SlayerQuery, Dict[str, Any]],
-        max_learnings: Optional[int] = None,
-        max_queries: Optional[int] = 2,
-    ) -> RecallResponse:
-        if self._storage is not None:
-            return await self._memory_service().recall_memories(
-                about=self._coerce_linked_entities(about),
-                max_learnings=max_learnings,
-                max_queries=max_queries,
+        entities: Optional[List[str]] = None,
+        query: Optional[Union[SlayerQuery, Dict[str, Any]]] = None,
+        question: Optional[str] = None,
+        datasource: Optional[str] = None,
+        max_memories: int = 5,
+        max_example_queries: int = 2,
+        max_entities: int = 5,
+    ) -> "SearchResponse":
+        """Up to three-channel semantic search over memories + canonical
+        entities.
+
+        Channels: (1) entity-overlap BM25 over memories; (2) tantivy
+        full-text over memories ∪ entities; (3) optional dense embedding
+        similarity (gated by the ``embedding_search`` extra and a
+        configured provider API key). Memory rankings from all active
+        channels and entity rankings from channels 2 and 3 are fused via
+        Reciprocal Rank Fusion (``k=60``).
+
+        ``datasource`` (DEV-1409, optional): when set, scope memories and
+        entities to that one datasource. Entity hits are limited to docs
+        rooted at the datasource (exact match or dotted-path descendant).
+        Memories surface when any of their tagged entities is rooted at
+        the datasource.
+
+        Error contract for an unknown ``datasource``:
+
+        * **Local mode** (constructed with ``storage=...``): the in-process
+          ``SearchService.search`` raises ``ValueError`` synchronously.
+        * **Remote mode** (constructed with ``base_url=...``): the server
+          returns HTTP 400 and ``httpx``'s ``raise_for_status`` raises an
+          ``HTTPStatusError`` here — it does NOT propagate as ``ValueError``.
+        """
+        # Local imports: slayer.search.service transitively imports tantivy,
+        # which is not part of the client extras (httpx + pandas). Remote-only
+        # client installs that never call .search() should not blow up at
+        # module-import time.
+        from slayer.search.service import SearchResponse, SearchService
+
+        coerced_query: Any = None
+        if query is not None:
+            coerced_query = (
+                query.model_dump(mode="json", exclude_none=True)
+                if isinstance(query, SlayerQuery) else query
             )
-        body = {
-            "about": self._coerce_linked_entities(about),
-            "max_learnings": max_learnings,
-            "max_queries": max_queries,
+        if self._storage is not None:
+            return await SearchService(storage=self._storage).search(
+                entities=entities,
+                query=coerced_query,
+                question=question,
+                datasource=datasource,
+                max_memories=max_memories,
+                max_example_queries=max_example_queries,
+                max_entities=max_entities,
+            )
+        body: Dict[str, Any] = {
+            "max_memories": max_memories,
+            "max_example_queries": max_example_queries,
+            "max_entities": max_entities,
         }
-        result = await self._request(
-            method="POST", path="/memories/recall", json=body
-        )
-        return RecallResponse.model_validate(result)
+        if entities is not None:
+            body["entities"] = entities
+        if coerced_query is not None:
+            body["query"] = coerced_query
+        if question is not None:
+            body["question"] = question
+        if datasource is not None:
+            body["datasource"] = datasource
+        result = await self._request(method="POST", path="/search", json=body)
+        return SearchResponse.model_validate(result)
 
     # ----- Sync API (for notebooks, scripts, CLI) -----
 

@@ -6,7 +6,32 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.embeddings import client as embedding_client
 from slayer.storage.yaml_storage import YAMLStorage
+
+
+@pytest.fixture(autouse=True)
+def _disable_embedding_channel_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the embedding channel off for every test by default.
+
+    Two reasons:
+
+    * Without this, tests that exercise the real write paths
+      (``save_memory`` / ``ingest`` / ``edit_model``) would attempt
+      live ``litellm.aembedding`` calls — costing money on a dev
+      machine that has ``OPENAI_API_KEY`` set, and emitting per-entity
+      bubble-up warnings on CI that doesn't.
+    * Tests that *do* want to exercise the embedding code path
+      (``test_embeddings_service.py``, ``test_search_three_channel.py``)
+      explicitly monkeypatch ``is_available`` back to ``True`` in their
+      local fixtures, so this autouse default doesn't interfere.
+
+    Per the spec, bubble-up of *runtime* embed failures is intentional;
+    this fixture isolates "channel disabled by env" from "channel
+    available and failing".
+    """
+    embedding_client.is_available.cache_clear()
+    monkeypatch.setattr(embedding_client, "is_available", lambda: False)
 
 
 @pytest.fixture

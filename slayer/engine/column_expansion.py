@@ -17,11 +17,13 @@ unresolved derived references.
 """
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
+from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
 
 ResolveModel = Callable[..., Awaitable[Optional[SlayerModel]]]
@@ -34,6 +36,63 @@ def _is_trivial_base(*, column: Column) -> bool:
     if column.sql is None:
         return True
     return column.sql.strip() == column.name
+
+
+def _root_scope_column_ids(*, parsed: exp.Expression) -> Set[int]:
+    """Return the ``id()`` set of ``exp.Column`` nodes that lexically belong
+    to the root scope of ``parsed`` (DEV-1410).
+
+    Column.sql is contractually a scalar expression, not a SELECT. To re-use
+    sqlglot's scope analysis we wrap ``parsed`` in a synthetic
+    ``SELECT <parsed> AS _`` so it has a real root scope. The wrapper is
+    used only for scope traversal; the original ``parsed`` AST is unchanged.
+
+    A Column is "root-scope" iff its innermost scope-defining ancestor is
+    the wrapper itself. Anything nested under a ``Subquery``, CTE, set
+    operation (``Union`` / ``Except`` / ``Intersect``), ``Values``, or
+    other scope-producing construct returns a non-root ScopeType and is
+    skipped from derived-column inlining.
+
+    ``Window`` / ``OVER`` is NOT a new scope: columns inside
+    ``PARTITION BY`` / ``ORDER BY`` remain root-scope.
+    """
+    if not isinstance(parsed, exp.Expression):
+        return set()
+    wrapper = exp.Select(expressions=[exp.Alias(this=parsed.copy(), alias="_")])
+    scope_node_ids: Dict[int, ScopeType] = {}
+    for scope in traverse_scope(wrapper):
+        scope_node_ids[id(scope.expression)] = scope.scope_type
+    if not scope_node_ids:
+        # No SELECTs in the fragment at all — every column is root-scope.
+        return {id(c) for c in parsed.find_all(exp.Column)}
+    # Re-walk the WRAPPER (which holds copies) — but we need ids from the
+    # ORIGINAL parsed tree. Pair them up positionally: find_all yields
+    # nodes in document order on both wrapper.this[0] and parsed.
+    wrapper_cols = list(wrapper.find_all(exp.Column))
+    parsed_cols = list(parsed.find_all(exp.Column))
+    if len(wrapper_cols) != len(parsed_cols):
+        # Fail closed: if the positional pairing between the wrapper copy
+        # and the original tree ever drifts, treat NO column as root-scope.
+        # That suppresses derived-column inlining entirely for this
+        # fragment, which is conservative (the compile-time guard still
+        # catches cycles, and a missed inline merely shows up as the
+        # historical bare-name auto-qualification — never as a silent
+        # cross-scope splice). This branch is unreachable today; the
+        # wrapper just wraps a deep copy and ``find_all`` walks in
+        # document order.
+        return set()
+    root_ids: Set[int] = set()
+    for w_col, p_col in zip(wrapper_cols, parsed_cols):
+        node: Optional[exp.Expression] = w_col.parent
+        scope_type: Optional[ScopeType] = None
+        while node is not None:
+            if id(node) in scope_node_ids:
+                scope_type = scope_node_ids[id(node)]
+                break
+            node = node.parent
+        if scope_type == ScopeType.ROOT:
+            root_ids.add(id(p_col))
+    return root_ids
 
 
 async def _walk_path_to_target(
@@ -62,11 +121,14 @@ async def _walk_path_to_target(
     in that case the caller should leave the reference untouched (it is
     likely a CTE / sub-query alias the user wired up themselves).
     """
-    parts = table_alias.split("__") if "__" in table_alias else [table_alias]
-    # Local: the alias is the source model itself (its name or its FROM
-    # alias as we already know it).
-    if len(parts) == 1 and parts[0] in (source_alias, source_model.name):
+    # DEV-1410: literal match against the host's FROM alias or model name
+    # comes FIRST, before any ``__`` splitting. ``alias_path`` is already a
+    # canonical ``__``-delimited path coming from the engine (e.g.
+    # ``"B__C"``) — splitting it would falsely treat it as a multi-hop
+    # walk and fail to resolve as the host.
+    if table_alias == source_alias or table_alias == source_model.name:
         return source_model, source_alias
+    parts = table_alias.split("__") if "__" in table_alias else [table_alias]
     current = source_model
     for hop in parts:
         join = next((j for j in current.joins if j.target_model == hop), None)
@@ -91,6 +153,7 @@ async def _process_column_node(
     dialect: str,
     visited: Tuple[Tuple[str, str], ...],
     is_root: bool,
+    root_scope_ids: Set[int],
 ) -> None:
     """Resolve one ``exp.Column`` node in the parsed AST, mutating it in
     place. Encapsulates the multi-branch decision that drives expansion:
@@ -115,12 +178,12 @@ async def _process_column_node(
     table_id = col.args.get("table")
     col_name = col.name
 
-    if table_id is None:
-        # Bare identifier → qualify to alias_path.
-        col.set("table", exp.to_identifier(alias_path))
-        return
-
-    table_alias = table_id.name
+    # DEV-1410: bare identifiers and qualified ``<alias>.<col>`` refs flow
+    # through the SAME lookup. A bare ref is treated as if it had been
+    # written with the host alias — ``_walk_path_to_target`` returns
+    # ``(source_model, alias_path)`` for that single-part match, so the
+    # downstream derived-vs-base decision (and recursion) is shared.
+    table_alias = table_id.name if table_id is not None else alias_path
     target_model, canonical_alias = await _walk_path_to_target(
         source_model=model,
         source_alias=alias_path,
@@ -139,6 +202,14 @@ async def _process_column_node(
         col.set("table", exp.to_identifier(canonical_alias))
         return
 
+    # DEV-1410 scope guard: only inline derived-column bodies when the
+    # reference is in the ROOT scope of the parent fragment. Nested
+    # scopes (subqueries, set-op branches, VALUES, CTEs) can legitimately
+    # use the same identifier to mean an inner column of a different
+    # rowset — leave them alone.
+    if id(col) not in root_scope_ids:
+        return
+
     # Derived → recurse. Recursion stays "root" only when the target
     # column lives on the same model (no alias change); a remote target
     # descended via a path is by definition non-root, so its own walks
@@ -148,8 +219,7 @@ async def _process_column_node(
     if key in visited:
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
-        chain = " → ".join(f"{m}.{c}" for m, c in cycle)
-        raise ValueError(f"Circular column reference detected: {chain}")
+        raise ColumnCycleError(cycle=list(cycle))
     expanded_sql = await expand_derived_refs(
         sql=target_col.sql,
         model=target_model,
@@ -211,6 +281,10 @@ async def expand_derived_refs(
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     # Materialize the columns first — we may mutate them in place via .replace().
     column_nodes = list(parsed.find_all(exp.Column))
+    # DEV-1410: compute root-scope membership once. Derived-column inlining
+    # only applies to root-scope refs; nested scopes (subqueries, set ops,
+    # VALUES, CTEs) are left alone.
+    root_scope_ids = _root_scope_column_ids(parsed=parsed)
 
     for col in column_nodes:
         await _process_column_node(
@@ -222,6 +296,7 @@ async def expand_derived_refs(
             dialect=dialect,
             visited=visited,
             is_root=is_root,
+            root_scope_ids=root_scope_ids,
         )
 
     return parsed.sql(dialect=dialect)

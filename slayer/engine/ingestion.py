@@ -9,15 +9,27 @@ Flow:
 
 import asyncio
 import logging
+import sys
 from collections import defaultdict, deque
-from typing import Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, TextIO, Tuple
 
 import sqlalchemy as sa
+from pydantic import BaseModel, Field
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.engine.profiling import refresh_all_table_backed_sampled
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.memories.resolver import canonical_id_rooted_at
 from slayer.storage.base import StorageBackend
+
+if TYPE_CHECKING:
+    # The runtime import lives inside ``_refresh_datasource_embeddings``
+    # so the embeddings module stays off the cold-start import graph
+    # when the optional extra isn't installed.
+    from slayer.embeddings.service import EmbeddingService
+
 
 logger = logging.getLogger(__name__)
 
@@ -977,8 +989,344 @@ async def ingest_datasource_idempotent(
         datasource=datasource, models=scoped_models
     )
 
+    # DEV-1375: refresh persisted Column.sampled values for every
+    # table-backed model in this datasource. Best-effort: per-column
+    # failures are accumulated as IngestionError entries; an unexpected
+    # raise is also caught so ingestion's idempotent contract holds.
+    refresh_engine = SlayerQueryEngine(storage=storage)
+    try:
+        refresh_errors = await refresh_all_table_backed_sampled(
+            engine=refresh_engine,
+            storage=storage,
+            data_source=datasource.name,
+        )
+    except Exception as exc:
+        refresh_errors = [f"{datasource.name}: {exc}"]
+    for err in refresh_errors:
+        errors.append(IngestionError(
+            model_name=err.split(".", 1)[0] if "." in err else "",
+            data_source=datasource.name,
+            error=f"sample-value refresh: {err}",
+        ))
+
+    # DEV-1386: refresh persisted embeddings for the datasource doc plus
+    # every visible model + its visible children. Best-effort: per-entity
+    # failures are surfaced as IngestionError entries, never aborts
+    # ingestion. When the `embedding_search` extra is not installed,
+    # EmbeddingService returns a single warning and does no work.
+    embedding_errors = await _refresh_datasource_embeddings(
+        datasource_name=datasource.name, storage=storage,
+    )
+    for model_name, err in embedding_errors:
+        # DEV-1416: each helper inside ``_refresh_datasource_embeddings``
+        # attaches the canonical entity tag (``<ds>.<model>``,
+        # ``memory:<id>``, or ``""`` for the datasource doc) so a
+        # startup log inspection can distinguish memory failures from
+        # model / datasource-doc failures at a glance — no string
+        # sniffing of free-form warning text.
+        errors.append(IngestionError(
+            model_name=model_name,
+            data_source=datasource.name,
+            error=f"embedding refresh: {err}",
+        ))
+
     return IdempotentIngestResult(
         additions=additions,
         to_delete=list(to_delete),
         errors=errors,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Friendly-error helper (moved from slayer/mcp/server.py — DEV-1392 so it can
+# be shared by the MCP server and the boot-time orchestrator without the
+# engine → mcp import edge).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _friendly_db_error(exc: Exception) -> str:
+    """Convert a database exception into a user-friendly message with hints."""
+    msg = str(exc)
+    if hasattr(exc, "orig") and exc.orig:
+        msg = str(exc.orig)
+
+    hints = []
+    msg_lower = msg.lower()
+    if "no password supplied" in msg_lower or "password authentication failed" in msg_lower:
+        hints.append("Check that username and password are correct.")
+    elif "does not exist" in msg_lower and "database" in msg_lower:
+        hints.append("Verify the database name is correct.")
+    elif "could not translate host" in msg_lower or "name or service not known" in msg_lower:
+        hints.append("Check that the host address is correct.")
+    elif "connection refused" in msg_lower:
+        hints.append("Check that the database server is running and the port is correct.")
+    elif "timeout" in msg_lower:
+        hints.append("The database server is not responding. Check host/port and network access.")
+
+    result = f"Database error: {msg}"
+    if hints:
+        result += "\nHint: " + " ".join(hints)
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Renderers — moved from slayer/cli.py so `slayer ingest` and the boot-time
+# orchestrator share one source of truth and one output channel (`file=`).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _print_ingest_addition(
+    addition, *, file: Optional[TextIO] = None
+) -> None:
+    out = file if file is not None else sys.stdout
+    if addition.created:
+        print(
+            f"Created: {addition.model_name} ({len(addition.new_columns)} columns)",
+            file=out,
+        )
+        return
+    if not (addition.new_columns or addition.new_joins):
+        return
+    details = []
+    if addition.new_columns:
+        details.append(f"+columns: {', '.join(addition.new_columns)}")
+    if addition.new_joins:
+        details.append(f"+joins: {', '.join(addition.new_joins)}")
+    print(f"Updated: {addition.model_name} ({'; '.join(details)})", file=out)
+
+
+def _print_ingest_drift_and_errors(
+    result, *, file: Optional[TextIO] = None
+) -> None:
+    out = file if file is not None else sys.stdout
+    if result.to_delete:
+        print("\nPending drift (run `slayer validate-models` to inspect):", file=out)
+        for entry in result.to_delete:
+            print(f"  - {entry.tool}: {entry.model_name}", file=out)
+    if result.errors:
+        print(f"\nErrors ({len(result.errors)}):", file=out)
+        for err in result.errors:
+            print(f"  - {err.model_name}: {err.error}", file=out)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEV-1392 — boot-time orchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class StartupIngestFailure(BaseModel):
+    """One per-datasource failure surfaced by the startup orchestrator."""
+
+    name: str
+    error: str
+
+
+class StartupIngestSummary(BaseModel):
+    """Outcome of :func:`ingest_all_datasources_idempotent`.
+
+    ``drift_pending`` accumulates ``ToDeleteEntry`` objects from
+    :mod:`slayer.engine.schema_drift` across every per-datasource result.
+    It is typed as ``List[Any]`` to avoid a circular import with
+    ``schema_drift``; runtime entries are
+    ``EditModelDelete | WholeModelDelete``.
+    """
+
+    succeeded: List[str] = Field(default_factory=list)
+    failures: List[StartupIngestFailure] = Field(default_factory=list)
+    drift_pending: List[Any] = Field(default_factory=list)
+
+
+async def ingest_all_datasources_idempotent(
+    *,
+    storage: StorageBackend,
+    stream: Optional[TextIO] = None,
+) -> StartupIngestSummary:
+    """Run idempotent auto-ingestion across every configured datasource.
+
+    Sequential. Per-datasource failures are caught and accumulated; the
+    function never raises on a single-datasource error and the server is
+    expected to start regardless. ``storage.list_datasources()`` raising IS
+    propagated — boot should not proceed with broken storage.
+
+    All human-readable output goes through ``stream`` (default ``sys.stderr``)
+    so ``slayer mcp`` stdio remains protocol-safe.
+
+    Drift entries from each per-datasource result are printed and
+    accumulated into ``summary.drift_pending``, but never auto-applied:
+    ``apply_drift_deletes`` is gated behind ``slayer validate-models
+    --force-clean`` and intentionally not reachable from this path.
+    """
+    out = stream if stream is not None else sys.stderr
+    summary = StartupIngestSummary()
+
+    names = await storage.list_datasources()
+    if not names:
+        print("Ingest-on-startup: no datasources configured", file=out)
+        return summary
+
+    for name in names:
+        print(f"Ingesting datasource '{name}'…", file=out)
+        try:
+            ds = await storage.get_datasource(name)
+        except Exception as exc:  # noqa: BLE001 — per-datasource isolation
+            friendly = _friendly_db_error(exc)
+            summary.failures.append(StartupIngestFailure(name=name, error=friendly))
+            print(f"Datasource '{name}': failed — {friendly}", file=out)
+            continue
+        if ds is None:
+            err = "datasource config disappeared between listing and load"
+            summary.failures.append(StartupIngestFailure(name=name, error=err))
+            print(f"Datasource '{name}': failed — {err}", file=out)
+            continue
+        try:
+            result = await ingest_datasource_idempotent(
+                datasource=ds,
+                storage=storage,
+                schema=None,
+                include_tables=None,
+                exclude_tables=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — per-datasource isolation
+            friendly = _friendly_db_error(exc)
+            summary.failures.append(StartupIngestFailure(name=name, error=friendly))
+            print(f"Datasource '{name}': failed — {friendly}", file=out)
+            continue
+
+        for addition in result.additions:
+            _print_ingest_addition(addition, file=out)
+        _print_ingest_drift_and_errors(result, file=out)
+        summary.succeeded.append(name)
+        summary.drift_pending.extend(result.to_delete)
+        print(f"Datasource '{name}': ingested", file=out)
+
+    total = len(summary.succeeded) + len(summary.failures)
+    base = f"Ingest-on-startup: {len(summary.succeeded)}/{total} datasources ingested"
+    if summary.failures:
+        names_failed = ", ".join(f.name for f in summary.failures)
+        base += f" ({len(summary.failures)} failed: {names_failed})"
+    print(base, file=out)
+    return summary
+
+
+async def _refresh_models_for_datasource(
+    *,
+    datasource_name: str,
+    storage: StorageBackend,
+    service: "EmbeddingService",
+) -> Tuple[List[Tuple[str, str]], List[SlayerModel]]:
+    """Refresh embeddings for every visible model in the datasource.
+
+    Returns ``(warnings, models_in_ds)``. Each warning is tagged with
+    the model's ``<ds>.<name>`` so the orchestrator can route it to the
+    right ``IngestionError.model_name``. ``models_in_ds`` is forwarded
+    to the datasource-doc refresh that follows.
+    """
+    warnings: List[Tuple[str, str]] = []
+    models_in_ds: List[SlayerModel] = []
+    try:
+        identities = await storage._list_all_model_identities()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        return [("", f"{datasource_name}: {exc}")], models_in_ds
+    for ds, name in identities:
+        if ds != datasource_name:
+            continue
+        tag = f"{ds}.{name}"
+        try:
+            m = await storage.get_model(name, data_source=ds)
+        except Exception as exc:  # noqa: BLE001 — defensive per-model
+            warnings.append((tag, str(exc)))
+            continue
+        if m is None:
+            continue
+        models_in_ds.append(m)
+        try:
+            subtree_warnings = await service.refresh_model_subtree(m)
+        except Exception as exc:  # noqa: BLE001 — defensive per-model
+            subtree_warnings = [str(exc)]
+        for w in subtree_warnings:
+            warnings.append((tag, w))
+    return warnings, models_in_ds
+
+
+async def _refresh_datasource_doc(
+    *,
+    datasource_name: str,
+    models: List[SlayerModel],
+    service: "EmbeddingService",
+) -> List[Tuple[str, str]]:
+    """Refresh the datasource doc embedding. Warnings are tagged with
+    an empty ``model_name`` since the doc has no specific entity name."""
+    try:
+        doc_warnings = await service.refresh_datasource(
+            name=datasource_name, models=models,
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive
+        return [("", f"{datasource_name} (datasource doc): {exc}")]
+    return [("", w) for w in doc_warnings]
+
+
+async def _refresh_memories_for_datasource(
+    *,
+    datasource_name: str,
+    storage: StorageBackend,
+    service: "EmbeddingService",
+) -> List[Tuple[str, str]]:
+    """Refresh embeddings for every memory whose canonical entities are
+    rooted at this datasource. Each warning is tagged with
+    ``memory:<id>`` so a startup log inspection can distinguish memory
+    failures from datasource-doc / model failures at a glance.
+
+    A memory linked to entities in datasources A and B is touched in
+    both passes; hash-skip inside ``_apply_pending`` makes the second
+    call a no-op.
+    """
+    try:
+        memories = await storage.list_memories()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        return [("", f"{datasource_name} (memories): {exc}")]
+    warnings: List[Tuple[str, str]] = []
+    for memory in memories:
+        if not any(
+            canonical_id_rooted_at(e, datasource_name)
+            for e in memory.entities
+        ):
+            continue
+        tag = f"memory:{memory.id}"
+        try:
+            memory_warnings = await service.refresh_memory(memory)
+        except Exception as exc:  # noqa: BLE001 — defensive per-memory
+            memory_warnings = [str(exc)]
+        for w in memory_warnings:
+            warnings.append((tag, w))
+    return warnings
+
+
+async def _refresh_datasource_embeddings(
+    *, datasource_name: str, storage: StorageBackend,
+) -> List[Tuple[str, str]]:
+    """Refresh persisted embeddings for everything reachable from this
+    datasource: every visible model + its visible children, the
+    datasource doc itself, and every memory whose canonical entities
+    are rooted at the datasource.
+
+    Best-effort: returns ``(model_name, error_text)`` tuples; never
+    raises. ``model_name`` is the canonical entity tag
+    (``<ds>.<model>``, ``memory:<id>``, or ``""`` for the datasource
+    doc) used by ``ingest_datasource_idempotent`` to route per-entity
+    failures to the matching ``IngestionError``.
+    """
+    # Local import to avoid pulling embeddings into ingestion's import
+    # graph on a cold start without the optional extra installed.
+    from slayer.embeddings.service import EmbeddingService
+
+    service = EmbeddingService(storage=storage)
+    model_warnings, models_in_ds = await _refresh_models_for_datasource(
+        datasource_name=datasource_name, storage=storage, service=service,
+    )
+    doc_warnings = await _refresh_datasource_doc(
+        datasource_name=datasource_name, models=models_in_ds, service=service,
+    )
+    memory_warnings = await _refresh_memories_for_datasource(
+        datasource_name=datasource_name, storage=storage, service=service,
+    )
+    return model_warnings + doc_warnings + memory_warnings

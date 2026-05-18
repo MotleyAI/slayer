@@ -2,7 +2,7 @@
 
 import logging
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -19,6 +19,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.memories.service import MemoryService
+from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,13 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: Optional[str] = None  # Run-by-name: backing query for a query-backed model
-    source_model: Optional[str] = None
+    # ``source_model`` accepts a string (stored model name) or a dict
+    # — the dict form is an inline ``ModelExtension`` (``{"source_name":
+    # "<model>", "columns": [...], "joins": [...]}``) or an inline
+    # ``SlayerModel`` (``{"name": "...", "sql_table": "...", "data_source":
+    # "...", "columns": [...]}``). The full polymorphism is handled by
+    # ``SlayerQuery.model_validate`` downstream.
+    source_model: Optional[Union[str, Dict[str, Any]]] = None
     measures: Optional[List[Dict[str, Any]]] = None
     dimensions: Optional[List[Dict[str, Any]]] = None
     time_dimensions: Optional[List[Dict[str, Any]]] = None
@@ -42,6 +49,24 @@ class QueryRequest(BaseModel):
     dry_run: Optional[bool] = None
     explain: Optional[bool] = None
     variables: Optional[Dict[str, Any]] = None
+
+
+class QueryListRequest(BaseModel):
+    """Body shape for multi-stage DAG queries at ``POST /query``.
+
+    ``queries`` is a non-empty list of query dicts forming a DAG —
+    same shape as ``engine.execute(query=[...])`` and the MCP
+    ``query_nested`` tool. Order doesn't matter; the engine auto-sorts.
+    Top-level ``variables`` / ``dry_run`` / ``explain`` apply to the
+    whole execution.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    queries: List[Dict[str, Any]]
+    variables: Optional[Dict[str, Any]] = None
+    dry_run: Optional[bool] = None
+    explain: Optional[bool] = None
 
 
 class FieldMetadataResponse(BaseModel):
@@ -97,13 +122,23 @@ class SaveMemoryRequest(BaseModel):
     linked_entities: Any
 
 
-class RecallMemoriesRequest(BaseModel):
-    """Body for ``POST /memories/recall``. Same union as ``about`` on
-    the MCP / Python-client surfaces."""
+class SearchRequest(BaseModel):
+    """Body for ``POST /search`` (DEV-1375). Mirrors the MCP / CLI /
+    SlayerClient surfaces.
 
-    about: Any
-    max_learnings: Optional[int] = None
-    max_queries: Optional[int] = 2
+    All three retrieval inputs are optional. Empty input falls back to
+    a recency listing of the newest ``max_memories`` learning-only
+    memories plus the newest ``max_example_queries`` query-bearing
+    memories.
+    """
+
+    entities: Optional[List[str]] = None
+    query: Optional[Any] = None
+    question: Optional[str] = None
+    datasource: Optional[str] = None
+    max_memories: int = 5
+    max_example_queries: int = 2
+    max_entities: int = 5
 
 
 def _slayer_version() -> str:
@@ -113,11 +148,27 @@ def _slayer_version() -> str:
         return "0.0.0+unknown"
 
 
-def create_app(storage: StorageBackend) -> FastAPI:
+def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity is the cumulative inline closure body of every @app.<route> handler. Splitting would require dependency-injecting `engine`/`storage`/`mcp` into a separate module — out of scope for incremental PRs.
+    storage: StorageBackend,
+    *,
+    ingest_on_startup: bool = False,
+) -> FastAPI:
+    if ingest_on_startup:
+        import sys
+
+        from slayer.async_utils import run_sync
+        from slayer.engine.ingestion import ingest_all_datasources_idempotent
+
+        run_sync(
+            ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
+        )
     app = FastAPI(title="SLayer", version=_slayer_version())
     engine = SlayerQueryEngine(storage=storage)
 
-    # Mount MCP server over SSE at /mcp
+    # Mount MCP server over SSE at /mcp. The embedded server intentionally
+    # does NOT receive `ingest_on_startup` — orchestration happens once,
+    # above, so calling `create_app(ingest_on_startup=True)` doesn't fire
+    # the orchestrator twice.
     mcp = create_mcp_server(storage=storage)
     mcp_app = mcp.sse_app()
     app.mount("/mcp", mcp_app)
@@ -141,13 +192,33 @@ def create_app(storage: StorageBackend) -> FastAPI:
             },
         },
     )
-    async def query(request: QueryRequest) -> QueryResponse:
+    async def query(
+        request: Union[QueryRequest, QueryListRequest],
+    ) -> QueryResponse:
         try:
+            # Multi-stage DAG: body is ``{"queries": [...], "variables": ...,
+            # "dry_run": ..., "explain": ...}``. Mirrors the MCP
+            # ``query_nested`` tool and ``engine.execute(query=[...])``.
+            # Engine auto-sorts the list and validates DAG invariants.
+            if isinstance(request, QueryListRequest):
+                if not request.queries:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="'queries' must be a non-empty list.",
+                    )
+                dry_run = bool(request.dry_run)
+                explain = bool(request.explain)
+                result = await engine.execute(
+                    query=list(request.queries),
+                    variables=request.variables or {},
+                    dry_run=dry_run,
+                    explain=explain,
+                )
             # Run-by-name: ``{"name": "<model>", "variables": {...}}``
             # routes through ``engine.execute(str)`` so the model's stored
             # backing query runs directly. Cannot be combined with
             # ``source_model`` or other query fields.
-            if request.name is not None:
+            elif request.name is not None:
                 disallowed = [
                     f for f in (
                         request.source_model, request.measures, request.dimensions,
@@ -565,8 +636,12 @@ def create_app(storage: StorageBackend) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return response.model_dump(mode="json")
 
+    # ---------- DEV-1375: semantic search -----------------------------
+
+    search_service = SearchService(storage=storage)
+
     @app.post(
-        "/memories/recall",
+        "/search",
         responses={
             400: {
                 "description": (
@@ -576,14 +651,16 @@ def create_app(storage: StorageBackend) -> FastAPI:
             }
         },
     )
-    async def recall_memories(
-        request: RecallMemoriesRequest,
-    ) -> Dict[str, Any]:
+    async def search(request: SearchRequest) -> Dict[str, Any]:
         try:
-            response = await memory_service.recall_memories(
-                about=request.about,
-                max_learnings=request.max_learnings,
-                max_queries=request.max_queries,
+            response = await search_service.search(
+                entities=request.entities,
+                query=request.query,
+                question=request.question,
+                datasource=request.datasource,
+                max_memories=request.max_memories,
+                max_example_queries=request.max_example_queries,
+                max_entities=request.max_entities,
             )
         except (
             EntityResolutionError,

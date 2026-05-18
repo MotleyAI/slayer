@@ -1610,17 +1610,17 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
 
 async def test_circular_query_reference_raises(integration_env):
     """Mutually-referential named queries should error clearly. The
-    sibling-stage scoping (DEV-1340) rejects ``a → b`` as a forward
-    reference at the first hop, before the cycle could form, so the
-    error names the offending stage and explains the rule rather than
-    surfacing a generic "Circular reference" trace.
+    runtime list path auto-sorts via Kahn's algorithm (DEV-1340 follow-up);
+    when two stages reference each other neither can ever drop to in-degree
+    zero, so the cycle surfaces as a ``ValueError`` naming both stages and
+    explaining the rule rather than a generic "Circular reference" trace.
     """
     engine = integration_env
 
     q1 = SlayerQuery(name="a", source_model="b", measures=[ModelMeasure(formula="*:count")])
     q2 = SlayerQuery(name="b", source_model="a", measures=[ModelMeasure(formula="*:count")])
     main = SlayerQuery(source_model="a", measures=[ModelMeasure(formula="*:count")])
-    with pytest.raises(ValueError, match=r"forward references are not allowed|Circular reference"):
+    with pytest.raises(ValueError, match=r"[Cc]ycle in query list|cyclic dependency"):
         await engine.execute(query=[q1, q2, main])
 
 
@@ -3011,3 +3011,438 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
         assert amounts == sorted(amounts, reverse=True), (
             f"customer {cid} amounts not in DESC order: {ranks}"
         )
+
+
+
+# ---------------------------------------------------------------------------
+# DEV-1375 — semantic search end-to-end on SQLite
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def search_env(tmp_path):
+    """SQLite + storage with two models ingested through the live
+    ``ingest_datasource_idempotent`` path so every column gets a real
+    ``Column.sampled`` snapshot, plus one seeded memory tagged on
+    ``test_sqlite.orders`` for the entity-channel test."""
+    from slayer.engine.ingestion import ingest_datasource_idempotent
+
+    db_path = tmp_path / "search.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE customers (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            region TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL,
+            amount REAL NOT NULL,
+            customer_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (customer_id) REFERENCES customers(id)
+        )
+        """
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?, ?, ?)",
+        [
+            (1, "Alice", "US"),
+            (2, "Bob", "EU"),
+            (3, "Charlie", "US"),
+        ],
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?, ?, ?)",
+        [
+            (1, "completed", 100.0, 1, "2025-01-15"),
+            (2, "completed", 200.0, 2, "2025-01-20"),
+            (3, "pending", 50.0, 1, "2025-02-10"),
+            (4, "cancelled", 75.0, 3, "2025-02-15"),
+            (5, "completed", 300.0, 2, "2025-03-05"),
+            (6, "pending", 25.0, 3, "2025-03-20"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    datasource = DatasourceConfig(
+        name="test_sqlite", type="sqlite", database=str(db_path),
+    )
+    await storage.save_datasource(datasource)
+
+    # Live ingest — populates Column.sampled on every non-pk column via the
+    # production code path.
+    await ingest_datasource_idempotent(datasource=datasource, storage=storage)
+
+    await storage.save_memory(
+        learning="orders.amount is gross of refunds.",
+        entities=["test_sqlite.orders"],
+    )
+
+    engine = SlayerQueryEngine(storage=storage)
+    return engine, storage
+
+
+async def test_search_ingest_populates_sampled(search_env):
+    """``slayer ingest`` writes ``Column.sampled`` for every non-pk column
+    on every table-backed model. Categorical and numeric columns get
+    different formats — spot-check one of each."""
+    _engine, storage = search_env
+    orders = await storage.get_model("orders", data_source="test_sqlite")
+    customers = await storage.get_model("customers", data_source="test_sqlite")
+    assert orders is not None
+    assert customers is not None
+
+    for model in (orders, customers):
+        for col in model.columns:
+            if col.primary_key or col.hidden:
+                continue
+            assert col.sampled is not None, (
+                f"{model.name}.{col.name} sampled was not populated by ingest"
+            )
+
+    status = next(c for c in orders.columns if c.name == "status")
+    assert "completed" in status.sampled
+    assert "pending" in status.sampled
+    assert "cancelled" in status.sampled
+
+    amount = next(c for c in orders.columns if c.name == "amount")
+    # Numeric columns surface as "<min> .. <max>".
+    assert ".." in amount.sampled
+
+
+async def test_search_question_finds_column(search_env):
+    """``search(question="amount")`` returns a column EntityHit pointing at
+    one of the seeded ``amount``-named columns."""
+    from slayer.search.service import SearchService
+
+    _engine, storage = search_env
+    response = await SearchService(storage=storage).search(
+        question="amount",
+        max_entities=10,
+        max_memories=0,
+    )
+    column_hits = [e for e in response.entities if e.kind == "column"]
+    assert column_hits, (
+        "expected at least one column EntityHit; got entities="
+        f"{[(e.id, e.kind) for e in response.entities]}"
+    )
+    # The question is "amount" — only ``*.amount`` columns are
+    # acceptable. Accepting any column hit (e.g. ``customers.region``)
+    # would mask a relevance regression in the search ranker.
+    assert any(h.id.endswith(".amount") for h in column_hits), (
+        "expected an `.amount` column EntityHit; got column hits="
+        f"{[h.id for h in column_hits]}"
+    )
+
+
+async def test_search_entity_filter_finds_memory(search_env):
+    """``search(entities=["test_sqlite.orders"])`` returns the seeded
+    memory with ``matched_entities`` listing the orders canonical id."""
+    from slayer.search.service import SearchService
+
+    _engine, storage = search_env
+    response = await SearchService(storage=storage).search(
+        entities=["test_sqlite.orders"],
+        max_memories=5,
+    )
+    assert len(response.memories) >= 1
+    hit = response.memories[0]
+    assert "test_sqlite.orders" in hit.matched_entities
+    assert "refunds" in hit.text
+
+
+async def test_search_edit_model_filter_refreshes_sampled(search_env):
+    """A model-level mutation (``SlayerModel.filters``) triggers
+    ``handle_edit_refresh(model_level_change=True)`` which re-profiles
+    every column. After the mutation, every column still has a
+    ``sampled`` snapshot."""
+    from slayer.engine.profiling import handle_edit_refresh
+
+    engine, storage = search_env
+    orders_before = await storage.get_model("orders", data_source="test_sqlite")
+    assert orders_before is not None
+    before_sampled = {c.name: c.sampled for c in orders_before.columns}
+
+    orders_before.filters = ["status != 'cancelled'"]
+    await storage.save_model(orders_before)
+
+    errors = await handle_edit_refresh(
+        engine=engine,
+        storage=storage,
+        data_source="test_sqlite",
+        model_name="orders",
+        changed_columns=set(),
+        model_level_change=True,
+    )
+    assert errors == []
+
+    orders_after = await storage.get_model("orders", data_source="test_sqlite")
+    assert orders_after is not None
+    for col in orders_after.columns:
+        if col.primary_key or col.hidden:
+            continue
+        assert col.sampled is not None, (
+            f"orders.{col.name} sampled was cleared without repopulation"
+        )
+
+    status_after = next(c for c in orders_after.columns if c.name == "status")
+    # The filter excludes 'cancelled', so the new sampled snapshot must
+    # not list it.
+    assert "cancelled" not in status_after.sampled
+    assert before_sampled["status"] != status_after.sampled
+
+
+# ---------------------------------------------------------------------------
+# DEV-1378 — Mode A SQL filter end-to-end via parse_sql_predicate
+# ---------------------------------------------------------------------------
+
+
+async def _setup_items_db(tmp_path) -> YAMLStorage:
+    """Build the shared SQLite ``items`` table + storage used by the
+    DEV-1378 ``lower(...)`` filter tests below."""
+    db_path = tmp_path / "ds.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT NOT NULL, amount REAL NOT NULL)")
+    cur.executemany(
+        "INSERT INTO items VALUES (?, ?, ?)",
+        [(1, "Active", 10.0), (2, "ACTIVE", 20.0), (3, "inactive", 5.0), (4, "active", 30.0)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+    return storage
+
+
+async def test_model_filter_with_lower_function_runs(tmp_path):
+    """Mode A: ``SlayerModel.filters`` with arbitrary SQL function call
+    (``lower(...)``) must execute end-to-end against SQLite. Before
+    DEV-1378 the engine raised ``Unknown filter function 'lower'`` at
+    enrichment time."""
+    storage = await _setup_items_db(tmp_path)
+
+    model = SlayerModel(
+        name="items",
+        sql_table="items",
+        data_source="ds",
+        filters=["lower(status) = 'active'"],
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+    )
+    await storage.save_model(model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="*:count")])
+    )
+    # Three rows match: "Active", "ACTIVE", "active" (case-folded match for "active").
+    assert response.data[0]["items._count"] == 3
+
+
+async def test_column_filter_with_lower_function_runs(tmp_path):
+    """Mode A: ``Column.filter`` with ``lower(...)`` runs end-to-end as a
+    CASE-WHEN measure-level filter against SQLite."""
+    storage = await _setup_items_db(tmp_path)
+
+    model = SlayerModel(
+        name="items",
+        sql_table="items",
+        data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(
+                name="active_amount",
+                sql="amount",
+                filter="lower(status) = 'active'",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    )
+    await storage.save_model(model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="active_amount:sum")])
+    )
+    # Active rows total: 10 + 20 + 30 = 60
+    assert response.data[0]["items.active_amount_sum"] == pytest.approx(60.0)
+
+
+async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
+    """Mode A: ``SlayerModel.filters`` with a ``__``-delimited join path
+    (``customers__regions.name = 'EU'``) must drive the join planner
+    correctly so the filter is applied against the joined table."""
+    db_path = tmp_path / "ds.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+    cur.execute(
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, region_id INTEGER NOT NULL,"
+        " FOREIGN KEY(region_id) REFERENCES regions(id))"
+    )
+    cur.execute(
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL, amount REAL NOT NULL,"
+        " FOREIGN KEY(customer_id) REFERENCES customers(id))"
+    )
+    cur.executemany("INSERT INTO regions VALUES (?, ?)", [(1, "US"), (2, "EU")])
+    cur.executemany("INSERT INTO customers VALUES (?, ?)", [(1, 1), (2, 2), (3, 1)])
+    cur.executemany(
+        "INSERT INTO orders VALUES (?, ?, ?)",
+        [(1, 1, 100.0), (2, 2, 50.0), (3, 3, 75.0), (4, 2, 25.0)],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+
+    regions_model = SlayerModel(
+        name="regions",
+        sql_table="regions",
+        data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+        ],
+    )
+    customers_model = SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="ds",
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="region_id", sql="region_id", type=DataType.INT),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[("region_id", "id")])],
+    )
+    orders_model = SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="ds",
+        # Mode A SQL filter with __-delimited join path through customers→regions.
+        filters=["customers__regions.name = 'EU'"],
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")])],
+    )
+    await storage.save_model(regions_model)
+    await storage.save_model(customers_model)
+    await storage.save_model(orders_model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="*:count")])
+    )
+    # Customers in EU: id=2 only. Their orders: id=2 (amount 50) and id=4 (amount 25) = 2 orders.
+    assert response.data[0]["orders._count"] == 2
+
+
+async def test_model_filter_with_json_extract_runs(tmp_path):
+    """Mode A: ``SlayerModel.filters`` with ``json_extract(...)`` (a SQLite
+    built-in function) executes end-to-end. Pre-DEV-1378 this raised
+    ``Unknown filter function 'json_extract'`` at enrichment time."""
+    db_path = tmp_path / "ds.db"
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL, amount REAL NOT NULL)"
+    )
+    cur.executemany(
+        "INSERT INTO items VALUES (?, ?, ?)",
+        [
+            (1, '{"active": 1}', 10.0),
+            (2, '{"active": 0}', 20.0),
+            (3, '{"active": 1}', 30.0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    storage_dir = tmp_path / "storage"
+    storage_dir.mkdir()
+    storage = YAMLStorage(base_dir=str(storage_dir))
+    await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
+
+    model = SlayerModel(
+        name="items",
+        sql_table="items",
+        data_source="ds",
+        filters=["json_extract(metadata, '$.active') = 1"],
+        columns=[
+            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            Column(name="metadata", sql="metadata", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+    )
+    await storage.save_model(model)
+
+    engine = SlayerQueryEngine(storage=storage)
+    response = await engine.execute(
+        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="*:count")])
+    )
+    # Two rows have active=1.
+    assert response.data[0]["items._count"] == 2
+
+
+
+async def test_query_filter_with_lower_function_runs(integration_env):
+    """DEV-1378: ``SlayerQuery.filters`` accepts ``lower(...)`` from the
+    string-hygiene allowlist and matches case-insensitively at runtime."""
+    engine = integration_env
+
+    # The integration_env's ``orders`` table has statuses
+    # ``completed`` / ``pending`` / ``cancelled`` (lowercase). The
+    # filter folds and compares against ``completed`` to confirm it
+    # actually goes through the engine, not just round-trip.
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["lower(status) = 'completed'"],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders._count"] == 3
+
+
+async def test_query_filter_with_replace_runs(integration_env):
+    """DEV-1378: ``replace(...)`` in a ``SlayerQuery.filters`` predicate
+    runs end-to-end on SQLite. Pre-fix, ``sqlglot.parse_one`` falls back
+    to a ``Command`` (REPLACE INTO) parse and the emitted SQL is
+    malformed; ``SQLGenerator._parse_predicate`` wraps in SELECT
+    context to dodge it."""
+    engine = integration_env
+
+    # Replace any commas in `status` with empty string. None of the
+    # statuses contain commas, so this is identity — match `completed`.
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["replace(status, ',', '') = 'completed'"],
+    )
+    response = await engine.execute(query)
+    assert response.data[0]["orders._count"] == 3

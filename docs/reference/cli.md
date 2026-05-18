@@ -28,7 +28,8 @@ Start the HTTP server (REST API + MCP SSE endpoint at `/mcp/sse`).
 slayer serve
 slayer serve --host 0.0.0.0 --port 8080
 slayer serve --storage slayer.db
-slayer serve --demo            # auto-ingest the bundled Jaffle Shop demo first
+slayer serve --demo                  # auto-ingest the bundled Jaffle Shop demo first
+slayer serve --ingest-on-startup     # run idempotent ingest over every configured datasource first
 ```
 
 | Flag | Default | Description |
@@ -37,6 +38,7 @@ slayer serve --demo            # auto-ingest the bundled Jaffle Shop demo first
 | `--port` | `5143` | Port number |
 | `--storage` | `./slayer_data` | Storage path (directory for YAML, .db file for SQLite) |
 | `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before the port opens. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
 ### `slayer mcp`
 
@@ -44,10 +46,10 @@ Run SLayer as an MCP server using stdio transport. This command is **not meant t
 
 ```bash
 # Register with Claude Code (the agent will spawn the process)
-claude mcp add slayer -- slayer mcp --storage ./slayer_data
+claude mcp add slayer -- slayer mcp --ingest-on-startup --storage ./slayer_data
 
 # If slayer is in a virtualenv, use the full executable path:
-#   claude mcp add slayer -- $(poetry env info -p)/bin/slayer mcp --storage /abs/path/to/slayer_data
+#   claude mcp add slayer -- $(poetry env info -p)/bin/slayer mcp --ingest-on-startup --storage /abs/path/to/slayer_data
 ```
 
 For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/sse` alongside the REST API.
@@ -56,6 +58,7 @@ For MCP over HTTP (SSE), use `slayer serve` instead — it exposes MCP at `/mcp/
 |------|---------|-------------|
 | `--storage` | `./slayer_data` | Storage path |
 | `--demo` | off | Generate and ingest the bundled Jaffle Shop demo before starting (idempotent). |
+| `--ingest-on-startup` | off | Walk every configured datasource and run idempotent auto-ingestion before stdio JSON-RPC starts. Per-datasource errors are logged to stderr and never abort startup. Also enabled by `SLAYER_INGEST_ON_STARTUP=1`. |
 
 ### `slayer query`
 
@@ -162,7 +165,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
-| `--years` | No | (demo only) Years of synthetic data to generate (default: 4) |
+| `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
 | `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
 | `--storage` | No | Storage path |
 

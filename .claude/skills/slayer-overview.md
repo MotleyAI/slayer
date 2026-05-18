@@ -12,7 +12,7 @@ SLayer is a lightweight, agent-first semantic layer. Instead of writing raw SQL,
 - **SQLGenerator** — takes an EnrichedQuery (not SlayerQuery) and converts it to SQL via sqlglot (dialect-aware: postgres, mysql, bigquery, etc.)
 - **SlayerSQLClient** — executes SQL via SQLAlchemy with retry logic and statement timeouts
 - **Storage** — YAML or SQLite backends for model and datasource configs
-- **Ingestion** — auto-generates models from DB schema with rollup-style FK joins (denormalized LEFT JOINs)
+- **Ingestion** — auto-generates models from DB schema with rollup-style FK joins (denormalized LEFT JOINs). It can be triggered manually (`slayer ingest`, `ingest_datasource_models`, `POST /ingest`) or **on every server boot** via `slayer serve --ingest-on-startup` / `slayer mcp --ingest-on-startup` (also `SLAYER_INGEST_ON_STARTUP=1`, or `create_app/create_mcp_server(ingest_on_startup=True)` programmatically). It is idempotent and continues on per-datasource failures.
 - **Interfaces** — MCP server (stdio via `slayer mcp`, SSE via `slayer serve` at `/mcp/sse`), REST API (FastAPI on port 5143), Python SDK
 
 ## Key Models
@@ -31,7 +31,8 @@ Model editing: `create_model`, `edit_model`, `delete_model`
 Datasources: `create_datasource`, `list_datasources`, `describe_datasource` (includes table listing by default), `edit_datasource`, `delete_datasource`, `set_datasource_priority`
 Ingestion: `ingest_datasource_models`
 Schema drift: `validate_models` (read-only diff against live schema; surfaces `SchemaDriftError` cleanups)
-Memory: `save_memory`, `forget_memory`, `recall_memories` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
+Memory write side: `save_memory`, `forget_memory` (per-entity learnings indexed by canonical entity strings — see [memories.md](../../docs/concepts/memories.md))
+Search: `search` (three-channel: entity-overlap BM25 over memories + tantivy full-text + optional dense embedding similarity, RRF-fused per kind so each output bucket — `memories` / `example_queries` / `entities` — has membership/order invariant under the other buckets' caps; embeddings require the `embedding_search` extra and degrade gracefully when unavailable; partitions query-bearing memories into `example_queries` — see [search.md](../../docs/concepts/search.md))
 
 ## Package Structure
 

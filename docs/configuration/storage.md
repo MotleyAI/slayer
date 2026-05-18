@@ -40,11 +40,15 @@ slayer_data/
     my_postgres.yaml
     other_db.yaml
   priority.yaml            # datasource priority list (optional)
-  memories.yaml            # agent memories (DEV-1357, optional)
-  counters.yaml            # monotonic memory ID allocator state
+  memories.yaml            # agent memories (optional)
+  embeddings.db            # SQLite sidecar for embedding rows (DEV-1405)
 ```
 
-**v4 layout (DEV-1330):** Models live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a pre-v4 directory migrates flat `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
+**Layout note:** Models live under `models/<data_source>/<name>.yaml` so two datasources sharing a table name don't collide. Opening a `YAMLStorage` on a legacy flat directory migrates `models/<name>.yaml` files into the nested layout automatically. If a flat file has an empty `data_source` and exactly one datasource is registered, the migrator auto-fills it; otherwise it hard-fails so the user can edit `data_source` by hand before reopening.
+
+**Embeddings sidecar (DEV-1405):** Embedding rows used by the optional dense-search channel live in a SQLite file at `<base_dir>/embeddings.db`, **not** in `embeddings.yaml`. Embeddings are derived artifacts (regeneratable by `slayer ingest` / `--ingest-on-startup`), not user-authored config, so the diffable-in-git property that drives the YAML choice for models doesn't apply. A pre-DEV-1405 `embeddings.yaml` or `counters.yaml` is silently renamed to `<name>.yaml.legacy` on first open and ignored thereafter; re-run `slayer ingest` to repopulate `embeddings.db`. The schema is identical to the `SQLiteStorage` embedding table — both backends delegate to a shared `SidecarEmbeddingStore` helper.
+
+**Memory id allocation (DEV-1405):** The next memory id is derived from `memories.yaml` itself — `last_row.id + 1` — rather than a separate counter file. Ids of deleted memories may be reused by future saves; cascade-on-delete in `delete_memory` already removes the matching embedding row.
 
 ### SQLiteStorage
 
@@ -56,7 +60,7 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 storage = SQLiteStorage(db_path="./slayer.db")
 ```
 
-Tables: `models`, `datasources`, `settings` (for the datasource priority list), `memories` + `memory_entities` (DEV-1357 indexed by canonical entity), and `id_counters` (monotonic positive-int memory id allocator).
+Tables: `models`, `datasources`, `settings` (for the datasource priority list), `memories` + `memory_entities` (indexed by canonical entity), and `embeddings` (cached embedding rows keyed by `(canonical_id, embedding_model_name)`). Memory ids are assigned by SQLite's `INTEGER PRIMARY KEY` rowid mechanism inside the save transaction — no separate counter table is needed.
 
 ## Storage Resolution
 
@@ -87,7 +91,7 @@ from slayer.storage.base import StorageBackend
 from slayer.core.models import SlayerModel, DatasourceConfig
 
 class MyCustomStorage(StorageBackend):
-    # v4 (DEV-1330): models are keyed by (data_source, name).
+    # Models are keyed by (data_source, name).
     def save_model(self, model: SlayerModel) -> None: ...
     def _list_all_model_identities(self) -> list[tuple[str, str]]: ...
     def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None: ...

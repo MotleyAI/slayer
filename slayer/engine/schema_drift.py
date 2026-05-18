@@ -47,6 +47,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import SlayerQuery
+from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.engine.ingestion import (
     _safe_get_columns,
     _safe_get_pk_constraint,
@@ -548,15 +549,40 @@ def _measure_formula_refs(
 
 
 def _filter_refs(filter_str: str) -> List[str]:
-    """Best-effort: return list of column references in a filter string.
+    """Best-effort: return list of column references in a SQL-mode filter.
 
-    Returns ``[]`` on parse failure.
+    Used to scan ``Column.filter`` / ``SlayerModel.filters`` strings (Mode A
+    SQL — DEV-1369). Returns ``[]`` on parse failure.
+    """
+    try:
+        pf = parse_sql_predicate(filter_str)
+    except Exception:
+        return []
+    return list(pf.columns)
+
+
+def _filter_refs_dsl(filter_str: str) -> List[str]:
+    """Best-effort: return list of column / measure references in a DSL filter.
+
+    Used to scan ``SlayerQuery.filters`` strings (Mode B DSL — DEV-1369),
+    which accept colon-syntax aggregations (``revenue:sum > 100``) and
+    transform calls (``change(revenue:sum) > 0``). Returns ``[]`` on
+    parse failure.
+
+    ``parse_filter`` replaces colon syntax with canonical aliases in
+    ``pf.columns`` (``revenue_sum``), so we recover the underlying base
+    measure names from ``pf.agg_refs`` and strip the synthesized aliases
+    from the raw columns. ``"*"`` (from ``*:count``) is excluded — it
+    isn't a real column reference.
     """
     try:
         pf = parse_filter(filter_str)
     except Exception:
         return []
-    return list(pf.columns)
+    measure_names = [ref.measure_name for ref in pf.agg_refs if ref.measure_name != "*"]
+    canonical_aliases = set(pf.synthesized_aliases)
+    raw_columns = [c for c in pf.columns if c not in canonical_aliases]
+    return list(dict.fromkeys(measure_names + raw_columns))
 
 
 def _walk_alias_to_target_model(
@@ -885,8 +911,11 @@ def _filter_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
 ) -> Set[str]:
     out: Set[str] = set()
+    # ``SlayerQuery.filters`` are Mode B (DSL) — go through the DSL parser
+    # so colon-syntax aggregations and transforms surface their underlying
+    # measure names. ``_filter_refs`` (SQL-mode) would drop them silently.
     for f in stage.filters or []:
-        for col in _filter_refs(f):
+        for col in _filter_refs_dsl(f):
             attributed = _attribute_ref_to_base(
                 ref=col, base_name=base_name, graph=graph
             )

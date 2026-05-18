@@ -2,13 +2,15 @@
 
 The ``inspect_model`` tool gains a ``Learnings`` section that surfaces
 **only memories where ``query is None``** — query-bearing memories appear
-only via ``recall_memories``. The section is auto-pruned when no
-matching learning-shaped memory exists. The ``query`` MCP tool docstring
-gains a paragraph directing agents to call ``recall_memories`` first.
+only via ``search`` (in the ``example_queries`` bucket). The section is
+auto-pruned when no matching learning-shaped memory exists. The
+``query`` MCP tool docstring gains a paragraph directing agents to call
+``search`` first.
 """
 
 import os
 import shutil
+import sqlite3
 import tempfile
 from typing import Any, Generator, Optional
 
@@ -50,11 +52,18 @@ def _reset_storage(storage: YAMLStorage) -> None:
     for f in (
         "priority.yaml",
         "memories.yaml",
-        "counters.yaml",
+        "embeddings.yaml.legacy",
+        "counters.yaml.legacy",
     ):
         p = os.path.join(storage.base_dir, f)
         if os.path.exists(p):
             os.remove(p)
+    # See _reset_storage in test_memories_mcp.py — clear rows in place
+    # rather than deleting the SidecarEmbeddingStore's open db file.
+    emb_path = os.path.join(storage.base_dir, "embeddings.db")
+    if os.path.exists(emb_path):
+        with sqlite3.connect(emb_path) as conn:
+            conn.execute("DELETE FROM embeddings")
 
 
 @pytest.fixture
@@ -271,10 +280,11 @@ class TestInspectModelLearningsSection:
 
 
 class TestQueryDocstring:
-    async def test_query_docstring_mentions_recall_memories(
+    async def test_query_docstring_mentions_search(
         self, mcp_server
     ) -> None:
         tools = await mcp_server.list_tools()
         query_tool = next(t for t in tools if t.name == "query")
-        # The docstring directs agents to call recall_memories first.
-        assert "recall_memories" in (query_tool.description or "")
+        # The docstring directs agents to call `search` first.
+        assert "search" in (query_tool.description or "")
+        assert "recall_memories" not in (query_tool.description or "")

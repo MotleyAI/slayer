@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import sqlglot
+import sqlglot.errors
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.formula import ParsedFilter
@@ -155,11 +156,46 @@ class TestBasicQueries:
         with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
             await _generate(generator, query, orders_model)
 
-    async def test_dimensions_only(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
-        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")])
+    async def test_dim_only_query_deduplicates(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """A dim-only query (no measures) auto-deduplicates via GROUP BY.
+
+        The ``GROUP BY`` must appear before ``LIMIT`` — otherwise a row
+        cap can silently drop unique tuples that only surface past row N.
+        """
+        query = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="status")], limit=100)
         sql = await _generate(generator, query, orders_model)
+        upper = sql.upper()
         assert "orders.status" in sql
-        assert "GROUP BY" not in sql  # No aggregation, no GROUP BY
+        assert "GROUP BY" in upper
+        assert upper.index("GROUP BY") < upper.index("LIMIT 100")
+
+    async def test_time_dim_only_query_deduplicates(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """Time-dimension-only queries also auto-deduplicate."""
+        query = SlayerQuery(
+            source_model="orders",
+            time_dimensions=[
+                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
+            ],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "GROUP BY" in sql
+
+    async def test_dim_with_measure_emits_single_group_by(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """The dim-only path must not double-emit GROUP BY when measures aggregate."""
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="revenue:sum")],
+            dimensions=[ColumnRef(name="status")],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "SUM(" in sql
+        assert sql.upper().count("GROUP BY") == 1
 
     async def test_dimension_with_measure(self, generator: SQLGenerator, orders_model: SlayerModel) -> None:
         query = SlayerQuery(
@@ -3084,15 +3120,12 @@ class TestFilteredMeasures:
         assert "_last_rn" in sql
         assert "_last_rn_f0" in sql
 
-    async def test_filtered_last_with_cross_model_filter_carries_join(
-        self, generator: SQLGenerator,
-    ) -> None:
-        """Regression for CodeRabbit #8 — when a filtered last measure's filter
-        references a column on a JOINED model, the LEFT JOIN must be applied
-        INSIDE the ranked subquery so the filter columns resolve. Previously
-        _build_last_ranked_from() built the subquery from base_from only and
-        the outer string-level join injection never matched the subquery wrapper."""
-
+    @staticmethod
+    async def _filtered_last_cross_model_sql(generator: SQLGenerator) -> str:
+        """Shared setup for the two ``active_balance:last`` cross-model
+        filter tests below. Builds the customers+orders models, runs
+        enrichment with a stub join resolver, and returns the generated
+        SQL — each caller asserts on a different facet of the output."""
         customers = SlayerModel(
             name="customers",
             sql_table="public.customers",
@@ -3139,7 +3172,18 @@ class TestFilteredMeasures:
             resolve_cross_model_measure=_noop_async,
             resolve_join_target=resolve_join_target,
         )
-        sql = generator.generate(enriched=enriched)
+        return generator.generate(enriched=enriched)
+
+    async def test_filtered_last_with_cross_model_filter_carries_join(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """Regression for CodeRabbit #8 — when a filtered last measure's filter
+        references a column on a JOINED model, the LEFT JOIN must be applied
+        INSIDE the ranked subquery so the filter columns resolve. Previously
+        _build_last_ranked_from() built the subquery from base_from only and
+        the outer string-level join injection never matched the subquery wrapper."""
+
+        sql = await self._filtered_last_cross_model_sql(generator)
         # The customers LEFT JOIN must be inside the ranked subquery so the
         # filter customers.status = 'active' resolves. Extract the subquery
         # by matching balanced parens after `FROM (`.
@@ -3169,53 +3213,7 @@ class TestFilteredMeasures:
         inside the ranked subquery so the filter resolves, and the final SELECT
         does not reference the joined table directly."""
 
-        customers = SlayerModel(
-            name="customers",
-            sql_table="public.customers",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-            ],
-        )
-        orders = SlayerModel(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-
-                Column(
-                    name="active_balance",
-                    sql="amount",
-                    filter="customers.status = 'active'", type=DataType.DOUBLE),
-            ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
-            default_time_dimension="created_at",
-        )
-
-        async def resolve_join_target(*, target_model_name, named_queries):
-            if target_model_name == "customers":
-                return ("public.customers", customers)
-            return None
-
-        query = SlayerQuery(
-            source_model="orders",
-            time_dimensions=[
-                TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH),
-            ],
-            measures=[ModelMeasure(formula="active_balance:last")],
-        )
-        enriched = await enrich_query(
-            query=query,
-            model=orders,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=resolve_join_target,
-        )
-        sql = generator.generate(enriched=enriched)
+        sql = await self._filtered_last_cross_model_sql(generator)
 
         # The outermost SELECT (after all CTEs) should not reference
         # 'customers.' directly — it pulls pre-computed values from CTEs.
@@ -3400,33 +3398,28 @@ class TestFilteredMeasures:
 
 
 class TestMeasureFilterInjection:
-    """End-to-end SQL-injection hardening for the ``Measure.filter`` field.
+    """End-to-end SQL-injection hardening for the ``Column.filter`` field.
 
-    The filter string is the only user-authored SQL fragment that gets
-    interpolated into the generated query (everything else goes through
-    sqlglot AST builders). These tests run the full enrichment + generation
-    pipeline for each payload and verify the resulting SQL is safe across
-    both standard-SQL and escape-sensitive dialects.
+    DEV-1378 finalises Mode A semantics for ``Column.filter`` /
+    ``SlayerModel.filters``: the strings are pass-through SQL that flows
+    into the WHERE clause and is then re-parsed by sqlglot under the
+    target dialect. The user is responsible for writing valid
+    dialect-aware SQL (including proper string-literal escaping —
+    doubled apostrophes, no Python-style ``\\'`` escapes); sqlglot is
+    the dialect-aware gate that catches malformed payloads.
 
-    Any payload the parser rejects at the ``parse_filter`` stage raises a
-    ``ValueError`` — those cases assert the raise, not the output. Payloads
-    the parser accepts must produce SQL in which the payload appears only
-    inside a properly-closed string literal.
+    These tests verify that a hostile filter still cannot inject SQL:
+    sqlglot's parser/tokenizer raises on the multi-statement,
+    UNION-injection, and unbalanced-quote payloads.
     """
 
     # ------------------------------------------------------------------
-    # Rejected at parse time
+    # Rejected at sqlglot generation time
     # ------------------------------------------------------------------
 
     async def test_drop_table_rejected(self, orders_model: SlayerModel) -> None:
-        """Classic ``'; DROP TABLE ...`` payload is rejected at SQL-generation
-        time (the formula parser refuses the multi-statement payload).
-
-        DEV-1369 round 2: SQL-mode validators no longer invoke sqlglot, so
-        Column construction itself now passes. Dialect-aware rejection
-        happens at generation time via the formula parser used inside
-        ``resolve_filter_columns``.
-        """
+        """Classic ``'; DROP TABLE ...`` payload is rejected by sqlglot
+        when the WHERE clause is parsed under the target dialect."""
         orders_model.columns.append(
             Column(
                 name="evil",
@@ -3436,11 +3429,11 @@ class TestMeasureFilterInjection:
             )
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
+        with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
             await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
 
     async def test_union_select_rejected(self, orders_model: SlayerModel) -> None:
-        """UNION SELECT payload is rejected at SQL-generation time."""
+        """UNION SELECT payload is rejected by sqlglot at generation time."""
         orders_model.columns.append(
             Column(
                 name="evil",
@@ -3450,7 +3443,7 @@ class TestMeasureFilterInjection:
             )
         )
         query = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="evil:sum")])
-        with pytest.raises(ValueError, match="Invalid filter syntax"):
+        with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
             await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
 
     def test_block_comment_passes_through_safely(self, orders_model: SlayerModel) -> None:
@@ -3478,26 +3471,32 @@ class TestMeasureFilterInjection:
     # ------------------------------------------------------------------
 
     @pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "duckdb"])
-    async def test_embedded_single_quote_is_doubled(
+    async def test_embedded_single_quote_round_trips(
         self, orders_model: SlayerModel, dialect: str,
     ) -> None:
-        """An apostrophe in the filter value must emit as ``''`` (SQL standard).
+        """A SQL-escaped apostrophe (`O''Brien`) round-trips through the
+        generator unchanged.
 
-        This holds for every dialect; none of them accept ``\\'`` as the
-        canonical escape for a literal apostrophe.
+        DEV-1378: Mode A is pass-through SQL; the user writes proper
+        dialect-aware escaping (doubled apostrophes), not Python-style
+        backslash escapes.
         """
         orders_model.columns.append(
             Column(
                 name="irish_names",
                 sql="amount",
-                # Runtime value of the literal:  O'Brien
-                filter="status = 'O\\'Brien'", type=DataType.DOUBLE)
+                # SQL-escaped literal (doubled single quote): O'Brien
+                filter="status = 'O''Brien'", type=DataType.DOUBLE)
         )
         query = SlayerQuery(
             source_model="orders", measures=[ModelMeasure(formula="irish_names:sum")]
         )
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
-        # The emitted literal must use doubled single quotes.
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
+        # sqlglot preserves the SQL-doubled apostrophe per dialect.
         assert "'O''Brien'" in sql
 
     @staticmethod
@@ -3585,22 +3584,24 @@ class TestMeasureFilterInjection:
     async def test_adversarial_quote_break_cannot_inject(
         self, orders_model: SlayerModel, dialect: str,
     ) -> None:
-        """The full attack: backslash + quote + SQL payload must either be
-        rejected at parse time or confined to a string literal.
+        """A backslash-quote injection payload must either be rejected at
+        sqlglot generation time or be confined to a properly-terminated
+        string literal that round-trips cleanly.
 
-        The intent of this payload is to break out of the string in MySQL,
-        then run arbitrary SQL. After the fix, this either raises at
-        ``parse_filter`` (most likely) or emits a safely-terminated literal.
+        DEV-1378: Mode A pass-through. The user passing Python-style
+        ``\\'`` is malformed SQL on most dialects (Postgres, SQLite,
+        DuckDB don't honour backslash as escape); MySQL/ClickHouse do.
+        sqlglot's tokenizer / parser is the gate.
         """
-        evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\' OR 1=1 --
+        evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\\' OR 1=1 --
         try:
             orders_model.columns.append(Column(name="evil", sql="amount", filter=evil, type=DataType.DOUBLE))
             query = SlayerQuery(
                 source_model="orders", measures=[ModelMeasure(formula="evil:sum")]
             )
             sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
-        except ValueError:
-            return  # parser rejected — also acceptable
+        except (ValueError, sqlglot.errors.ParseError, sqlglot.errors.TokenError):
+            return  # sqlglot rejected — acceptable
         self._assert_round_trips_cleanly(sql, dialect)
 
     async def test_existing_filter_still_works_after_escaping(
@@ -6706,3 +6707,167 @@ class TestCastEmissionNonBasePaths:
         # CAST present somewhere — column_type propagated to formula expansion.
         assert "CAST(" in sql.upper()
         assert "JSON_EXTRACT" in sql.upper()
+
+
+class TestStringHygieneDialectTranslation:
+    """DEV-1378: lowercase string-hygiene operators are pass-through to
+    the emitted SQL string, then re-parsed by sqlglot under the target
+    dialect at WHERE-assembly. sqlglot's per-dialect emitter chooses
+    each dialect's preferred spelling. These tests pin the actual
+    emitted SQL across SQLite / Postgres / MySQL / DuckDB / ClickHouse
+    so a future sqlglot upgrade that changes the spelling is caught.
+    """
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("sqlite", "LOWER(orders.status) = 'active'"),
+            ("postgres", "LOWER(orders.status) = 'active'"),
+            ("mysql", "LOWER(orders.status) = 'active'"),
+            ("duckdb", "LOWER(orders.status) = 'active'"),
+            ("clickhouse", "lower(orders.status) = 'active'"),
+        ],
+    )
+    async def test_lower(self, orders_model: SlayerModel, dialect: str, expected: str) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["lower(status) = 'active'"],
+        )
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
+        assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("sqlite", "INSTR(orders.status, ',')"),
+            ("postgres", "POSITION(',' IN orders.status)"),
+            ("mysql", "LOCATE(',', orders.status)"),
+            ("duckdb", "STRPOS(orders.status, ',')"),
+            ("clickhouse", "POSITION(orders.status, ',')"),
+        ],
+    )
+    async def test_instr_translates_per_dialect(
+        self, orders_model: SlayerModel, dialect: str, expected: str,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["instr(status, ',') > 0"],
+        )
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
+        assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
+
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            ("sqlite", "SUBSTRING(orders.status, 1, 5)"),
+            ("postgres", "SUBSTRING(orders.status FROM 1 FOR 5)"),
+            ("mysql", "SUBSTRING(orders.status, 1, 5)"),
+            ("duckdb", "SUBSTRING(orders.status, 1, 5)"),
+            ("clickhouse", "substr(orders.status, 1, 5)"),
+        ],
+    )
+    async def test_substr_translates_per_dialect(
+        self, orders_model: SlayerModel, dialect: str, expected: str,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["substr(status, 1, 5) = 'abcde'"],
+        )
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
+        assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
+
+    @pytest.mark.parametrize(
+        "dialect,expected_substring",
+        [
+            # SQLite normalises CONCAT(...) → a || b at emit time.
+            ("sqlite", "orders.status || orders.status"),
+            ("postgres", "CONCAT(orders.status, orders.status)"),
+            ("mysql", "CONCAT(orders.status, orders.status)"),
+            ("duckdb", "CONCAT(orders.status, orders.status)"),
+            ("clickhouse", "CONCAT(orders.status, orders.status)"),
+        ],
+    )
+    async def test_concat_via_pipe_pipe_translates_per_dialect(
+        self, orders_model: SlayerModel, dialect: str, expected_substring: str,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["status || status = 'foo'"],
+        )
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
+        assert expected_substring in sql, f"{dialect}: {expected_substring!r} not in {sql!r}"
+
+
+class TestReplaceFunctionInPredicate:
+    """DEV-1378: pin the ``replace(...)``-as-Command parsing trap.
+
+    ``sqlglot.parse_one("replace(x, ',', '') = 'foo'", dialect="sqlite")``
+    by default falls back to a Command (``REPLACE INTO`` statement form),
+    which emits broken SQL. ``SQLGenerator._parse_predicate`` wraps the
+    expression in ``SELECT 1 WHERE ...`` to dodge this. These tests pin
+    that the wrap fires at every relevant predicate-emission site, so a
+    regression doesn't reintroduce the trap.
+    """
+
+    @pytest.mark.parametrize("dialect", ["sqlite", "mysql"])
+    async def test_replace_in_query_filter(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="*:count")],
+            filters=["replace(status, ',', '') = 'foo'"],
+        )
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
+        # Function-call form, not the broken `REPLACE (x, ...)` Command form.
+        assert "REPLACE(" in sql.upper() or "replace(" in sql
+        assert "REPLACE (" not in sql.upper()  # space after REPLACE = Command form
+
+    @pytest.mark.parametrize("dialect", ["sqlite", "mysql"])
+    async def test_replace_in_column_filter(
+        self, orders_model: SlayerModel, dialect: str,
+    ) -> None:
+        orders_model.columns.append(
+            Column(
+                name="cleaned_amt",
+                sql="amount",
+                filter="replace(status, ',', '') = 'foo'",
+                type=DataType.DOUBLE,
+            )
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[ModelMeasure(formula="cleaned_amt:sum")],
+        )
+        sql = await _generate(
+            generator=SQLGenerator(dialect=dialect),
+            query=query,
+            model=orders_model,
+        )
+        # Function-call form, not Command.
+        assert "REPLACE(" in sql.upper() or "replace(" in sql
+        assert "REPLACE (" not in sql.upper()

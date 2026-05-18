@@ -27,38 +27,91 @@ _MULTIDOT_COLUMN_RE = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*){2,})\b')
 _STRING_LITERAL_RE = re.compile(r"'[^']*'")
 
 
-def _validate_model_name(name: str, context: str) -> str:
-    """Reject model/query names containing ``__`` or ``.``.
+class _SubstringRule:
+    """Single source of truth for a forbidden substring inside a name.
 
-    Model and query names become SQL table aliases where ``__`` encodes
-    join paths, so both separators are reserved.
+    Each rule pairs the forbidden character / digraph with the rationale.
+    Every validator that rejects the same substring uses the same rule
+    so the wording (and the rejection rationale) lives in one place.
     """
-    if "__" in name:
+
+    __slots__ = ("substring", "reason")
+
+    def __init__(self, *, substring: str, reason: str) -> None:
+        self.substring = substring
+        self.reason = reason
+
+    def check(self, name: str, context: str) -> None:
+        if self.substring in name:
+            raise ValueError(
+                f"{context} '{name}' must not contain "
+                f"{self.substring!r}; {self.reason}"
+            )
+
+
+_NO_DUNDER = _SubstringRule(
+    substring="__",
+    reason="double underscores are reserved for join path aliases in "
+           "generated SQL.",
+)
+_NO_DOT = _SubstringRule(
+    substring=".",
+    reason="dots are the canonical-id namespace delimiter "
+           "(``<ds>.<model>.<leaf>``) and the dotted-path reference "
+           "syntax in queries.",
+)
+_NO_COLON = _SubstringRule(
+    substring=":",
+    reason="colons are reserved as the aggregation separator "
+           "(``revenue:sum``) and the ``memory:<int>`` canonical-id "
+           "prefix.",
+)
+_NO_FWD_SLASH = _SubstringRule(
+    substring="/",
+    reason="path separators break the storage layout.",
+)
+_NO_BACK_SLASH = _SubstringRule(
+    substring="\\",
+    reason="path separators break the storage layout.",
+)
+_NO_NUL = _SubstringRule(
+    substring="\x00",
+    reason="NUL bytes are filesystem-unsafe.",
+)
+
+
+def _require_non_empty_trimmed(v: str, context: str) -> None:
+    """Reject empty / whitespace-only inputs and inputs with
+    leading or trailing whitespace."""
+    if not v or not v.strip():
         raise ValueError(
-            f"{context} name '{name}' must not contain '__'. "
-            f"Double underscores are reserved for join path aliases in generated SQL."
+            f"{context} must be a non-empty string; got {v!r}."
         )
-    if "." in name:
+    if v.strip() != v:
         raise ValueError(
-            f"{context} name '{name}' must not contain '.'. "
-            f"Dots are path syntax for referencing joined models in queries."
+            f"{context} must not have leading/trailing whitespace; "
+            f"got {v!r}."
         )
+
+
+def _validate_model_name(name: str, context: str) -> str:
+    """Reject model/query names containing ``__``, ``.``, or ``:``."""
+    label = f"{context} name"
+    _NO_DUNDER.check(name=name, context=label)
+    _NO_DOT.check(name=name, context=label)
+    _NO_COLON.check(name=name, context=label)
     return name
 
 
 def _validate_column_name(name: str, context: str) -> str:
-    """Reject dimension/measure names containing ``.``.
+    """Reject dimension/measure names containing ``.`` or ``:``.
 
-    Dots are path syntax in queries (``customers.name``), not part of names.
-    ``__`` is allowed — it encodes flattened join paths in virtual models
-    created by ``_query_as_model`` (e.g., ``stores__name``).
+    ``__`` is allowed — it encodes flattened join paths in virtual
+    models created by ``_query_as_model`` (e.g., ``stores__name``).
     """
-    if "." in name:
-        raise ValueError(
-            f"{context} name '{name}' must not contain '.'. "
-            f"Dots are path syntax for referencing joined models in queries, "
-            f"not part of dimension or measure names."
-        )
+    label = f"{context} name"
+    _NO_DOT.check(name=name, context=label)
+    _NO_COLON.check(name=name, context=label)
     return name
 
 
@@ -117,6 +170,7 @@ class Column(BaseModel):
     allowed_aggregations: Optional[List[str]] = None
     filter: Optional[str] = None  # Applied inside CASE WHEN at aggregation time only
     meta: Optional[Dict[str, Any]] = None
+    sampled: Optional[str] = None  # DEV-1375: cached sample-value snapshot
 
     @model_validator(mode="before")
     @classmethod
@@ -332,7 +386,7 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 4
+    version: int = 6
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None
@@ -359,15 +413,26 @@ class SlayerModel(BaseModel):
     @field_validator("data_source")
     @classmethod
     def _validate_data_source_format(cls, v: str) -> str:
-        # Format-only checks (run on every input). Emptiness is enforced in
-        # ``_require_data_source_unless_query_backed`` below so query-backed
-        # models can be constructed before their cache populator fills in
-        # ``data_source`` from the resolved virtual model.
-        if "/" in v or "\\" in v:
+        # Format-only checks (run on every input). Emptiness is enforced
+        # in ``_require_data_source_unless_query_backed`` below so
+        # query-backed models can be constructed before their cache
+        # populator fills in ``data_source`` from the resolved virtual
+        # model. Whitespace-strip mismatch and substring rules mirror
+        # ``DatasourceConfig.name`` so the two canonical-id ingress
+        # points share validation logic via the shared ``_NO_*`` rules.
+        if not v:
+            return v
+        if v.strip() != v:
             raise ValueError(
-                f"Model 'data_source' must not contain path separators "
-                f"('/' or '\\'); got {v!r}."
+                f"Model 'data_source' must not have leading/trailing "
+                f"whitespace; got {v!r}."
             )
+        label = "Model 'data_source'"
+        _NO_NUL.check(name=v, context=label)
+        _NO_FWD_SLASH.check(name=v, context=label)
+        _NO_BACK_SLASH.check(name=v, context=label)
+        _NO_DOT.check(name=v, context=label)
+        _NO_COLON.check(name=v, context=label)
         return v
 
     @model_validator(mode="after")
@@ -623,6 +688,28 @@ class DatasourceConfig(BaseModel):
         if isinstance(data, dict) and "user" in data and "username" not in data:
             data["username"] = data.pop("user")
         return data
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        # Datasource names are the leading segment of every canonical-id
+        # (``<ds>``, ``<ds>.<model>``, ``<ds>.<model>.<leaf>``) and a
+        # path component in YAML storage (``datasources/<name>.yaml``,
+        # ``models/<name>/...``). The substring rules are shared with
+        # ``SlayerModel.data_source`` via the module-level ``_NO_*``
+        # rules so the rationale lives in one place.
+        #
+        # ``__`` is intentionally NOT rejected: datasource names never
+        # become SQL table aliases, so the join-path-alias reservation
+        # that applies to model and query names doesn't apply here.
+        label = "Datasource 'name'"
+        _require_non_empty_trimmed(v=v, context=label)
+        _NO_NUL.check(name=v, context=label)
+        _NO_FWD_SLASH.check(name=v, context=label)
+        _NO_BACK_SLASH.check(name=v, context=label)
+        _NO_DOT.check(name=v, context=label)
+        _NO_COLON.check(name=v, context=label)
+        return v
 
     def get_connection_string(self) -> str:
         if self.connection_string:

@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 
@@ -21,9 +21,16 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.engine.ingestion import _friendly_db_error
+from slayer.engine.profiling import (
+    _collect_dim_profile,
+    _format_dim_profile_value,
+    handle_edit_refresh,
+)
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
 from slayer.memories.service import MemoryService
+from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -83,32 +90,6 @@ def _get_schemas(ds: DatasourceConfig) -> list[str]:
         return schemas
     except Exception:
         return []
-
-
-def _friendly_db_error(exc: Exception) -> str:
-    """Convert a database exception into a user-friendly message with hints."""
-    msg = str(exc)
-    # Extract the core error from SQLAlchemy wrapper
-    if hasattr(exc, "orig") and exc.orig:
-        msg = str(exc.orig)
-
-    hints = []
-    msg_lower = msg.lower()
-    if "no password supplied" in msg_lower or "password authentication failed" in msg_lower:
-        hints.append("Check that username and password are correct.")
-    elif "does not exist" in msg_lower and "database" in msg_lower:
-        hints.append("Verify the database name is correct.")
-    elif "could not translate host" in msg_lower or "name or service not known" in msg_lower:
-        hints.append("Check that the host address is correct.")
-    elif "connection refused" in msg_lower:
-        hints.append("Check that the database server is running and the port is correct.")
-    elif "timeout" in msg_lower:
-        hints.append("The database server is not responding. Check host/port and network access.")
-
-    result = f"Database error: {msg}"
-    if hints:
-        result += "\nHint: " + " ".join(hints)
-    return result
 
 
 def _fetch_tables(
@@ -529,136 +510,6 @@ async def _get_row_count(
         return None
 
 
-class _DimProfileEntry(NamedTuple):
-    """One row of dimension-profile output.
-
-    Exactly one of two population modes is used:
-    - Categorical (string/boolean): ``distinct_count`` and ``values`` are set.
-      When cardinality exceeds the cap, both are ``None`` to signal overflow.
-    - Numeric/temporal: ``min_value`` and ``max_value`` are set.
-    """
-    name: str
-    type_str: str
-    distinct_count: Optional[int]
-    values: Optional[List[Any]]
-    min_value: Optional[Any]
-    max_value: Optional[Any]
-
-
-def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
-    """Render a profile entry as a single-cell string for the Dimensions table.
-
-    - Enumerated categorical → ```a`, `b`, `c`` (backticked, comma-separated).
-    - Overflowed categorical → ``> 20 distinct``.
-    - Numeric/temporal range → ``<min> .. <max>``.
-    """
-    if entry.values is not None:
-        return ", ".join(_md_code_span(v) for v in entry.values)
-    if (
-        entry.distinct_count is None
-        and entry.values is None
-        and entry.min_value is None
-        and entry.max_value is None
-    ):
-        return "> 20 distinct"
-    return f"{entry.min_value} .. {entry.max_value}"
-
-
-async def _collect_dim_profile(
-    model: SlayerModel,
-    engine: SlayerQueryEngine,
-    *,
-    max_values: int = 20,
-    max_dims: int = 10,
-) -> List[_DimProfileEntry]:
-    """Produce one profile entry per eligible dimension (non-hidden, non-pk).
-
-    - string/boolean dims: distinct values (or overflow marker) via one query
-      per dim.
-    - number/date/time dims: min and max via one batched query across all such
-      dims, using a ``ModelExtension`` with transient inline measures.
-
-    Caps the total number of eligible dims at ``max_dims``. Individual failures
-    are swallowed — that dim is simply omitted from the result.
-    """
-    eligible = [
-        c for c in model.columns
-        if not c.hidden and not c.primary_key
-    ][:max_dims]
-    # DEV-1361: type vocabulary aligned to sqlglot — TEXT/BOOLEAN are
-    # categorical; INT/DOUBLE/DATE/TIMESTAMP are numeric/temporal.
-    categorical = [c for c in eligible if c.type in (DataType.TEXT, DataType.BOOLEAN)]
-    numeric_temporal = [
-        c for c in eligible
-        if c.type in (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
-    ]
-
-    entries: Dict[str, _DimProfileEntry] = {}
-
-    # --- categorical dims: one query per dim
-    for c in categorical:
-        try:
-            q = SlayerQuery.model_validate({
-                "source_model": model.name,
-                "dimensions": [{"name": c.name}],
-                "measures": [{"formula": "*:count"}],
-                "limit": max_values + 1,
-            })
-            r = await engine.execute(query=q, data_source=model.data_source or None)
-        except Exception:
-            continue
-        value_key = f"{model.name}.{c.name}"
-        values = [row.get(value_key) for row in r.data]
-        overflow = len(values) > max_values
-        entries[c.name] = _DimProfileEntry(
-            name=c.name,
-            type_str=str(c.type),
-            distinct_count=None if overflow else len(values),
-            values=None if overflow else values,
-            min_value=None,
-            max_value=None,
-        )
-
-    # --- numeric/temporal dims: ONE batched query for all mins and maxes
-    if numeric_temporal:
-        ext_columns = [
-            {"name": f"_slayer_range_{c.name}", "sql": c.sql if c.sql else c.name,
-             "type": str(c.type)}
-            for c in numeric_temporal
-        ]
-        measures_payload: List[Dict[str, str]] = []
-        for c in numeric_temporal:
-            measures_payload.append({"formula": f"_slayer_range_{c.name}:min"})
-            measures_payload.append({"formula": f"_slayer_range_{c.name}:max"})
-        row: Dict[str, Any] = {}
-        try:
-            q = SlayerQuery.model_validate({
-                "source_model": {"source_name": model.name, "columns": ext_columns},
-                "measures": measures_payload,
-            })
-            r = await engine.execute(query=q, data_source=model.data_source or None)
-            if r.data:
-                row = r.data[0]
-        except Exception:
-            row = {}
-        for c in numeric_temporal:
-            mn = row.get(f"{model.name}._slayer_range_{c.name}_min")
-            mx = row.get(f"{model.name}._slayer_range_{c.name}_max")
-            if mn is None and mx is None:
-                continue  # query failed or empty table
-            entries[c.name] = _DimProfileEntry(
-                name=c.name,
-                type_str=str(c.type),
-                distinct_count=None,
-                values=None,
-                min_value=mn,
-                max_value=mx,
-            )
-
-    # Preserve declaration order in the rendered output
-    return [entries[c.name] for c in eligible if c.name in entries]
-
-
 async def _collect_measure_profile(
     model: SlayerModel,
     engine: SlayerQueryEngine,
@@ -924,7 +775,20 @@ def _model_to_summary(model: SlayerModel) -> dict:
     }
 
 
-def create_mcp_server(storage: StorageBackend):
+def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; complexity is the cumulative inline closure body of every @mcp.tool() handler. Splitting would require dependency-injecting the engine/storage/services into a separate module — out of scope for incremental PRs.
+    storage: StorageBackend,
+    *,
+    ingest_on_startup: bool = False,
+):
+    if ingest_on_startup:
+        import sys
+
+        from slayer.async_utils import run_sync
+        from slayer.engine.ingestion import ingest_all_datasources_idempotent
+
+        run_sync(
+            ingest_all_datasources_idempotent(storage=storage, stream=sys.stderr)
+        )
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError:
@@ -1007,7 +871,7 @@ def create_mcp_server(storage: StorageBackend):
 
         Example: query(source_model="orders", measures=[{"formula": "*:count"}], dimensions=["status"], filters=["status == 'completed'"])
 
-        Before calling this tool, run ``recall_memories`` first, supplying the entities you're thinking of using (or the query itself via the ``about`` arg). Read the returned learnings and consider any matching saved queries before formulating the final query.
+        Before calling this tool, run ``search`` first, supplying the entities you're thinking of using (and/or the query itself via the ``query`` arg, or a free-text ``question``). Read the returned memories and consider any matching example queries before formulating the final query.
         """
         data: Dict[str, Any] = {"source_model": source_model}
         if dimensions:
@@ -1071,6 +935,87 @@ def create_mcp_server(storage: StorageBackend):
             slayer_query = SlayerQuery.model_validate(data)
             result = await engine.execute(
                 query=slayer_query,
+                variables=variables,
+                dry_run=dry_run,
+                explain=explain,
+            )
+            if dry_run:
+                return f"SQL:\n{result.sql}"
+            if explain:
+                output = f"SQL:\n{result.sql}\n\nQuery Plan:\n"
+                output += _format_output(result=result, fmt=fmt)
+                return output
+            output = _format_output(result=result, fmt=fmt)
+            if show_sql and result.sql:
+                output = f"SQL:\n{result.sql}\n\n{output}"
+            if result.attributes and (result.attributes.dimensions or result.attributes.measures):
+                output += "\n\n" + _format_attributes(attributes=result.attributes)
+            return output
+        except Exception as e:
+            if isinstance(e, (sa.exc.OperationalError, sa.exc.DatabaseError)):
+                return _friendly_db_error(e)
+            raise
+
+    @mcp.tool()
+    async def query_nested(
+        queries: List[Dict[str, Any]],
+        variables: Optional[Dict[str, Any]] = None,
+        show_sql: bool = False,
+        dry_run: bool = False,
+        explain: bool = False,
+        format: str = "markdown",
+    ) -> str:
+        """Run a multi-stage query as a DAG. Use this when one stage depends on the output of another.
+
+        ``queries`` is a list of query dicts forming a DAG. Each entry has the
+        same shape as the regular ``query`` tool's arguments
+        (``source_model``, ``measures``, ``dimensions``, ``filters``,
+        ``time_dimensions``, ``order``, ``limit``, ``offset``,
+        ``whole_periods_only``) plus an optional ``name``. Stages reference
+        each other by name via ``source_model: "<sibling_name>"`` or
+        ``joins.target_model``.
+
+        Order doesn't matter — the engine auto-sorts so every stage
+        appears after the siblings it references. The **last entry of
+        the input is always the entry point / DAG root** (its result is
+        what's returned); only the non-final entries are reordered.
+        Every non-final entry must have a ``name``. Cycles,
+        self-references, and a non-final stage referencing the root are
+        rejected with a clear error. Stages that aren't reachable from
+        the root are accepted as utility sub-queries — they're silently
+        dropped from the emitted SQL.
+
+        Args:
+            queries: Ordered list of stage dicts. Earlier stages must be
+                named; the last stage is the one whose rows return.
+            variables: Variable values for ``{var}`` placeholder
+                substitution in filters. Runtime kwarg precedence:
+                ``runtime > stage.variables > outer query.variables >
+                model.query_variables``.
+            show_sql: When true, include the generated SQL in the response.
+            dry_run: When true, generate the SQL without executing it.
+            explain: When true, run EXPLAIN ANALYZE and return the plan.
+            format: ``markdown`` (default), ``json``, or ``csv``.
+
+        Example:
+            queries=[
+                {"name": "monthly", "source_model": "orders",
+                 "measures": [{"formula": "*:count"}, {"formula": "revenue:sum"}],
+                 "time_dimensions": [{"dimension": "created_at", "granularity": "month"}]},
+                {"source_model": "monthly", "measures": [{"formula": "*:count"}]}
+            ]
+
+        For a single-stage query, prefer the regular ``query`` tool — its
+        typed arguments give a more discoverable schema.
+        """
+        try:
+            fmt = format.lower().strip()
+            if fmt not in ("json", "csv", "markdown"):
+                raise ValueError(f"Invalid format '{format}'. Must be one of: json, csv, markdown")
+            if not queries:
+                raise ValueError("'queries' must be a non-empty list of query dicts.")
+            result = await engine.execute(
+                query=list(queries),
                 variables=variables,
                 dry_run=dry_run,
                 explain=explain,
@@ -1363,15 +1308,69 @@ def create_mcp_server(storage: StorageBackend):
         # DB-hitting computations — skip when their consumers aren't requested.
         # ------------------------------------------------------------------
         # Dimension/measure profile populates the ``sampled`` column of the
-        # columns table. Only needed when ``columns`` is fully included.
+        # columns table. Read cached ``Column.sampled`` first; on miss, profile
+        # live and write back via storage so subsequent calls (and any search)
+        # get the cached value for free (DEV-1375).
         profile_by_name: Dict[str, str] = {}
         measure_profile: Dict[str, str] = {}
         if "columns" in included_set:
-            profile_entries = await _collect_dim_profile(model=model, engine=engine)
-            profile_by_name = {
-                e.name: _format_dim_profile_value(e) for e in profile_entries
-            }
-            measure_profile = await _collect_measure_profile(model=model, engine=engine)
+            cached_columns: List[str] = []
+            uncached_columns: List[Column] = []
+            for c in model.columns:
+                if c.hidden or c.primary_key:
+                    continue
+                if c.sampled is not None:
+                    profile_by_name[c.name] = c.sampled
+                    cached_columns.append(c.name)
+                else:
+                    uncached_columns.append(c)
+            if uncached_columns:
+                live_entries = await _collect_dim_profile(
+                    model=model, engine=engine,
+                    only_columns={c.name for c in uncached_columns},
+                )
+                for e in live_entries:
+                    live_value = _format_dim_profile_value(e)
+                    profile_by_name[e.name] = live_value
+                    try:
+                        await storage.update_column_sampled(
+                            data_source=model.data_source,
+                            model_name=model.name,
+                            column_name=e.name,
+                            sampled=live_value,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "inspect_model: failed to persist sampled value for "
+                            "%s.%s.%s: %s",
+                            model.data_source, model.name, e.name, exc,
+                        )
+                measure_profile = await _collect_measure_profile(model=model, engine=engine)
+                # Persist any measure-side (numeric/temporal) profile
+                # values to ``Column.sampled`` so subsequent
+                # ``inspect_model`` / search calls hit the cache
+                # instead of re-running the live profile query.
+                for col in uncached_columns:
+                    sampled_value = measure_profile.get(col.name)
+                    if sampled_value is None or col.name in profile_by_name:
+                        # Either no measure-side value for this column
+                        # (already covered by dim profile above), or
+                        # the dim profile already won the cache slot.
+                        continue
+                    profile_by_name[col.name] = sampled_value
+                    try:
+                        await storage.update_column_sampled(
+                            data_source=model.data_source,
+                            model_name=model.name,
+                            column_name=col.name,
+                            sampled=sampled_value,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "inspect_model: failed to persist sampled value for "
+                            "%s.%s.%s: %s",
+                            model.data_source, model.name, col.name, exc,
+                        )
 
         # ``measure_types`` informs the sample query's choice of avg vs
         # count_distinct. Only needed when ``samples`` is in the included set.
@@ -1984,6 +1983,17 @@ def create_mcp_server(storage: StorageBackend):
 
         original_data_source = model.data_source
         changes: List[str] = []
+        # DEV-1375: track refresh-triggering changes so the post-save hook
+        # knows whether to refresh just the touched columns or every
+        # column on the model.
+        changed_columns: set = set()
+        model_level_change = False
+        # DEV-1386: pure model-doc changes (measures / aggregations /
+        # joins) don't invalidate ``Column.sampled`` but DO change the
+        # embedding text rendered by ``slayer.search.render``. Track
+        # these separately so the embedding refresh fires without
+        # triggering a full per-column sample-value re-profile.
+        model_doc_changed = False
 
         # --- Phase 1: Scalar metadata ---
         if description is not None:
@@ -2029,11 +2039,13 @@ def create_mcp_server(storage: StorageBackend):
             model.sql_table = sql_table
             model.sql = None
             model.source_queries = None
+            model_level_change = True
             changes.append(f"set sql_table to '{sql_table}'")
         if sql is not None:
             model.sql = sql
             model.sql_table = None
             model.source_queries = None
+            model_level_change = True
             changes.append(f"set sql to '{sql}'")
         if source_queries is not None:
             # Switching to query-backed source mode. Cache columns and
@@ -2082,6 +2094,7 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Measure '{name}' not found on model '{model_name}'."
                 model.measures.remove(match)
                 changes.append(f"removed measure '{name}'")
+                model_doc_changed = True
 
             for name in remove.get("aggregations", []):
                 match = next((a for a in model.aggregations if a.name == name), None)
@@ -2089,6 +2102,7 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Aggregation '{name}' not found on model '{model_name}'."
                 model.aggregations.remove(match)
                 changes.append(f"removed aggregation '{name}'")
+                model_doc_changed = True
 
             for target in remove.get("joins", []):
                 match = next((j for j in model.joins if j.target_model == target), None)
@@ -2096,9 +2110,13 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Join to '{target}' not found on model '{model_name}'."
                 model.joins.remove(match)
                 changes.append(f"removed join to '{target}'")
+                model_doc_changed = True
 
         # --- Phase 3: Entity upserts ---
         for spec in columns or []:
+            col_name = spec.get("name")
+            if isinstance(col_name, str):
+                changed_columns.add(col_name)
             err = _upsert_entity(
                 entity_list=model.columns, spec=spec, entity_cls=Column,
                 id_field="name", changes=changes, label="column",
@@ -2113,6 +2131,7 @@ def create_mcp_server(storage: StorageBackend):
             )
             if err:
                 return err
+            model_doc_changed = True
 
         for spec in aggregations or []:
             err = _upsert_entity(
@@ -2121,6 +2140,7 @@ def create_mcp_server(storage: StorageBackend):
             )
             if err:
                 return err
+            model_doc_changed = True
 
         for spec in joins or []:
             err = _upsert_entity(
@@ -2129,6 +2149,7 @@ def create_mcp_server(storage: StorageBackend):
             )
             if err:
                 return err
+            model_doc_changed = True
 
         # --- Phase 4: Filters ---
         if add_filters:
@@ -2138,6 +2159,7 @@ def create_mcp_server(storage: StorageBackend):
                     model.filters.append(f)
                     existing_filters.add(f)
                     changes.append(f"added filter '{f}'")
+                    model_level_change = True
 
         if remove_filters:
             for f in remove_filters:
@@ -2145,6 +2167,7 @@ def create_mcp_server(storage: StorageBackend):
                     return f"Filter not found on model '{model_name}': {f}"
                 model.filters.remove(f)
                 changes.append(f"removed filter '{f}'")
+                model_level_change = True
 
         if not changes:
             return f"No changes specified for model '{model_name}'."
@@ -2208,12 +2231,41 @@ def create_mcp_server(storage: StorageBackend):
             await storage.delete_model(
                 saved_model.name, data_source=original_data_source
             )
-        return json.dumps({
+        # DEV-1375 / DEV-1386: refresh persisted ``Column.sampled``
+        # values for any touched columns (or every column when a
+        # source-level change made every column's sample suspect), and
+        # refresh embeddings for the model subtree on any edit that
+        # changed the indexed text. Best-effort: any raise here is
+        # captured into ``refresh_warnings`` so the save's success
+        # status survives a flaky embedding API.
+        refresh_warnings: List[str] = []
+        if changed_columns or model_level_change or model_doc_changed:
+            try:
+                refresh_warnings = await handle_edit_refresh(
+                    engine=engine,
+                    storage=storage,
+                    data_source=saved_model.data_source,
+                    model_name=saved_model.name,
+                    changed_columns=changed_columns,
+                    model_level_change=model_level_change,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort post-save
+                logger.warning(
+                    "edit_model refresh hook raised for %s.%s: %s",
+                    saved_model.data_source, saved_model.name, exc,
+                )
+                refresh_warnings = [
+                    f"refresh hook raised: {exc}",
+                ]
+        response_payload: dict = {
             "success": True,
             "model_name": model_name,
             "changes": changes,
             "message": f"Applied {len(changes)} change(s) to '{model_name}'",
-        }, indent=2)
+        }
+        if refresh_warnings:
+            response_payload["warnings"] = refresh_warnings
+        return json.dumps(response_payload, indent=2)
 
     # -----------------------------------------------------------------------
     # Datasource management
@@ -2570,9 +2622,9 @@ def create_mcp_server(storage: StorageBackend):
           ``source_model``, ``dimensions``, ``time_dimensions``,
           ``measures``, and ``filters``; resolution warnings are
           non-fatal. The query itself is stored alongside the
-          learning, so the memory surfaces in
-          ``recall_memories``'s ``queries`` list (vs the
-          ``learnings`` list for entity-list memories).
+          learning, so the memory surfaces in ``search``'s
+          ``example_queries`` list (vs the ``memories`` list for
+          entity-list memories).
 
         Returns the assigned ``memory_id`` (a positive int), the
         canonical entities stored, and any non-fatal warnings.
@@ -2629,49 +2681,82 @@ def create_mcp_server(storage: StorageBackend):
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
+    # ---------- DEV-1375: semantic search -----------------------------
+
+    search_service = SearchService(storage=storage)
+
     @mcp.tool()
-    async def recall_memories(
-        about: Any,
-        max_learnings: Optional[int] = None,
-        max_queries: Optional[int] = 2,
+    async def search(
+        entities: Optional[List[str]] = None,
+        query: Any = None,
+        question: Optional[str] = None,
+        datasource: Optional[str] = None,
+        max_memories: int = 5,
+        max_example_queries: int = 2,
+        max_entities: int = 5,
     ) -> str:
-        """Look up agent memories by BM25 over canonical entity sets.
+        """Up to three-channel semantic search over memories + canonical entities.
 
         Call this BEFORE ``query`` to surface any notes or example
         queries previously saved against the entities you're
         considering.
 
-        ``about`` accepts either:
+        Channel 1 (entity-overlap BM25 over memories): runs when
+        ``entities`` and/or ``query`` is supplied. Memories whose
+        canonical entity tags overlap the resolved input are ranked.
 
-        * a list of entity reference strings — each is resolved
-          strictly; resolution failures raise.
-        * a ``SlayerQuery`` (dict) — the entity extractor walks the
-          query and warnings are non-fatal.
+        Channel 2 (tantivy full-text over memories ∪ entities): runs
+        when ``question`` is supplied. The in-memory index covers every
+        memory + every searchable entity (datasource / non-hidden model /
+        non-hidden column / named measure / aggregation).
 
-        Empty input (``about=[]`` or a query with no extractable
-        entities) returns all memories ranked by recency (newest first)
-        with an explanatory warning.
+        Channel 3 (dense embedding similarity, optional): runs when
+        ``question`` is supplied AND the ``embedding_search`` extra is
+        installed AND a provider API key is configured for the active
+        embedding model. Cosine similarity between the question
+        embedding and persisted entity/memory embeddings. Skipped with
+        a single warning into ``SearchResponse.warnings`` when any
+        precondition fails — tantivy + BM25 continue to work.
 
-        Stored memories are ranked by BM25 over their canonical entity
-        sets, so a memory tagged precisely against the query entities
-        outranks one with a long entity list that overlaps incidentally.
-        Memories with zero overlap are dropped. The result splits
-        memories without an attached query (``learnings``) from those
-        with one (``queries``); each list is capped independently.
+        Memory rankings from every active channel and entity rankings
+        from channels 2 and 3 are fused via Reciprocal Rank Fusion
+        (k=60). Query-bearing memories (those saved with an attached
+        ``SlayerQuery``) are partitioned into ``example_queries`` and
+        capped independently from learning-only ``memories`` so bulky
+        example queries cannot crowd out small notes.
+
+        Empty input (no entities, no query, no question) returns the
+        newest ``max_memories`` learning-only memories and the newest
+        ``max_example_queries`` query-bearing memories, with a warning.
 
         Args:
-            about: List of entity reference strings, or an inline
-                ``SlayerQuery`` payload.
-            max_learnings: Cap on returned learning-shaped memories.
-                ``None`` = all.
-            max_queries: Cap on returned query-bearing memories.
-                Default ``2``.
+            entities: Canonical entity reference strings.
+            query: Optional ``SlayerQuery`` (dict). Entities are
+                auto-extracted to broaden channel-1 input.
+            question: Free-text query for the tantivy full-text channel.
+            datasource: Optional datasource name. When set, scope all
+                three channels to that one datasource. Entity hits are
+                limited to docs rooted at the datasource (exact match
+                or dotted-path descendant). Memories surface when any
+                of their tagged entities is rooted at the datasource —
+                a memory spanning multiple datasources surfaces from
+                each. BM25 / IDF stats reflect only the filtered subset.
+                Unknown datasource raises ``ValueError``.
+            max_memories: Cap on returned learning-only memory hits
+                (default 5).
+            max_example_queries: Cap on returned query-bearing memory
+                hits (default 2 — they're bulky).
+            max_entities: Cap on returned entity hits (default 5).
         """
         try:
-            response = await memory_service.recall_memories(
-                about=about,
-                max_learnings=max_learnings,
-                max_queries=max_queries,
+            response = await search_service.search(
+                entities=entities,
+                query=query,
+                question=question,
+                datasource=datasource,
+                max_memories=max_memories,
+                max_example_queries=max_example_queries,
+                max_entities=max_entities,
             )
         except (
             EntityResolutionError,

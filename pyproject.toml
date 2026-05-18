@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "0.5.0"
+version = "0.6.8"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -57,6 +57,11 @@ dbt-core = {version = ">=1.7", optional = true}
 # `flight` extra makes the Flight SQL facade dependency explicit and lets
 # users who skip duckdb still get it via `pip install motley-slayer[flight]`.
 pyarrow = {version = ">=18.0", optional = true}
+tantivy = "^0.26"
+# Embedding-based semantic search (DEV-1386). Optional — search degrades
+# gracefully to tantivy + BM25 when this extra is not installed.
+litellm = {version = ">=1.50", optional = true}
+numpy = {version = ">=1.24", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]
@@ -66,7 +71,8 @@ clickhouse = ["clickhouse-sqlalchemy"]
 dbt = ["dbt-core"]
 docs = ["mkdocs-material"]
 flight = ["pyarrow"]
-all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core", "pyarrow"]
+embedding_search = ["litellm", "numpy"]
+all = ["httpx", "pandas", "psycopg2-binary", "asyncpg", "pymysql", "aiomysql", "clickhouse-sqlalchemy", "dbt-core", "pyarrow", "litellm", "numpy"]
 
 [project.scripts]
 slayer = "slayer.cli:main"

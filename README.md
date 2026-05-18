@@ -60,6 +60,9 @@ uvx --from 'motley-slayer[all]' slayer serve --demo
 
 # Or run without --demo and connect your own data afterwards
 uvx --from 'motley-slayer[all]' slayer serve
+
+# Already have datasource YAMLs configured? Ingest them all at boot:
+uvx --from 'motley-slayer[all]' slayer serve --ingest-on-startup
 ```
 
 Or using Claude Code with an in-process MCP server:
@@ -68,11 +71,14 @@ Or using Claude Code with an in-process MCP server:
 # With the Jaffle Shop demo preloaded (zero-config quickstart)
 claude mcp add slayer -- uvx --from motley-slayer slayer mcp --demo
 
-# Or without the demo
+# Or with idempotent boot-time auto-ingestion across every configured datasource
+claude mcp add slayer -- uvx --from motley-slayer slayer mcp --ingest-on-startup
+
+# Or without either — manual ingestion via the ingest_datasource_models tool
 claude mcp add slayer -- uvx --from motley-slayer slayer mcp
 ```
 
-The `--demo` flag will preload the Jaffle Shop demo on startup – this takes a few seconds.
+The `--demo` flag will preload the Jaffle Shop demo on startup – this takes a few seconds. The `--ingest-on-startup` flag walks every configured datasource and runs idempotent auto-ingestion before the server begins accepting connections (also enabled via `SLAYER_INGEST_ON_STARTUP=1`).
 
 Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#datasource-setup) or ask your agent to help you do it.
 
@@ -114,6 +120,9 @@ claude mcp add slayer -- slayer mcp
 
 # 1b. same, but preload the Jaffle Shop demo on startup
 claude mcp add slayer -- slayer mcp --demo
+
+# 1c. same, but run idempotent auto-ingestion across every configured datasource on startup
+claude mcp add slayer -- slayer mcp --ingest-on-startup
 
 # 2. HTTP-based (SSE), provided SLayer server is already running
 claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
@@ -264,6 +273,11 @@ slayer ingest --datasource my_postgres --schema public
 # Via API
 curl -X POST http://localhost:5143/ingest \
   -d '{"datasource": "my_postgres", "schema_name": "public"}'
+
+# Or run the same idempotent ingest pass over every configured datasource at
+# server boot — useful for YAML-drop workflows:
+slayer serve --ingest-on-startup
+slayer mcp --ingest-on-startup
 ```
 
 Via MCP, agents can do this conversationally:

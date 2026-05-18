@@ -12,10 +12,11 @@ v4 (DEV-1330): join targets are resolved within the parent model's
 ``data_source`` only — cross-datasource joins are never auto-mirrored.
 """
 
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from slayer.core.enums import JoinType
 from slayer.core.models import DatasourceConfig, ModelJoin, SlayerModel
+from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 
@@ -116,10 +117,18 @@ class JoinSyncStorage(StorageBackend):
 
     # -- model operations (with sync) -------------------------------------
 
-    async def save_model(self, model: SlayerModel) -> None:
+    async def _save_model_impl(self, model: SlayerModel) -> None:
+        """Decorator-level save: delegate the actual write to the inner
+        backend, then keep inner-join mirrors in sync. Cycle validation
+        runs ONCE — at the outer layer, via the ``StorageBackend.save_model``
+        template method on this decorator — and is then suppressed on the
+        inner write via ``_validate=False`` so it is not redundantly
+        re-checked. Overriding ``_save_model_impl`` (rather than
+        ``save_model``) is what keeps that single-pass invariant.
+        """
         await self._ensure_reconciled()
         old = await self._inner.get_model(model.name, data_source=model.data_source)
-        await self._inner.save_model(model)
+        await self._inner.save_model(model, _validate=False)
 
         # Mirror outward: ensure reverse inner joins exist / are up-to-date.
         await _mirror_inner_joins(model, self._inner)
@@ -153,6 +162,8 @@ class JoinSyncStorage(StorageBackend):
                 return False
             data_source, name = identity
         model = await self._inner.get_model(name, data_source=data_source)
+        # Inner's ``delete_model`` is the ABC's non-abstract wrapper; it
+        # cascade-deletes embeddings for the model's canonical prefix.
         result = await self._inner.delete_model(name, data_source=data_source)
         if result and model:
             inner_targets = {
@@ -164,6 +175,23 @@ class JoinSyncStorage(StorageBackend):
                     name, model.data_source, inner_targets, self._inner
                 )
         return result
+
+    async def _delete_model_row(
+        self, *, data_source: str, name: str,
+    ) -> bool:
+        # Pure delegation — the wrapper's reverse-join cleanup runs only
+        # through the public ``delete_model`` path above. Direct callers
+        # of ``_delete_model_row`` (currently only the ABC's wrapper) get
+        # the underlying row delete without join sync; that's fine here
+        # since the ABC wrapper at this level is bypassed when the
+        # ``self._inner.delete_model`` call above runs the wrapper on the
+        # inner backend.
+        return await self._inner._delete_model_row(
+            data_source=data_source, name=name,
+        )
+
+    async def _delete_datasource_row(self, name: str) -> bool:
+        return await self._inner._delete_datasource_row(name)
 
     # -- pure delegation --------------------------------------------------
 
@@ -178,6 +206,21 @@ class JoinSyncStorage(StorageBackend):
     ) -> Optional[SlayerModel]:
         await self._ensure_reconciled()
         return await self._inner.get_model(name, data_source=data_source)
+
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        return await self._inner.update_column_sampled(
+            data_source=data_source,
+            model_name=model_name,
+            column_name=column_name,
+            sampled=sampled,
+        )
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         return await self._inner.save_datasource(datasource)
@@ -215,3 +258,44 @@ class JoinSyncStorage(StorageBackend):
 
     async def _next_memory_seq(self) -> int:
         return await self._inner._next_memory_seq()
+
+    # -- embeddings (DEV-1386) — pure delegation --------------------------
+
+    async def save_embedding(self, row: Embedding) -> None:
+        await self._inner.save_embedding(row)
+
+    async def save_embeddings(self, rows: List[Embedding]) -> None:
+        await self._inner.save_embeddings(rows)
+
+    async def get_embedding(
+        self, *, canonical_id: str, embedding_model_name: str,
+    ) -> Optional[Embedding]:
+        return await self._inner.get_embedding(
+            canonical_id=canonical_id,
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def get_embeddings_for_canonical_ids(
+        self,
+        *,
+        canonical_ids: List[str],
+        embedding_model_name: str,
+    ) -> Dict[str, Embedding]:
+        return await self._inner.get_embeddings_for_canonical_ids(
+            canonical_ids=canonical_ids,
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def list_embeddings(
+        self, *, embedding_model_name: str,
+    ) -> List[Embedding]:
+        return await self._inner.list_embeddings(
+            embedding_model_name=embedding_model_name,
+        )
+
+    async def delete_embeddings_for_canonical(
+        self, *, canonical_id_prefix: str,
+    ) -> int:
+        return await self._inner.delete_embeddings_for_canonical(
+            canonical_id_prefix=canonical_id_prefix,
+        )

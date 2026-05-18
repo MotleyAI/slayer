@@ -337,6 +337,35 @@ class SQLGenerator:
         # (oracle; tsql for log2) keep the canonical 2-arg LOG form.
         return tree.transform(self._rewrite_log_aliases)
 
+    def _parse_predicate(self, sql: str, *, dialect: Optional[str] = None) -> exp.Expression:
+        """Parse a bare WHERE/HAVING predicate expression (DEV-1378).
+
+        ``sqlglot.parse_one(sql, dialect=...)`` falls back to a ``Command``
+        statement parse when an expression starts with a function name that
+        is also a SQL statement keyword in the target dialect — e.g.
+        ``replace(x, ',', '')`` on SQLite or MySQL is misinterpreted as
+        the ``REPLACE INTO`` statement form. To dodge this, wrap the
+        expression in ``SELECT 1 WHERE ...`` and extract the WHERE body —
+        sqlglot's expression-context parser then reads ``replace`` as a
+        function call.
+
+        Use this in place of :meth:`_parse` for parsing bare expressions
+        derived from user-supplied SQL fragments (filter SQL, measure
+        ``filter_sql``, etc.) — paths where statement-keyword shadowing is
+        possible.
+        """
+        d = dialect or self.dialect
+        wrapped = sqlglot.parse_one(f"SELECT 1 WHERE {sql}", dialect=d)
+        where = wrapped.args.get("where")
+        if where is None or where.this is None:  # pragma: no cover — defensive
+            raise ValueError(
+                f"Could not extract WHERE predicate from {sql!r} (dialect={d!r})"
+            )
+        tree = where.this
+        if d == "sqlite":
+            tree = rewrite_sqlite_json_extract(tree)
+        return tree.transform(self._rewrite_log_aliases)
+
     def generate(self, enriched: EnrichedQuery) -> str:
         """Generate SQL from a fully resolved EnrichedQuery.
 
@@ -919,10 +948,12 @@ class SQLGenerator:
 
         value_expr = self._resolve_sql(sql=measure.sql or measure.name, name=measure.name, model_name=measure.model_name)
         if measure.filter_sql:
-            # measure.filter_sql is a raw SQL string (originates upstream); parse
-            # it once via sqlglot so the CASE WHEN ... THEN ... END is a true
-            # AST node rather than text glued in.
-            filter_ast = self._parse(measure.filter_sql)
+            # measure.filter_sql is a user-supplied predicate (originates from
+            # ``Column.filter`` / ``SlayerQuery.filters``); parse it via
+            # ``_parse_predicate`` so dialects whose statement keywords
+            # shadow function calls at expression start (SQLite / MySQL
+            # ``REPLACE``) don't fall back to a Command parse — DEV-1378.
+            filter_ast = self._parse_predicate(measure.filter_sql)
             value_expr = exp.Case(ifs=[exp.If(this=filter_ast, true=value_expr)])
         source_cols.append(value_expr.as_("_w_value"))
 
@@ -1143,8 +1174,16 @@ class SQLGenerator:
             select = select.where(where_clause)
 
         # Group by when there are aggregations, cross-model measures exist,
-        # or isolated measures were skipped (to deduplicate the dimension spine)
-        needs_group_by = has_aggregation or bool(enriched.cross_model_measures) or skip_isolated
+        # isolated measures were skipped (to deduplicate the dimension spine),
+        # or the query is dim-only (auto-dedup distinct dim/time-dim tuples
+        # — applied before LIMIT so a row cap can't drop unique tuples).
+        dim_only_dedup = bool(group_by_columns) and not enriched.measures
+        needs_group_by = (
+            has_aggregation
+            or bool(enriched.cross_model_measures)
+            or skip_isolated
+            or dim_only_dedup
+        )
         if needs_group_by and group_by_columns:
             for gb in group_by_columns:
                 select = select.group_by(gb)
@@ -2323,11 +2362,15 @@ class SQLGenerator:
         where_clause = None
         if where_parts:
             where_sql = _SQL_AND_JOINER.join(where_parts)
-            where_clause = self._parse(where_sql)
+            # DEV-1378: ``_parse_predicate`` wraps in SELECT context so a
+            # filter starting with ``replace(...)`` (a SQLite/MySQL
+            # statement keyword) is parsed as a function call rather
+            # than the REPLACE INTO statement form.
+            where_clause = self._parse_predicate(where_sql)
 
         having_clause = None
         if having_parts:
             having_sql = _SQL_AND_JOINER.join(having_parts)
-            having_clause = self._parse(having_sql)
+            having_clause = self._parse_predicate(having_sql)
 
         return where_clause, having_clause

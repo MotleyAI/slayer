@@ -8,6 +8,17 @@ list — used to disambiguate bare-name lookups — is stored at
 On open, ``migrate_yaml_layout`` walks the legacy flat layout and moves each
 file into the new subdirectory. See ``slayer/storage/v4_migration.py`` for the
 contract details.
+
+DEV-1405: embedding rows now live in a SQLite sidecar at
+``<base_dir>/embeddings.db`` (via :class:`SidecarEmbeddingStore`) instead of
+a single ``embeddings.yaml`` whose whole-file-rewrite-on-save bottlenecked
+``slayer ingest``. Any pre-DEV-1405 ``embeddings.yaml`` is silently renamed
+to ``embeddings.yaml.legacy`` on first open; re-run ``slayer ingest`` (or
+rely on ``--ingest-on-startup``) to repopulate ``embeddings.db``. Memory ids
+are now derived from ``memories.yaml`` itself (``last_row.id + 1``), so the
+companion ``counters.yaml`` file is no longer used; it is similarly renamed
+to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
+``.legacy`` file already exists at upgrade time, both files are left alone.
 """
 
 import os
@@ -18,22 +29,40 @@ from pydantic import ValidationError
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
-from slayer.storage.base import StorageBackend
+from slayer.storage.base import StorageBackend, _validate_path_component
+from slayer.storage.sidecar_embedding_store import (
+    SidecarEmbeddingsMixin,
+    SidecarEmbeddingStore,
+)
 from slayer.storage.v4_migration import migrate_yaml_layout
 
 
-class YAMLStorage(StorageBackend):
+_LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")
+
+
+class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
     def __init__(self, base_dir: str):
         self.base_dir = base_dir
         self.models_dir = os.path.join(base_dir, "models")
         self.datasources_dir = os.path.join(base_dir, "datasources")
         self._priority_path = os.path.join(base_dir, "priority.yaml")
         self._memories_path = os.path.join(base_dir, "memories.yaml")
-        self._counters_path = os.path.join(base_dir, "counters.yaml")
         os.makedirs(self.models_dir, exist_ok=True)
         os.makedirs(self.datasources_dir, exist_ok=True)
         # Idempotent — moves any pre-v4 flat files into <data_source>/ subdirs.
         migrate_yaml_layout(base_dir)
+        # Idempotent — rename pre-DEV-1405 sidecar files out of the way.
+        # If a ``.legacy`` companion already exists (user upgraded twice or
+        # manually restored), leave both files in place so we never clobber
+        # an existing backup.
+        for filename in _LEGACY_RENAMES:
+            current = os.path.join(base_dir, filename)
+            legacy = os.path.join(base_dir, filename + ".legacy")
+            if os.path.exists(current) and not os.path.exists(legacy):
+                os.rename(current, legacy)
+        self._embeddings_store = SidecarEmbeddingStore(
+            db_path=os.path.join(base_dir, "embeddings.db"),
+        )
 
     # ---- internal helpers --------------------------------------------------
 
@@ -42,7 +71,7 @@ class YAMLStorage(StorageBackend):
 
     # ---- model CRUD --------------------------------------------------------
 
-    async def save_model(self, model: SlayerModel) -> None:
+    async def _save_model_impl(self, model: SlayerModel) -> None:
         target_dir = os.path.join(self.models_dir, model.data_source)
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{model.name}.yaml")
@@ -81,20 +110,46 @@ class YAMLStorage(StorageBackend):
             name=name, data=data, data_source=data_source,
         )
 
-    async def delete_model(
-        self,
-        name: str,
-        data_source: Optional[str] = None,
+    async def _delete_model_row(
+        self, *, data_source: str, name: str,
     ) -> bool:
-        target = await self._resolve_target_or_none(name, data_source=data_source)
-        if target is None:
-            return False
-        data_source, name = target
         path = self._model_path(data_source, name)
         if os.path.exists(path):
             os.remove(path)
             return True
         return False
+
+    async def update_column_sampled(
+        self,
+        *,
+        data_source: str,
+        model_name: str,
+        column_name: str,
+        sampled: Optional[str],
+    ) -> None:
+        path = self._model_path(data_source, model_name)
+        if not os.path.exists(path):
+            raise ValueError(
+                f"update_column_sampled: model {model_name!r} in datasource "
+                f"{data_source!r} not found."
+            )
+        with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design
+            data = yaml.safe_load(f) or {}
+        cols = data.get("columns") or []
+        for col in cols:
+            if isinstance(col, dict) and col.get("name") == column_name:
+                if sampled is None:
+                    col.pop("sampled", None)
+                else:
+                    col["sampled"] = sampled
+                break
+        else:
+            raise ValueError(
+                f"update_column_sampled: column {column_name!r} not found "
+                f"on model {model_name!r} in datasource {data_source!r}."
+            )
+        with open(path, "w") as f:  # NOSONAR(S7493)
+            yaml.dump(data, f, sort_keys=False)
 
     # ---- datasource CRUD ---------------------------------------------------
 
@@ -105,6 +160,8 @@ class YAMLStorage(StorageBackend):
             yaml.dump(data, f, sort_keys=False)
 
     async def get_datasource(self, name: str) -> Optional[DatasourceConfig]:
+        # DEV-1405: sanitize before composing the filesystem path.
+        _validate_path_component(name, kind="datasource name")
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
         if not os.path.exists(path):
             return None
@@ -129,7 +186,7 @@ class YAMLStorage(StorageBackend):
                 result.append(filename.rsplit(".", 1)[0])
         return result
 
-    async def delete_datasource(self, name: str) -> bool:
+    async def _delete_datasource_row(self, name: str) -> bool:
         path = os.path.join(self.datasources_dir, f"{name}.yaml")
         if os.path.exists(path):
             os.remove(path)
@@ -167,39 +224,23 @@ class YAMLStorage(StorageBackend):
         with open(path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump(rows, f, sort_keys=False)
 
-    def _read_counters(self) -> Dict[str, int]:
-        if not os.path.exists(self._counters_path):
-            return {}
-        with open(self._counters_path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            data = yaml.safe_load(f) or {}
-        if not isinstance(data, dict):
-            return {}
-        return {str(k): int(v) for k, v in data.items() if isinstance(v, int)}
-
-    def _write_counters(self, counters: Dict[str, int]) -> None:
-        with open(self._counters_path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
-            yaml.dump(dict(counters), f, sort_keys=False)
-
-    def _max_memory_id(self) -> int:
-        max_id = 0
-        for row in self._read_yaml_list(self._memories_path):
-            row_id = row.get("id")
-            if isinstance(row_id, int) and row_id > max_id:
-                max_id = row_id
-        return max_id
-
     async def _next_memory_seq(self) -> int:
-        counters = self._read_counters()
-        # Recover from a missing/wiped counters.yaml: if memories.yaml
-        # already has rows, the next allocation must skip past them so
-        # _save_memory_row never replaces an existing record.
-        base = counters.get("memory_seq")
-        if base is None:
-            base = self._max_memory_id()
-        seq = base + 1
-        counters["memory_seq"] = seq
-        self._write_counters(counters)
-        return seq
+        """DEV-1405: derive the next id straight from ``memories.yaml``.
+        Returns ``max(int_ids) + 1`` over the current rows (or ``1`` for
+        an empty file). Ids of deleted memories may be reused — there is
+        no separate counter file.
+
+        Note: the SQLite backend reaches the same invariant via
+        ``SELECT MAX(id) + 1``; we don't rely on ``rows[-1]`` here because
+        ``_save_memory_row``'s filter-and-append upsert pattern (and any
+        hand-edit of the file) can leave the tail row out of id order.
+        """
+        rows = self._read_yaml_list(self._memories_path)
+        max_id = max(
+            (r["id"] for r in rows if isinstance(r.get("id"), int)),
+            default=0,
+        )
+        return max_id + 1
 
     async def _save_memory_row(self, memory: Memory) -> None:
         rows = self._read_yaml_list(self._memories_path)
@@ -232,3 +273,8 @@ class YAMLStorage(StorageBackend):
             return False
         self._write_yaml_list(self._memories_path, kept)
         return True
+
+    # Embedding CRUD lives in :class:`SidecarEmbeddingsMixin`, which
+    # forwards to ``self._embeddings_store`` set in ``__init__`` above.
+    # The mixin owns the SQL once and both backends consume it — see
+    # ``slayer/storage/sidecar_embedding_store.py``.
