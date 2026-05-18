@@ -425,7 +425,7 @@ def test_n10_concurrent_executequery(
                     results.append(int(rows[0][0]))
             finally:
                 conn.close()
-        except BaseException as exc:  # noqa: BLE001 — capture for assert
+        except BaseException as exc:  # noqa: BLE001 — capture for assert  # NOSONAR(S5754) — capture threading errors for assert
             with lock:
                 errors.append(exc)
 

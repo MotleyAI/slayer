@@ -41,8 +41,8 @@ def _descriptor_for(msg, suffix: str) -> fl.FlightDescriptor:
     return fl.FlightDescriptor.for_command(_pack_command(msg, suffix))
 
 
-def _client(host: str, port: int, *, token: str | None = None) -> fl.FlightClient:
-    """Construct a pyarrow Flight client, optionally with a bearer token header."""
+def _client(*, host: str, port: int) -> fl.FlightClient:
+    """Construct a pyarrow Flight client. Auth is per-RPC via ``_bearer_options``."""
     return fl.FlightClient(f"grpc://{host}:{port}")
 
 
@@ -63,7 +63,7 @@ def _bearer_options(token: str | None) -> fl.FlightCallOptions:
 
 def test_get_catalogs(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(
         fsql_pb.CommandGetCatalogs(), "CommandGetCatalogs",
     )
@@ -75,7 +75,7 @@ def test_get_catalogs(flight_demo_server: Tuple[str, int]) -> None:
 
 def test_get_db_schemas(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(
         fsql_pb.CommandGetDbSchemas(), "CommandGetDbSchemas",
     )
@@ -87,7 +87,7 @@ def test_get_db_schemas(flight_demo_server: Tuple[str, int]) -> None:
 
 def test_get_tables(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetTables(), "CommandGetTables")
     info = client.get_flight_info(descriptor)
     table = client.do_get(info.endpoints[0].ticket).read_all()
@@ -99,7 +99,7 @@ def test_get_tables(flight_demo_server: Tuple[str, int]) -> None:
 
 def test_get_table_types(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(
         fsql_pb.CommandGetTableTypes(), "CommandGetTableTypes",
     )
@@ -111,7 +111,7 @@ def test_get_table_types(flight_demo_server: Tuple[str, int]) -> None:
 
 def test_get_primary_keys_empty(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     cmd = fsql_pb.CommandGetPrimaryKeys()
     cmd.table = "orders"
     descriptor = _descriptor_for(cmd, "CommandGetPrimaryKeys")
@@ -125,7 +125,7 @@ def test_get_primary_keys_empty(flight_demo_server: Tuple[str, int]) -> None:
 
 def test_get_sql_info(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetSqlInfo(), "CommandGetSqlInfo")
     info = client.get_flight_info(descriptor)
     table = client.do_get(info.endpoints[0].ticket).read_all()
@@ -165,7 +165,7 @@ def _execute_prepared(client: fl.FlightClient, handle: bytes):
 
 def test_prepared_statement_row_count(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     resp = _create_prepared(client, "SELECT row_count FROM orders")
     assert resp.prepared_statement_handle == b"SELECT row_count FROM orders"
     table = _execute_prepared(client, resp.prepared_statement_handle)
@@ -176,7 +176,7 @@ def test_prepared_statement_row_count(flight_demo_server: Tuple[str, int]) -> No
 
 def test_prepared_statement_time_grain(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     sql = (
         "SELECT month(ordered_at) AS m, row_count FROM orders "
         "WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31' "
@@ -192,7 +192,7 @@ def test_prepared_statement_time_grain(flight_demo_server: Tuple[str, int]) -> N
 
 def test_prepared_statement_cross_model_dim(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     resp = _create_prepared(
         client, "SELECT customers.name, row_count FROM orders",
     )
@@ -205,7 +205,7 @@ def test_prepared_statement_info_schema_metrics(
     flight_demo_server: Tuple[str, int],
 ) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     resp = _create_prepared(client, "SELECT * FROM INFORMATION_SCHEMA.METRICS")
     table = _execute_prepared(client, resp.prepared_statement_handle)
     rows = table.to_pylist()
@@ -225,7 +225,7 @@ def test_prepared_statement_probe_queries(
     flight_demo_server: Tuple[str, int], probe_sql: str,
 ) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     resp = _create_prepared(client, probe_sql)
     table = _execute_prepared(client, resp.prepared_statement_handle)
     if "1=0" in probe_sql:
@@ -240,7 +240,7 @@ def test_prepared_statement_probe_queries(
 
 def test_select_star_rejected(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     with pytest.raises(fl.FlightServerError) as excinfo:
         _create_prepared(client, "SELECT * FROM orders")
     assert "SELECT * not supported" in str(excinfo.value)
@@ -248,7 +248,7 @@ def test_select_star_rejected(flight_demo_server: Tuple[str, int]) -> None:
 
 def test_dml_rejected(flight_demo_server: Tuple[str, int]) -> None:
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     with pytest.raises(fl.FlightServerError) as excinfo:
         _create_prepared(client, "INSERT INTO orders VALUES (1)")
     assert "read-only" in str(excinfo.value).lower()
@@ -257,7 +257,7 @@ def test_dml_rejected(flight_demo_server: Tuple[str, int]) -> None:
 def test_close_prepared_statement(flight_demo_server: Tuple[str, int]) -> None:
     """``ActionClosePreparedStatementRequest`` is a no-op; it must complete cleanly."""
     host, port = flight_demo_server
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     resp = _create_prepared(client, "SELECT 1")
     close_req = fsql_pb.ActionClosePreparedStatementRequest()
     close_req.prepared_statement_handle = resp.prepared_statement_handle
@@ -274,7 +274,7 @@ def test_auth_positive(
 ) -> None:
     """With the correct bearer token attached on every RPC, the server accepts."""
     host, port, token = flight_demo_server_with_token
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetCatalogs(), "CommandGetCatalogs")
     info = client.get_flight_info(descriptor, options=_bearer_options(token))
     table = client.do_get(
@@ -289,7 +289,7 @@ def test_auth_negative_missing_token(
 ) -> None:
     """Without an Authorization header the server rejects with UNAUTHENTICATED."""
     host, port, _token = flight_demo_server_with_token
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetCatalogs(), "CommandGetCatalogs")
     with pytest.raises(fl.FlightUnauthenticatedError):
         client.get_flight_info(descriptor)
@@ -299,7 +299,7 @@ def test_auth_negative_wrong_token(
     flight_demo_server_with_token: Tuple[str, int, str],
 ) -> None:
     host, port, _token = flight_demo_server_with_token
-    client = _client(host, port)
+    client = _client(host=host, port=port)
     descriptor = _descriptor_for(fsql_pb.CommandGetCatalogs(), "CommandGetCatalogs")
     with pytest.raises(fl.FlightUnauthenticatedError):
         client.get_flight_info(descriptor, options=_bearer_options("wrong"))
@@ -318,12 +318,12 @@ def test_n10_concurrent_prepared_statements(flight_demo_server: Tuple[str, int])
 
     def worker() -> None:
         try:
-            client = _client(host, port)
+            client = _client(host=host, port=port)
             resp = _create_prepared(client, "SELECT row_count FROM orders")
             table = _execute_prepared(client, resp.prepared_statement_handle)
             with lock:
                 results.append(int(table.to_pylist()[0]["row_count"]))
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001  # NOSONAR(S5754) — capture threading errors for assert
             with lock:
                 errors.append(exc)
 

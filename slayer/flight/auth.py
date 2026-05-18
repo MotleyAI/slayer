@@ -149,7 +149,12 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
 
         if self._expected is None:
             # No-auth mode: loopback fallback. Server startup already rejects
-            # non-loopback without a token, but recheck here.
+            # non-loopback without a token; recheck the peer here in case the
+            # bind address changed at runtime or a proxy forwarded the call.
+            if not _peer_is_loopback(info.peer):
+                raise fl.FlightUnauthenticatedError(
+                    "No token configured; only loopback peers accepted"
+                )
             return _BearerTokenMiddleware(environment_id=environment_id)
 
         if provided is None:

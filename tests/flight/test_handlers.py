@@ -48,13 +48,13 @@ class _FakeStorage:
     def __init__(self, models_by_ds: dict[str, list[SlayerModel]]) -> None:
         self._by_ds = models_by_ds
 
-    async def list_datasources(self) -> list[str]:
+    async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
         return list(self._by_ds.keys())
 
-    async def list_models(self, *, data_source: str | None = None) -> list[str]:
+    async def list_models(self, *, data_source: str | None = None) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
         return [m.name for m in self._by_ds.get(data_source or "", [])]
 
-    async def get_model(self, *, name: str, data_source: str | None = None):
+    async def get_model(self, *, name: str, data_source: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
         for m in self._by_ds.get(data_source or "", []):
             if m.name == name:
                 return m
@@ -67,7 +67,7 @@ class _FakeEngine:
     def __init__(self, *, response: SlayerResponse) -> None:
         self._response = response
 
-    async def execute(self, *, query):  # noqa: ARG002
+    async def execute(self, *, query):  # noqa: ARG002  # NOSONAR(S7503) — must match async interface (called via await in production)
         return self._response
 
 

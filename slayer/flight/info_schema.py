@@ -12,9 +12,10 @@ Five tables are served:
   and dimensions into "columns" since that's the schema-y view a BI tool
   introspecting via the dbt-SL JDBC driver sees.
 
-Phase 1 does not apply ``WHERE`` predicates server-side — the full table
-is returned and BI tools / clients filter client-side. The spec marks
-that as Phase-2 work.
+Phase 1 does not apply ``WHERE`` predicates server-side, nor does it
+slice the canned table by the ``SELECT`` projection — the full table
+is returned and BI tools / clients filter client-side. Tracked in
+DEV-1425.
 """
 
 from __future__ import annotations
@@ -60,6 +61,17 @@ def _is_information_schema_from(node: exp.Expression) -> Optional[str]:
     schema_name = str(schema_part.this) if hasattr(schema_part, "this") else str(schema_part)
     if schema_name.lower() != "information_schema":
         return None
+    # Catalog-qualified form must name the SLayer catalog. Anything else is a
+    # user mistake; return None so a typo'd catalog raises "Unknown catalog"
+    # in the regular table-resolution path rather than silently returning
+    # SLayer metadata under a foreign-catalog query.
+    catalog_part = table.args.get("catalog")
+    if catalog_part is not None:
+        catalog_name = (
+            str(catalog_part.this) if hasattr(catalog_part, "this") else str(catalog_part)
+        )
+        if catalog_name != CATALOG_NAME:
+            return None
     table_name = str(table.this.this) if hasattr(table.this, "this") else str(table.this)
     table_name_upper = table_name.upper()
     if table_name_upper not in SUPPORTED_INFO_SCHEMA_TABLES:
@@ -68,7 +80,7 @@ def _is_information_schema_from(node: exp.Expression) -> Optional[str]:
 
 
 def match_info_schema(
-    parsed: exp.Expression, catalog: FlightCatalog,
+    *, parsed: exp.Expression, catalog: FlightCatalog,
 ) -> Optional[pa.Table]:
     """Return the canned ``INFORMATION_SCHEMA.<table>`` answer or ``None``."""
     table_name = _is_information_schema_from(parsed)

@@ -156,7 +156,7 @@ def _exercise(conn) -> None:
          ))
     _try("cross-model dim SELECT",
          lambda: run_select(
-             "SELECT customers__regions__name, revenue_sum FROM orders"
+             "SELECT customers.regions.name, revenue_sum FROM orders"
          ))
 
     _try("DML rejection (INSERT)",

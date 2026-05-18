@@ -169,38 +169,61 @@ def _column_to_dotted(col: exp.Column) -> str:
     return ".".join(parts)
 
 
-def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, exp.Column]]:
-    """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
-    return ``(granularity, column)``. Otherwise ``None``.
-    """
-    # date_trunc('month', col) — exp.DateTrunc.
-    if isinstance(node, exp.DateTrunc):
-        unit = node.args.get("unit")
-        col = node.this
-        if unit is not None and isinstance(col, exp.Column):
-            unit_str = (
-                str(unit.this) if isinstance(unit, exp.Literal)
-                else str(unit)
-            ).lower()
-            grain = _TIME_GRAIN_NAMES.get(unit_str)
-            if grain is not None:
-                return grain, col
-    # Single-arg shortcuts: month(col), year(col), etc. — represented either
-    # as a dedicated AST class or as exp.Anonymous(this=<name>) for the ones
-    # without a dedicated class (hour/minute/second).
+def _detect_time_grain_date_trunc(
+    node: exp.DateTrunc,
+) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    unit = node.args.get("unit")
+    col = node.this
+    if unit is None or not isinstance(col, exp.Column):
+        return None
+    unit_str = (
+        str(unit.this) if isinstance(unit, exp.Literal) else str(unit)
+    ).lower()
+    grain = _TIME_GRAIN_NAMES.get(unit_str)
+    if grain is None:
+        return None
+    return grain, col
+
+
+def _detect_time_grain_single_arg(
+    node: exp.Expression,
+) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    """Dedicated AST classes like ``exp.Month`` / ``exp.Year``."""
     for cls, grain in _TIME_GRAIN_CLASSES.items():
         if isinstance(node, cls):
             target = node.this
             if isinstance(target, exp.Column):
                 return grain, target
             return None
+    return None
+
+
+def _detect_time_grain_anonymous(
+    node: exp.Anonymous,
+) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    """``hour(col)`` / ``minute(col)`` / ``second(col)`` come through here."""
+    grain = _TIME_GRAIN_NAMES.get(str(node.this).lower())
+    if grain is None:
+        return None
+    args = node.args.get("expressions") or []
+    if len(args) == 1 and isinstance(args[0], exp.Column):
+        return grain, args[0]
+    return None
+
+
+def _detect_time_grain(node: exp.Expression) -> Optional[Tuple[TimeGranularity, exp.Column]]:
+    """If ``node`` is ``<grain>(<column>)`` or ``date_trunc('<grain>', <column>)``,
+    return ``(granularity, column)``. Otherwise ``None``.
+    """
+    if isinstance(node, exp.DateTrunc):
+        match = _detect_time_grain_date_trunc(node)
+        if match is not None:
+            return match
+    single = _detect_time_grain_single_arg(node)
+    if single is not None:
+        return single
     if isinstance(node, exp.Anonymous):
-        name = str(node.this).lower()
-        grain = _TIME_GRAIN_NAMES.get(name)
-        if grain is not None:
-            args = node.args.get("expressions") or []
-            if len(args) == 1 and isinstance(args[0], exp.Column):
-                return grain, args[0]
+        return _detect_time_grain_anonymous(node)
     return None
 
 
@@ -225,6 +248,43 @@ def _flatten_catalog(catalog: FlightCatalog) -> Dict[str, List[Tuple[str, Flight
     return by_name
 
 
+def _unwrap_identifier(node: Optional[exp.Expression]) -> Optional[str]:
+    """Pull the string value out of a sqlglot identifier-ish node."""
+    if node is None:
+        return None
+    return str(node.this) if hasattr(node, "this") else str(node)
+
+
+def _resolve_qualified_table(
+    *, schema_str: str, table_name: str, catalog: FlightCatalog,
+) -> Tuple[str, FlightTable]:
+    for sch in catalog.schemas:
+        if sch.name != schema_str:
+            continue
+        for tbl in sch.tables:
+            if tbl.name == table_name:
+                return sch.name, tbl
+        raise TranslationError(
+            f"Unknown table {table_name!r} in schema {schema_str!r}"
+        )
+    raise TranslationError(f"Unknown schema: {schema_str!r}")
+
+
+def _resolve_bare_table(
+    *, table_name: str, catalog: FlightCatalog,
+) -> Tuple[str, FlightTable]:
+    matches = _flatten_catalog(catalog).get(table_name, [])
+    if not matches:
+        raise TranslationError(f"Unknown table: {table_name!r}")
+    if len(matches) > 1:
+        candidates = ", ".join(f"{s}.{t.name}" for s, t in matches)
+        raise TranslationError(
+            f"Ambiguous table name {table_name!r}; qualify with one of: "
+            f"{candidates}"
+        )
+    return matches[0]
+
+
 def _resolve_table(
     from_clause: exp.From, catalog: FlightCatalog,
 ) -> Tuple[str, FlightTable]:
@@ -243,16 +303,9 @@ def _resolve_table(
             f"FROM clause must reference a table, got "
             f"{type(inner).__name__}"
         )
-    table_name = str(inner.this.this) if hasattr(inner.this, "this") else str(inner.this)
-    schema_part = inner.args.get("db")
-    catalog_part = inner.args.get("catalog")
-
-    schema_str: Optional[str] = None
-    if schema_part is not None:
-        schema_str = str(schema_part.this) if hasattr(schema_part, "this") else str(schema_part)
-    catalog_str: Optional[str] = None
-    if catalog_part is not None:
-        catalog_str = str(catalog_part.this) if hasattr(catalog_part, "this") else str(catalog_part)
+    table_name = _unwrap_identifier(inner.this) or ""
+    schema_str = _unwrap_identifier(inner.args.get("db"))
+    catalog_str = _unwrap_identifier(inner.args.get("catalog"))
 
     if catalog_str is not None and catalog_str != CATALOG_NAME:
         raise TranslationError(
@@ -260,29 +313,10 @@ def _resolve_table(
         )
 
     if schema_str is not None:
-        # Qualified lookup.
-        for sch in catalog.schemas:
-            if sch.name == schema_str:
-                for tbl in sch.tables:
-                    if tbl.name == table_name:
-                        return sch.name, tbl
-                raise TranslationError(
-                    f"Unknown table {table_name!r} in schema {schema_str!r}"
-                )
-        raise TranslationError(f"Unknown schema: {schema_str!r}")
-
-    # Bare-name lookup across all schemas.
-    by_name = _flatten_catalog(catalog)
-    matches = by_name.get(table_name, [])
-    if not matches:
-        raise TranslationError(f"Unknown table: {table_name!r}")
-    if len(matches) > 1:
-        candidates = ", ".join(f"{s}.{t.name}" for s, t in matches)
-        raise TranslationError(
-            f"Ambiguous table name {table_name!r}; qualify with one of: "
-            f"{candidates}"
+        return _resolve_qualified_table(
+            schema_str=schema_str, table_name=table_name, catalog=catalog,
         )
-    return matches[0]
+    return _resolve_bare_table(table_name=table_name, catalog=catalog)
 
 
 # --- projection translation --------------------------------------------------
@@ -300,6 +334,58 @@ class _ProjectionItem(BaseModel):
     time_grain_underlying: Optional[FlightDimension] = None
 
 
+def _resolve_time_grain_projection(
+    *,
+    grain: TimeGranularity,
+    col: exp.Column,
+    alias_name: Optional[str],
+    table: FlightTable,
+    dims_by_name: Dict[str, FlightDimension],
+) -> _ProjectionItem:
+    dotted = _column_to_dotted(col)
+    dim = dims_by_name.get(dotted)
+    if dim is None:
+        raise TranslationError(
+            f"Unknown dimension {dotted!r} inside time-grain "
+            f"{grain.value}() on table {table.name!r}"
+        )
+    if not dim.is_time:
+        raise TranslationError(
+            f"Dimension {dotted!r} is not a time column; cannot wrap "
+            f"in {grain.value}()"
+        )
+    return _ProjectionItem(
+        projected_name=alias_name or _alias_for_time_grain(grain, col),
+        dimension=dim,
+        time_grain=grain,
+        time_grain_underlying=dim,
+    )
+
+
+def _resolve_column_projection(
+    *,
+    body: exp.Column,
+    alias_name: Optional[str],
+    table: FlightTable,
+    metrics_by_name: Dict[str, FlightMetric],
+    dims_by_name: Dict[str, FlightDimension],
+) -> _ProjectionItem:
+    dotted = _column_to_dotted(body)
+    if dotted in metrics_by_name:
+        return _ProjectionItem(
+            projected_name=alias_name or dotted,
+            metric=metrics_by_name[dotted],
+        )
+    if dotted in dims_by_name:
+        return _ProjectionItem(
+            projected_name=alias_name or dotted,
+            dimension=dims_by_name[dotted],
+        )
+    raise TranslationError(
+        f"Unknown projection item {dotted!r} on table {table.name!r}"
+    )
+
+
 def _resolve_projection(
     expressions: Sequence[exp.Expression], table: FlightTable,
 ) -> List[_ProjectionItem]:
@@ -312,62 +398,27 @@ def _resolve_projection(
         if isinstance(expr, exp.Star):
             raise TranslationError(SELECT_STAR_MESSAGE)
 
-        # Strip alias wrapper but remember the projected name.
         alias_name: Optional[str] = None
-        body = expr
+        body: exp.Expression = expr
         if isinstance(expr, exp.Alias):
             alias_name = str(expr.alias)
             body = expr.this
 
-        # Time-grain wrapper?
         grain_match = _detect_time_grain(body)
         if grain_match is not None:
             grain, col = grain_match
-            dotted = _column_to_dotted(col)
-            dim = dims_by_name.get(dotted)
-            if dim is None:
-                raise TranslationError(
-                    f"Unknown dimension {dotted!r} inside time-grain "
-                    f"{grain.value}() on table {table.name!r}"
-                )
-            if not dim.is_time:
-                raise TranslationError(
-                    f"Dimension {dotted!r} is not a time column; cannot wrap "
-                    f"in {grain.value}()"
-                )
-            out.append(
-                _ProjectionItem(
-                    projected_name=alias_name or _alias_for_time_grain(grain, col),
-                    dimension=dim,
-                    time_grain=grain,
-                    time_grain_underlying=dim,
-                )
-            )
+            out.append(_resolve_time_grain_projection(
+                grain=grain, col=col, alias_name=alias_name,
+                table=table, dims_by_name=dims_by_name,
+            ))
             continue
 
         if isinstance(body, exp.Column):
-            dotted = _column_to_dotted(body)
-            if dotted in metrics_by_name:
-                metric = metrics_by_name[dotted]
-                out.append(
-                    _ProjectionItem(
-                        projected_name=alias_name or dotted,
-                        metric=metric,
-                    )
-                )
-                continue
-            if dotted in dims_by_name:
-                dim = dims_by_name[dotted]
-                out.append(
-                    _ProjectionItem(
-                        projected_name=alias_name or dotted,
-                        dimension=dim,
-                    )
-                )
-                continue
-            raise TranslationError(
-                f"Unknown projection item {dotted!r} on table {table.name!r}"
-            )
+            out.append(_resolve_column_projection(
+                body=body, alias_name=alias_name, table=table,
+                metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
+            ))
+            continue
 
         raise TranslationError(
             f"Unsupported projection expression: {body.sql()!r}"
@@ -392,6 +443,39 @@ def _split_and_chain(node: exp.Expression) -> List[exp.Expression]:
     return out
 
 
+def _lift_time_between(
+    conj: exp.Between, time_dim_names: set[str],
+) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+    col = conj.this
+    if not isinstance(col, exp.Column):
+        return None
+    dotted = _column_to_dotted(col)
+    if dotted not in time_dim_names:
+        return None
+    lo = _literal_str(conj.args.get("low"))
+    hi = _literal_str(conj.args.get("high"))
+    if lo and hi:
+        return dotted, lo, hi
+    return None
+
+
+def _lift_time_comparator(
+    conj: exp.Expression, time_dim_names: set[str],
+) -> Optional[Tuple[str, Optional[str], Optional[str]]]:
+    col = conj.this
+    if not isinstance(col, exp.Column):
+        return None
+    dotted = _column_to_dotted(col)
+    if dotted not in time_dim_names:
+        return None
+    val = _literal_str(conj.expression)
+    if val is None:
+        return None
+    if isinstance(conj, (exp.GTE, exp.GT)):
+        return dotted, val, None
+    return dotted, None, val
+
+
 def _classify_where_conjunct(
     conj: exp.Expression, time_dim_names: set[str],
 ) -> Tuple[Optional[Tuple[str, Optional[str], Optional[str]]], Optional[str]]:
@@ -401,30 +485,14 @@ def _classify_where_conjunct(
     a time-dim filter that should lift to ``time_dimensions[*].date_range``.
     Returns ``(None, verbatim_sql)`` for the everything-else case.
     """
-    # BETWEEN
     if isinstance(conj, exp.Between):
-        col = conj.this
-        if isinstance(col, exp.Column):
-            dotted = _column_to_dotted(col)
-            if dotted in time_dim_names:
-                lo = _literal_str(conj.args.get("low"))
-                hi = _literal_str(conj.args.get("high"))
-                if lo and hi:
-                    return (dotted, lo, hi), None
-
-    # Comparator (>=, >, <=, <)
+        lifted = _lift_time_between(conj, time_dim_names)
+        if lifted is not None:
+            return lifted, None
     if isinstance(conj, (exp.GTE, exp.GT, exp.LTE, exp.LT)):
-        col = conj.this
-        rhs = conj.expression
-        if isinstance(col, exp.Column):
-            dotted = _column_to_dotted(col)
-            if dotted in time_dim_names:
-                val = _literal_str(rhs)
-                if val is not None:
-                    if isinstance(conj, (exp.GTE, exp.GT)):
-                        return (dotted, val, None), None
-                    return (dotted, None, val), None
-
+        lifted = _lift_time_comparator(conj, time_dim_names)
+        if lifted is not None:
+            return lifted, None
     return None, _rewrite_neq(conj.sql())
 
 
@@ -582,12 +650,94 @@ def translate(sql: str, catalog: FlightCatalog) -> TranslatorResult:
         return ProbeResult(table=probe)
 
     # Step 4 — INFORMATION_SCHEMA dispatch.
-    info = match_info_schema(parsed, catalog)
+    info = match_info_schema(parsed=parsed, catalog=catalog)
     if info is not None:
         return InfoSchemaResult(table=info)
 
     # Step 5 / 6 — SLayer-table translation.
     return _translate_slayer_select(parsed, catalog)
+
+
+class _ProjectionPlan(BaseModel):
+    """Pieces of a SlayerQuery derived from the SELECT projection."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    measures: List[dict]
+    dimension_refs: List[ColumnRef]
+    time_dims: List[TimeDimension]
+    time_dim_by_name: Dict[str, TimeDimension]
+    derived_dims: List[str]
+    column_name_mapping: List[Tuple[str, str]]
+    projection_types: List[Optional[DataType]]
+
+
+def _record_metric(
+    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FlightTable,
+) -> None:
+    assert item.metric is not None
+    plan.measures.append({
+        "formula": item.metric.measure_formula,
+        "name": item.projected_name,
+    })
+    engine_alias = f"{table.name}.{item.projected_name}"
+    plan.column_name_mapping.append((engine_alias, item.projected_name))
+    plan.projection_types.append(item.metric.data_type)
+
+
+def _record_time_grain(
+    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FlightTable,
+) -> None:
+    assert item.time_grain is not None and item.time_grain_underlying is not None
+    dotted = item.time_grain_underlying.dimension_ref
+    td = TimeDimension(
+        dimension={"name": dotted},
+        granularity=item.time_grain,
+    )
+    plan.time_dims.append(td)
+    plan.time_dim_by_name[dotted] = td
+    plan.derived_dims.append(item.projected_name)
+    engine_alias = f"{table.name}.{dotted}"
+    plan.column_name_mapping.append((engine_alias, item.projected_name))
+    plan.projection_types.append(item.time_grain_underlying.data_type)
+
+
+def _record_dimension(
+    *, plan: _ProjectionPlan, item: _ProjectionItem, table: FlightTable,
+) -> None:
+    assert item.dimension is not None
+    plan.dimension_refs.append(ColumnRef.from_string(item.dimension.dimension_ref))
+    plan.derived_dims.append(item.projected_name)
+    engine_alias = f"{table.name}.{item.dimension.dimension_ref}"
+    plan.column_name_mapping.append((engine_alias, item.projected_name))
+    plan.projection_types.append(item.dimension.data_type)
+
+
+def _build_projection_plan(
+    items: Sequence[_ProjectionItem], table: FlightTable,
+) -> _ProjectionPlan:
+    plan = _ProjectionPlan(
+        measures=[], dimension_refs=[], time_dims=[], time_dim_by_name={},
+        derived_dims=[], column_name_mapping=[], projection_types=[],
+    )
+    for item in items:
+        if item.metric is not None:
+            _record_metric(plan=plan, item=item, table=table)
+        elif item.time_grain is not None:
+            _record_time_grain(plan=plan, item=item, table=table)
+        else:
+            _record_dimension(plan=plan, item=item, table=table)
+    return plan
+
+
+def _parse_int_literal(node: Optional[exp.Expression]) -> Optional[int]:
+    """Pull an int out of ``LIMIT N`` / ``OFFSET N`` style nodes."""
+    if node is None or not isinstance(node.expression, exp.Literal):
+        return None
+    try:
+        return int(str(node.expression.this))
+    except ValueError:
+        return None
 
 
 def _translate_slayer_select(
@@ -608,87 +758,31 @@ def _translate_slayer_select(
         raise TranslationError(SELECT_STAR_MESSAGE)
 
     items = _resolve_projection(proj_exprs, table)
+    plan = _build_projection_plan(items, table)
 
-    # Build SlayerQuery pieces from the projection.
-    measures: List[dict] = []
-    dimension_refs: List[ColumnRef] = []
-    time_dims: List[TimeDimension] = []
-    time_dim_by_name: Dict[str, TimeDimension] = {}
-    derived_dims: List[str] = []
-    column_name_mapping: List[Tuple[str, str]] = []
-    projection_types: List[Optional[DataType]] = []
+    _validate_group_by(parsed.args.get("group"), plan.derived_dims)
 
-    for item in items:
-        if item.metric is not None:
-            measures.append({
-                "formula": item.metric.measure_formula,
-                "name": item.projected_name,
-            })
-            engine_alias = f"{table.name}.{item.projected_name}"
-            column_name_mapping.append((engine_alias, item.projected_name))
-            projection_types.append(item.metric.data_type)
-        elif item.time_grain is not None and item.time_grain_underlying is not None:
-            dotted = item.time_grain_underlying.dimension_ref
-            td = TimeDimension(
-                dimension={"name": dotted},
-                granularity=item.time_grain,
-            )
-            time_dims.append(td)
-            time_dim_by_name[dotted] = td
-            derived_dims.append(item.projected_name)
-            engine_alias = f"{table.name}.{dotted}"
-            column_name_mapping.append((engine_alias, item.projected_name))
-            projection_types.append(item.time_grain_underlying.data_type)
-        else:
-            assert item.dimension is not None
-            dimension_refs.append(ColumnRef.from_string(item.dimension.dimension_ref))
-            derived_dims.append(item.projected_name)
-            engine_alias = f"{table.name}.{item.dimension.dimension_ref}"
-            column_name_mapping.append((engine_alias, item.projected_name))
-            projection_types.append(item.dimension.data_type)
-
-    # GROUP BY validation (strict-on-extras / lenient-on-omissions).
-    _validate_group_by(parsed.args.get("group"), derived_dims)
-
-    # WHERE translation.
     filters: List[str] = []
-    _apply_where(parsed.args.get("where"), time_dim_by_name, filters)
+    _apply_where(parsed.args.get("where"), plan.time_dim_by_name, filters)
 
-    # ORDER BY mapping (by projected name).
     item_by_projected_name = {item.projected_name: item for item in items}
     order_items = _translate_order_by(parsed.args.get("order"), item_by_projected_name)
 
-    # LIMIT / OFFSET.
-    limit_node = parsed.args.get("limit")
-    limit_val: Optional[int] = None
-    if limit_node is not None and isinstance(limit_node.expression, exp.Literal):
-        try:
-            limit_val = int(str(limit_node.expression.this))
-        except ValueError:
-            limit_val = None
-    offset_node = parsed.args.get("offset")
-    offset_val: Optional[int] = None
-    if offset_node is not None and isinstance(offset_node.expression, exp.Literal):
-        try:
-            offset_val = int(str(offset_node.expression.this))
-        except ValueError:
-            offset_val = None
-
     query = SlayerQuery(
         source_model=table.name,
-        measures=measures or None,
-        dimensions=dimension_refs or None,
-        time_dimensions=time_dims or None,
+        measures=plan.measures or None,
+        dimensions=plan.dimension_refs or None,
+        time_dimensions=plan.time_dims or None,
         filters=filters or None,
         order=order_items or None,
-        limit=limit_val,
-        offset=offset_val,
+        limit=_parse_int_literal(parsed.args.get("limit")),
+        offset=_parse_int_literal(parsed.args.get("offset")),
     )
 
     return QueryResult(
         query=query,
-        column_name_mapping=column_name_mapping,
+        column_name_mapping=plan.column_name_mapping,
         flight_table=table,
         schema_name=schema_name,
-        projection_types=projection_types,
+        projection_types=plan.projection_types,
     )

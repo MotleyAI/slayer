@@ -145,6 +145,11 @@ _SCHEMA_GET_KEYS = pa.schema([
 
 _SCHEMA_GET_SQL_INFO = pa.schema([
     pa.field("info_name", pa.uint32()),
+    # Phase 1: ``value`` is utf8; Flight SQL spec defines a dense union over
+    # (string, bool, int64, int32, list<string>, map<int32, list<int32>>).
+    # Upstream Apache JDBC driver never issues GetSqlInfo (see
+    # CAPTURE-FINDINGS.md), so this is wire-safe for the dbt-SL workflow but
+    # non-spec for direct Flight SQL clients. Tracked in DEV-1424.
     pa.field("value", pa.utf8()),
 ])
 
@@ -201,7 +206,7 @@ class FlightHandlers:
             [{"catalog_name": CATALOG_NAME}], schema=_SCHEMA_GET_CATALOGS,
         )
 
-    def handle_get_db_schemas(self, cmd: "fsql_pb.CommandGetDbSchemas") -> pa.Table:
+    def handle_get_db_schemas(self, cmd: "fsql_pb.CommandGetDbSchemas") -> pa.Table:  # NOSONAR(S1172) — required by dispatcher signature; Phase 1 ignores filter (DEV-1426)
         catalog = self._build_catalog()
         # The filter pattern fields are optional and rarely populated by the
         # Apache JDBC driver during introspection (Phase 1.0 capture shows
@@ -213,7 +218,7 @@ class FlightHandlers:
         ]
         return pa.Table.from_pylist(rows, schema=_SCHEMA_GET_DB_SCHEMAS)
 
-    def handle_get_tables(self, cmd: "fsql_pb.CommandGetTables") -> pa.Table:
+    def handle_get_tables(self, cmd: "fsql_pb.CommandGetTables") -> pa.Table:  # NOSONAR(S1172) — required by dispatcher signature; Phase 1 ignores filter (DEV-1426)
         catalog = self._build_catalog()
         rows = []
         for sch in catalog.schemas:
@@ -336,7 +341,8 @@ class FlightHandlers:
         return _pack_any(response, "ActionCreatePreparedStatementResult")
 
     def handle_close_prepared_statement(
-        self, cmd: "fsql_pb.ActionClosePreparedStatementRequest",
+        self,
+        cmd: "fsql_pb.ActionClosePreparedStatementRequest",  # NOSONAR(S1172) — Flight SQL spec parameter; stateless no-op, kept for dispatcher signature
     ) -> None:
         """No-op: handles are stateless (UTF-8 SQL bytes; nothing to free)."""
         return None
@@ -412,7 +418,7 @@ class FlightHandlers:
         dataset_schema wire format)."""
         sink = pa.BufferOutputStream()
         with pa.ipc.new_stream(sink, schema):
-            pass
+            pass  # NOSONAR(S108) — open+close pa.ipc.new_stream writes schema-only IPC bytes
         return sink.getvalue().to_pybytes()
 
     @staticmethod

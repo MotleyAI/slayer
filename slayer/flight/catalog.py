@@ -262,80 +262,85 @@ def _metric_expansion(
     return out
 
 
-def _local_metrics_for(*, model: SlayerModel) -> List[FlightMetric]:
-    """Apply rules 1-4 to a single model in isolation (no join walk)."""
-    out: List[FlightMetric] = []
-
-    # Rule 1: synthetic row_count (with collision rename to _row_count).
-    row_count_name = "row_count"
+def _synthetic_row_count(model: SlayerModel) -> FlightMetric:
+    """Rule 1: synthetic ``*:count`` metric, renamed on collision."""
+    name = "row_count"
     if any(c.name == "row_count" for c in model.columns):
-        row_count_name = "_row_count"
+        name = "_row_count"
         logger.warning(
             "Flight catalog: model %r has a Column named 'row_count' which "
             "collides with the synthetic *:count metric; renaming the "
             "synthetic to '_row_count'.",
             model.name,
         )
-    out.append(
-        FlightMetric(
-            name=row_count_name,
-            description=f"Row count of {model.name}",
-            data_type=DataType.INT,
-            measure_formula="*:count",
-        )
+    return FlightMetric(
+        name=name,
+        description=f"Row count of {model.name}",
+        data_type=DataType.INT,
+        measure_formula="*:count",
     )
 
-    # Rule 2: saved ModelMeasures.
-    for mm in model.measures:
-        if mm.name is None:
-            # A nameless saved measure has no surfaceable handle — skip.
-            continue
-        out.append(
-            FlightMetric(
-                name=mm.name,
-                description=mm.description,
-                label=mm.label,
-                data_type=mm.type,  # may be None; LIMIT-0 schema fills it in
-                measure_formula=mm.name,
-            )
+
+def _saved_model_measures(model: SlayerModel) -> List[FlightMetric]:
+    """Rule 2: every saved ``ModelMeasure`` with a name."""
+    return [
+        FlightMetric(
+            name=mm.name,
+            description=mm.description,
+            label=mm.label,
+            data_type=mm.type,  # may be None; LIMIT-0 schema fills it in
+            measure_formula=mm.name,
         )
+        for mm in model.measures
+        if mm.name is not None
+    ]
 
-    # Rule 3: column × agg cartesian over eligible aggregations.
-    for col in model.columns:
-        if col.hidden:
-            continue
-        for agg in sorted(_eligible_aggregations(column=col)):
-            out.append(
-                FlightMetric(
-                    name=f"{col.name}_{agg}",
-                    description=_describe_column_agg(column=col, agg=agg),
-                    label=col.label,
-                    data_type=_agg_output_type(column=col, agg=agg),
-                    measure_formula=f"{col.name}:{agg}",
-                )
-            )
 
-    # Rule 4: custom aggs without ``params``.
+def _column_x_builtin_aggs(model: SlayerModel) -> List[FlightMetric]:
+    """Rule 3: column × eligible-builtin-agg cartesian."""
+    return [
+        FlightMetric(
+            name=f"{col.name}_{agg}",
+            description=_describe_column_agg(column=col, agg=agg),
+            label=col.label,
+            data_type=_agg_output_type(column=col, agg=agg),
+            measure_formula=f"{col.name}:{agg}",
+        )
+        for col in model.columns
+        if not col.hidden
+        for agg in sorted(_eligible_aggregations(column=col))
+    ]
+
+
+def _column_x_custom_aggs(model: SlayerModel) -> List[FlightMetric]:
+    """Rule 4: column × parameterless custom aggs. Custom aggs are not
+    gated by ``DEFAULT_AGGREGATIONS_BY_TYPE``, so we expose them on every
+    non-hidden column. Custom-agg output type is opaque."""
     custom = _eligible_custom_aggregations(model=model)
-    for agg in custom:
-        for col in model.columns:
-            if col.hidden:
-                continue
-            # Custom aggs aren't gated by DEFAULT_AGGREGATIONS_BY_TYPE.
-            # We expose them on every non-hidden column.
-            out.append(
-                FlightMetric(
-                    name=f"{col.name}_{agg.name}",
-                    description=agg.description or _describe_column_agg(
-                        column=col, agg=agg.name,
-                    ),
-                    label=col.label,
-                    data_type=None,  # custom agg output type is opaque
-                    measure_formula=f"{col.name}:{agg.name}",
-                )
-            )
+    return [
+        FlightMetric(
+            name=f"{col.name}_{agg.name}",
+            description=agg.description or _describe_column_agg(
+                column=col, agg=agg.name,
+            ),
+            label=col.label,
+            data_type=None,
+            measure_formula=f"{col.name}:{agg.name}",
+        )
+        for agg in custom
+        for col in model.columns
+        if not col.hidden
+    ]
 
-    return out
+
+def _local_metrics_for(*, model: SlayerModel) -> List[FlightMetric]:
+    """Apply rules 1-4 to a single model in isolation (no join walk)."""
+    return [
+        _synthetic_row_count(model),
+        *_saved_model_measures(model),
+        *_column_x_builtin_aggs(model),
+        *_column_x_custom_aggs(model),
+    ]
 
 
 def _describe_column_agg(*, column: Column, agg: str) -> Optional[str]:

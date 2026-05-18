@@ -68,15 +68,13 @@ def _multi_schema_catalog() -> FlightCatalog:
 
 
 def test_probe_query_returns_probe_result() -> None:
-    result = translate("SELECT 1", _catalog())
+    result = translate(sql="SELECT 1", catalog=_catalog())
     assert isinstance(result, ProbeResult)
     assert result.table.to_pylist() == [{"1": 1}]
 
 
 def test_info_schema_returns_info_schema_result() -> None:
-    result = translate(
-        "SELECT * FROM INFORMATION_SCHEMA.METRICS", _catalog(),
-    )
+    result = translate(sql="SELECT * FROM INFORMATION_SCHEMA.METRICS", catalog=_catalog())
     assert isinstance(result, InfoSchemaResult)
     assert result.table.num_rows > 0
 
@@ -92,7 +90,7 @@ def test_info_schema_returns_info_schema_result() -> None:
     ],
 )
 def test_no_op_statements(sql: str) -> None:
-    result = translate(sql, _catalog())
+    result = translate(sql=sql, catalog=_catalog())
     assert isinstance(result, NoOpResult)
 
 
@@ -109,20 +107,20 @@ def test_no_op_statements(sql: str) -> None:
 )
 def test_dml_ddl_rejected_read_only(sql: str) -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate(sql, _catalog())
+        translate(sql=sql, catalog=_catalog())
     assert READ_ONLY_MESSAGE in str(exc_info.value)
 
 
 def test_select_star_on_flight_table_rejected() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate("SELECT * FROM orders", _catalog())
+        translate(sql="SELECT * FROM orders", catalog=_catalog())
     assert "SELECT *" in str(exc_info.value)
     assert "INFORMATION_SCHEMA.METRICS" in str(exc_info.value)
 
 
 def test_parse_error_translates() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate("SELECT FROM WHERE", _catalog())
+        translate(sql="SELECT FROM WHERE", catalog=_catalog())
     assert "parse error" in str(exc_info.value).lower()
 
 
@@ -130,23 +128,19 @@ def test_parse_error_translates() -> None:
 
 
 def test_schema_qualified_lookup() -> None:
-    result = translate("SELECT revenue_sum FROM jaffle.orders", _catalog())
+    result = translate(sql="SELECT revenue_sum FROM jaffle.orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.flight_table.name == "orders"
     assert result.schema_name == "jaffle"
 
 
 def test_catalog_qualified_lookup() -> None:
-    result = translate(
-        "SELECT revenue_sum FROM slayer.jaffle.orders", _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum FROM slayer.jaffle.orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
 
 
 def test_bare_name_unique_match() -> None:
-    result = translate(
-        "SELECT x FROM unique_a", _multi_schema_catalog(),
-    )
+    result = translate(sql="SELECT x FROM unique_a", catalog=_multi_schema_catalog())
     assert isinstance(result, QueryResult)
     assert result.flight_table.name == "unique_a"
     assert result.schema_name == "dsA"
@@ -154,7 +148,7 @@ def test_bare_name_unique_match() -> None:
 
 def test_bare_name_ambiguous_errors() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate("SELECT x FROM shared", _multi_schema_catalog())
+        translate(sql="SELECT x FROM shared", catalog=_multi_schema_catalog())
     assert "Ambiguous" in str(exc_info.value)
     assert "dsA.shared" in str(exc_info.value)
     assert "dsB.shared" in str(exc_info.value)
@@ -162,13 +156,13 @@ def test_bare_name_ambiguous_errors() -> None:
 
 def test_bare_name_unknown_errors() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate("SELECT 1 FROM nope", _catalog())
+        translate(sql="SELECT 1 FROM nope", catalog=_catalog())
     assert "Unknown table" in str(exc_info.value)
 
 
 def test_unknown_catalog_errors() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate("SELECT id FROM elsewhere.jaffle.orders", _catalog())
+        translate(sql="SELECT id FROM elsewhere.jaffle.orders", catalog=_catalog())
     assert "Unknown catalog" in str(exc_info.value)
 
 
@@ -176,9 +170,7 @@ def test_unknown_catalog_errors() -> None:
 
 
 def test_simple_metric_and_dimension() -> None:
-    result = translate(
-        "SELECT revenue_sum, status FROM jaffle.orders", _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, status FROM jaffle.orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.source_model == "orders"
     # One measure, one dimension.
@@ -195,14 +187,14 @@ def test_simple_metric_and_dimension() -> None:
 
 
 def test_row_count_metric_maps_to_star_count() -> None:
-    result = translate("SELECT row_count FROM orders", _catalog())
+    result = translate(sql="SELECT row_count FROM orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
     assert result.query.measures[0].formula == "*:count"
 
 
 def test_saved_measure_aov_maps_to_bare_name() -> None:
-    result = translate("SELECT aov, status FROM orders", _catalog())
+    result = translate(sql="SELECT aov, status FROM orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.measures is not None
     formulas = [m.formula for m in result.query.measures]
@@ -210,9 +202,7 @@ def test_saved_measure_aov_maps_to_bare_name() -> None:
 
 
 def test_cross_model_dotted_dimension() -> None:
-    result = translate(
-        "SELECT revenue_sum, customers.region FROM orders", _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, customers.region FROM orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
     assert [d.full_name for d in result.query.dimensions] == ["customers.region"]
@@ -222,12 +212,12 @@ def test_cross_model_dotted_dimension() -> None:
 
 def test_unknown_projection_item_errors() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate("SELECT bogus FROM orders", _catalog())
+        translate(sql="SELECT bogus FROM orders", catalog=_catalog())
     assert "Unknown projection item" in str(exc_info.value)
 
 
 def test_as_alias_renames_projected_column() -> None:
-    result = translate("SELECT revenue_sum AS rs FROM orders", _catalog())
+    result = translate(sql="SELECT revenue_sum AS rs FROM orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert dict(result.column_name_mapping) == {"orders.rs": "rs"}
     # The SLayerQuery measure carries the alias as its `name`.
@@ -239,9 +229,7 @@ def test_as_alias_renames_projected_column() -> None:
 
 
 def test_month_wrapper_creates_time_dimension() -> None:
-    result = translate(
-        "SELECT revenue_sum, month(ordered_at) FROM orders", _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, month(ordered_at) FROM orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.time_dimensions is not None
     assert len(result.query.time_dimensions) == 1
@@ -251,10 +239,7 @@ def test_month_wrapper_creates_time_dimension() -> None:
 
 
 def test_date_trunc_creates_time_dimension() -> None:
-    result = translate(
-        "SELECT date_trunc('month', ordered_at), revenue_sum FROM orders",
-        _catalog(),
-    )
+    result = translate(sql="SELECT date_trunc('month', ordered_at), revenue_sum FROM orders", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.time_dimensions is not None
     assert result.query.time_dimensions[0].granularity == TimeGranularity.MONTH
@@ -262,7 +247,7 @@ def test_date_trunc_creates_time_dimension() -> None:
 
 def test_time_grain_on_non_time_column_errors() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate("SELECT month(status) FROM orders", _catalog())
+        translate(sql="SELECT month(status) FROM orders", catalog=_catalog())
     assert "not a time column" in str(exc_info.value)
 
 
@@ -270,11 +255,8 @@ def test_time_grain_on_non_time_column_errors() -> None:
 
 
 def test_between_lifts_to_date_range() -> None:
-    result = translate(
-        "SELECT month(ordered_at), revenue_sum FROM orders "
-        "WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31'",
-        _catalog(),
-    )
+    result = translate(sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        "WHERE ordered_at BETWEEN '2024-01-01' AND '2024-12-31'", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.time_dimensions is not None
     td = result.query.time_dimensions[0]
@@ -284,50 +266,35 @@ def test_between_lifts_to_date_range() -> None:
 
 
 def test_half_open_gte_lifts_to_date_range_lo() -> None:
-    result = translate(
-        "SELECT month(ordered_at), revenue_sum FROM orders "
-        "WHERE ordered_at >= '2024-01-01'",
-        _catalog(),
-    )
+    result = translate(sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        "WHERE ordered_at >= '2024-01-01'", catalog=_catalog())
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range == ["2024-01-01", None]
 
 
 def test_combined_half_open_gte_and_lte_set_both_bounds() -> None:
-    result = translate(
-        "SELECT month(ordered_at), revenue_sum FROM orders "
-        "WHERE ordered_at >= '2024-01-01' AND ordered_at < '2025-01-01'",
-        _catalog(),
-    )
+    result = translate(sql="SELECT month(ordered_at), revenue_sum FROM orders "
+        "WHERE ordered_at >= '2024-01-01' AND ordered_at < '2025-01-01'", catalog=_catalog())
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range == ["2024-01-01", "2025-01-01"]
 
 
 def test_non_time_filter_passes_through_verbatim() -> None:
-    result = translate(
-        "SELECT revenue_sum, status FROM orders WHERE status = 'completed'",
-        _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, status FROM orders WHERE status = 'completed'", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.filters == ["status = 'completed'"]
 
 
 def test_not_equal_rewrites_to_dsl_neq() -> None:
-    result = translate(
-        "SELECT revenue_sum, status FROM orders WHERE status != 'cancelled'",
-        _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, status FROM orders WHERE status != 'cancelled'", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.filters == ["status <> 'cancelled'"]
 
 
 def test_metric_in_where_passes_through_for_having() -> None:
-    result = translate(
-        "SELECT revenue_sum, status FROM orders WHERE revenue_sum > 1000",
-        _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, status FROM orders WHERE revenue_sum > 1000", catalog=_catalog())
     assert isinstance(result, QueryResult)
     # Engine auto-routes metric refs to HAVING; translator just emits.
     assert result.query.filters == ["revenue_sum > 1000"]
@@ -337,39 +304,27 @@ def test_metric_in_where_passes_through_for_having() -> None:
 
 
 def test_group_by_matching_derived_set_passes() -> None:
-    result = translate(
-        "SELECT revenue_sum, status FROM orders GROUP BY status",
-        _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, status FROM orders GROUP BY status", catalog=_catalog())
     assert isinstance(result, QueryResult)
 
 
 def test_group_by_omission_is_lenient() -> None:
     # User forgot to GROUP BY `customers.region` — translator silently
     # honours the projection.
-    result = translate(
-        "SELECT revenue_sum, status, customers.region FROM orders "
-        "GROUP BY status",
-        _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, status, customers.region FROM orders "
+        "GROUP BY status", catalog=_catalog())
     assert isinstance(result, QueryResult)
 
 
 def test_group_by_extra_item_errors_strict() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate(
-            "SELECT revenue_sum, status FROM orders GROUP BY status, customers.region",
-            _catalog(),
-        )
+        translate(sql="SELECT revenue_sum, status FROM orders GROUP BY status, customers.region", catalog=_catalog())
     assert "customers.region" in str(exc_info.value)
     assert "not in the projection" in str(exc_info.value)
 
 
 def test_order_by_by_projected_metric_name() -> None:
-    result = translate(
-        "SELECT revenue_sum, status FROM orders ORDER BY revenue_sum DESC",
-        _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum, status FROM orders ORDER BY revenue_sum DESC", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
     assert result.query.order[0].column.name == "revenue_sum"
@@ -378,17 +333,12 @@ def test_order_by_by_projected_metric_name() -> None:
 
 def test_order_by_unknown_column_errors() -> None:
     with pytest.raises(TranslationError) as exc_info:
-        translate(
-            "SELECT revenue_sum, status FROM orders ORDER BY missing ASC",
-            _catalog(),
-        )
+        translate(sql="SELECT revenue_sum, status FROM orders ORDER BY missing ASC", catalog=_catalog())
     assert "not in the projection" in str(exc_info.value)
 
 
 def test_limit_and_offset_pass_through() -> None:
-    result = translate(
-        "SELECT revenue_sum FROM orders LIMIT 100 OFFSET 50", _catalog(),
-    )
+    result = translate(sql="SELECT revenue_sum FROM orders LIMIT 100 OFFSET 50", catalog=_catalog())
     assert isinstance(result, QueryResult)
     assert result.query.limit == 100
     assert result.query.offset == 50

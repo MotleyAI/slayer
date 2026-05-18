@@ -15,8 +15,20 @@ from slayer.flight.auth import (
 )
 
 
-def _start_call(factory: BearerTokenMiddlewareFactory, headers: dict):
-    return factory.start_call(info=None, headers=headers)
+class _FakeCallInfo:
+    """Minimal stand-in for ``fl.CallInfo``; only ``peer`` is consulted."""
+
+    def __init__(self, *, peer: str = "ipv4:127.0.0.1:1234") -> None:
+        self.peer = peer
+
+
+def _start_call(
+    factory: BearerTokenMiddlewareFactory,
+    headers: dict,
+    *,
+    peer: str = "ipv4:127.0.0.1:1234",
+):
+    return factory.start_call(info=_FakeCallInfo(peer=peer), headers=headers)
 
 
 # --- _is_loopback ------------------------------------------------------------
@@ -27,7 +39,7 @@ def test_loopback_hosts_recognised(host: str) -> None:
     assert _is_loopback(host) is True
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "192.168.1.1", "example.com"])
+@pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "192.168.1.1", "example.com"])  # NOSONAR(S1313) — RFC1918 test fixtures, never live addresses
 def test_non_loopback_hosts_rejected(host: str) -> None:
     assert _is_loopback(host) is False
 
@@ -121,6 +133,15 @@ def test_middleware_unauthenticated_passes_when_no_token_configured() -> None:
     factory = BearerTokenMiddlewareFactory(token=None)
     mw = _start_call(factory, {})
     assert mw is not None
+
+
+def test_middleware_rejects_non_loopback_peer_in_no_auth_mode() -> None:
+    """Belt-and-braces: even if the bind address is reconfigured at runtime,
+    no-auth mode must refuse non-loopback peers."""
+    factory = BearerTokenMiddlewareFactory(token=None)
+    with pytest.raises(fl.FlightUnauthenticatedError) as exc_info:
+        _start_call(factory, {}, peer="ipv4:10.0.0.5:1234")
+    assert "loopback" in str(exc_info.value).lower()
 
 
 # --- environmentId handling --------------------------------------------------

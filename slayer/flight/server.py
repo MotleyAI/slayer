@@ -111,10 +111,7 @@ class FlightSqlServer(fl.FlightServerBase):
     def get_flight_info(
         self, context: fl.ServerCallContext, descriptor: fl.FlightDescriptor,
     ) -> fl.FlightInfo:
-        try:
-            type_url, msg = decode_command(descriptor.command)
-        except fl.FlightServerError:
-            raise
+        type_url, msg = decode_command(descriptor.command)
         try:
             return self._dispatch_get_flight_info(descriptor, type_url, msg)
         except TranslationError as exc:
@@ -174,10 +171,7 @@ class FlightSqlServer(fl.FlightServerBase):
     # ----- do_get dispatch ---------------------------------------------------
 
     def do_get(self, context: fl.ServerCallContext, ticket: fl.Ticket):
-        try:
-            type_url, msg = decode_ticket(ticket.ticket)
-        except fl.FlightServerError:
-            raise
+        type_url, msg = decode_ticket(ticket.ticket)
         try:
             return self._dispatch_do_get(type_url, msg)
         except TranslationError as exc:

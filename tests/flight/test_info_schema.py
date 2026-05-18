@@ -53,23 +53,34 @@ def test_supported_tables_set() -> None:
 
 
 def test_non_info_schema_select_returns_none() -> None:
-    assert match_info_schema(_parse("SELECT * FROM orders"), _demo_catalog()) is None
-    assert match_info_schema(_parse("SELECT 1"), _demo_catalog()) is None
+    assert match_info_schema(parsed=_parse("SELECT * FROM orders"), catalog=_demo_catalog()) is None
+    assert match_info_schema(parsed=_parse("SELECT 1"), catalog=_demo_catalog()) is None
 
 
 def test_unknown_info_schema_table_returns_none() -> None:
     """Unrecognised INFORMATION_SCHEMA.<X> still falls through to the next
     pipeline step rather than being silently treated as a Flight table."""
+    assert match_info_schema(parsed=_parse("SELECT * FROM information_schema.bogus"), catalog=_demo_catalog()) is None
+
+
+def test_foreign_catalog_information_schema_returns_none() -> None:
+    """``other.INFORMATION_SCHEMA.METRICS`` must not silently return SLayer
+    metadata — falling through to the table-resolution path lets it raise
+    the standard ``Unknown catalog`` error."""
     assert match_info_schema(
-        _parse("SELECT * FROM information_schema.bogus"), _demo_catalog()
+        parsed=_parse("SELECT * FROM other.INFORMATION_SCHEMA.METRICS"),
+        catalog=_demo_catalog(),
     ) is None
+    # The SLayer catalog name itself is still accepted.
+    assert match_info_schema(
+        parsed=_parse("SELECT * FROM slayer.INFORMATION_SCHEMA.METRICS"),
+        catalog=_demo_catalog(),
+    ) is not None
 
 
 def test_metrics_table_shape_and_content() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
     assert table is not None
     assert table.schema.names == [
         "catalog_name", "schema_name", "table_name", "metric_name",
@@ -91,9 +102,7 @@ def test_metrics_table_shape_and_content() -> None:
 
 def test_dimensions_table_shape() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM information_schema.dimensions"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM information_schema.dimensions"), catalog=cat)
     assert table is not None
     assert table.schema.names == [
         "catalog_name", "schema_name", "table_name", "dimension_name",
@@ -109,9 +118,7 @@ def test_dimensions_table_shape() -> None:
 
 def test_tables_table_shape() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM INFORMATION_SCHEMA.TABLES"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.TABLES"), catalog=cat)
     assert table is not None
     assert table.schema.names == [
         "table_catalog", "table_schema", "table_name", "table_type",
@@ -125,9 +132,7 @@ def test_tables_table_shape() -> None:
 
 def test_schemata_table() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA"), catalog=cat)
     assert table is not None
     assert table.schema.names == ["catalog_name", "schema_name"]
     rows = table.to_pylist()
@@ -136,9 +141,7 @@ def test_schemata_table() -> None:
 
 def test_columns_table_flattens_metrics_and_dimensions() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM INFORMATION_SCHEMA.COLUMNS"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.COLUMNS"), catalog=cat)
     assert table is not None
     assert table.schema.names == [
         "table_catalog", "table_schema", "table_name", "column_name",
@@ -172,16 +175,14 @@ def test_case_insensitive_information_schema_match() -> None:
         "SELECT * FROM information_schema.metrics",
         "SELECT * FROM Information_Schema.Metrics",
     ]:
-        table = match_info_schema(_parse(sql), cat)
+        table = match_info_schema(parsed=_parse(sql), catalog=cat)
         assert table is not None, f"failed to match: {sql}"
         assert table.schema.names[0] == "catalog_name"
 
 
 def test_metric_data_type_renders_as_jdbc_string() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
     rows = table.to_pylist()
     aov = next(r for r in rows if r["table_name"] == "orders" and r["metric_name"] == "aov")
     assert aov["data_type"] == "DOUBLE"
@@ -199,9 +200,7 @@ def test_metric_data_type_renders_as_jdbc_string() -> None:
 
 def test_dimension_data_type_renders_as_jdbc_string() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM INFORMATION_SCHEMA.DIMENSIONS"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.DIMENSIONS"), catalog=cat)
     rows = table.to_pylist()
     ordered_at = next(
         r for r in rows
@@ -212,8 +211,6 @@ def test_dimension_data_type_renders_as_jdbc_string() -> None:
 
 def test_metrics_table_is_pyarrow_table_with_correct_dtypes() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(
-        _parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), cat,
-    )
+    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
     assert isinstance(table, pa.Table)
     assert table.schema.field("data_type").type == pa.utf8()
