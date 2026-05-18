@@ -10,6 +10,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import (
+    MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
     Memory,
     _validate_memory_id_charset,
 )
@@ -561,12 +562,12 @@ class StorageBackend(ABC):
         # Cascade: drop any embedding rows tagged with this memory's
         # canonical id so an orphan embedding never survives its source.
         await self.delete_embeddings_for_canonical(
-            canonical_id_prefix=f"memory:{memory_id}",
+            canonical_id_prefix=f"{_MEMORY_PREFIX}{memory_id}",
         )
         # DEV-1428 cascade-strip: drop ``memory:<id>`` refs from every
         # other memory's ``entities`` list.
         await self.strip_dangling_entities_from_memories(
-            canonical_id=f"memory:{memory_id}",
+            canonical_id=f"{_MEMORY_PREFIX}{memory_id}",
         )
 
     async def strip_dangling_entities_from_memories(
@@ -594,44 +595,71 @@ class StorageBackend(ABC):
         """
         if not canonical_id:
             return 0
-        is_memory_ref = canonical_id.startswith("memory:")
+        is_memory_ref = canonical_id.startswith(_MEMORY_PREFIX)
         memories = await self._list_memories_rows(entities=None)
         rewritten = 0
         for memory in memories:
-            if not memory.entities:
+            if not self._memory_has_cascade_candidate(
+                memory=memory,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            ):
                 continue
-            kept: List[str] = []
-            changed = False
-            for entry in memory.entities:
-                if _entity_matches_cascade(
-                    entry=entry,
-                    canonical_id=canonical_id,
-                    is_memory_ref=is_memory_ref,
-                ):
-                    changed = True
-                    continue
-                kept.append(entry)
-            if changed:
-                fresh = await self._get_memory_row(memory.id)
-                if fresh is None:
-                    # Concurrent delete won the race; nothing to write.
-                    continue
-                fresh_kept = [
-                    e for e in fresh.entities
-                    if not _entity_matches_cascade(
-                        entry=e,
-                        canonical_id=canonical_id,
-                        is_memory_ref=is_memory_ref,
-                    )
-                ]
-                if fresh_kept == fresh.entities:
-                    continue
-                rewritten_memory = fresh.model_copy(
-                    update={"entities": fresh_kept},
-                )
-                await self._save_memory_row(rewritten_memory)
+            if await self._rewrite_memory_dropping_entity(
+                memory_id=memory.id,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            ):
                 rewritten += 1
         return rewritten
+
+    @staticmethod
+    def _memory_has_cascade_candidate(
+        *, memory: Memory, canonical_id: str, is_memory_ref: bool,
+    ) -> bool:
+        """Cheap snapshot check — does ``memory.entities`` contain any
+        entry the cascade would strip? Used to skip the read-modify-write
+        round-trip for memories the cascade can't touch."""
+        if not memory.entities:
+            return False
+        return any(
+            _entity_matches_cascade(
+                entry=e,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            )
+            for e in memory.entities
+        )
+
+    async def _rewrite_memory_dropping_entity(
+        self, *, memory_id: str, canonical_id: str, is_memory_ref: bool,
+    ) -> bool:
+        """Re-fetch the row, drop matching entities, write back via
+        ``_save_memory_row``. Returns ``True`` if a write happened.
+
+        Re-fetch is what makes the cascade safe under concurrent saves:
+        the snapshot check above is racy against a write that lands
+        between the read and the cascade rewrite, but the per-row
+        write here always operates on the freshest stored state.
+        """
+        fresh = await self._get_memory_row(memory_id)
+        if fresh is None:
+            # Concurrent delete won the race; nothing to write.
+            return False
+        fresh_kept = [
+            e for e in fresh.entities
+            if not _entity_matches_cascade(
+                entry=e,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            )
+        ]
+        if fresh_kept == fresh.entities:
+            return False
+        await self._save_memory_row(
+            fresh.model_copy(update={"entities": fresh_kept})
+        )
+        return True
 
     # ---- embeddings sidecar (DEV-1386) ------------------------------------
     #

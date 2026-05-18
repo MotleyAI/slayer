@@ -33,6 +33,11 @@ def _utcnow() -> datetime:
 
 _FORBIDDEN_ID_CHARS = (":", "/", "?", "#")
 
+#: Canonical-id prefix for cross-memory references (`memory:<id>`).
+#: Re-exported from this module so the resolver, search service, and
+#: ingestion cleanup all share one definition (Sonar S1192).
+MEMORY_CANONICAL_PREFIX = "memory:"
+
 
 def _validate_memory_id_charset(value: str) -> None:
     """Reject the forbidden charset on a memory id.

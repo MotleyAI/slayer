@@ -23,6 +23,7 @@ from slayer.core.models import SlayerModel
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.client import current_model, embed_batch
 from slayer.embeddings.models import Embedding, EntityKind
+from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
 from slayer.search.render import (
     render_aggregation_text,
@@ -43,7 +44,7 @@ def _sha256(text: str) -> str:
 
 
 def _memory_canonical_id(memory_id: str) -> str:
-    return f"memory:{memory_id}"
+    return f"{_MEMORY_PREFIX}{memory_id}"
 
 
 def _model_canonical_id(model: SlayerModel) -> str:

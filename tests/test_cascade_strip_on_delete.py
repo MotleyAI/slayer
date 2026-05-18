@@ -12,48 +12,29 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-from typing import AsyncIterator
 from unittest.mock import patch
 
 import pytest
 
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
-from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.fixture
-async def storage() -> AsyncIterator[StorageBackend]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        s = YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
-        await s.save_datasource(
-            DatasourceConfig(
-                name="mydb", type="sqlite", database=":memory:",
-            )
+async def storage(mydb_orders_storage: StorageBackend) -> StorageBackend:
+    # DEV-1428: cascade tests additionally need a second model
+    # (``orders_archive``) so they can pin that the dotted-namespace
+    # rule excludes substring-prefix matches.
+    await mydb_orders_storage.save_model(
+        SlayerModel(
+            name="orders_archive",
+            sql_table="orders_archive",
+            data_source="mydb",
+            columns=[Column(name="id", sql="id", primary_key=True)],
         )
-        await s.save_model(
-            SlayerModel(
-                name="orders",
-                sql_table="orders",
-                data_source="mydb",
-                columns=[
-                    Column(name="id", sql="id", primary_key=True),
-                    Column(name="amount", sql="amount"),
-                ],
-            )
-        )
-        await s.save_model(
-            SlayerModel(
-                name="orders_archive",
-                sql_table="orders_archive",
-                data_source="mydb",
-                columns=[Column(name="id", sql="id", primary_key=True)],
-            )
-        )
-        yield s
+    )
+    return mydb_orders_storage
 
 
 class TestDeleteModelCascade:

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.memories.models import Memory
+from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import StorageBackend, _validate_path_component
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
@@ -473,8 +473,6 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         id: Optional[str] = None,  # noqa: A002 — public kwarg
     ) -> Memory:
         if id is not None:
-            from slayer.memories.models import _validate_memory_id_charset
-
             _validate_memory_id_charset(id)
         return await asyncio.to_thread(
             self._save_memory_atomic_sync,

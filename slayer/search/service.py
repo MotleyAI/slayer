@@ -46,6 +46,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.models import Embedding
+from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
 from slayer.memories.ranker import bm25_rank
 from slayer.memories.resolver import (
@@ -319,14 +320,25 @@ def _count_corpus_kinds(corpus: Corpus) -> Tuple[int, int]:
     return memory_count, entity_count
 
 
+def _collect_memory_canonicals(memories: List["Memory"]) -> set:
+    """Return ``{"memory:<id>" for m in memories}`` — pulled out so
+    ``_valid_canonical_set`` stays under the cognitive-complexity gate."""
+    return {f"{_MEMORY_PREFIX}{m.id}" for m in memories}
+
+
 def _memory_id_from_canonical(canonical_id: str) -> Optional[str]:
     """Parse a memory row's canonical id back into the str memory id.
-    Returns ``None`` if the format is malformed — only possible if a
-    backend smuggled in a non-conforming row."""
-    parts = canonical_id.split(":", 1)
-    if len(parts) != 2 or not parts[1]:
+
+    Returns ``None`` when the input is not a memory canonical id — i.e.
+    not exactly of the shape ``memory:<non-empty-id>``. DEV-1428 review:
+    a corrupted / stale embedding row carrying ``foo:bar`` would
+    otherwise be mis-mapped to a memory hit; the prefix gate keeps the
+    memory channel honest.
+    """
+    if not canonical_id.startswith(_MEMORY_PREFIX):
         return None
-    return parts[1]
+    memory_id = canonical_id[len(_MEMORY_PREFIX):]
+    return memory_id or None
 
 
 def _rank_embedding_kind(
@@ -499,7 +511,9 @@ class SearchService:
             corpus=corpus,
             question_active=question_active,
             datasource=datasource,
-            eligible_memory_canonicals={f"memory:{m.id}" for m in all_memories},
+            eligible_memory_canonicals={
+                f"{_MEMORY_PREFIX}{m.id}" for m in all_memories
+            },
         )
         warnings = _dedup(warnings + channel_3_warnings)
 
@@ -906,29 +920,47 @@ class SearchService:
         Datasource-filtered when ``datasource`` is set.
         """
         canonicals: set = set()
-        datasources = await self._storage.list_datasources()
+        canonicals.update(
+            await self._collect_datasource_canonicals(datasource=datasource)
+        )
+        canonicals.update(
+            await self._collect_model_subtree_canonicals(datasource=datasource)
+        )
+        canonicals.update(_collect_memory_canonicals(all_memories))
+        return canonicals
+
+    async def _collect_datasource_canonicals(
+        self, *, datasource: Optional[str],
+    ) -> set:
+        """Set of bare datasource canonical ids, narrowed by ``datasource``."""
+        names = await self._storage.list_datasources()
         if datasource is not None:
-            datasources = [d for d in datasources if d == datasource]
-        canonicals.update(datasources)
+            names = [d for d in names if d == datasource]
+        return set(names)
+
+    async def _collect_model_subtree_canonicals(
+        self, *, datasource: Optional[str],
+    ) -> set:
+        """Set of `<ds>.<model>[.<leaf>]` canonical ids across every
+        persisted model identity, narrowed by ``datasource`` when set."""
+        out: set = set()
         identities = await self._storage._list_all_model_identities()
         for ds, name in identities:
             if datasource is not None and ds != datasource:
                 continue
-            canonicals.add(f"{ds}.{name}")
+            out.add(f"{ds}.{name}")
             model = await self._storage.get_model(name, data_source=ds)
             if model is None:
                 continue
             for column in model.columns:
-                canonicals.add(f"{ds}.{name}.{column.name}")
+                out.add(f"{ds}.{name}.{column.name}")
             for measure in model.measures:
                 if measure.name is None:
                     continue
-                canonicals.add(f"{ds}.{name}.{measure.name}")
+                out.add(f"{ds}.{name}.{measure.name}")
             for agg in model.aggregations:
-                canonicals.add(f"{ds}.{name}.{agg.name}")
-        for memory in all_memories:
-            canonicals.add(f"memory:{memory.id}")
-        return canonicals
+                out.add(f"{ds}.{name}.{agg.name}")
+        return out
 
     async def _stale_query_warnings(
         self,
@@ -951,8 +983,8 @@ class SearchService:
                 )
             except (EntityResolutionError, AmbiguousModelError) as exc:
                 out.append(
-                    f"example_query memory:{hit.id}: attached query "
-                    f"has stale references ({exc}); re-save to clean."
+                    f"example_query {_MEMORY_PREFIX}{hit.id}: attached "
+                    f"query has stale references ({exc}); re-save to clean."
                 )
         return out
 

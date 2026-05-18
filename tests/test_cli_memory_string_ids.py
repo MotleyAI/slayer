@@ -36,7 +36,7 @@ def _exit_code(*argv: str) -> int:
     with _argv(*argv):
         try:
             cli_main()
-        except SystemExit as exc:
+        except SystemExit as exc:  # NOSONAR(S5754) — capturing CLI exit code; re-raising would defeat the test
             return int(exc.code or 0)
     return 0
 

@@ -21,7 +21,12 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.memories.resolver import canonical_id_rooted_at
+from slayer.core.errors import AmbiguousModelError, EntityResolutionError
+from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
+from slayer.memories.resolver import (
+    canonical_id_rooted_at,
+    extract_entities_from_query,
+)
 from slayer.storage.base import StorageBackend
 
 if TYPE_CHECKING:
@@ -1275,8 +1280,8 @@ async def _entity_ref_exists(
     * ``None`` when the lookup raises (transient infra failure — treat
       as "ref intact" so we don't drop data).
     """
-    if entity.startswith("memory:"):
-        memory_id = entity[len("memory:"):]
+    if entity.startswith(_MEMORY_PREFIX):
+        memory_id = entity[len(_MEMORY_PREFIX):]
         try:
             row = await storage.get_memory_row(memory_id)
         except Exception:  # noqa: BLE001 — transient
@@ -1351,11 +1356,11 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
         # embedding refresh remains datasource-rooted so we don't
         # re-embed every memory on every pass.
         has_memory_refs = any(
-            e.startswith("memory:") for e in memory.entities
+            e.startswith(_MEMORY_PREFIX) for e in memory.entities
         )
         if not rooted_at_ds and not has_memory_refs:
             continue
-        tag = f"memory:{memory.id}"
+        tag = f"{_MEMORY_PREFIX}{memory.id}"
         if rooted_at_ds:
             try:
                 memory_warnings = await service.refresh_memory(memory)
@@ -1383,16 +1388,6 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
                 warnings.append((tag, f"cleanup failed: {exc}"))
         # DEV-1428: stale Memory.query warning.
         if memory.query is not None and rooted_at_ds:
-            # Local import to avoid a heavy import at module load time
-            # and to keep the ingestion module's import graph compact.
-            from slayer.core.errors import (
-                AmbiguousModelError,
-                EntityResolutionError,
-            )
-            from slayer.memories.resolver import (
-                extract_entities_from_query,
-            )
-
             try:
                 await extract_entities_from_query(
                     query=memory.query, storage=storage,

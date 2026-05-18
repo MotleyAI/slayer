@@ -6,41 +6,18 @@ flip to ``str``; ``MemoryHit.id`` / ``ExampleQueryHit.id`` also flip.
 
 from __future__ import annotations
 
-import os
-import tempfile
-from typing import AsyncIterator
-
 import pytest
 
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
-from slayer.storage.yaml_storage import YAMLStorage
 
 
 @pytest.fixture
-async def storage() -> AsyncIterator[StorageBackend]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        s = YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
-        await s.save_datasource(
-            DatasourceConfig(
-                name="mydb", type="sqlite", database=":memory:",
-            )
-        )
-        await s.save_model(
-            SlayerModel(
-                name="orders",
-                sql_table="orders",
-                data_source="mydb",
-                columns=[
-                    Column(name="id", sql="id", primary_key=True),
-                    Column(name="amount", sql="amount"),
-                ],
-            )
-        )
-        yield s
+def storage(mydb_orders_storage: StorageBackend) -> StorageBackend:
+    return mydb_orders_storage
 
 
 class TestStringIds:

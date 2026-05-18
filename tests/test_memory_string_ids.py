@@ -296,7 +296,7 @@ class TestMemoryV1ToV2Migration:
         with tempfile.TemporaryDirectory() as tmpdir:
             # Two rows with the SAME content — should dedupe silently.
             legacy_path = os.path.join(tmpdir, "memories.yaml")
-            with open(legacy_path, "w") as f:
+            with open(legacy_path, "w") as f:  # NOSONAR(S7493) — test seeding writes the legacy YAML directly, matching YAMLStorage's sync-yaml convention
                 yaml.dump(
                     [
                         {
@@ -325,7 +325,7 @@ class TestMemoryV1ToV2Migration:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             legacy_path = os.path.join(tmpdir, "memories.yaml")
-            with open(legacy_path, "w") as f:
+            with open(legacy_path, "w") as f:  # NOSONAR(S7493) — test seeding writes the legacy YAML directly, matching YAMLStorage's sync-yaml convention
                 yaml.dump(
                     [
                         {

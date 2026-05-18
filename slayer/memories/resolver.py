@@ -46,6 +46,10 @@ from slayer.core.formula import (
 from slayer.core.models import SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import strip_agg_suffix as _strip_agg_suffix
+from slayer.memories.models import (
+    MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
+    _validate_memory_id_charset,
+)
 from slayer.storage.base import StorageBackend
 
 
@@ -83,7 +87,7 @@ def canonical_id_rooted_at(canonical_id: str, datasource: str) -> bool:
     """
     if not datasource:
         return False
-    if canonical_id.startswith("memory:"):
+    if canonical_id.startswith(_MEMORY_PREFIX):
         return False
     return canonical_id == datasource or canonical_id.startswith(
         f"{datasource}."
@@ -240,10 +244,8 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     # — otherwise ``memory:abc`` would be parsed as prefix ``memory`` plus
     # agg ``abc``. Memory ids are opaque strings (with a small charset
     # forbidden); the resolver checks existence via ``get_memory_row``.
-    if raw.startswith("memory:"):
-        memory_id = raw[len("memory:"):]
-        from slayer.memories.models import _validate_memory_id_charset
-
+    if raw.startswith(_MEMORY_PREFIX):
+        memory_id = raw[len(_MEMORY_PREFIX):]
         try:
             _validate_memory_id_charset(memory_id)
         except ValueError as exc:

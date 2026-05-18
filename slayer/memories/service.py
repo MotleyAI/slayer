@@ -26,6 +26,7 @@ from slayer.core.query import SlayerQuery
 from slayer.memories.models import (
     ForgetMemoryResponse,
     SaveMemoryResponse,
+    _validate_memory_id_charset,
 )
 from slayer.memories.resolver import (
     extract_entities_from_query,
@@ -74,8 +75,6 @@ def _coerce_memory_id(identifier: Union[int, str]) -> str:
             f"memory id must be str or int; "
             f"got {type(identifier).__name__}."
         )
-    from slayer.memories.models import _validate_memory_id_charset
-
     _validate_memory_id_charset(value)
     return value
 
@@ -110,8 +109,6 @@ class MemoryService:
         if not learning or not learning.strip():
             raise ValueError("learning text must be a non-empty string.")
         if id is not None:
-            from slayer.memories.models import _validate_memory_id_charset
-
             _validate_memory_id_charset(id)
 
         canonical: List[str] = []

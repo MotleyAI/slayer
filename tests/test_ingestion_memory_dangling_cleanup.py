@@ -9,16 +9,27 @@ emits an ``IngestionError`` rather than rewriting the query.
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 from typing import AsyncIterator
 
 import pytest
+from sqlalchemy.exc import OperationalError as SAOperationalError
 
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.ingestion import ingest_datasource_idempotent
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
+
+
+# Live-datasource introspection raises one of these when the seeded
+# SQLite file is empty / missing the ``orders`` table the test model
+# claims to back. The test's intent is to validate the memory cleanup
+# pass, not the ingest itself, so we suppress these specific errors
+# (and re-raise everything else, so assertion / logic regressions are
+# never masked — CodeRabbit review on PR #130).
+_EXPECTED_INGEST_FAILURES = (SAOperationalError, sqlite3.OperationalError)
 
 
 @pytest.fixture
@@ -61,7 +72,7 @@ class TestIngestDanglingRefCleanup:
             await ingest_datasource_idempotent(
                 storage=storage, datasource=ds,
             )
-        except Exception:
+        except _EXPECTED_INGEST_FAILURES:
             # Ingestion may fail because of missing live table, but the
             # memory cleanup pass should still run / surface independently.
             pass
@@ -96,7 +107,11 @@ class TestIngestDanglingRefCleanup:
             await ingest_datasource_idempotent(
                 storage=storage, datasource=ds,
             )
-        except Exception:
+        except (_EXPECTED_INGEST_FAILURES + (RuntimeError,)):
+            # The patched ``get_model`` raises RuntimeError; the live
+            # ingest can additionally hit the missing-table sqlite
+            # errors. Anything else means an assertion regression and
+            # MUST fail the test.
             pass
         # Restore so the post-test get_memory lookup works.
         monkeypatch.undo()
