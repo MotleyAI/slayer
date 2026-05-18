@@ -657,6 +657,16 @@ class SearchService:
                 and len(example_query_hits) >= max_example_queries
             ):
                 break
+        # DEV-1428: emit stale-Memory.query warnings on the recency path
+        # too; otherwise an empty-input search would silently return
+        # example_queries whose attached queries no longer resolve.
+        memory_by_id = {m.id: m for m in recency_memories}
+        warnings = _dedup(
+            warnings + await self._stale_query_warnings(
+                example_query_hits=example_query_hits,
+                memory_by_id=memory_by_id,
+            )
+        )
         return SearchResponse(
             memories=memory_hits,
             example_queries=example_query_hits,

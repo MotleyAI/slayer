@@ -21,11 +21,17 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 ``.legacy`` file already exists at upgrade time, both files are left alone.
 """
 
+import contextlib
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import yaml
 from pydantic import ValidationError
+
+try:  # POSIX-only; Windows users get the no-op fallback.
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover — Windows
+    _fcntl = None  # type: ignore[assignment]
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
@@ -293,7 +299,12 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     @staticmethod
     def _rows_content_equal(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
-        keys = ("learning", "entities", "query", "created_at")
+        # DEV-1428: "content" excludes ``created_at`` — two legacy rows for
+        # the same logical memory may carry different timestamps (e.g. one
+        # written on int-id v1, then re-saved as str on v2). The plan's
+        # "fail loud if content differs" rule covers the actually-lossy
+        # case (different learning / entities / attached query).
+        keys = ("learning", "entities", "query")
         return all(a.get(k) == b.get(k) for k in keys)
 
     async def _save_memory_row(self, memory: Memory) -> None:
@@ -330,6 +341,44 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return False
         self._write_yaml_list(self._memories_path, kept)
         return True
+
+    @contextlib.contextmanager
+    def _memories_file_lock(self) -> Iterator[None]:
+        """DEV-1428: serialise whole-file memories rewrites for the
+        cascade-strip path. Without the lock, two concurrent cascades
+        (or a cascade + a user save) can both read the same row list,
+        write back partially-overlapping mutations, and lose the
+        difference.
+
+        Implementation: an advisory ``flock`` on a sibling
+        ``memories.lock`` file (so a race with the YAML reader on the
+        live file is impossible). No-op on platforms without ``fcntl``
+        — for now that's only Windows, which isn't a supported
+        deployment target for the file-based store anyway.
+        """
+        if _fcntl is None:
+            yield
+            return
+        lock_path = self._memories_path + ".lock"
+        # Open in append-binary so the file is created if missing and
+        # no truncation happens on subsequent locks.
+        with open(lock_path, "ab") as lock_file:
+            _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_UN)
+
+    async def strip_dangling_entities_from_memories(
+        self, *, canonical_id: str,
+    ) -> int:
+        # YAML override: take the file-level lock around the entire
+        # cascade walk so concurrent cascades / saves can't interleave
+        # whole-file rewrites and lose unrelated edits (DEV-1428).
+        with self._memories_file_lock():
+            return await super().strip_dangling_entities_from_memories(
+                canonical_id=canonical_id,
+            )
 
     # Embedding CRUD lives in :class:`SidecarEmbeddingsMixin`, which
     # forwards to ``self._embeddings_store`` set in ``__init__`` above.

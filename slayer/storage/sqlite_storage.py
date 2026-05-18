@@ -40,65 +40,88 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         self._embeddings_store = SidecarEmbeddingStore(db_path=self.db_path)
 
     def _migrate_memories_to_text_pk(self) -> None:
-        """DEV-1428: rebuild a pre-DEV-1428 ``memories`` table whose ``id``
-        column is INTEGER PRIMARY KEY (or whose ``memory_entities.memory_id``
-        is INTEGER) so string ids can be stored. Idempotent: no-op if the
-        column is already TEXT or the table does not yet exist."""
+        """DEV-1428: rebuild pre-DEV-1428 ``memories`` / ``memory_entities``
+        tables whose primary key / foreign key columns are INTEGER so
+        string ids can be stored.
+
+        Idempotent under partial state: a crash after the first rebuild
+        but before the second leaves ``memories.id`` as TEXT and
+        ``memory_entities.memory_id`` still INTEGER. The next startup
+        must recognise the split state and finish the migration — so we
+        check each table independently, and combine both rebuilds into
+        a single transaction whenever both need migrating.
+        """
         with sqlite3.connect(self.db_path) as conn:
-            cur = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='memories'"
-            )
-            if cur.fetchone() is None:
+            memories_needs_rebuild = self._memories_needs_text_pk(conn)
+            me_needs_rebuild = self._memory_entities_needs_text_fk(conn)
+            if not memories_needs_rebuild and not me_needs_rebuild:
                 return
-            cur = conn.execute("PRAGMA table_info(memories)")
-            cols = cur.fetchall()
-            # PRAGMA returns (cid, name, type, notnull, dflt_value, pk).
-            id_col = next((c for c in cols if c[1] == "id"), None)
-            if id_col is None or id_col[2].upper() == "TEXT":
-                return
-            # Rebuild the table with TEXT PK. SQLite does not support
-            # ALTER COLUMN; rename-copy-drop in one transaction.
-            conn.executescript("""
-                BEGIN;
-                ALTER TABLE memories RENAME TO _memories_legacy;
-                CREATE TABLE memories (
-                    id TEXT PRIMARY KEY,
-                    data TEXT NOT NULL
-                );
-                INSERT INTO memories (id, data)
-                    SELECT CAST(id AS TEXT), data FROM _memories_legacy;
-                DROP TABLE _memories_legacy;
-                COMMIT;
-            """)
-            # The memory_entities table also needs its FK type widened.
-            cur = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='memory_entities'"
-            )
-            if cur.fetchone() is None:
-                return
-            cur = conn.execute("PRAGMA table_info(memory_entities)")
-            me_cols = cur.fetchall()
-            me_col = next((c for c in me_cols if c[1] == "memory_id"), None)
-            if me_col is None or me_col[2].upper() == "TEXT":
-                return
-            conn.executescript("""
-                BEGIN;
-                ALTER TABLE memory_entities RENAME TO _memory_entities_legacy;
-                CREATE TABLE memory_entities (
-                    memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                    entity TEXT NOT NULL,
-                    PRIMARY KEY (memory_id, entity)
-                );
-                INSERT INTO memory_entities (memory_id, entity)
-                    SELECT CAST(memory_id AS TEXT), entity
-                    FROM _memory_entities_legacy;
-                DROP TABLE _memory_entities_legacy;
-                CREATE INDEX IF NOT EXISTS idx_memory_entities_entity
-                    ON memory_entities(entity);
-                COMMIT;
-            """)
+            # Combine into one transaction so the cross-table FK rebuild
+            # is atomic. Each ALTER/INSERT/DROP gated by the per-table
+            # flags above; an empty branch is a no-op (no DDL emitted).
+            script_parts: List[str] = ["BEGIN;"]
+            if memories_needs_rebuild:
+                script_parts.append(
+                    "ALTER TABLE memories RENAME TO _memories_legacy;"
+                )
+                script_parts.append(
+                    "CREATE TABLE memories ("
+                    "id TEXT PRIMARY KEY, data TEXT NOT NULL);"
+                )
+                script_parts.append(
+                    "INSERT INTO memories (id, data) "
+                    "SELECT CAST(id AS TEXT), data FROM _memories_legacy;"
+                )
+                script_parts.append("DROP TABLE _memories_legacy;")
+            if me_needs_rebuild:
+                script_parts.append(
+                    "ALTER TABLE memory_entities RENAME TO _memory_entities_legacy;"
+                )
+                script_parts.append(
+                    "CREATE TABLE memory_entities ("
+                    "memory_id TEXT NOT NULL REFERENCES memories(id) "
+                    "ON DELETE CASCADE, "
+                    "entity TEXT NOT NULL, "
+                    "PRIMARY KEY (memory_id, entity));"
+                )
+                script_parts.append(
+                    "INSERT INTO memory_entities (memory_id, entity) "
+                    "SELECT CAST(memory_id AS TEXT), entity "
+                    "FROM _memory_entities_legacy;"
+                )
+                script_parts.append("DROP TABLE _memory_entities_legacy;")
+                script_parts.append(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_entities_entity "
+                    "ON memory_entities(entity);"
+                )
+            script_parts.append("COMMIT;")
+            conn.executescript("\n".join(script_parts))
+
+    @staticmethod
+    def _memories_needs_text_pk(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='memories'"
+        )
+        if cur.fetchone() is None:
+            return False
+        cur = conn.execute("PRAGMA table_info(memories)")
+        cols = cur.fetchall()
+        id_col = next((c for c in cols if c[1] == "id"), None)
+        return id_col is not None and id_col[2].upper() != "TEXT"
+
+    @staticmethod
+    def _memory_entities_needs_text_fk(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='memory_entities'"
+        )
+        if cur.fetchone() is None:
+            return False
+        cur = conn.execute("PRAGMA table_info(memory_entities)")
+        me_cols = cur.fetchall()
+        me_col = next((c for c in me_cols if c[1] == "memory_id"), None)
+        return me_col is not None and me_col[2].upper() != "TEXT"
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:

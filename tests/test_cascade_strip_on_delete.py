@@ -188,36 +188,64 @@ class TestEmbeddingRefreshNotFired:
 
 
 class TestCascadeLostUpdateWindow:
-    async def test_concurrent_save_visible_after_cascade(
-        self, storage: StorageBackend,
+    async def test_upsert_between_cascade_read_and_write_is_lost(
+        self, storage: StorageBackend, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Per-row read-modify-write semantics: a concurrent
         ``save_memory(id=..)`` upsert that lands between cascade's read
-        and write can be lost by the cascade. The retrieval-time filter
-        hides the stale tag at search time, so end users never see it.
+        and write is observable as a lost update for the cascade write.
+        The retrieval-time filter hides the stale tag at search time,
+        so end users never see it.
 
-        We simulate the race deterministically: cascade reads, then we
-        interleave an upsert, then cascade writes. The cascade write
-        wins (drops the stale tag added by the interleaved upsert)."""
+        Deterministic simulation: monkey-patch ``_get_memory_row`` so
+        the second-read inside the cascade's per-row RMW first lands an
+        independent upsert that adds a fresh entity, then returns the
+        original (now-stale) row. The cascade writes back the
+        original-minus-cascade-target, losing the interleaved upsert's
+        new entity."""
+        from slayer.storage import base as base_mod
+
         seed = await storage.save_memory(
             id="m1",
             learning="x",
             entities=["mydb.orders.amount"],
         )
-        # Cascade-strip ``mydb.orders.amount`` from m1 (it should remove
-        # the entity); after the cascade the user concurrently upserts
-        # the same row with a fresh entity list including the stale tag.
-        await storage.delete_model("orders", data_source="mydb")
-        # The cascade already wrote; an upsert AFTER the cascade can
-        # re-introduce a stale tag, which the search-time filter then
-        # hides — but storage holds it until the next ingest sweep.
-        await storage.save_memory(
-            id=seed.id,
-            learning="x",
-            entities=["mydb.orders.amount"],
+
+        # Save the original method so we can call it from inside the
+        # interceptor + restore later.
+        original_get_row = storage._get_memory_row
+        interleaved = {"fired": False}
+
+        async def _intercept(memory_id: str):
+            row = await original_get_row(memory_id)
+            if memory_id == "m1" and not interleaved["fired"]:
+                interleaved["fired"] = True
+                # Concurrent upsert: same row with an extra entity we
+                # want the cascade to NOT clobber.
+                await storage.save_memory(
+                    id="m1",
+                    learning="x",
+                    entities=["mydb.orders.amount", "concurrent.tag"],
+                )
+            return row
+
+        monkeypatch.setattr(storage, "_get_memory_row", _intercept)
+        await storage.strip_dangling_entities_from_memories(
+            canonical_id="mydb.orders.amount",
         )
+        monkeypatch.undo()
+
         loaded = await storage.get_memory(seed.id)
-        # After the deliberately-after-cascade upsert, the tag is back
-        # in storage — the search-time filter (covered in
-        # test_search_lazy_gc_in_memory) is what makes that benign.
-        assert "mydb.orders.amount" in loaded.entities
+        # Cascade write wins → ``concurrent.tag`` is lost.
+        # This is the lost-update window the search-time filter and the
+        # ingest-time cleanup sweep are designed to be benign about.
+        assert seed.id == "m1"
+        assert "concurrent.tag" not in loaded.entities
+        # The intended cascade effect did happen.
+        assert "mydb.orders.amount" not in loaded.entities
+        assert interleaved["fired"], (
+            "expected the interleave to actually fire — otherwise the "
+            "test isn't exercising the race window"
+        )
+        # Silence unused-import lint.
+        _ = base_mod

@@ -1340,18 +1340,29 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
         return [("", f"{datasource_name} (memories): {exc}")]
     warnings: List[Tuple[str, str]] = []
     for memory in memories:
-        if not any(
+        rooted_at_ds = any(
             canonical_id_rooted_at(e, datasource_name)
             for e in memory.entities
-        ):
+        )
+        # DEV-1428: ``memory:<id>`` refs are datasource-agnostic. A
+        # memory carrying only such refs would otherwise never be
+        # touched by any per-datasource pass and could accumulate stale
+        # entries forever. Include those in the cleanup walk; the
+        # embedding refresh remains datasource-rooted so we don't
+        # re-embed every memory on every pass.
+        has_memory_refs = any(
+            e.startswith("memory:") for e in memory.entities
+        )
+        if not rooted_at_ds and not has_memory_refs:
             continue
         tag = f"memory:{memory.id}"
-        try:
-            memory_warnings = await service.refresh_memory(memory)
-        except Exception as exc:  # noqa: BLE001 — defensive per-memory
-            memory_warnings = [str(exc)]
-        for w in memory_warnings:
-            warnings.append((tag, w))
+        if rooted_at_ds:
+            try:
+                memory_warnings = await service.refresh_memory(memory)
+            except Exception as exc:  # noqa: BLE001 — defensive per-memory
+                memory_warnings = [str(exc)]
+            for w in memory_warnings:
+                warnings.append((tag, w))
         # DEV-1428 cleanup pass: drop refs that resolve to False
         # (definitive not-found); keep refs that raise (transient).
         cleaned: List[str] = []
@@ -1371,7 +1382,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
             except Exception as exc:  # noqa: BLE001 — defensive
                 warnings.append((tag, f"cleanup failed: {exc}"))
         # DEV-1428: stale Memory.query warning.
-        if memory.query is not None:
+        if memory.query is not None and rooted_at_ds:
             # Local import to avoid a heavy import at module load time
             # and to keep the ingestion module's import graph compact.
             from slayer.core.errors import (
