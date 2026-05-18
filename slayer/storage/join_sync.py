@@ -240,12 +240,12 @@ class JoinSyncStorage(StorageBackend):
     async def _set_datasource_priority_raw(self, priority: List[str]) -> None:
         return await self._inner._set_datasource_priority_raw(priority)
 
-    # -- memories (DEV-1357 v2) — pure delegation -------------------------
+    # -- memories (DEV-1357 v2 / DEV-1428) — pure delegation --------------
 
     async def _save_memory_row(self, memory: Memory) -> None:
         await self._inner._save_memory_row(memory)
 
-    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
+    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
         return await self._inner._get_memory_row(memory_id)
 
     async def _list_memories_rows(
@@ -253,11 +253,18 @@ class JoinSyncStorage(StorageBackend):
     ) -> List[Memory]:
         return await self._inner._list_memories_rows(entities=entities)
 
-    async def _delete_memory_row(self, memory_id: int) -> bool:
+    async def _delete_memory_row(self, memory_id: str) -> bool:
         return await self._inner._delete_memory_row(memory_id)
 
-    async def _next_memory_seq(self) -> int:
+    async def _next_memory_seq(self) -> str:
         return await self._inner._next_memory_seq()
+
+    async def strip_dangling_entities_from_memories(
+        self, *, canonical_id: str,
+    ) -> int:
+        return await self._inner.strip_dangling_entities_from_memories(
+            canonical_id=canonical_id,
+        )
 
     # -- embeddings (DEV-1386) — pure delegation --------------------------
 

@@ -210,19 +210,24 @@ class SlayerClient:
         *,
         learning: str,
         linked_entities: Union[List[str], SlayerQuery, Dict[str, Any]],
+        id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
     ) -> SaveMemoryResponse:
         """Save a memory: a learning text + linked entities (or an
-        inline SlayerQuery to extract entities from)."""
+        inline SlayerQuery to extract entities from). DEV-1428:
+        optional ``id`` lets callers pin the canonical memory id."""
         if self._storage is not None:
             response = await self._memory_service().save_memory(
                 learning=learning,
                 linked_entities=self._coerce_linked_entities(linked_entities),
+                id=id,
             )
             return response
-        body = {
+        body: Dict[str, Any] = {
             "learning": learning,
             "linked_entities": self._coerce_linked_entities(linked_entities),
         }
+        if id is not None:
+            body["id"] = id
         result = await self._request(method="POST", path="/memories", json=body)
         return SaveMemoryResponse.model_validate(result)
 
@@ -234,7 +239,7 @@ class SlayerClient:
                 identifier=identifier
             )
         result = await self._request(
-            method="DELETE", path=f"/memories/{int(identifier)}"
+            method="DELETE", path=f"/memories/{identifier}",
         )
         return ForgetMemoryResponse.model_validate(result)
 

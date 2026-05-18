@@ -29,7 +29,7 @@ from slayer.search.render import (
     render_column_text,
     render_datasource_text,
     render_measure_text,
-    render_memory_text,
+    render_memory_text_for_embedding,
     render_model_text,
 )
 from slayer.storage.base import StorageBackend
@@ -42,7 +42,7 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _memory_canonical_id(memory_id: int) -> str:
+def _memory_canonical_id(memory_id: str) -> str:
     return f"memory:{memory_id}"
 
 
@@ -119,7 +119,7 @@ class EmbeddingService:
         pending = _PendingRefresh(
             canonical_id=_memory_canonical_id(memory.id),
             entity_kind="memory",
-            text=render_memory_text(memory=memory),
+            text=render_memory_text_for_embedding(memory=memory),
         )
         return await self._apply_pending([pending])
 

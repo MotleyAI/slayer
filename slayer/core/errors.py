@@ -58,16 +58,20 @@ class EntityResolutionError(SlayerError):
 
 
 class MemoryNotFoundError(SlayerError):
-    """Raised when a memory id does not exist in storage (DEV-1357).
+    """Raised when a memory id does not exist in storage (DEV-1357 /
+    DEV-1428).
 
-    Memory ids are monotonic positive integers; the unified
+    Memory ids are non-empty strings (auto-allocated int-shaped, or
+    user-supplied like ``"kb.policy.42"``). The unified
     ``forget_memory`` MCP tool / REST endpoint / CLI subcommand surface
     this error when the requested id is unknown.
     """
 
-    def __init__(self, identifier: int) -> None:
-        self.identifier = int(identifier)
-        super().__init__(f"No memory with id '{self.identifier}'.")
+    def __init__(self, memory_id: str) -> None:
+        self.memory_id = str(memory_id)
+        # Back-compat alias for callers that still use ``.identifier``.
+        self.identifier = self.memory_id
+        super().__init__(f"No memory with id '{self.memory_id}'.")
 
 
 class SchemaDriftError(SlayerError):

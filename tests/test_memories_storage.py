@@ -54,7 +54,7 @@ def sample_query() -> SlayerQuery:
 
 
 class TestMemoryCRUD:
-    async def test_save_returns_memory_with_int_id(
+    async def test_save_returns_memory_with_str_id(
         self, storage: StorageBackend
     ) -> None:
         memory = await storage.save_memory(
@@ -62,12 +62,13 @@ class TestMemoryCRUD:
             entities=["mydb.orders.is_returned"],
         )
         assert isinstance(memory, Memory)
-        assert isinstance(memory.id, int)
-        assert memory.id == 1
+        # DEV-1428: ids are non-empty strings.
+        assert isinstance(memory.id, str)
+        assert memory.id == "1"
         assert memory.learning.startswith("orders.is_returned")
         assert memory.entities == ["mydb.orders.is_returned"]
         assert memory.query is None
-        assert memory.version == 1
+        assert memory.version == 2
         assert memory.created_at is not None
 
     async def test_save_with_query_persists_query(
@@ -114,11 +115,11 @@ class TestMemoryCRUD:
 
     async def test_get_missing_raises(self, storage: StorageBackend) -> None:
         with pytest.raises(MemoryNotFoundError):
-            await storage.get_memory(999)
+            await storage.get_memory("999")
 
     async def test_delete_missing_raises(self, storage: StorageBackend) -> None:
         with pytest.raises(MemoryNotFoundError):
-            await storage.delete_memory(999)
+            await storage.delete_memory("999")
 
     async def test_delete_removes_row(self, storage: StorageBackend) -> None:
         saved = await storage.save_memory(
@@ -211,9 +212,9 @@ class TestMemoryIds:
     async def test_id_starts_at_one(
         self, storage: StorageBackend
     ) -> None:
-        """Empty corpus → first save gets id 1 (DEV-1405 edge case)."""
+        """Empty corpus → first save gets id "1" (DEV-1428)."""
         m = await storage.save_memory(learning="a", entities=["mydb.orders"])
-        assert m.id == 1
+        assert m.id == "1"
 
     async def test_id_monotonic_across_saves(
         self, storage: StorageBackend
@@ -221,20 +222,20 @@ class TestMemoryIds:
         a = await storage.save_memory(learning="a", entities=["mydb.orders"])
         b = await storage.save_memory(learning="b", entities=["mydb.orders"])
         c = await storage.save_memory(learning="c", entities=["mydb.orders"])
-        assert (a.id, b.id, c.id) == (1, 2, 3)
+        assert (a.id, b.id, c.id) == ("1", "2", "3")
 
     async def test_id_reused_after_tail_delete(
         self,
         storage: StorageBackend,
     ) -> None:
-        """DEV-1405: ids of deleted memories may be reused. Deleting the
-        most recently allocated id frees it for the next save."""
+        """DEV-1405 / DEV-1428: ids of deleted memories may be reused
+        (auto allocator picks max int-shaped + 1)."""
         a = await storage.save_memory(learning="a", entities=["mydb.orders"])
         b = await storage.save_memory(learning="b", entities=["mydb.orders"])
         await storage.delete_memory(b.id)
         c = await storage.save_memory(learning="c", entities=["mydb.orders"])
         # c reuses b's freed id.
-        assert (a.id, b.id, c.id) == (1, 2, 2)
+        assert (a.id, b.id, c.id) == ("1", "2", "2")
         # Reuse points at the new record, not the deleted one.
         loaded = await storage.get_memory(c.id)
         assert loaded.learning == "c"
@@ -250,13 +251,13 @@ class TestMemoryIds:
         c = await storage.save_memory(learning="c", entities=["mydb.orders"])
         # Delete a hole in the middle.
         await storage.delete_memory(b.id)
-        # Existing rows: {a.id=1, c.id=3}. Next save must NOT pick 1 or 3.
+        # Existing rows: {a.id="1", c.id="3"}. Next save must NOT pick "1" or "3".
         d = await storage.save_memory(learning="d", entities=["mydb.orders"])
         existing = {m.id for m in await storage.list_memories()}
         assert d.id not in (a.id, c.id)
         assert d.id in existing
         # Spelled out: d.id is strictly above max(remaining ids before save).
-        assert d.id == 4
+        assert d.id == "4"
 
     async def test_id_unified_across_query_and_no_query(
         self,
@@ -272,7 +273,7 @@ class TestMemoryIds:
             query=sample_query,
         )
         c = await storage.save_memory(learning="c", entities=["mydb.orders"])
-        assert (a.id, b.id, c.id) == (1, 2, 3)
+        assert (a.id, b.id, c.id) == ("1", "2", "3")
 
     async def test_id_persists_across_backend_reopen(
         self,
@@ -291,7 +292,7 @@ class TestMemoryIds:
             third = await ys2.save_memory(
                 learning="c", entities=["mydb.orders"]
             )
-            assert third.id == 3
+            assert third.id == "3"
 
             db_path = os.path.join(tmpdir, "test.db")
             ss = SQLiteStorage(db_path=db_path)
@@ -302,7 +303,7 @@ class TestMemoryIds:
             third = await ss2.save_memory(
                 learning="c", entities=["mydb.orders"]
             )
-            assert third.id == 3
+            assert third.id == "3"
 
     async def test_id_derived_when_no_counter_file_exists(
         self,
@@ -321,17 +322,17 @@ class TestMemoryIds:
             third = await ys2.save_memory(
                 learning="c", entities=["mydb.orders"]
             )
-            assert third.id == 3
+            assert third.id == "3"
             ids = sorted(m.id for m in await ys2.list_memories())
-            assert ids == [1, 2, 3]
+            assert ids == ["1", "2", "3"]
 
     async def test_sqlite_seq_derives_from_memories_max(
         self,
     ) -> None:
-        """DEV-1405: ``id_counters`` is no longer touched — next id comes
-        from ``SELECT MAX(id) + 1 FROM memories``. Pre-existing
-        ``id_counters`` rows are harmless dead data; the seq derivation
-        ignores them entirely."""
+        """DEV-1405 / DEV-1428: ``id_counters`` is no longer touched —
+        next id comes from a Python-side scan over ``SELECT id FROM
+        memories``. Pre-existing ``id_counters`` rows are harmless dead
+        data; the seq derivation ignores them entirely."""
         import sqlite3
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -341,7 +342,7 @@ class TestMemoryIds:
             await ss.save_memory(learning="b", entities=["mydb.orders"])
             # If id_counters table still exists from a legacy schema,
             # planting a misleading row in it must not affect future
-            # allocations — we read MAX(id) from memories now.
+            # allocations.
             with sqlite3.connect(db_path) as conn:
                 tables = {
                     r[0] for r in conn.execute(
@@ -359,9 +360,9 @@ class TestMemoryIds:
             third = await ss2.save_memory(
                 learning="c", entities=["mydb.orders"]
             )
-            assert third.id == 3
+            assert third.id == "3"
             ids = sorted(m.id for m in await ss2.list_memories())
-            assert ids == [1, 2, 3]
+            assert ids == ["1", "2", "3"]
 
 
 # ---------------------------------------------------------------------------

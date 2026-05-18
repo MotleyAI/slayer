@@ -56,33 +56,28 @@ def _coerce_query(query: QueryInput) -> SlayerQuery:
     )
 
 
-def _coerce_int_id(identifier: Union[int, str]) -> int:
-    """Accept native ``int`` or its decimal string form."""
-    if isinstance(identifier, bool):  # bool is a subclass of int
-        raise ValueError(f"id must be a positive int; got {identifier!r}.")
+def _coerce_memory_id(identifier: Union[int, str]) -> str:
+    """DEV-1428: accept native ``str`` (canonical form) or legacy
+    ``int`` (back-compat: stringify decimally). Validates the result
+    through :func:`_validate_memory_id_charset` so the surface layer
+    sees the same error on bad input regardless of input shape."""
+    if isinstance(identifier, bool):
+        raise ValueError(
+            f"memory id must be str or int; got bool {identifier!r}."
+        )
     if isinstance(identifier, int):
-        if identifier <= 0:
-            raise ValueError(
-                f"id must be a positive int; got {identifier}."
-            )
-        return identifier
-    if isinstance(identifier, str):
-        s = identifier.strip()
-        if not s.isdigit():
-            raise ValueError(
-                f"id '{identifier}' is not a valid memory id "
-                f"(must be a positive int)."
-            )
-        value = int(s)
-        if value <= 0:
-            raise ValueError(
-                f"id must be a positive int; got {value}."
-            )
-        return value
-    raise ValueError(
-        f"id must be int or its decimal string form; "
-        f"got {type(identifier).__name__}."
-    )
+        value = str(identifier)
+    elif isinstance(identifier, str):
+        value = identifier
+    else:
+        raise ValueError(
+            f"memory id must be str or int; "
+            f"got {type(identifier).__name__}."
+        )
+    from slayer.memories.models import _validate_memory_id_charset
+
+    _validate_memory_id_charset(value)
+    return value
 
 
 def _dedup(items: List[str]) -> List[str]:
@@ -110,9 +105,14 @@ class MemoryService:
         *,
         learning: str,
         linked_entities: LinkedEntities,
+        id: Optional[str] = None,  # noqa: A002 — public kwarg
     ) -> SaveMemoryResponse:
         if not learning or not learning.strip():
             raise ValueError("learning text must be a non-empty string.")
+        if id is not None:
+            from slayer.memories.models import _validate_memory_id_charset
+
+            _validate_memory_id_charset(id)
 
         canonical: List[str] = []
         warnings: List[str] = []
@@ -147,6 +147,7 @@ class MemoryService:
             learning=learning,
             entities=canonical,
             query=attached_query,
+            id=id,
         )
         # DEV-1386: best-effort embedding refresh for this single
         # memory. Local import keeps the embeddings module off the
@@ -172,7 +173,7 @@ class MemoryService:
     async def forget_memory(
         self, *, identifier: Union[int, str]
     ) -> ForgetMemoryResponse:
-        memory_id = _coerce_int_id(identifier)
+        memory_id = _coerce_memory_id(identifier)
         await self._storage.delete_memory(memory_id)
         return ForgetMemoryResponse(deleted_id=memory_id)
 

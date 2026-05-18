@@ -116,10 +116,16 @@ class SaveMemoryRequest(BaseModel):
     resolution, an object validates as a ``SlayerQuery`` and triggers
     entity extraction (the query is then persisted alongside the
     learning).
+
+    DEV-1428: optional ``id`` lets callers pin the memory's canonical id
+    (e.g. for knowledge-base ingestion that wants stable string ids
+    like ``kb.policy.42``). Bad charset → 400. Omit → auto-allocated
+    int-shaped id.
     """
 
     learning: str
     linked_entities: Any
+    id: Optional[str] = None
 
 
 class SearchRequest(BaseModel):
@@ -611,6 +617,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             response = await memory_service.save_memory(
                 learning=request.learning,
                 linked_entities=request.linked_entities,
+                id=request.id,
             )
         except (
             EntityResolutionError,
@@ -623,11 +630,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.delete(
         "/memories/{memory_id}",
         responses={
-            400: {"description": "Invalid memory id (non-numeric or non-positive)."},
+            400: {"description": "Invalid memory id (charset violation)."},
             404: {"description": "Memory not found."},
         },
     )
-    async def delete_memory(memory_id: int) -> Dict[str, Any]:
+    async def delete_memory(memory_id: str) -> Dict[str, Any]:
         try:
             response = await memory_service.forget_memory(identifier=memory_id)
         except MemoryNotFoundError as exc:

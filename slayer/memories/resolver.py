@@ -236,6 +236,25 @@ async def resolve_entity(  # NOSONAR(S3776) — single linear dispatch matching 
     if not raw:
         raise EntityResolutionError("entity reference is empty")
 
+    # DEV-1428: ``memory:<id>`` branch must run BEFORE ``_strip_agg_suffix``
+    # — otherwise ``memory:abc`` would be parsed as prefix ``memory`` plus
+    # agg ``abc``. Memory ids are opaque strings (with a small charset
+    # forbidden); the resolver checks existence via ``get_memory_row``.
+    if raw.startswith("memory:"):
+        memory_id = raw[len("memory:"):]
+        from slayer.memories.models import _validate_memory_id_charset
+
+        try:
+            _validate_memory_id_charset(memory_id)
+        except ValueError as exc:
+            raise EntityResolutionError(str(exc)) from exc
+        row = await storage.get_memory_row(memory_id)
+        if row is None:
+            raise EntityResolutionError(
+                f"No memory with id {memory_id!r}."
+            )
+        return EntityResolution(canonical_forms=[raw])
+
     prefix, agg = _strip_agg_suffix(raw)
 
     # ``*:count`` special case (§3.1): collapses to the source model.
