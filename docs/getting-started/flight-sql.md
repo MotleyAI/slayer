@@ -44,7 +44,7 @@ Apache Flight SQL JDBC driver under the hood.
 In Sigma's connection setup, choose **dbt Semantic Layer** as the connector type and
 fill in:
 
-```
+```text
 Host: <slayer-host>
 Port: 5144
 Service token: <slayer --token value>
@@ -54,7 +54,7 @@ Service token: <slayer --token value>
 
 Use Looker's **dbt Semantic Layer** connection profile:
 
-```
+```text
 Server: <slayer-host>:5144
 Auth: bearer token
 ```
@@ -65,7 +65,7 @@ Tableau treats Flight SQL identifiers as case-sensitive by default. When picking
 and dimensions, **match SLayer's casing exactly** (lowercase model + column names in
 the demo dataset). Configure the connection as:
 
-```
+```text
 Server: <slayer-host>
 Port: 5144
 Authentication: dbt Semantic Layer token
@@ -75,7 +75,7 @@ Authentication: dbt Semantic Layer token
 
 Use the generic JDBC driver dialog:
 
-```
+```text
 Driver class:  org.apache.arrow.driver.jdbc.ArrowFlightJdbcDriver
 URL:           jdbc:arrow-flight-sql://<slayer-host>:5144/?useEncryption=false&token=<token>
 JAR:           https://repo1.maven.org/maven2/org/apache/arrow/flight-sql-jdbc-driver/18.3.0/flight-sql-jdbc-driver-18.3.0.jar
@@ -84,7 +84,7 @@ JAR:           https://repo1.maven.org/maven2/org/apache/arrow/flight-sql-jdbc-d
 Java 17+ users must add the Arrow memory-access JVM args to the DBeaver `dbeaver.ini`
 (or pass via the driver's "VM Arguments"):
 
-```
+```text
 --add-opens=java.base/java.nio=ALL-UNNAMED
 --add-opens=java.base/java.lang=ALL-UNNAMED
 --add-opens=java.base/java.util=ALL-UNNAMED
@@ -94,7 +94,7 @@ Java 17+ users must add the Arrow memory-access JVM args to the DBeaver `dbeaver
 
 In Hex's Connection settings, choose **dbt Semantic Layer**:
 
-```
+```text
 Endpoint: <slayer-host>:5144
 Token: <slayer --token value>
 ```

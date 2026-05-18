@@ -9,26 +9,13 @@ import pyarrow.flight as fl
 from slayer.flight.auth import (
     BearerTokenMiddlewareFactory,
     _is_loopback,
-    _peer_is_loopback,
     validate_bind_address,
     validate_tls_pair,
 )
 
 
-class _FakeCallInfo:
-    """Minimal stand-in for ``fl.CallInfo``; only ``peer`` is consulted."""
-
-    def __init__(self, *, peer: str = "ipv4:127.0.0.1:1234") -> None:
-        self.peer = peer
-
-
-def _start_call(
-    factory: BearerTokenMiddlewareFactory,
-    headers: dict,
-    *,
-    peer: str = "ipv4:127.0.0.1:1234",
-):
-    return factory.start_call(info=_FakeCallInfo(peer=peer), headers=headers)
+def _start_call(factory: BearerTokenMiddlewareFactory, headers: dict):
+    return factory.start_call(info=None, headers=headers)
 
 
 # --- _is_loopback ------------------------------------------------------------
@@ -135,15 +122,6 @@ def test_middleware_unauthenticated_passes_when_no_token_configured() -> None:
     assert mw is not None
 
 
-def test_middleware_rejects_non_loopback_peer_in_no_auth_mode() -> None:
-    """Belt-and-braces: even if the bind address is reconfigured at runtime,
-    no-auth mode must refuse non-loopback peers."""
-    factory = BearerTokenMiddlewareFactory(token=None)
-    with pytest.raises(fl.FlightUnauthenticatedError) as exc_info:
-        _start_call(factory, {}, peer="ipv4:10.0.0.5:1234")
-    assert "loopback" in str(exc_info.value).lower()
-
-
 # --- environmentId handling --------------------------------------------------
 
 
@@ -159,19 +137,3 @@ def test_middleware_logs_environment_id(caplog) -> None:
 # --- peer-loopback heuristic -------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "peer",
-    [
-        "ipv4:127.0.0.1:43210",
-        "ipv6:[::1]:43210",
-        "grpc+tcp://127.0.0.1:43210",
-        "grpc+tcp://[::1]:43210",
-    ],
-)
-def test_peer_is_loopback_recognises_common_shapes(peer: str) -> None:
-    assert _peer_is_loopback(peer) is True
-
-
-@pytest.mark.parametrize("peer", ["", "ipv4:10.0.0.5:43210", "ipv4:8.8.8.8:80"])
-def test_peer_is_loopback_rejects_non_loopback(peer: str) -> None:
-    assert _peer_is_loopback(peer) is False

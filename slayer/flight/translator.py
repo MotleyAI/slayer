@@ -303,7 +303,9 @@ def _resolve_table(
             f"FROM clause must reference a table, got "
             f"{type(inner).__name__}"
         )
-    table_name = _unwrap_identifier(inner.this) or ""
+    table_name = _unwrap_identifier(inner.this)
+    if not table_name:
+        raise TranslationError("FROM clause is missing a table name")
     schema_str = _unwrap_identifier(inner.args.get("db"))
     catalog_str = _unwrap_identifier(inner.args.get("catalog"))
 

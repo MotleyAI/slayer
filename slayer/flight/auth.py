@@ -74,22 +74,6 @@ def validate_tls_pair(*, cert: Optional[str], key: Optional[str]) -> None:
         )
 
 
-_PEER_LOOPBACK_PREFIXES = ("grpc+tcp://127.", "grpc+tcp://[::1]", "grpc+tls://127.", "grpc+tls://[::1]")
-
-
-def _peer_is_loopback(peer: str) -> bool:
-    """Heuristically decide if ``ServerCallContext.peer()`` is loopback.
-
-    pyarrow's peer string looks like ``ipv4:127.0.0.1:43210`` or
-    ``ipv6:[::1]:43210`` or ``grpc+tcp://127.0.0.1:43210``. We treat any
-    string containing ``127.`` or ``::1`` as loopback for the
-    no-token-on-loopback fallback.
-    """
-    if not peer:
-        return False
-    return any(marker in peer for marker in ("127.", "::1", "localhost"))
-
-
 class _BearerTokenMiddleware(fl.ServerMiddleware):
     """No-op once-per-call middleware; auth check happened in the factory."""
 
@@ -111,11 +95,13 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
     """Validate ``Authorization: Bearer <token>`` on every incoming RPC.
 
     Construct with the configured token (or ``None`` for no-auth mode).
-    When no token is configured, requests from loopback peers are
-    accepted unauthenticated; non-loopback peers are rejected (paired
-    with the startup-time :func:`validate_bind_address` check, which is
-    the primary defence — middleware-level rejection of non-loopback
-    is belt-and-braces in case someone reconfigures at runtime).
+    When no token is configured, every incoming RPC is accepted
+    unauthenticated. The defence against non-loopback exposure is the
+    startup-time :func:`validate_bind_address` check — pyarrow's
+    ``ServerMiddlewareFactory.start_call(info, headers)`` does not
+    expose the remote peer address (``CallInfo`` only carries
+    ``method``), so middleware-level peer enforcement is not feasible
+    without a custom ``ServerCallContext`` wrapper.
     """
 
     def __init__(self, *, token: Optional[str]) -> None:
@@ -148,13 +134,9 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
             provided = auth_raw[len("Bearer "):].strip()
 
         if self._expected is None:
-            # No-auth mode: loopback fallback. Server startup already rejects
-            # non-loopback without a token; recheck the peer here in case the
-            # bind address changed at runtime or a proxy forwarded the call.
-            if not _peer_is_loopback(info.peer):
-                raise fl.FlightUnauthenticatedError(
-                    "No token configured; only loopback peers accepted"
-                )
+            # No-auth mode. Server startup already rejected non-loopback
+            # binds via validate_bind_address; pyarrow CallInfo does not
+            # expose the peer address at this layer, so we cannot recheck.
             return _BearerTokenMiddleware(environment_id=environment_id)
 
         if provided is None:

@@ -78,6 +78,28 @@ def test_foreign_catalog_information_schema_returns_none() -> None:
     ) is not None
 
 
+def test_catalog_qualifier_is_case_insensitive() -> None:
+    """The catalog-qualifier match must follow the same case-insensitive
+    rule the schema and table comparisons use."""
+    cat = _demo_catalog()
+    for sql in [
+        "SELECT * FROM SLAYER.INFORMATION_SCHEMA.METRICS",
+        "SELECT * FROM Slayer.INFORMATION_SCHEMA.METRICS",
+        "SELECT * FROM slayer.INFORMATION_SCHEMA.METRICS",
+    ]:
+        assert match_info_schema(parsed=_parse(sql), catalog=cat) is not None, sql
+
+
+def test_foreign_schema_with_slayer_catalog_returns_none() -> None:
+    """A valid catalog qualifier with a non-INFORMATION_SCHEMA db must still
+    fall through (e.g. ``slayer.public.METRICS``) — the schema match is the
+    one that gates whether we serve canned INFORMATION_SCHEMA bytes."""
+    assert match_info_schema(
+        parsed=_parse("SELECT * FROM slayer.public.METRICS"),
+        catalog=_demo_catalog(),
+    ) is None
+
+
 def test_metrics_table_shape_and_content() -> None:
     cat = _demo_catalog()
     table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)

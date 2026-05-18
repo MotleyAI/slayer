@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.flight as fl
 import pytest
 from google.protobuf.any_pb2 import Any as PbAny
 
@@ -34,6 +35,7 @@ from slayer.flight.handlers import (
     decode_command,
     decode_ticket,
 )
+from slayer.flight.translator import InfoSchemaResult, ProbeResult
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capture-latest.jsonl"
@@ -310,7 +312,6 @@ def test_pack_any_round_trips() -> None:
 
 
 def test_get_flight_info_for_probe_builds_canned_schema() -> None:
-    import pyarrow.flight as fl
     handlers = _make_handlers()
     descriptor = fl.FlightDescriptor.for_command(b"")
     info = handlers.get_flight_info_for_sql(descriptor, "SELECT 1")
@@ -326,21 +327,23 @@ def test_get_flight_info_for_probe_builds_canned_schema() -> None:
 def test_do_get_for_probe_returns_canned_table() -> None:
     handlers = _make_handlers()
     stream = handlers.do_get_for_sql("SELECT 1")
-    # RecordBatchStream wraps a pa.Table; pull it back via the reader API.
-    reader = stream.to_reader() if hasattr(stream, "to_reader") else None
-    if reader is not None:
-        table = reader.read_all()
-        assert table.to_pylist() == [{"1": 1}]
+    # RecordBatchStream is a server-side return-type marker with no public
+    # read API; assert the wrapper shape and re-translate to read the bytes.
+    assert isinstance(stream, fl.RecordBatchStream)
+    result = handlers._translate("SELECT 1")
+    assert isinstance(result, ProbeResult)
+    assert result.table.to_pylist() == [{"1": 1}]
 
 
 def test_do_get_for_information_schema_returns_canned_table() -> None:
     handlers = _make_handlers()
     stream = handlers.do_get_for_sql("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA")
-    if hasattr(stream, "to_reader"):
-        table = stream.to_reader().read_all()
-        assert table.to_pylist() == [
-            {"catalog_name": "slayer", "schema_name": "jaffle"},
-        ]
+    assert isinstance(stream, fl.RecordBatchStream)
+    result = handlers._translate("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA")
+    assert isinstance(result, InfoSchemaResult)
+    assert result.table.to_pylist() == [
+        {"catalog_name": "slayer", "schema_name": "jaffle"},
+    ]
 
 
 def test_do_get_for_dml_raises_translation_error_propagating() -> None:

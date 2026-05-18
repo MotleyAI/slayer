@@ -64,13 +64,14 @@ def _is_information_schema_from(node: exp.Expression) -> Optional[str]:
     # Catalog-qualified form must name the SLayer catalog. Anything else is a
     # user mistake; return None so a typo'd catalog raises "Unknown catalog"
     # in the regular table-resolution path rather than silently returning
-    # SLayer metadata under a foreign-catalog query.
+    # SLayer metadata under a foreign-catalog query. Matched case-insensitively
+    # to stay consistent with the schema / table comparisons above.
     catalog_part = table.args.get("catalog")
     if catalog_part is not None:
         catalog_name = (
             str(catalog_part.this) if hasattr(catalog_part, "this") else str(catalog_part)
         )
-        if catalog_name != CATALOG_NAME:
+        if catalog_name.lower() != CATALOG_NAME.lower():
             return None
     table_name = str(table.this.this) if hasattr(table.this, "this") else str(table.this)
     table_name_upper = table_name.upper()
