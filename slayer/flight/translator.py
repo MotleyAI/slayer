@@ -309,7 +309,7 @@ def _resolve_table(
     schema_str = _unwrap_identifier(inner.args.get("db"))
     catalog_str = _unwrap_identifier(inner.args.get("catalog"))
 
-    if catalog_str is not None and catalog_str != CATALOG_NAME:
+    if catalog_str is not None and catalog_str.lower() != CATALOG_NAME.lower():
         raise TranslationError(
             f"Unknown catalog: {catalog_str!r} (only {CATALOG_NAME!r} is exposed)"
         )

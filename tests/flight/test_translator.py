@@ -166,6 +166,21 @@ def test_unknown_catalog_errors() -> None:
     assert "Unknown catalog" in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT revenue_sum FROM slayer.jaffle.orders",
+        "SELECT revenue_sum FROM SLAYER.jaffle.orders",
+        "SELECT revenue_sum FROM Slayer.jaffle.orders",
+    ],
+)
+def test_catalog_qualifier_is_case_insensitive(sql: str) -> None:
+    """The catalog qualifier must match case-insensitively, consistent with
+    the INFORMATION_SCHEMA dispatch in info_schema._is_information_schema_from."""
+    result = translate(sql=sql, catalog=_catalog())
+    assert isinstance(result, QueryResult), sql
+
+
 # --- projection translation --------------------------------------------------
 
 

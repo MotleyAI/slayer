@@ -17,6 +17,7 @@ The middleware honours the dbt-SL JDBC URL convention:
 
 from __future__ import annotations
 
+import hmac
 import ipaddress
 import logging
 from typing import Optional
@@ -101,7 +102,9 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
     ``ServerMiddlewareFactory.start_call(info, headers)`` does not
     expose the remote peer address (``CallInfo`` only carries
     ``method``), so middleware-level peer enforcement is not feasible
-    without a custom ``ServerCallContext`` wrapper.
+    at ``start_call`` time. (``ServerCallContext.peer()`` *is*
+    available in per-RPC handlers like ``do_get``/``do_action``, so a
+    handler-layer recheck would be possible if we ever want one.)
     """
 
     def __init__(self, *, token: Optional[str]) -> None:
@@ -141,7 +144,7 @@ class BearerTokenMiddlewareFactory(fl.ServerMiddlewareFactory):
 
         if provided is None:
             raise fl.FlightUnauthenticatedError("Missing bearer token")
-        if provided != self._expected:
+        if not hmac.compare_digest(provided, self._expected):
             raise fl.FlightUnauthenticatedError("invalid bearer token")
 
         return _BearerTokenMiddleware(environment_id=environment_id)

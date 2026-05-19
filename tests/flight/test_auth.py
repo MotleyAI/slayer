@@ -132,8 +132,3 @@ def test_middleware_logs_environment_id(caplog) -> None:
         mw = _start_call(factory, {"authorization": "Bearer t", "environmentid": "42"})
     assert mw is not None
     assert any("environmentId=42" in r.message for r in caplog.records)
-
-
-# --- peer-loopback heuristic -------------------------------------------------
-
-

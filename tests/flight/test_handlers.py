@@ -35,7 +35,7 @@ from slayer.flight.handlers import (
     decode_command,
     decode_ticket,
 )
-from slayer.flight.translator import InfoSchemaResult, ProbeResult
+from slayer.flight.translator import InfoSchemaResult, ProbeResult, TranslationError
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capture-latest.jsonl"
@@ -349,7 +349,6 @@ def test_do_get_for_information_schema_returns_canned_table() -> None:
 def test_do_get_for_dml_raises_translation_error_propagating() -> None:
     """Unknown / forbidden SQL surfaces as a TranslationError from translate(),
     which the handler propagates (server.py maps to FlightServerError)."""
-    from slayer.flight.translator import TranslationError
     handlers = _make_handlers()
     with pytest.raises(TranslationError):
         handlers.do_get_for_sql("INSERT INTO orders VALUES (1)")
