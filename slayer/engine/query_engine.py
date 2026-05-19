@@ -24,6 +24,7 @@ from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedMeasure,
     EnrichedQuery,
+    public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.sql.client import SlayerSQLClient
@@ -617,19 +618,31 @@ class SlayerQueryEngine:
         # Generate SQL from EnrichedQuery
         dialect = self._dialect_for_type(datasource.type)
         generator = SQLGenerator(dialect=dialect)
-        sql = generator.generate(enriched=enriched)
+        # DEV-1444: this is the final-stage SQL that gets executed and
+        # shown to the user — pin ``outer`` mode so the projection is
+        # trimmed to public_projection_aliases(enriched).
+        sql = generator.generate(enriched=enriched, render_mode="outer")
         logger.debug("Generated SQL:\n%s", sql)
 
-        # Collect field metadata from enriched query, split by type
+        # DEV-1444: the response's attributes + expected_columns must mirror
+        # the trimmed outer projection — never include hoisted intermediates.
+        public_aliases = set(public_projection_aliases(enriched))
+
+        # Collect field metadata from enriched query, split by type. Each
+        # entry is included only if its alias is part of the public
+        # projection (filter-extracted hidden transforms, ORDER-BY
+        # aggregates, and window-arg hoists are silently dropped).
         dim_meta: Dict[str, FieldMetadata] = {}
         measure_meta: Dict[str, FieldMetadata] = {}
         for d in enriched.dimensions:
-            if d.label or d.format:
+            if d.alias in public_aliases and (d.label or d.format):
                 dim_meta[d.alias] = FieldMetadata(label=d.label, format=d.format)
         for td in enriched.time_dimensions:
-            if td.label:
+            if td.alias in public_aliases and td.label:
                 dim_meta[td.alias] = FieldMetadata(label=td.label)
         for m in enriched.measures:
+            if m.alias not in public_aliases:
+                continue
             measure_fmt = _infer_aggregated_format(
                 model=model,
                 measure_name=m.source_measure_name or m.name,
@@ -638,23 +651,29 @@ class SlayerQueryEngine:
             if m.label or measure_fmt:
                 measure_meta[m.alias] = FieldMetadata(label=m.label, format=measure_fmt)
         for e in enriched.expressions:
+            if e.alias not in public_aliases:
+                continue
             measure_meta[e.alias] = FieldMetadata(
                 label=e.label,
                 format=NumberFormat(type=NumberFormatType.FLOAT),
             )
         for t in enriched.transforms:
+            if t.alias not in public_aliases:
+                continue
             measure_meta[t.alias] = FieldMetadata(
                 label=t.label,
                 format=NumberFormat(type=NumberFormatType.FLOAT),
             )
         for cm in enriched.cross_model_measures:
-            if cm.label or cm.format:
+            if cm.alias in public_aliases and (cm.label or cm.format):
                 measure_meta[cm.alias] = FieldMetadata(label=cm.label, format=cm.format)
         attributes = ResponseAttributes(dimensions=dim_meta, measures=measure_meta)
 
-        # Derive expected column names from the enriched query, excluding internal aliases
-        # (_inner_* from nested transforms, _ft* from filter transform extraction)
-        expected_columns = (
+        # DEV-1444: expected_columns matches the outer SELECT projection
+        # exactly (helper-driven). Fall back to the legacy bucket-union if
+        # ``public_projection`` is empty (e.g. enrichment paths that don't
+        # yet populate ``user_projection``).
+        expected_columns = list(public_projection_aliases(enriched)) or (
             [d.alias for d in enriched.dimensions]
             + [td.alias for td in enriched.time_dimensions]
             + [m.alias for m in enriched.measures if not m.name.startswith(("_inner_", "_ft"))]
@@ -921,7 +940,10 @@ class SlayerQueryEngine:
             enriched = await self._enrich(query=probe_query, model=model)
             dialect = self._dialect_for_type(datasource.type)
             generator = SQLGenerator(dialect=dialect)
-            sql = generator.generate(enriched=enriched)
+            # DEV-1444: type probing is a user-visible call site; pin
+            # ``outer`` mode explicitly so a future default-change cannot
+            # silently shift type-probe behaviour.
+            sql = generator.generate(enriched=enriched, render_mode="outer")
         except Exception:
             logger.warning("get_column_types enrich/generate failed for model '%s'", model_name)
             return {}
@@ -1793,7 +1815,10 @@ class SlayerQueryEngine:
         datasource = await self._resolve_datasource(model=inner_model)
         dialect = self._dialect_for_type(datasource.type)
         generator = SQLGenerator(dialect=dialect)
-        inner_sql = generator.generate(enriched=enriched)
+        # DEV-1444: _query_as_model wraps the inner query as a virtual model;
+        # downstream references reach EVERY hoisted alias, so the inner SQL
+        # must keep its full projection rather than getting trimmed.
+        inner_sql = generator.generate(enriched=enriched, render_mode="wrapped")
 
         # Build virtual model from enriched columns.
         # Inner query columns have aliases like "orders.count" (with dots).

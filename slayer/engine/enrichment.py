@@ -63,6 +63,50 @@ def _strip_string_literal(value: str) -> str:
 _canonical_agg_name = canonical_agg_name  # Module-internal alias for the shared helper
 
 
+def canonical_expression_key(node: Any) -> Tuple[Any, ...]:
+    """DEV-1444: build an alias-independent, structural hash key for a
+    parsed formula AST node.
+
+    Two formulas that are *structurally equal* — same aggregation, same
+    column, same transform stack, same args / kwargs (order-insensitive) —
+    yield identical keys regardless of any user ``name`` override.
+
+    Consumed by the provenance-merge step in enrichment: when an
+    auto-extracted entry (order-by aggregate, filter-extracted hidden
+    field, window-arg hoist) shares a key with an already-user-declared
+    entry, the entries collapse to the declared one — preventing phantom
+    ``orders.revenue_sum`` columns alongside a user-declared
+    ``{"formula":"revenue:sum","name":"total"}``.
+    """
+    if isinstance(node, AggregatedMeasureRef):
+        return (
+            "agg",
+            node.measure_name,
+            node.aggregation_name,
+            tuple(node.agg_args),
+            tuple(sorted(node.agg_kwargs.items())),
+        )
+    if isinstance(node, TransformField):
+        return (
+            "transform",
+            node.transform,
+            canonical_expression_key(node.inner),
+            tuple(node.args),
+            tuple(sorted((k, str(v)) for k, v in node.kwargs.items())),
+        )
+    if isinstance(node, (ArithmeticField, MixedArithmeticField)):
+        # Arithmetic structural keys: the preprocessed SQL string with
+        # placeholders, plus the sorted set of inner agg-ref keys so
+        # ``a+b`` and ``b+a`` produce the same key when the underlying
+        # placeholders are interchangeable.
+        agg_keys = tuple(sorted(
+            canonical_expression_key(ref) for ref in node.agg_refs.values()
+        ))
+        return ("arith", node.sql, agg_keys)
+    # Fallback: stringify so downstream callers always get a hashable.
+    return ("raw", repr(node))
+
+
 async def _collect_reachable_agg_names(
     model: SlayerModel,
     resolve_join_target,
@@ -185,6 +229,19 @@ async def enrich_query(
         dialect=dialect,
     )
 
+    # DEV-1444: a query that lists the same column as both a regular
+    # dimension and a time dimension produces ambiguous aliases (same
+    # ``<model>.<col>`` key in both EnrichedDimension and
+    # EnrichedTimeDimension). Reject up-front with a clear error rather
+    # than silently picking one.
+    dim_alias_set = {d.alias for d in dimensions}
+    for td in time_dimensions:
+        if td.alias in dim_alias_set:
+            raise ValueError(
+                f"Column {td.alias!r} appears in both `dimensions` and "
+                f"`time_dimensions` — ambiguous projection. Use one or the other."
+            )
+
     # --- Time resolution for transforms ---
     resolved_time_alias = _resolve_time_alias(
         time_dimensions=time_dimensions,
@@ -206,6 +263,39 @@ async def enrich_query(
     cross_model_measures: List[CrossModelMeasure] = []
     known_aliases: Dict[str, str] = {}
     field_name_aliases: Dict[str, str] = {}
+
+    # DEV-1444 provenance-merge index: canonical_expression_key →
+    # surfaced alias. Populated when an EnrichedMeasure is created;
+    # consulted by ``_ensure_aggregated_measure`` so an auto-extracted
+    # ref whose canonical form matches an already-declared measure
+    # (e.g. order-by ``revenue:sum`` matching a user-declared
+    # ``{"formula":"revenue:sum","name":"total"}``) reuses the existing
+    # alias instead of materialising a phantom ``orders.revenue_sum``.
+    measure_canonical_key_to_alias: Dict[Tuple[Any, ...], str] = {}
+
+    def _mark_user_declared(alias: str) -> bool:
+        """DEV-1444: flip ``user_declared=True`` on the enriched entry that
+        owns ``alias``. The entry could live in any of measures, expressions,
+        transforms, or cross_model_measures. Returns True iff an entry was
+        found — callers use that to detect missing wiring.
+        """
+        for m in measures:
+            if m.alias == alias:
+                m.user_declared = True
+                return True
+        for e in enriched_expressions:
+            if e.alias == alias:
+                e.user_declared = True
+                return True
+        for t in enriched_transforms:
+            if t.alias == alias:
+                t.user_declared = True
+                return True
+        for cm in cross_model_measures:
+            if cm.alias == alias:
+                cm.user_declared = True
+                return True
+        return False
 
     async def _ensure_aggregated_measure(
         alias_key: str,
@@ -252,10 +342,32 @@ async def enrich_query(
             agg_kwargs={**agg_kwargs, **({"window": window} if window is not None else {})},
         )
 
+        # DEV-1444 provenance merge: structural key collapsed across user
+        # ``name`` overrides. If a previous call already created an
+        # EnrichedMeasure for the same canonical form (e.g. a
+        # user-declared ``{"formula":"revenue:sum","name":"total"}``),
+        # reuse its surfaced alias and skip the duplicate hoist.
+        merged_kwargs = {
+            **agg_kwargs,
+            **({"window": window} if window is not None else {}),
+        }
+        canon_key = (
+            "agg",
+            measure_name,
+            aggregation_name,
+            tuple(agg_args),
+            tuple(sorted(merged_kwargs.items())),
+        )
+        existing_alias = measure_canonical_key_to_alias.get(canon_key)
+        if existing_alias is not None:
+            known_aliases[alias_key] = existing_alias
+            return
+
         # Skip if already ensured with this alias_key
         alias = f"{model_name_str}.{canonical_name}"
         if any(m.alias == alias for m in measures):
             known_aliases[alias_key] = alias
+            measure_canonical_key_to_alias[canon_key] = alias
             return
 
         # Resolve column SQL
@@ -384,6 +496,10 @@ async def enrich_query(
             )
         )
         known_aliases[alias_key] = alias
+        # DEV-1444: record the canonical key so later refs to the same
+        # canonical form collapse onto this entry's alias (and onto any
+        # subsequent user-name rename of it).
+        measure_canonical_key_to_alias[canon_key] = alias
 
     def _resolve_sql(sql: str) -> str:
         resolved = sql
@@ -554,7 +670,14 @@ async def enrich_query(
                 agg_args=spec.agg_args,
                 agg_kwargs=spec.agg_kwargs,
             )
-            return f"{model_name_str}.{canonical_name}"
+            # DEV-1444: after provenance-merge the canonical alias may
+            # point at a previously declared user measure (e.g. when the
+            # user renamed ``revenue:sum`` to ``total``). Consult
+            # known_aliases so downstream callers receive the surfaced
+            # alias rather than synthesising the unrenamed canonical form.
+            return known_aliases.get(
+                canonical_name, f"{model_name_str}.{canonical_name}"
+            )
 
         elif isinstance(spec, ArithmeticField):
             for mname in spec.measure_names:
@@ -685,6 +808,11 @@ async def enrich_query(
 
         raise ValueError(f"Unsupported field spec: {spec!r}")
 
+    # DEV-1444: track aliases in declared order so EnrichedQuery.user_projection
+    # can be populated at the end. Dims and time-dims come first.
+    user_projection: List[str] = [d.alias for d in dimensions]
+    user_projection.extend(td.alias for td in time_dimensions)
+
     # Process each query field
     for qfield in query.measures or []:
         spec = parse_formula(
@@ -725,7 +853,12 @@ async def enrich_query(
                 # EnrichedMeasure so _build_combined wraps the agg in CAST.
                 if qfield.type is not None:
                     cm.measure.type = qfield.type
+                # DEV-1444: this CrossModelMeasure corresponds to a user-
+                # declared qfield, so mark it as such and surface its alias
+                # in the public projection.
+                cm.user_declared = True
                 cross_model_measures.append(cm)
+                user_projection.append(cm.alias)
                 continue
 
             await _ensure_aggregated_measure(
@@ -742,13 +875,20 @@ async def enrich_query(
             # remains resolvable via known_aliases for inline references.
             if qfield.name and qfield.name != canonical_name:
                 user_alias = f"{model_name_str}.{qfield.name}"
+                prev_alias = f"{model_name_str}.{canonical_name}"
                 for m in measures:
-                    if m.alias == f"{model_name_str}.{canonical_name}":
+                    if m.alias == prev_alias:
                         m.name = qfield.name
                         m.alias = user_alias
                         break
                 known_aliases[qfield.name] = user_alias
                 known_aliases[canonical_name] = user_alias
+                # DEV-1444 provenance merge: any canonical key currently
+                # pointing at the pre-rename alias must follow the rename
+                # so later auto-extracted refs collapse onto the new alias.
+                for k, v in list(measure_canonical_key_to_alias.items()):
+                    if v == prev_alias:
+                        measure_canonical_key_to_alias[k] = user_alias
             # Register custom field name so ORDER BY can resolve it
             if field_name != canonical_name and canonical_name in known_aliases:
                 field_name_aliases[field_name] = known_aliases[canonical_name]
@@ -771,6 +911,15 @@ async def enrich_query(
                 for m in measures:
                     if m.name == target_name:
                         m.type = qfield.type
+            # DEV-1444: mark the surfaced EnrichedMeasure as user-declared
+            # and append its alias to the projection.
+            surfaced_alias = (
+                f"{model_name_str}.{qfield.name}"
+                if (qfield.name and qfield.name != canonical_name)
+                else f"{model_name_str}.{canonical_name}"
+            )
+            _mark_user_declared(surfaced_alias)
+            user_projection.append(surfaced_alias)
 
         else:
             await _flatten_spec(spec, field_name)
@@ -796,6 +945,12 @@ async def enrich_query(
                 for t in enriched_transforms:
                     if t.alias == alias:
                         t.type = qfield.type
+            # DEV-1444: mark the surfaced EnrichedExpression / EnrichedTransform
+            # (whichever the formula landed in) as user-declared. The inner
+            # hoisted measures created by _flatten_spec remain user_declared=False.
+            surfaced_alias = f"{model_name_str}.{field_name}"
+            _mark_user_declared(surfaced_alias)
+            user_projection.append(surfaced_alias)
 
     # --- Enrich ORDER BY formulas as hidden fields ---
     for item in query.order or []:
@@ -820,7 +975,22 @@ async def enrich_query(
         # Only enrich if not already present from fields
         if canonical not in known_aliases:
             await _flatten_spec(spec, canonical)
-        item.column.name = canonical
+        # DEV-1444: when the canonical form was already declared as a
+        # user measure (and possibly renamed via ``qfield.name``), point
+        # the ORDER BY at the user's surfaced name so _resolve_order_column
+        # finds the existing alias instead of synthesising a phantom
+        # ``model.<canonical>`` reference.
+        resolved_alias = known_aliases.get(canonical)
+        if resolved_alias:
+            # Prefer the user-declared measure's ``name`` for the OrderItem
+            # so the resolver hits the same EnrichedMeasure entry.
+            picked = next(
+                (m.name for m in measures if m.alias == resolved_alias),
+                canonical,
+            )
+            item.column.name = picked
+        else:
+            item.column.name = canonical
 
     # --- Validate model filters ---
     # DEV-1378: Mode A model filters get parsed via ``parse_sql_predicate``
@@ -994,6 +1164,7 @@ async def enrich_query(
         limit=query.limit,
         offset=query.offset,
         field_name_aliases=field_name_aliases,
+        user_projection=user_projection,
     )
 
 
