@@ -764,6 +764,24 @@ async def enrich_query(
             # instead of the canonical ``col_agg`` form. The canonical alias
             # remains resolvable via known_aliases for inline references.
             if qfield.name and qfield.name != canonical_name:
+                # DEV-1443 (Codex review on PR #133): if the canonical alias
+                # itself shadows a source ``Column`` on the model, the colon-
+                # form filter ``col:agg <op> N`` is ambiguous — the remap
+                # would resolve to the user alias, while strict resolution
+                # would resolve a literal ``col_agg`` reference to the source
+                # column. Refuse the query at construction time rather than
+                # silently picking one and producing surprising SQL.
+                if canonical_name in _source_column_names:
+                    raise ValueError(
+                        f"Measure '{qfield.formula}' renamed to '{qfield.name}', "
+                        f"but model '{model.name}' has a source column named "
+                        f"'{canonical_name}' that shadows the canonical alias of "
+                        f"this aggregation. Filters / ORDER BY using "
+                        f"'{qfield.formula}' would be ambiguous. Pick a different "
+                        f"`name` (so the canonical alias is unused), rename the "
+                        f"source column, or reference the measure by its user "
+                        f"alias '{qfield.name}'."
+                    )
                 user_alias = f"{model_name_str}.{qfield.name}"
                 for m in measures:
                     if m.alias == f"{model_name_str}.{canonical_name}":
@@ -994,7 +1012,6 @@ async def enrich_query(
         _remap_renamed_aliases_in_filter(
             pf=pf,
             canonical_to_user_name=canonical_to_user_name,
-            source_column_names=_source_column_names,
         )
     resolved_query_filters = await resolve_filter_columns(
         parsed_filters=parsed_query_filters_pre,
@@ -1586,32 +1603,31 @@ def _remap_renamed_aliases_in_filter(
     *,
     pf: ParsedFilter,
     canonical_to_user_name: Dict[str, str],
-    source_column_names: Set[str],
 ) -> None:
     """DEV-1443: rewrite canonical-agg aliases in a parsed query filter
     to the user-supplied alias when the same node renamed the measure.
 
-    The eligibility filter is two-pronged:
-
-    * ``c in pf.synthesized_aliases`` — only remap names the parser saw
-      as colon-syntax in *this* filter. A literal column reference (no
-      colon syntax) is therefore left alone, since the parser would not
-      have synthesized it.
-    * ``c not in source_column_names`` — if a source ``Column`` literally
-      shares the canonical alias name, skip the remap; the regex sub
-      would otherwise clobber the legitimate column reference. The
-      pathological "filter combines both forms" case is rare enough that
-      preserving pre-fix semantics is the safest choice.
+    Eligibility: ``c in pf.synthesized_aliases`` — only remap names the
+    parser saw as colon-syntax in *this* filter. A literal column reference
+    (no colon syntax) is left alone since the parser would not have
+    synthesized it.
 
     Mutates ``pf.sql`` and ``pf.columns`` in place. ``synthesized_aliases``
     and ``agg_refs`` are left intact (they're parser provenance, not the
     rendered SQL).
+
+    Note: the case where ``canonical_name`` is also the name of a source
+    ``Column`` on the model is rejected up front at measure enrichment
+    (DEV-1443 Codex-review on PR #133). By the time this helper runs the
+    mapping is guaranteed not to alias a source column, so any
+    ``\\bcanonical\\b`` occurrence in ``pf.sql`` came from colon syntax
+    and is safe to rewrite.
     """
     if not canonical_to_user_name:
         return
     eligible = {
         c: u for c, u in canonical_to_user_name.items()
-        if c in pf.synthesized_aliases and c not in source_column_names
+        if c in pf.synthesized_aliases
     }
     if not eligible:
         return

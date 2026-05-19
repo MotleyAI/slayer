@@ -77,11 +77,17 @@ Or write the transform **inline** in the filter — no need to add it to `measur
 Renamed measures may be filtered by EITHER the user alias OR the raw colon
 formula — both resolve to the user alias. With
 `{"formula": "*:count", "name": "n"}`, either `filters: ["n > 5"]` or
-`filters: ["*:count > 5"]` produces the same HAVING clause. A `name` that
-collides with a source column on the source model is rejected at
-enrichment (alias-form filters would otherwise bind to the source column).
+`filters: ["*:count > 5"]` produces the same HAVING clause. Two
+enrichment-time validations apply to renamed measures: a `name` that
+collides with a source column on the source model is rejected (alias-form
+filters would otherwise bind to the source column); a rename whose
+canonical alias literally shadows a source column on the same model is
+also rejected (the colon-form filter would otherwise be ambiguous).
 Cross-model agg-ref filters with rename (`customers.revenue:sum >= 100`)
-are not yet auto-resolved — use the user alias directly.
+are NOT yet auto-resolved in any form — neither the colon syntax nor the
+user alias resolves. As a workaround until DEV-1445 lands, restructure
+as a multi-stage `source_queries` model so the cross-model measure
+becomes local in the downstream stage.
 
 ## Filtered columns — CASE WHEN inside an aggregate
 

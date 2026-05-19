@@ -24,7 +24,7 @@ from slayer.engine.enrichment import enrich_query
 from slayer.sql.generator import SQLGenerator
 
 
-async def _noop_async(**kw):
+async def _noop_async(**kw):  # NOSONAR(S7503) — must stay async, callers await this callback
     return None
 
 
@@ -181,7 +181,7 @@ class TestFilterRenamedMeasureRemap:
         )
         enriched = await _enrich(query, model)
         # Exactly one parsed filter — and it must be HAVING.
-        relevant = [f for f in enriched.filters]
+        relevant = list(enriched.filters)
         assert len(relevant) == 1
         f = relevant[0]
         assert f.is_having, (
@@ -238,14 +238,15 @@ class TestOrderByRenamedMeasureRemap:
 class TestRemapEdgeCases:
     """Codex F1 + F2 — corner cases around the remap."""
 
-    async def test_filter_canonical_name_collides_with_source_column_skips_remap(
+    async def test_filter_canonical_name_collides_with_source_column_raises(
         self,
     ) -> None:
-        """Codex F1: if a source column literally shares the canonical alias
-        AND the filter uses both forms, the remap must NOT fire — that would
-        clobber the literal source-column reference. Eligibility: remap only
-        when the canonical is in ``pf.synthesized_aliases`` AND not in
-        source-column names.
+        """DEV-1443 (Codex review on PR #133): if the canonical agg alias
+        of a renamed measure literally shadows a source ``Column`` on the
+        model, the colon-form filter ``col:agg <op> N`` is ambiguous (it
+        could mean the renamed aggregate or the source column). Refuse
+        the query at enrichment time rather than silently picking one and
+        producing surprising SQL.
         """
         model = SlayerModel(
             name="orders",
@@ -256,47 +257,29 @@ class TestRemapEdgeCases:
                 Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
                 # Pathological: a real column whose name happens to equal
-                # the canonical alias of a hypothetical ``amount:sum``.
+                # the canonical alias of ``amount:sum``.
                 Column(name="amount_sum", sql="amount_sum", type=DataType.DOUBLE),
             ],
         )
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
+            # Rename triggers the collision check: canonical
+            # ``amount_sum`` already names a source column.
             measures=[ModelMeasure(formula="amount:sum", name="revenue")],
-            # Filter combines:
-            #  - the colon form (would canonicalise to ``amount_sum``), AND
-            #  - a literal reference to the source column also named
-            #    ``amount_sum``.
-            # The remap must skip the canonical because of the source-column
-            # collision; the predicate retains ``amount_sum`` (or the
-            # resolved qualified form), NOT the renamed alias ``revenue``.
-            filters=["amount:sum > 100 or amount_sum > 0"],
         )
-        # Stronger assertion (per Codex test-review): the parsed-filter SQL
-        # must NOT have been remapped to the user alias. Inspect at the
-        # enrichment level to avoid being fooled by generator-side qualifier
-        # rewrites.
-        enriched = await _enrich(query, model)
-        predicate_sqls = [f.sql for f in enriched.filters]
-        for predicate_sql in predicate_sqls:
-            assert "revenue" not in predicate_sql, (
-                f"remap fired despite source-column collision: predicate="
-                f"{predicate_sql!r}, filters={predicate_sqls!r}"
-            )
-        # And the full rendered SQL still references the literal source
-        # column.
-        sql = await _generate(query, model)
-        assert "amount_sum" in sql, sql
+        with pytest.raises(ValueError, match=r"shadows the canonical alias"):
+            await _enrich(query, model)
 
     async def test_model_level_filter_unaffected_by_query_measure_rename(
         self,
     ) -> None:
         """Codex F3 (test-review): pin the Mode B/DSL-only boundary. A
-        ``SlayerModel.filters`` entry (Mode A SQL) referencing a token that
-        happens to be the canonical-shape of a renamed query measure must
-        NOT be remapped — model-side filters never carry synthesized
-        canonical aliases and the remap pre-pass must not touch them.
+        ``SlayerModel.filters`` entry (Mode A SQL) must survive query
+        enrichment untouched even when the query renames a measure that
+        would otherwise feed into ``canonical_to_user_name``. The remap
+        helper is only invoked for query filters; model filters go through
+        ``parse_sql_predicate`` and never see canonical-agg aliases.
         """
         model = SlayerModel(
             name="orders",
@@ -307,36 +290,35 @@ class TestRemapEdgeCases:
                 Column(name="status", sql="status", type=DataType.TEXT),
                 Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
                 Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                # A real source column whose name happens to equal the
-                # canonical of an unrelated query rename. Mode A model
-                # filters reference this directly.
-                Column(name="customer_id_count_distinct", sql="customer_id_count_distinct", type=DataType.DOUBLE),
+                Column(name="deleted_at", sql="deleted_at", type=DataType.TIMESTAMP),
             ],
-            filters=["customer_id_count_distinct > 0"],  # Mode A SQL filter.
+            # Plain Mode A model filter.
+            filters=["deleted_at IS NULL"],
         )
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                # Renames `customer_id:count_distinct` → `num_customers`.
+                # Triggers the rename branch — populates canonical_to_user_name.
                 ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
             ],
         )
         enriched = await _enrich(query, model)
-        # The model-level filter must surface untouched in the enriched
-        # filter list — neither the SQL text nor the columns list should
-        # have been rewritten to the user alias.
-        model_filters = [
-            f for f in enriched.filters if "customer_id_count_distinct" in f.sql
-        ]
-        assert model_filters, (
-            f"model filter lost from enriched output: "
+        # The model-level filter's text must surface in the enriched
+        # output, unchanged by the query-side remap. Strict identity
+        # match against the original Mode A predicate.
+        survivors = [f for f in enriched.filters if "deleted_at" in f.sql]
+        assert survivors, (
+            f"model filter dropped from enriched output: "
             f"{[f.sql for f in enriched.filters]!r}"
         )
-        for f in model_filters:
+        for f in survivors:
             assert "num_customers" not in f.sql, (
                 f"model-level (Mode A) filter must not be remapped to the "
                 f"query measure alias: {f.sql!r}"
+            )
+            assert "IS NULL" in f.sql.upper(), (
+                f"model filter shape altered: {f.sql!r}"
             )
 
     async def test_query_measure_name_collides_with_source_column_raises(

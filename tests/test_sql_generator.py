@@ -875,11 +875,16 @@ class TestFields:
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
         # DEV-1443: the colon-syntax filter resolves to the renamed user
-        # alias. Since ``revenue_90d`` is the only ``revenue:sum`` variant
-        # in this query, referencing it from the filter unambiguously
-        # selects the windowed measure (and never the plain sum).
-        assert '"orders.revenue_90d"' in norm, (
-            f"Filter must reference the renamed windowed measure's alias.\nsql:\n{sql}"
+        # alias. CodeRabbit nitpick: target the post-filter WHERE clause
+        # specifically — the alias surfaces in the projection too, so a
+        # generic ``in norm`` check could pass even on regression.
+        where_clause = norm.split(" WHERE ", 1)[1] if " WHERE " in norm else ""
+        assert '"orders.revenue_90d"' in where_clause, (
+            f"Filter must reference the renamed windowed measure's alias in WHERE.\nsql:\n{sql}"
+        )
+        # The filter must NOT bind to the plain-sum alias (no window).
+        assert '"orders.revenue_sum"' not in where_clause, (
+            f"Filter must not bind to plain-sum alias.\nsql:\n{sql}"
         )
         # The filter must be applied OUTSIDE the base CTE (no HAVING on the
         # plain `SUM(amount)` aggregate — that would use the wrong value).
