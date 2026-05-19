@@ -21,7 +21,12 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.engine.profiling import refresh_all_table_backed_sampled
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.memories.resolver import canonical_id_rooted_at
+from slayer.core.errors import AmbiguousModelError, EntityResolutionError
+from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
+from slayer.memories.resolver import (
+    canonical_id_rooted_at,
+    extract_entities_from_query,
+)
 from slayer.storage.base import StorageBackend
 
 if TYPE_CHECKING:
@@ -1265,7 +1270,55 @@ async def _refresh_datasource_doc(
     return [("", w) for w in doc_warnings]
 
 
-async def _refresh_memories_for_datasource(
+async def _entity_ref_exists(
+    *, entity: str, storage: StorageBackend,
+) -> Optional[bool]:
+    """DEV-1428 defense-in-depth cleanup probe. Returns:
+
+    * ``True`` when the canonical ref still resolves.
+    * ``False`` when storage definitively says it does not exist.
+    * ``None`` when the lookup raises (transient infra failure — treat
+      as "ref intact" so we don't drop data).
+    """
+    if entity.startswith(_MEMORY_PREFIX):
+        memory_id = entity[len(_MEMORY_PREFIX):]
+        try:
+            row = await storage.get_memory_row(memory_id)
+        except Exception:  # noqa: BLE001 — transient
+            return None
+        return row is not None
+    # ``<ds>[.<model>[.<leaf>]]`` shape. Datasource alone is rooted at
+    # ``ds``; deeper paths probe the parent model.
+    try:
+        datasources = set(await storage.list_datasources())
+    except Exception:  # noqa: BLE001 — transient
+        return None
+    parts = entity.split(".")
+    head = parts[0]
+    if head not in datasources:
+        return False
+    if len(parts) == 1:
+        return True
+    model_name = parts[1]
+    try:
+        model = await storage.get_model(model_name, data_source=head)
+    except Exception:  # noqa: BLE001 — transient
+        return None
+    if model is None:
+        return False
+    if len(parts) == 2:
+        return True
+    leaf = parts[-1]
+    if model.get_column(leaf) is not None:
+        return True
+    if model.get_measure(leaf) is not None:
+        return True
+    if model.get_aggregation(leaf) is not None:
+        return True
+    return False
+
+
+async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line per-memory walk over the existing-refresh edge plus a stale-ref-cleanup edge; splitting the two phases would force a second iteration over the same memory corpus
     *,
     datasource_name: str,
     storage: StorageBackend,
@@ -1275,6 +1328,12 @@ async def _refresh_memories_for_datasource(
     rooted at this datasource. Each warning is tagged with
     ``memory:<id>`` so a startup log inspection can distinguish memory
     failures from datasource-doc / model failures at a glance.
+
+    DEV-1428 defense-in-depth: also strip stale refs from every memory
+    rooted at this datasource (refs that resolve to a definitive "not
+    found"; transient lookup failures keep the ref intact). For memories
+    with ``Memory.query`` set, emit an ``IngestionError`` when the query
+    has stale references — the query itself is NOT rewritten.
 
     A memory linked to entities in datasources A and B is touched in
     both passes; hash-skip inside ``_apply_pending`` makes the second
@@ -1286,18 +1345,57 @@ async def _refresh_memories_for_datasource(
         return [("", f"{datasource_name} (memories): {exc}")]
     warnings: List[Tuple[str, str]] = []
     for memory in memories:
-        if not any(
+        rooted_at_ds = any(
             canonical_id_rooted_at(e, datasource_name)
             for e in memory.entities
-        ):
+        )
+        # DEV-1428: ``memory:<id>`` refs are datasource-agnostic. A
+        # memory carrying only such refs would otherwise never be
+        # touched by any per-datasource pass and could accumulate stale
+        # entries forever. Include those in the cleanup walk; the
+        # embedding refresh remains datasource-rooted so we don't
+        # re-embed every memory on every pass.
+        has_memory_refs = any(
+            e.startswith(_MEMORY_PREFIX) for e in memory.entities
+        )
+        if not rooted_at_ds and not has_memory_refs:
             continue
-        tag = f"memory:{memory.id}"
-        try:
-            memory_warnings = await service.refresh_memory(memory)
-        except Exception as exc:  # noqa: BLE001 — defensive per-memory
-            memory_warnings = [str(exc)]
-        for w in memory_warnings:
-            warnings.append((tag, w))
+        tag = f"{_MEMORY_PREFIX}{memory.id}"
+        if rooted_at_ds:
+            try:
+                memory_warnings = await service.refresh_memory(memory)
+            except Exception as exc:  # noqa: BLE001 — defensive per-memory
+                memory_warnings = [str(exc)]
+            for w in memory_warnings:
+                warnings.append((tag, w))
+        # DEV-1428 cleanup pass: drop refs that resolve to False
+        # (definitive not-found); keep refs that raise (transient).
+        cleaned: List[str] = []
+        changed = False
+        for entity in memory.entities:
+            exists = await _entity_ref_exists(
+                entity=entity, storage=storage,
+            )
+            if exists is False:
+                changed = True
+                continue
+            cleaned.append(entity)
+        if changed:
+            try:
+                rewritten = memory.model_copy(update={"entities": cleaned})
+                await storage._save_memory_row(rewritten)
+            except Exception as exc:  # noqa: BLE001 — defensive
+                warnings.append((tag, f"cleanup failed: {exc}"))
+        # DEV-1428: stale Memory.query warning.
+        if memory.query is not None and rooted_at_ds:
+            try:
+                await extract_entities_from_query(
+                    query=memory.query, storage=storage,
+                )
+            except (EntityResolutionError, AmbiguousModelError) as exc:
+                warnings.append(
+                    (tag, f"attached query has stale references: {exc}"),
+                )
     return warnings
 
 

@@ -21,11 +21,17 @@ to ``counters.yaml.legacy`` if present. Both renames are idempotent: if a
 ``.legacy`` file already exists at upgrade time, both files are left alone.
 """
 
+import contextlib
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import yaml
 from pydantic import ValidationError
+
+try:  # POSIX-only; Windows users get the no-op fallback.
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover — Windows
+    _fcntl = None  # type: ignore[assignment]
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.memories.models import Memory
@@ -224,55 +230,155 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         with open(path, "w") as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design (CLAUDE.md, Async Architecture)
             yaml.dump(rows, f, sort_keys=False)
 
-    async def _next_memory_seq(self) -> int:
-        """DEV-1405: derive the next id straight from ``memories.yaml``.
-        Returns ``max(int_ids) + 1`` over the current rows (or ``1`` for
-        an empty file). Ids of deleted memories may be reused — there is
-        no separate counter file.
+    @staticmethod
+    def _is_int_shaped_id(value: Any) -> bool:
+        """DEV-1428: pure-digit, no-leading-zero id form. ``"0"`` counts
+        but ``"001"`` and ``"42abc"`` do not."""
+        if not isinstance(value, str) or not value:
+            return False
+        if not value.isdigit():
+            return False
+        if value != "0" and value.startswith("0"):
+            return False
+        return True
 
-        Note: the SQLite backend reaches the same invariant via
-        ``SELECT MAX(id) + 1``; we don't rely on ``rows[-1]`` here because
-        ``_save_memory_row``'s filter-and-append upsert pattern (and any
-        hand-edit of the file) can leave the tail row out of id order.
+    async def _next_memory_seq(self) -> str:
+        """DEV-1428: derive the next int-shaped id from ``memories.yaml``.
+        Returns ``str(max(int_shaped_ids) + 1)`` (or ``"1"`` for an
+        empty corpus). Non-int-shaped ids (``"001"``, ``"42abc"``,
+        user-supplied strings like ``"kb.policy"``) are ignored.
         """
         rows = self._read_yaml_list(self._memories_path)
-        max_id = max(
-            (r["id"] for r in rows if isinstance(r.get("id"), int)),
-            default=0,
-        )
-        return max_id + 1
+        max_id = 0
+        for r in rows:
+            raw = r.get("id")
+            # Legacy int rows in pre-DEV-1428 files migrate at validation
+            # time; the allocator walk accepts both shapes pre-load.
+            if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+                max_id = max(max_id, raw)
+            elif isinstance(raw, str) and self._is_int_shaped_id(raw):
+                max_id = max(max_id, int(raw))
+        return str(max_id + 1)
+
+    def _normalize_legacy_rows(
+        self, rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """DEV-1428: dedupe legacy duplicate rows where the same logical
+        id exists in both int and str form. Fails loud when their content
+        differs."""
+        seen: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            raw = row.get("id")
+            if isinstance(raw, bool):
+                continue
+            if isinstance(raw, int):
+                key = str(raw)
+            elif isinstance(raw, str):
+                key = raw
+            else:
+                continue
+            if key not in seen:
+                seen[key] = row
+                continue
+            prior = seen[key]
+            if self._rows_content_equal(prior, row):
+                # Prefer the legacy int form (per plan) when both shapes
+                # carry the same content — the v1→v2 migration normalises
+                # it through ``Memory.model_validate`` anyway.
+                if isinstance(prior.get("id"), int):
+                    continue
+                seen[key] = row
+                continue
+            raise ValueError(
+                f"Cannot migrate Memory rows: id {key!r} exists in both "
+                f"int and str forms with different content "
+                f"(learning={prior.get('learning')!r} vs "
+                f"{row.get('learning')!r}). Resolve manually."
+            )
+        return list(seen.values())
+
+    @staticmethod
+    def _rows_content_equal(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        # DEV-1428: "content" excludes ``created_at`` — two legacy rows for
+        # the same logical memory may carry different timestamps (e.g. one
+        # written on int-id v1, then re-saved as str on v2). The plan's
+        # "fail loud if content differs" rule covers the actually-lossy
+        # case (different learning / entities / attached query).
+        keys = ("learning", "entities", "query")
+        return all(a.get(k) == b.get(k) for k in keys)
 
     async def _save_memory_row(self, memory: Memory) -> None:
         rows = self._read_yaml_list(self._memories_path)
-        rows = [r for r in rows if r.get("id") != memory.id]
+        rows = [r for r in rows if str(r.get("id")) != memory.id]
         rows.append(memory.model_dump(mode="json"))
         self._write_yaml_list(self._memories_path, rows)
 
-    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
-        for row in self._read_yaml_list(self._memories_path):
-            if row.get("id") == memory_id:
+    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
+        rows = self._normalize_legacy_rows(
+            self._read_yaml_list(self._memories_path),
+        )
+        for row in rows:
+            if str(row.get("id")) == memory_id:
                 return Memory.model_validate(row)
         return None
 
     async def _list_memories_rows(
         self, *, entities: Optional[List[str]]
     ) -> List[Memory]:
-        rows = [
-            Memory.model_validate(r)
-            for r in self._read_yaml_list(self._memories_path)
-        ]
+        rows = self._normalize_legacy_rows(
+            self._read_yaml_list(self._memories_path),
+        )
+        memories = [Memory.model_validate(r) for r in rows]
         if entities is None:
-            return rows
+            return memories
         wanted = set(entities)
-        return [r for r in rows if wanted & set(r.entities)]
+        return [m for m in memories if wanted & set(m.entities)]
 
-    async def _delete_memory_row(self, memory_id: int) -> bool:
+    async def _delete_memory_row(self, memory_id: str) -> bool:
         rows = self._read_yaml_list(self._memories_path)
-        kept = [r for r in rows if r.get("id") != memory_id]
+        kept = [r for r in rows if str(r.get("id")) != memory_id]
         if len(kept) == len(rows):
             return False
         self._write_yaml_list(self._memories_path, kept)
         return True
+
+    @contextlib.contextmanager
+    def _memories_file_lock(self) -> Iterator[None]:
+        """DEV-1428: serialise whole-file memories rewrites for the
+        cascade-strip path. Without the lock, two concurrent cascades
+        (or a cascade + a user save) can both read the same row list,
+        write back partially-overlapping mutations, and lose the
+        difference.
+
+        Implementation: an advisory ``flock`` on a sibling
+        ``memories.lock`` file (so a race with the YAML reader on the
+        live file is impossible). No-op on platforms without ``fcntl``
+        — for now that's only Windows, which isn't a supported
+        deployment target for the file-based store anyway.
+        """
+        if _fcntl is None:
+            yield
+            return
+        lock_path = self._memories_path + ".lock"
+        # Open in append-binary so the file is created if missing and
+        # no truncation happens on subsequent locks.
+        with open(lock_path, "ab") as lock_file:
+            _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                _fcntl.flock(lock_file.fileno(), _fcntl.LOCK_UN)
+
+    async def strip_dangling_entities_from_memories(
+        self, *, canonical_id: str,
+    ) -> int:
+        # YAML override: take the file-level lock around the entire
+        # cascade walk so concurrent cascades / saves can't interleave
+        # whole-file rewrites and lose unrelated edits (DEV-1428).
+        with self._memories_file_lock():
+            return await super().strip_dangling_entities_from_memories(
+                canonical_id=canonical_id,
+            )
 
     # Embedding CRUD lives in :class:`SidecarEmbeddingsMixin`, which
     # forwards to ``self._embeddings_store`` set in ``__init__`` above.

@@ -162,6 +162,36 @@ canonical entities are rooted at the datasource** (DEV-1416). A stale
 surface as `IngestionError(model_name="memory:<id>", …)` in the
 result's `errors` list.
 
+### Defense-in-depth dangling-ref cleanup (DEV-1428)
+
+The same per-datasource memory pass also walks each memory's
+`entities` list and probes every reference against storage. Refs
+that resolve to a definitive "not found" (deleted model, dropped
+column, vanished referenced memory) are stripped from the persisted
+list — three layers of defense keep entity tags clean as the
+underlying entities come and go:
+
+1. **Cascade-strip at delete (primary)** — `delete_model` /
+   `delete_datasource` / `forget_memory` / `edit_model_remove`
+   rewrite affected memories synchronously.
+2. **Retrieval-time in-memory filter (belt)** — `SearchService`
+   filters each memory's `entities` against the live canonical set
+   before BM25 ranks, so partially-completed cascades never surface
+   stale tags. No write-back.
+3. **Ingest-time persisted cleanup (suspenders)** — the per-memory
+   walk described here.
+
+A raise during the cleanup-side existence-check (transient infra
+failure) is treated as **"ref intact"** — the reference is kept,
+never dropped on a maybe.
+
+For memories with an attached `Memory.query` (the inline example
+query stored alongside the learning), the cleanup pass attempts to
+re-extract entities from the query. On failure the pass emits an
+`IngestionError(model_name="memory:<id>", error="attached query has
+stale references: ...")` — the query itself is **not** rewritten.
+Agents reading the warning can re-save the memory to clean it.
+
 ### CLI
 
 ```bash

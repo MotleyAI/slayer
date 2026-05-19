@@ -6,18 +6,22 @@ materialised ``SlayerQuery``). Memories without a ``query`` are surfaced
 in ``inspect_model``'s Learnings section; query-bearing memories appear
 only via ``search`` (in the ``example_queries`` bucket).
 
-Ids are monotonic positive ints allocated by the storage layer at save
-time. The default ``id=0`` lets callers construct a draft and let
-storage fill in the persisted id; ``created_at`` defaults to UTC now.
-Canonical entity strings are produced by the resolver before rows reach
-storage; the ``entities`` field is stored verbatim with no further
-validation.
+DEV-1428: ids are non-empty strings. The default ``id=""`` is the
+"unassigned" sentinel the storage layer recognises (it allocates a
+monotonic int-shaped id then). Auto-allocation only counts pure-digit,
+no-leading-zero ids when picking the next value, so ``"001"`` and
+``"42abc"`` do not pollute the max-int walk. User-supplied ids share
+the namespace and may collide intentionally → upsert.
+
+Forbidden charset on ``id``: ``:``, ``/``, ``?``, ``#``, whitespace,
+ASCII control. Bare-name resolution never resolves to a memory — refs
+must use the ``memory:<id>`` prefix.
 """
 
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from slayer.core.query import SlayerQuery
 from slayer.storage.migrations import migrate as _migrate_schema
@@ -27,12 +31,55 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_FORBIDDEN_ID_CHARS = (":", "/", "?", "#")
+
+#: Canonical-id prefix for cross-memory references (`memory:<id>`).
+#: Re-exported from this module so the resolver, search service, and
+#: ingestion cleanup all share one definition (Sonar S1192).
+MEMORY_CANONICAL_PREFIX = "memory:"
+
+
+def _validate_memory_id_charset(value: str) -> None:
+    """Reject the forbidden charset on a memory id.
+
+    Called from both ``Memory.id`` validation (model layer) and
+    ``resolve_entity("memory:<id>")`` (resolver layer) so the rule
+    has exactly one definition.
+    """
+    if not isinstance(value, str):
+        raise ValueError(
+            f"memory id must be a string; got {type(value).__name__}."
+        )
+    if not value:
+        raise ValueError("memory id must be non-empty.")
+    for ch in _FORBIDDEN_ID_CHARS:
+        if ch in value:
+            raise ValueError(
+                f"memory id {value!r}: forbidden character {ch!r}."
+            )
+    for ch in value:
+        if ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F:
+            raise ValueError(
+                f"memory id {value!r}: whitespace and ASCII control "
+                "characters are not allowed."
+            )
+
+
+def is_valid_memory_id(value: str) -> bool:
+    """Return ``True`` iff ``value`` would pass ``_validate_memory_id_charset``."""
+    try:
+        _validate_memory_id_charset(value)
+    except ValueError:
+        return False
+    return True
+
+
 class Memory(BaseModel):
     """A single agent memory: a note plus its canonical entity tags,
     optionally bundled with a ``SlayerQuery`` example."""
 
-    version: int = 1
-    id: int = 0
+    version: int = 2
+    id: str = ""
     learning: str
     entities: List[str] = Field(default_factory=list)
     query: Optional[SlayerQuery] = None
@@ -43,6 +90,27 @@ class Memory(BaseModel):
     def _apply_schema_migrations(cls, data: Any) -> Any:
         return _migrate_schema(entity="Memory", data=data)
 
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            raise ValueError(
+                f"memory id must be a string; got bool {value!r}."
+            )
+        if isinstance(value, int):
+            return str(value)
+        return value
+
+    @field_validator("id")
+    @classmethod
+    def _check_id_charset(cls, value: str) -> str:
+        if value == "":
+            return value
+        _validate_memory_id_charset(value)
+        return value
+
 
 # ---------------------------------------------------------------------------
 # Tool / endpoint response models
@@ -50,12 +118,10 @@ class Memory(BaseModel):
 
 
 class SaveMemoryResponse(BaseModel):
-    memory_id: int
+    memory_id: str
     resolved_entities: List[str]
     warnings: List[str] = Field(default_factory=list)
 
 
 class ForgetMemoryResponse(BaseModel):
-    deleted_id: int
-
-
+    deleted_id: str

@@ -70,9 +70,9 @@ class TestSaveMemory:
             learning="orders.amount in cents",
             linked_entities=["mydb.orders.amount"],
         )
-        assert resp.memory_id == 1
+        assert resp.memory_id == "1"
         assert resp.resolved_entities == ["mydb.orders.amount"]
-        loaded = await storage.get_memory(1)
+        loaded = await storage.get_memory("1")
         assert loaded.learning == "orders.amount in cents"
 
     async def test_save_with_query(
@@ -85,8 +85,8 @@ class TestSaveMemory:
                 "measures": [{"formula": "amount:sum"}],
             },
         )
-        assert resp.memory_id == 1
-        loaded = await storage.get_memory(1)
+        assert resp.memory_id == "1"
+        loaded = await storage.get_memory("1")
         assert loaded.query is not None
 
 

@@ -51,7 +51,7 @@ class IndexHit(BaseModel):
     canonical: str
     text: str
     score: float
-    memory_id: Optional[int] = None  # populated only when kind == "memory"
+    memory_id: Optional[str] = None  # populated only when kind == "memory"
 
 
 # ---------------------------------------------------------------------------
@@ -323,12 +323,9 @@ def search_index(
         doc = searcher.doc(address)
         kind = str(doc.get_first("kind"))
         canonical = str(doc.get_first("canonical"))
-        memory_id: Optional[int] = None
+        memory_id: Optional[str] = None
         if kind == "memory":
-            try:
-                memory_id = int(canonical)
-            except (TypeError, ValueError):
-                memory_id = None
+            memory_id = canonical or None
         out.append(IndexHit(
             id=str(doc.get_first("id")),
             kind=kind,

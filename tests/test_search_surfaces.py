@@ -99,9 +99,11 @@ async def test_mcp_search_tool_returns_json_with_three_lists(
 
 
 @pytest.mark.asyncio
-async def test_mcp_search_friendly_error_on_unknown_entity(
+async def test_mcp_search_friendly_warning_on_unknown_entity(
     storage_with_corpus: StorageBackend,
 ) -> None:
+    """DEV-1428: unknown entities become warnings; the MCP tool still
+    returns the regular JSON response (the warning is visible inside)."""
     from slayer.mcp.server import create_mcp_server
     mcp = create_mcp_server(storage=storage_with_corpus)
     result_text = await _call_mcp_tool(
@@ -109,7 +111,8 @@ async def test_mcp_search_friendly_error_on_unknown_entity(
         name="search",
         arguments={"entities": ["warehouse.nope.col"]},
     )
-    assert "Error" in result_text
+    assert "warehouse.nope.col" in result_text
+    assert "warnings" in result_text
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +160,9 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
     ).status_code in (404, 405)
 
 
-def test_rest_post_search_unknown_entity_returns_400(tmp_path) -> None:
+def test_rest_post_search_unknown_entity_returns_warning(tmp_path) -> None:
+    """DEV-1428: unknown entities become warnings rather than 400 — the
+    REST endpoint returns 200 with the warning in ``warnings``."""
     from slayer.api.server import create_app
     import asyncio
     storage = resolve_storage(str(tmp_path / "storage"))
@@ -169,7 +174,9 @@ def test_rest_post_search_unknown_entity_returns_400(tmp_path) -> None:
     app = create_app(storage=storage)
     client = TestClient(app)
     res = client.post("/search", json={"entities": ["warehouse.nope.col"]})
-    assert res.status_code == 400
+    assert res.status_code == 200
+    body = res.json()
+    assert any("warehouse.nope.col" in w for w in body["warnings"])
 
 
 # ---------------------------------------------------------------------------

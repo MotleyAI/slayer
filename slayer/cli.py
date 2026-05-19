@@ -473,11 +473,25 @@ examples:
         default=None,
         help="Inline JSON SlayerQuery (or @file.json) to extract entities from and persist alongside the learning.",
     )
+    memory_save_parser.add_argument(
+        "--id",
+        default=None,
+        dest="id",
+        help=(
+            "Optional canonical memory id. Omit to auto-allocate a "
+            "monotonic int-shaped id; supply a non-empty string "
+            "(charset excludes ':', '/', '?', '#', whitespace) for a "
+            "stable user-controlled id (e.g. 'kb.policy.42'). "
+            "Duplicate id → upsert."
+        ),
+    )
 
     memory_forget_parser = memory_subparsers.add_parser(
         "forget", help="Delete a memory by id"
     )
-    memory_forget_parser.add_argument("id", type=int, help="Memory id (positive int)")
+    memory_forget_parser.add_argument(
+        "id", type=str, help="Memory id (non-empty string)",
+    )
 
     # ── storage ──────────────────────────────────────────────────────
     storage_parser = subparsers.add_parser(
@@ -1614,6 +1628,7 @@ def _run_memory_save(args, service):
             service.save_memory(
                 learning=args.learning,
                 linked_entities=linked,
+                id=getattr(args, "id", None),
             )
         )
     except (EntityResolutionError, AmbiguousModelError, ValueError) as exc:
