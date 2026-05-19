@@ -279,6 +279,19 @@ class TestQuery:
         assert len(slayer_query.measures) == 1
         assert slayer_query.measures[0].formula == "*:count"
 
+    def test_request_accepts_bare_string_measures_and_dimensions(self) -> None:
+        """Bare strings in ``measures`` / ``dimensions`` (matching ``SlayerQuery``'s
+        coercion and the docs / example READMEs) must pass FastAPI validation
+        and lift to ``{"formula": ...}`` / ``{"name": ...}`` downstream."""
+        req = QueryRequest.model_validate(
+            {"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}
+        )
+        slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
+        assert slayer_query.measures is not None
+        assert slayer_query.measures[0].formula == "*:count"
+        assert slayer_query.dimensions is not None
+        assert slayer_query.dimensions[0].name == "status"
+
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
         req = QueryRequest.model_validate(

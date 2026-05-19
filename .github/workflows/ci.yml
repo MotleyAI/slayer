@@ -35,3 +35,71 @@ jobs:
 
       - name: Run unit tests
         run: poetry run pytest tests/ -v
+
+  integration-examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [clickhouse, mysql]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install verify.py dependencies
+        run: pip install sqlalchemy
+
+      - name: Make slayer_data writable for container user
+        working-directory: examples/${{ matrix.example }}
+        run: chmod -R 777 slayer_data
+
+      - name: Build images
+        working-directory: examples/${{ matrix.example }}
+        run: docker compose build
+
+      - name: Start DB + seed
+        working-directory: examples/${{ matrix.example }}
+        run: docker compose up -d --wait --wait-timeout 180 seed
+
+      - name: Start slayer service
+        working-directory: examples/${{ matrix.example }}
+        run: docker compose up -d slayer
+
+      - name: Wait for SLayer API to accept connections
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:5143/datasources >/dev/null; then
+              echo "SLayer API ready after ${i} attempts"
+              exit 0
+            fi
+            # If the container died, fail fast and show why.
+            if [ "$(docker compose ps -q slayer | xargs -r docker inspect -f '{{.State.Running}}')" = "false" ]; then
+              echo "slayer container exited before becoming ready — logs:" >&2
+              docker compose logs --no-color slayer
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "SLayer API never came up — logs:" >&2
+          docker compose logs --no-color slayer
+          exit 1
+
+      - name: Run verify.py
+        timeout-minutes: 5
+        run: python examples/${{ matrix.example }}/verify.py
+
+      - name: Dump all container logs
+        if: always()
+        working-directory: examples/${{ matrix.example }}
+        run: docker compose logs --no-color
+
+      - name: Tear down stack
+        if: always()
+        working-directory: examples/${{ matrix.example }}
+        run: docker compose down -v

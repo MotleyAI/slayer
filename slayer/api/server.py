@@ -38,8 +38,13 @@ class QueryRequest(BaseModel):
     # "...", "columns": [...]}``). The full polymorphism is handled by
     # ``SlayerQuery.model_validate`` downstream.
     source_model: Optional[Union[str, Dict[str, Any]]] = None
-    measures: Optional[List[Dict[str, Any]]] = None
-    dimensions: Optional[List[Dict[str, Any]]] = None
+    # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
+    # mirroring the Python API: ``"*:count"`` is lifted to
+    # ``{"formula": "*:count"}``, ``"status"`` to ``{"name": "status"}``.
+    # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
+    # ``_coerce_dimensions``) do the actual lifting downstream.
+    measures: Optional[List[Union[str, Dict[str, Any]]]] = None
+    dimensions: Optional[List[Union[str, Dict[str, Any]]]] = None
     time_dimensions: Optional[List[Dict[str, Any]]] = None
     filters: Optional[List[str]] = None
     order: Optional[List[Dict[str, Any]]] = None
