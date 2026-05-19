@@ -79,6 +79,8 @@ Measure formulas define what aggregated values a query returns. They go in the `
 
 The `name` is optional — if omitted, it's auto-generated from the formula. The `label` is an optional human-readable display name for the field.
 
+When a measure is renamed via `name`, query filters and ORDER BY entries in the same node accept either form — the raw colon formula or the user alias. See [Filters → Filtering on Computed Columns](queries.md#filtering-on-computed-columns).
+
 ### Arithmetic Operators
 
 | Operator | Example | SQL |

@@ -165,7 +165,9 @@ time (`instr` → `POSITION` / `LOCATE` / `STRPOS`, `substr` →
 
 ### Filtering on Computed Columns
 
-Filters can reference names of computed measures — transforms and arithmetic expressions defined in `measures`. These are applied as post-filters on the outer query, after all transforms are computed. Note: bare measure renames (e.g., `{"formula": "*:count", "name": "n"}`) are not post-filterable by name; use the original measure name instead.
+Filters can reference names of computed measures — transforms and arithmetic expressions defined in `measures`. These are applied as post-filters on the outer query, after all transforms are computed.
+
+When a query measure is renamed via `{"formula": "col:agg", "name": "alias"}`, the filter in the same node may reference EITHER form — the raw colon formula `col:agg` OR the user alias `alias`. Both resolve to the user alias, and a colon-form filter is classified as HAVING on the underlying aggregate. Renaming never changes the legal filter form. Two enrichment-time validations apply: (1) a query measure `name` that collides with a source column on the source model is rejected (alias-form filters would otherwise silently bind to the source column); (2) a rename whose canonical alias literally shadows a source column on the same model is also rejected (the colon-form filter would otherwise be ambiguous). Cross-model agg-ref filters with rename (`customers.revenue:sum >= 100` paired with a renamed cross-model measure) are NOT yet auto-resolved in any form — neither the colon syntax nor the user alias resolves through the join-walk path. Workaround until DEV-1445 lands: restructure as a multi-stage `source_queries` model so the cross-model measure becomes a local measure in the downstream stage.
 
 ```json
 {
