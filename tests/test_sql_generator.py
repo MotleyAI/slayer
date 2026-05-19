@@ -860,9 +860,11 @@ class TestFields:
         aggregate.
 
         Verify by checking the generated SQL contains a WHERE on the
-        post-aggregate combined CTE (referenced via the windowed alias),
-        and that the canonical filter alias matches the windowed measure's
-        alias (i.e. the window kwarg is preserved in canonicalization).
+        post-aggregate combined CTE (referenced via the windowed alias).
+        DEV-1443: the colon-syntax filter auto-resolves to the user alias
+        when the measure is renamed, so the filter references
+        ``"orders.revenue_90d"`` (the user-supplied name on the windowed
+        measure) and never the unrelated plain-sum alias.
         """
         query = SlayerQuery(
             source_model="orders",
@@ -872,10 +874,12 @@ class TestFields:
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
-        # Canonical filter name must include the window kwarg suffix so it
-        # matches the windowed measure's alias.
-        assert "revenue_sum_window_90d" in norm, (
-            f"Filter canonical name must include window kwarg.\nsql:\n{sql}"
+        # DEV-1443: the colon-syntax filter resolves to the renamed user
+        # alias. Since ``revenue_90d`` is the only ``revenue:sum`` variant
+        # in this query, referencing it from the filter unambiguously
+        # selects the windowed measure (and never the plain sum).
+        assert '"orders.revenue_90d"' in norm, (
+            f"Filter must reference the renamed windowed measure's alias.\nsql:\n{sql}"
         )
         # The filter must be applied OUTSIDE the base CTE (no HAVING on the
         # plain `SUM(amount)` aggregate — that would use the wrong value).
