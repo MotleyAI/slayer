@@ -460,7 +460,7 @@ Sibling stages can also reference each other — any non-final stage may use a *
 
 **Surface coverage.** Query lists work via every surface:
 
-- Python SDK: `engine.execute(query=[...])`.
+- Python SDK: `engine.execute(query=[...])` and `SlayerClient.query`/`query_sync`/`sql`/`sql_sync`/`explain`/`explain_sync`/`query_df` all accept `SlayerQuery | dict | list[SlayerQuery | dict] | str` (str = run-by-name).
 - CLI: `slayer query @file.json` — accepts both a single object and a top-level list.
 - MCP: the `query_nested` tool, `queries=[...]` argument.
 - REST: `POST /query` with body `{"queries": [...], "variables": {...}, "dry_run": ..., "explain": ...}` (the single-query body shape is also still accepted).
