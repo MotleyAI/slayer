@@ -109,6 +109,20 @@ class SlayerClient:
             return resp.json()
 
     @staticmethod
+    def _validated_dump(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Round-trip a single-query payload through ``SlayerQuery`` so
+        the server sees the normalised JSON-mode shape. Necessary because
+        the server's ``QueryRequest`` declares ``measures`` /
+        ``dimensions`` as ``List[Dict[str, Any]]`` and FastAPI rejects
+        string-shorthand entries with HTTP 422 before the server can
+        re-coerce them — whereas ``SlayerQuery`` itself accepts shorthand
+        and normalises it to dict form.
+        """
+        return SlayerQuery.model_validate(dict(payload)).model_dump(
+            mode="json", exclude_none=True
+        )
+
+    @staticmethod
     def _build_query_body(
         query: QueryInput,
         *,
@@ -122,10 +136,12 @@ class SlayerClient:
         Shapes (mirroring ``engine.execute``):
 
         * ``str`` → ``{"name": <str>}`` (run-by-name)
-        * ``list`` → ``{"queries": [<item-dict>, ...]}`` — each item is
-          either a ``SlayerQuery`` (JSON-dumped) or a dict (shallow-copied)
-        * ``dict`` → shallow copy of the dict (server's ``QueryRequest``
-          has ``extra="allow"`` so passing through is safe)
+        * ``Sequence`` (list/tuple/...) → ``{"queries": [<item-dict>, ...]}``
+          — each item is either a ``SlayerQuery`` or a ``Mapping``; both
+          are normalised through ``SlayerQuery`` so string-shorthand
+          measures / dimensions round-trip cleanly.
+        * ``Mapping`` (dict/MappingProxyType/...) → normalised
+          ``SlayerQuery`` JSON dump (same reason as above).
         * ``SlayerQuery`` → ``model_dump(mode="json", exclude_none=True)``
 
         ``dry_run`` and ``explain`` are appended at the top of the body
@@ -148,7 +164,7 @@ class SlayerClient:
                         item.model_dump(mode="json", exclude_none=True)
                     )
                 elif isinstance(item, ABCMapping):
-                    serialised.append(dict(item))
+                    serialised.append(SlayerClient._validated_dump(item))
                 else:
                     raise TypeError(
                         f"query[{i}] must be SlayerQuery or Mapping; got "
@@ -156,7 +172,7 @@ class SlayerClient:
                     )
             body = {"queries": serialised}
         elif isinstance(query, ABCMapping):
-            body = dict(query)
+            body = SlayerClient._validated_dump(query)
         else:
             raise TypeError(
                 "query must be SlayerQuery, Mapping, Sequence, or str; got "
@@ -167,6 +183,31 @@ class SlayerClient:
         if explain:
             body["explain"] = True
         return body
+
+    @staticmethod
+    def _normalize_for_engine(query: QueryInput) -> Any:
+        """Coerce ``Mapping``/``Sequence`` inputs to concrete ``dict`` /
+        ``list`` before forwarding to ``engine.execute`` / ``execute_sync``.
+        The engine's dispatch uses ``isinstance(query, dict)`` and
+        ``isinstance(query, list)`` directly, so a tuple or
+        ``MappingProxyType`` would fall through to the SlayerQuery branch
+        and crash. Mirrors the runtime contract advertised by
+        ``QueryInput`` on both local and HTTP transports.
+        """
+        if isinstance(query, str) or isinstance(query, SlayerQuery):
+            return query
+        if isinstance(query, ABCSequence) and not isinstance(
+            query, (bytes, bytearray)
+        ):
+            return [
+                item if isinstance(item, SlayerQuery)
+                else dict(item) if isinstance(item, ABCMapping)
+                else item  # engine raises with the per-item context.
+                for item in query
+            ]
+        if isinstance(query, ABCMapping):
+            return dict(query)
+        return query  # engine raises with the per-input context.
 
     @staticmethod
     def _parse_response(result: dict) -> SlayerResponse:
@@ -209,7 +250,9 @@ class SlayerClient:
         """
         if self._engine is not None:
             return await self._engine.execute(
-                query=query, dry_run=dry_run, explain=explain
+                query=self._normalize_for_engine(query),
+                dry_run=dry_run,
+                explain=explain,
             )
         body = self._build_query_body(
             query, dry_run=dry_run, explain=explain
@@ -427,7 +470,9 @@ class SlayerClient:
         """
         if self._engine is not None:
             return self._engine.execute_sync(
-                query=query, dry_run=dry_run, explain=explain
+                query=self._normalize_for_engine(query),
+                dry_run=dry_run,
+                explain=explain,
             )
         body = self._build_query_body(
             query, dry_run=dry_run, explain=explain

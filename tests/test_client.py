@@ -228,6 +228,45 @@ class TestLocalMode:
         assert "amount" in resp.sql.lower()
         assert "region" in resp.sql.lower()
 
+    async def test_query_sync_accepts_tuple_local_mode(
+        self, client: SlayerClient, storage: YAMLStorage
+    ) -> None:
+        """``tuple`` input reaches the engine in local mode — the client
+        normalises Sequence → list before forwarding so the engine's
+        ``isinstance(query, list)`` dispatch matches."""
+        await _save_orders(storage)
+        queries = (
+            {
+                "name": "by_customer",
+                "source_model": "orders",
+                "measures": [{"formula": "amount:sum"}],
+                "dimensions": [{"name": "customer_id"}],
+            },
+            {
+                "source_model": "by_customer",
+                "measures": [{"formula": "amount_sum:avg"}],
+            },
+        )
+        resp = client.query_sync(queries, dry_run=True)
+        assert resp.sql is not None
+        assert "avg(" in resp.sql.lower()
+
+    async def test_query_sync_accepts_mappingproxy_local_mode(
+        self, client: SlayerClient, storage: YAMLStorage
+    ) -> None:
+        """``MappingProxyType`` input reaches the engine in local mode
+        — the client normalises Mapping → dict before forwarding."""
+        await _save_orders(storage)
+        payload: Mapping[str, Any] = MappingProxyType(
+            {
+                "source_model": "orders",
+                "measures": [{"formula": "amount:sum"}],
+            }
+        )
+        resp = client.query_sync(payload, dry_run=True)
+        assert resp.sql is not None
+        assert "amount" in resp.sql.lower()
+
 
 # --------------------------------------------------------------------------- #
 # HTTP-mode body-shape tests (pins the DEV-1437 bug)
@@ -259,7 +298,15 @@ class TestHttpBodyShape:
         assert resp.sql == "SELECT 1"
         body = cap.last_body
         assert body is not None
-        assert body == {"queries": queries}
+        expected = {
+            "queries": [
+                SlayerQuery.model_validate(q).model_dump(
+                    mode="json", exclude_none=True
+                )
+                for q in queries
+            ]
+        }
+        assert body == expected
 
     def test_list_with_slayerquery_items(
         self,
@@ -281,7 +328,12 @@ class TestHttpBodyShape:
         assert body["queries"][0] == q.model_dump(
             mode="json", exclude_none=True
         )
-        assert body["queries"][1] == {"source_model": "a"}
+        # Dict items are normalised through SlayerQuery (string-shorthand
+        # measures / dimensions become dict-form; defaults like ``version``
+        # surface).
+        assert body["queries"][1] == SlayerQuery.model_validate(
+            {"source_model": "a"}
+        ).model_dump(mode="json", exclude_none=True)
 
     # --- str ----------------------------------------------------------- #
 
@@ -299,6 +351,12 @@ class TestHttpBodyShape:
         self,
         http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
     ) -> None:
+        """Dict input is round-tripped through ``SlayerQuery`` so the
+        server sees the JSON-mode dump (string-shorthand normalised,
+        defaults included). FastAPI's ``QueryRequest`` declares strict
+        list-of-dict types for measures/dimensions; the round-trip is
+        the only way string-shorthand input doesn't 422 server-side.
+        """
         client, cap = http_client_with_capture
         payload = {
             "source_model": "orders",
@@ -306,10 +364,31 @@ class TestHttpBodyShape:
         }
         client.query_sync(payload)
         body = cap.last_body
-        assert body == payload
-        # Helper shallow-copies the dict so dry_run/explain appends don't
-        # mutate the caller. See ``test_does_not_mutate_caller_dict``.
+        assert body == SlayerQuery.model_validate(payload).model_dump(
+            mode="json", exclude_none=True
+        )
+        # Helper doesn't mutate the caller. See
+        # ``test_does_not_mutate_caller_dict``.
         assert body is not payload
+
+    def test_dict_normalizes_string_shorthand(
+        self,
+        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        """String-shorthand measures (e.g. ``"amount:sum"``) become
+        dict-form (``{"formula": "amount:sum"}``) before reaching the
+        server — otherwise FastAPI's ``QueryRequest`` rejects the body
+        with HTTP 422.
+        """
+        client, cap = http_client_with_capture
+        payload = {"source_model": "orders", "measures": ["amount:sum"]}
+        client.query_sync(payload)
+        body = cap.last_body
+        assert body is not None
+        # Each measure landed as a dict, not a bare string.
+        for m in body["measures"]:
+            assert isinstance(m, dict)
+            assert m.get("formula") == "amount:sum"
 
     # --- SlayerQuery --------------------------------------------------- #
 
@@ -452,13 +531,16 @@ class TestHttpBodyShape:
         http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         """``MappingProxyType`` is a ``Mapping`` but not a ``dict`` — the
-        helper must honour the declared ``Mapping[str, Any]`` contract."""
+        helper must honour the declared ``Mapping[str, Any]`` contract
+        AND route through the SlayerQuery normalisation pipeline."""
         client, cap = http_client_with_capture
         payload: Mapping[str, Any] = MappingProxyType(
             {"source_model": "orders", "measures": [{"formula": "amount:sum"}]}
         )
         client.query_sync(payload)
-        assert cap.last_body == dict(payload)
+        assert cap.last_body == SlayerQuery.model_validate(
+            dict(payload)
+        ).model_dump(mode="json", exclude_none=True)
 
     def test_tuple_body_shape(
         self,
@@ -473,7 +555,13 @@ class TestHttpBodyShape:
         client.query_sync(items)
         body = cap.last_body
         assert body is not None
-        assert body["queries"] == list(items)
+        expected = [
+            SlayerQuery.model_validate(it).model_dump(
+                mode="json", exclude_none=True
+            )
+            for it in items
+        ]
+        assert body["queries"] == expected
 
     # --- pass-through of variables (DEV-1438 ergonomics live in body) -- #
 
@@ -513,7 +601,13 @@ class TestHttpBodyShape:
         assert sql == "SELECT 1"
         body = cap.last_body
         assert body is not None
-        assert body.get("queries") == queries
+        expected = [
+            SlayerQuery.model_validate(q).model_dump(
+                mode="json", exclude_none=True
+            )
+            for q in queries
+        ]
+        assert body.get("queries") == expected
         assert body.get("dry_run") is True
 
     def test_sql_sync_str_input(
@@ -540,7 +634,13 @@ class TestHttpBodyShape:
         assert resp.sql == "SELECT 1"
         body = cap.last_body
         assert body is not None
-        assert body.get("queries") == queries
+        expected = [
+            SlayerQuery.model_validate(q).model_dump(
+                mode="json", exclude_none=True
+            )
+            for q in queries
+        ]
+        assert body.get("queries") == expected
         assert body.get("explain") is True
 
     def test_explain_sync_str_input(
@@ -586,10 +686,17 @@ class TestHttpBodyShape:
         df = client.query_df(queries)
         assert isinstance(df, pd.DataFrame)
         assert len(df) == 2
-        # And the list shape did reach the transport.
+        # And the list shape did reach the transport (normalised through
+        # SlayerQuery — see ``test_dict_normalizes_string_shorthand``).
         body = capture.last_body
         assert body is not None
-        assert body.get("queries") == queries
+        expected = [
+            SlayerQuery.model_validate(q).model_dump(
+                mode="json", exclude_none=True
+            )
+            for q in queries
+        ]
+        assert body.get("queries") == expected
 
     # --- async mirror -------------------------------------------------- #
 
@@ -604,7 +711,15 @@ class TestHttpBodyShape:
             {"source_model": "a"},
         ]
         await client.query(queries)
-        assert cap.last_body == {"queries": queries}
+        expected = {
+            "queries": [
+                SlayerQuery.model_validate(q).model_dump(
+                    mode="json", exclude_none=True
+                )
+                for q in queries
+            ]
+        }
+        assert cap.last_body == expected
 
     async def test_async_query_str_body_shape(
         self,
