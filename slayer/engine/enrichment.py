@@ -63,7 +63,7 @@ def _strip_string_literal(value: str) -> str:
 _canonical_agg_name = canonical_agg_name  # Module-internal alias for the shared helper
 
 
-def canonical_expression_key(node: Any) -> Tuple[Any, ...]:
+def canonical_expression_key(node: Any) -> Tuple[Any, ...]:  # NOSONAR(S8495) — variable-length tuple shape IS the discriminator; type signature already declares Tuple[Any, ...]
     """DEV-1444: build an alias-independent, structural hash key for a
     parsed formula AST node.
 
@@ -824,6 +824,18 @@ async def enrich_query(
     user_projection: List[str] = [d.alias for d in dimensions]
     user_projection.extend(td.alias for td in time_dimensions)
 
+    # DEV-1444 (Codex review on PR #134): the provenance-merge index in
+    # ``_ensure_aggregated_measure`` would silently collapse two
+    # user-declared measures that share a canonical key — e.g.
+    # ``{"formula":"amount:sum","name":"revenue1"}`` followed by
+    # ``{"formula":"amount:sum","name":"revenue2"}`` — onto whichever
+    # surfaced alias was claimed first, leaving the second qfield's
+    # alias in ``user_projection`` with no matching EnrichedMeasure. The
+    # outer trim would then project a column the inner SELECT doesn't
+    # expose. Track the set of canonical keys already owned by a
+    # user-declared qfield and refuse the duplicate.
+    user_declared_canon_keys: Dict[Tuple[Any, ...], str] = {}
+
     # Process each query field
     for qfield in query.measures or []:
         spec = parse_formula(
@@ -883,6 +895,37 @@ async def enrich_query(
                 cross_model_measures.append(cm)
                 user_projection.append(cm.alias)
                 continue
+
+            # DEV-1444 (Codex review on PR #134): refuse two user-
+            # declared qfields with the same canonical aggregation. The
+            # provenance-merge index would otherwise reuse the first
+            # alias for the second qfield, surfacing ``user_projection``
+            # entries that no EnrichedMeasure backs.
+            qfield_canon_key = (
+                "agg",
+                spec.measure_name,
+                spec.aggregation_name,
+                tuple(spec.agg_args),
+                tuple(sorted(spec.agg_kwargs.items())),
+            )
+            if qfield_canon_key in user_declared_canon_keys:
+                prior_name = user_declared_canon_keys[qfield_canon_key]
+                this_name = qfield.name or canonical_name
+                if prior_name != this_name:
+                    raise ValueError(
+                        f"Measure '{qfield.formula}' (surfacing as "
+                        f"'{this_name}') canonicalises to the same "
+                        f"aggregation as an earlier query measure "
+                        f"(surfacing as '{prior_name}'). Two user-declared "
+                        f"measures with the same canonical aggregation "
+                        f"would otherwise collapse into one column, "
+                        f"leaving the second name with no backing "
+                        f"aggregate. Pick a single name, or drop the "
+                        f"duplicate."
+                    )
+            user_declared_canon_keys[qfield_canon_key] = (
+                qfield.name or canonical_name
+            )
 
             await _ensure_aggregated_measure(
                 alias_key=canonical_name,

@@ -111,6 +111,11 @@ _SELF_JOIN_TRANSFORMS = {"time_shift"}
 # at every join site.
 _SQL_AND_JOINER = " AND "
 
+# DEV-1444: separator used between pretty-printed SELECT projection columns
+# (",\n    "). Extracted as a constant so Sonar S1192 doesn't flag every
+# join site that follows the same pattern.
+_SQL_COL_SEP = ",\n    "
+
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
     r'^(?:'
@@ -304,6 +309,17 @@ def _filter_references_available(f, available_aliases: set) -> bool:
     return True
 
 
+# DEV-1444: pagination-clause tail patterns used by
+# ``_strip_trailing_pagination``. Three narrow patterns instead of one
+# alternation reduce regex complexity (Sonar S5843) and avoid the
+# theoretical polynomial backtracking of an unbounded ``.*`` head.
+_TRAILING_OFFSET_RE = re.compile(r"(?is)\s*OFFSET\s+\d+\s*\Z")
+_TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*(?:OFFSET\s+\d+)?\s*\Z")
+_TRAILING_ORDER_BY_RE = re.compile(
+    r"(?is)\s*ORDER\s+BY\b[^()]*\Z"
+)
+
+
 def _strip_trailing_pagination(sql: str) -> str:
     """DEV-1444: remove trailing ORDER BY / LIMIT / OFFSET clauses that
     SLayer's generator appends as raw string segments after the inner
@@ -315,23 +331,16 @@ def _strip_trailing_pagination(sql: str) -> str:
     closing ``)`` after them).
     """
     s = sql.rstrip()
-    while True:
-        m = re.search(
-            r"(?is)\s*(ORDER\s+BY\b.*|LIMIT\s+\d+\s*(OFFSET\s+\d+)?|OFFSET\s+\d+)\s*\Z",
-            s,
-        )
-        if not m:
-            break
-        start = m.start()
-        if start == 0:
-            break
-        # Only strip if this trailing clause sits at the SAME nesting
-        # level as the outermost SELECT (i.e. there are an equal number
-        # of unmatched ``(`` / ``)`` between start and end-of-string).
-        tail = s[start:]
+    # Tail clauses are appended in the order ORDER → LIMIT → OFFSET, so
+    # strip in reverse (OFFSET → LIMIT → ORDER) to peel any combination.
+    for pattern in (_TRAILING_OFFSET_RE, _TRAILING_LIMIT_RE, _TRAILING_ORDER_BY_RE):
+        m = pattern.search(s)
+        if not m or m.start() == 0:
+            continue
+        tail = s[m.start():]
         if tail.count("(") != tail.count(")"):
-            break
-        s = s[:start].rstrip()
+            continue
+        s = s[:m.start()].rstrip()
     return s
 
 
@@ -514,7 +523,7 @@ class SQLGenerator:
         # Wrap path: always emit the inner SQL as-is (preserve formatting)
         # inside a thin SELECT FROM (...) wrapper that carries the public
         # projection plus the detached ORDER / LIMIT / OFFSET.
-        outer_select = ",\n    ".join(f'"{a}"' for a in public)
+        outer_select = _SQL_COL_SEP.join(f'"{a}"' for a in public)
         wrapped_sql = (
             f"SELECT\n    {outer_select}\n"
             f"FROM (\n{sql.rstrip()}\n) AS _outer"
@@ -1471,7 +1480,7 @@ class SQLGenerator:
             # Emit window layer CTE if anything was added
             if added_this_layer:
                 layer_name = f"step{layer_num}"
-                layer_select = "SELECT\n    " + ",\n    ".join(layer_parts)
+                layer_select = "SELECT\n    " + _SQL_COL_SEP.join(layer_parts)
                 ctes.append((layer_name, f"{layer_select}\nFROM {prev_cte}"))
                 available_aliases.update(added_this_layer)
 
@@ -1555,7 +1564,7 @@ class SQLGenerator:
                 window_sql = wrapped.sql(dialect=self.dialect)
             final_parts.append(f'{window_sql} AS "{t.alias}"')
 
-        outer_select = "SELECT\n    " + ",\n    ".join(final_parts)
+        outer_select = "SELECT\n    " + _SQL_COL_SEP.join(final_parts)
 
         sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
 

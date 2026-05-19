@@ -104,7 +104,7 @@ def _outer_order_by_references(sql: str, *, dialect: str = "postgres") -> List[s
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-async def _noop(**kw: Any) -> None:
+async def _noop(**kw: Any) -> None:  # NOSONAR(S7503) — engine API requires an awaitable callback even if this stub never needs to await
     return None
 
 
@@ -858,7 +858,7 @@ class TestMultiDialectProjectionTrim:
 # Group I — Render-mode separation.
 # ===========================================================================
 class TestRenderModeSeparation:
-    async def test_generator_accepts_render_mode_parameter(
+    async def test_generator_accepts_render_mode_parameter(  # NOSONAR(S7503) — async-test-class consistency: sibling tests in this class do await
         self, generator: SQLGenerator, funds_model: SlayerModel,
     ) -> None:
         """``SQLGenerator.generate`` must accept a ``render_mode`` keyword
@@ -967,7 +967,7 @@ class TestRenderModeSeparation:
 # Group J — Provenance and public-projection helper.
 # ===========================================================================
 class TestProvenance:
-    async def test_user_declared_flag_exists_on_enriched_types(
+    async def test_user_declared_flag_exists_on_enriched_types(  # NOSONAR(S7503) — async-test-class consistency: sibling tests in this class do await
         self, generator: SQLGenerator, orders_model: SlayerModel,
     ) -> None:
         """``user_declared: bool`` must be present on EnrichedMeasure /
@@ -1110,7 +1110,7 @@ class TestProvenance:
             f"measures), got {len(user_projection)}"
         )
 
-    async def test_public_projection_aliases_helper_exists(self) -> None:
+    async def test_public_projection_aliases_helper_exists(self) -> None:  # NOSONAR(S7503) — async-test-class consistency: sibling tests in this class do await
         """The helper function ``public_projection_aliases`` must exist in
         ``slayer.engine.enriched`` (or wherever the spec puts it)."""
         assert public_projection_aliases is not None, (
@@ -1602,3 +1602,49 @@ class TestDimAndTimeDimClash:
             or "ambig" in msg
             or "clash" in msg
         ), f"Validation error message is too vague: {exc.value!r}"
+
+
+# ===========================================================================
+# Validation: duplicate user-declared canonical aggregation rejection
+# (Codex review on PR #134).
+# ===========================================================================
+class TestDuplicateUserDeclaredCanonical:
+    async def test_two_qfields_same_canonical_different_names_rejected(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Two user-declared measures with the same canonical aggregation
+        but different ``name`` overrides would silently collapse to one
+        EnrichedMeasure under the provenance-merge index, leaving the
+        second name in ``user_projection`` with no backing aggregate.
+        Reject at enrichment time with a concrete ``ValueError``."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="revenue:sum", name="revenue1"),
+                ModelMeasure(formula="revenue:sum", name="revenue2"),
+            ],
+        )
+        with pytest.raises(ValueError) as exc:
+            await _enrich(query, orders_model)
+        msg = str(exc.value).lower()
+        assert "canonical" in msg or "collapse" in msg or "same canonical" in msg, (
+            f"Validation message must call out the canonical-collision: {exc.value!r}"
+        )
+
+    async def test_two_qfields_same_canonical_unnamed_and_named_rejected(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """Same shape but the first qfield is unnamed (surfaces as the
+        canonical alias) and the second has a name. Still ambiguous and
+        rejected."""
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="revenue:sum"),
+                ModelMeasure(formula="revenue:sum", name="other"),
+            ],
+        )
+        with pytest.raises(ValueError):
+            await _enrich(query, orders_model)
