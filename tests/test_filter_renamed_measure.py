@@ -238,6 +238,75 @@ class TestOrderByRenamedMeasureRemap:
 class TestRemapEdgeCases:
     """Codex F1 + F2 — corner cases around the remap."""
 
+    async def test_remap_does_not_rewrite_quoted_string_literal(
+        self,
+    ) -> None:
+        """DEV-1443 (CodeRabbit thread 2): the filter remap is identifier-
+        level only — canonical-name matches inside quoted string literals
+        must NOT be rewritten. Example: filter ``country:first = 'country_first'``
+        with the measure renamed to ``primary_country`` must remap the
+        first occurrence (the alias) but leave the literal
+        ``'country_first'`` alone, otherwise the filter compares the
+        renamed-alias column to itself instead of the original constant.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="country", sql="country", type=DataType.TEXT),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="country:first", name="primary_country"),
+            ],
+            filters=["country:first = 'country_first'"],
+        )
+        enriched = await _enrich(query, model)
+        # The literal 'country_first' must still appear in the predicate
+        # text — the remap must not have rewritten it.
+        relevant = [f.sql for f in enriched.filters]
+        assert any("'country_first'" in s for s in relevant), (
+            f"remap clobbered the literal 'country_first': filters={relevant!r}"
+        )
+
+    async def test_duplicate_explicit_name_across_arithmetic_measures_raises(
+        self,
+    ) -> None:
+        """DEV-1443 (CodeRabbit round 3 thread + Codex round 4): the
+        duplicate-explicit-name check must cover non-aggregate measure
+        shapes too (arithmetic / transform formulas), not just the local
+        AggregatedMeasureRef rename branch. Two computed measures sharing
+        a `name` would otherwise silently collapse to one EnrichedExpression
+        alias.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="profit", sql="profit", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="amount:sum / 100", name="metric"),
+                ModelMeasure(formula="profit:avg * 2", name="metric"),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"both declare name"):
+            await _enrich(query, model)
+
     async def test_duplicate_explicit_name_across_measures_raises(
         self,
     ) -> None:
