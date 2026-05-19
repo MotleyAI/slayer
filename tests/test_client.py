@@ -96,7 +96,7 @@ class _CapturedRequests:
         # cannot mutate the canned response across tests.
         return dict(_CANNED_RESP)
 
-    async def _replace_async(
+    async def _replace_async(  # NOSONAR(S7503) — must be async def to match the awaited contract of self._request; body has no IO to await
         self,
         *,
         method: str,
@@ -104,10 +104,9 @@ class _CapturedRequests:
         json: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        self.calls.append(
-            {"method": method, "path": path, "json": json, "params": params}
+        return self._replace_sync(
+            method=method, path=path, json=json, params=params
         )
-        return dict(_CANNED_RESP)
 
     @property
     def last_body(self) -> Optional[Dict[str, Any]]:
