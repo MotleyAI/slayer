@@ -238,6 +238,41 @@ class TestOrderByRenamedMeasureRemap:
 class TestRemapEdgeCases:
     """Codex F1 + F2 — corner cases around the remap."""
 
+    async def test_duplicate_explicit_name_across_measures_raises(
+        self,
+    ) -> None:
+        """DEV-1443 (Codex review on PR #133 round 3): two query measures
+        with the same explicit ``name`` produce two ``EnrichedMeasure``
+        entries that share an alias — filters/ORDER BY referencing the
+        alias would bind to whichever measure happened to be first in
+        iteration order. Refuse at enrichment time.
+
+        Same shape as the previous round's CodeRabbit finding (rename
+        colliding with another measure's auto-canonical), but for the
+        symmetric explicit-name case.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="profit", sql="profit", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="amount:sum", name="metric"),
+                ModelMeasure(formula="profit:avg", name="metric"),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"both declare name"):
+            await _enrich(query, model)
+
     async def test_rename_collides_with_other_measure_canonical_raises(
         self,
     ) -> None:
@@ -269,7 +304,7 @@ class TestRemapEdgeCases:
                 # Rename to a name that collides with the second measure's
                 # auto-canonical (``profit_avg``).
                 ModelMeasure(formula="revenue:sum", name="profit_avg"),
-                ModelMeasure(formula="profit:avg"),  # canonical = "profit_avg"
+                ModelMeasure(formula="profit:avg"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
             ],
         )
         with pytest.raises(ValueError, match=r"collides with .*measure"):

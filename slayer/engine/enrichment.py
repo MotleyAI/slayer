@@ -790,9 +790,23 @@ async def enrich_query(
                 # distinct aggregates collapse into one. Refuse the
                 # collision; the user is naming two different things the
                 # same name.
+                # DEV-1443 (Codex review round 3 on PR #133): the symmetric
+                # case — two query measures sharing the same explicit
+                # ``name`` — also collapses to a single alias and leaves
+                # filter/ORDER BY refs binding to whichever measure was
+                # processed first. Same rejection applies.
                 for qf_other in (query.measures or []):
                     if qf_other is qfield:
                         continue
+                    if qf_other.name and qf_other.name == qfield.name:
+                        raise ValueError(
+                            f"Measure '{qfield.formula}' and measure "
+                            f"'{qf_other.formula}' both declare name "
+                            f"'{qfield.name}'. Two distinct aggregates "
+                            f"would otherwise be silently merged into one "
+                            f"column. Pick a different `name` for one of "
+                            f"them."
+                        )
                     spec_other = parse_formula(
                         qf_other.formula,
                         extra_agg_names=custom_agg_names,
