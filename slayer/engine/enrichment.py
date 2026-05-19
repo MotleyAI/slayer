@@ -206,6 +206,17 @@ async def enrich_query(
     cross_model_measures: List[CrossModelMeasure] = []
     known_aliases: Dict[str, str] = {}
     field_name_aliases: Dict[str, str] = {}
+    # DEV-1443: canonical-agg alias → user-supplied measure name. Populated
+    # when a query measure renames the canonical (``{"formula": "col:agg",
+    # "name": "alias"}``). Consumed by the filter pre-pass (so a filter
+    # written as ``col:agg <op> N`` resolves to the user alias and HAVINGs
+    # correctly) and by the ORDER BY enrichment (same shape).
+    canonical_to_user_name: Dict[str, str] = {}
+    # Cached source-column name set for the remap eligibility guard
+    # (Codex Finding 1 — skip remap when the canonical alias also literally
+    # names a source column on the model, since the regex sub would then
+    # clobber the literal source-column reference).
+    _source_column_names: Set[str] = {c.name for c in model.columns}
 
     async def _ensure_aggregated_measure(
         alias_key: str,
@@ -685,6 +696,27 @@ async def enrich_query(
 
         raise ValueError(f"Unsupported field spec: {spec!r}")
 
+    # DEV-1443 (CodeRabbit thread + Codex round 4 on PR #133): the
+    # duplicate-explicit-name check must run for every query measure
+    # kind, not just inside the local AggregatedMeasureRef rename branch.
+    # Cross-model aggregates ``continue`` before reaching that branch and
+    # arithmetic/transform measures fall through to ``_flatten_spec``; in
+    # both cases a duplicate ``name`` would silently collapse two
+    # measures onto a single alias. Run the pairwise check once up front.
+    _seen_explicit_names: Dict[str, str] = {}
+    for qf in (query.measures or []):
+        if not qf.name:
+            continue
+        if qf.name in _seen_explicit_names:
+            raise ValueError(
+                f"Measure '{qf.formula}' and measure "
+                f"'{_seen_explicit_names[qf.name]}' both declare name "
+                f"'{qf.name}'. Two distinct aggregates would otherwise be "
+                f"silently merged into one column. Pick a different `name` "
+                f"for one of them."
+            )
+        _seen_explicit_names[qf.name] = qf.formula
+
     # Process each query field
     for qfield in query.measures or []:
         spec = parse_formula(
@@ -692,6 +724,18 @@ async def enrich_query(
             extra_agg_names=custom_agg_names,
             named_measures=named_measures,
         )
+        # DEV-1443 (Codex Finding 2): block the latent bug where an
+        # alias-form filter against a renamed measure silently resolves to
+        # the source column instead of the HAVING aggregate. Reject up
+        # front rather than letting strict resolution misfire downstream.
+        if qfield.name and qfield.name in _source_column_names:
+            raise ValueError(
+                f"Query measure name '{qfield.name}' collides with a source "
+                f"column on model '{model.name}'. Pick a different name "
+                f"(or omit `name` to use the canonical alias). Filters and "
+                f"ORDER BY would otherwise bind to the source column "
+                f"instead of the renamed aggregate."
+            )
         field_name = qfield.name or qfield.formula.replace(" ", "_").replace("/", "_div_").replace(":", "_").replace(
             "*", ""
         )
@@ -741,6 +785,63 @@ async def enrich_query(
             # instead of the canonical ``col_agg`` form. The canonical alias
             # remains resolvable via known_aliases for inline references.
             if qfield.name and qfield.name != canonical_name:
+                # DEV-1443 (Codex review on PR #133): if the canonical alias
+                # itself shadows a source ``Column`` on the model, the colon-
+                # form filter ``col:agg <op> N`` is ambiguous — the remap
+                # would resolve to the user alias, while strict resolution
+                # would resolve a literal ``col_agg`` reference to the source
+                # column. Refuse the query at construction time rather than
+                # silently picking one and producing surprising SQL.
+                if canonical_name in _source_column_names:
+                    raise ValueError(
+                        f"Measure '{qfield.formula}' renamed to '{qfield.name}', "
+                        f"but model '{model.name}' has a source column named "
+                        f"'{canonical_name}' that shadows the canonical alias of "
+                        f"this aggregation. Filters / ORDER BY using "
+                        f"'{qfield.formula}' would be ambiguous. Pick a different "
+                        f"`name` (so the canonical alias is unused), rename the "
+                        f"source column, or reference the measure by its user "
+                        f"alias '{qfield.name}'."
+                    )
+                # DEV-1443 (CodeRabbit review round 2 on PR #133): if the
+                # rename target equals the canonical alias of another query
+                # measure, ``_ensure_aggregated_measure`` would dedupe the
+                # second measure onto the renamed first measure's alias
+                # (alias-keyed dedup at the top of that helper) — two
+                # distinct aggregates collapse into one. Refuse the
+                # collision; the user is naming two different things the
+                # same name.
+                # DEV-1443 (Codex review round 3 on PR #133): the symmetric
+                # case — two query measures sharing the same explicit
+                # ``name`` — is handled by the pre-pass above; this branch
+                # only handles the rename-vs-other-canonical case below.
+                for qf_other in (query.measures or []):
+                    if qf_other is qfield:
+                        continue
+                    spec_other = parse_formula(
+                        qf_other.formula,
+                        extra_agg_names=custom_agg_names,
+                        named_measures=named_measures,
+                    )
+                    if not isinstance(spec_other, AggregatedMeasureRef):
+                        continue
+                    other_canonical = _canonical_agg_name(
+                        measure_name=spec_other.measure_name,
+                        aggregation_name=spec_other.aggregation_name,
+                        agg_args=spec_other.agg_args,
+                        agg_kwargs=spec_other.agg_kwargs,
+                    )
+                    if other_canonical == qfield.name:
+                        raise ValueError(
+                            f"Measure '{qfield.formula}' renamed to "
+                            f"'{qfield.name}', but that name collides with "
+                            f"the canonical alias of another query measure "
+                            f"'{qf_other.formula}' (also canonicalises to "
+                            f"'{qfield.name}'). Two distinct aggregates would "
+                            f"otherwise be silently merged into one column. "
+                            f"Pick a different `name`, or rename the other "
+                            f"measure too."
+                        )
                 user_alias = f"{model_name_str}.{qfield.name}"
                 for m in measures:
                     if m.alias == f"{model_name_str}.{canonical_name}":
@@ -749,6 +850,11 @@ async def enrich_query(
                         break
                 known_aliases[qfield.name] = user_alias
                 known_aliases[canonical_name] = user_alias
+                # DEV-1443: record the canonical → user-name mapping so
+                # query filters and ORDER BY items referencing the raw
+                # ``col:agg`` formula can be remapped to the user alias
+                # before resolution.
+                canonical_to_user_name[canonical_name] = qfield.name
             # Register custom field name so ORDER BY can resolve it
             if field_name != canonical_name and canonical_name in known_aliases:
                 field_name_aliases[field_name] = known_aliases[canonical_name]
@@ -820,7 +926,13 @@ async def enrich_query(
         # Only enrich if not already present from fields
         if canonical not in known_aliases:
             await _flatten_spec(spec, canonical)
-        item.column.name = canonical
+        # DEV-1443: when the canonical points at a measure renamed by the
+        # query, the user alias is the real column key in the projection.
+        # Setting the order item's column name to the canonical would send
+        # the generator's ``_resolve_order_by_column`` down the fallback
+        # branch (``{model_prefix}.{canonical}``), producing a reference
+        # to a column that does not exist.
+        item.column.name = canonical_to_user_name.get(canonical, canonical)
 
     # --- Validate model filters ---
     # DEV-1378: Mode A model filters get parsed via ``parse_sql_predicate``
@@ -948,11 +1060,21 @@ async def enrich_query(
         drop_if_unresolved=False,
         query_aliases=set(),
     )
+    # DEV-1443: pre-pass remap of canonical agg aliases → user aliases for
+    # query filters. Applied here (and ONLY here) so model filters and
+    # ``Column.filter`` predicates — which never carry colon-syntax
+    # synthesized aliases anyway — are left untouched.
+    parsed_query_filters_pre = [
+        parse_filter(f, extra_agg_names=custom_agg_names)
+        for f in processed_query_filters
+    ]
+    for pf in parsed_query_filters_pre:
+        _remap_renamed_aliases_in_filter(
+            pf=pf,
+            canonical_to_user_name=canonical_to_user_name,
+        )
     resolved_query_filters = await resolve_filter_columns(
-        parsed_filters=[
-            parse_filter(f, extra_agg_names=custom_agg_names)
-            for f in processed_query_filters
-        ],
+        parsed_filters=parsed_query_filters_pre,
         model=model,
         model_name=model_name_str,
         resolve_join_target=resolve_join_target,
@@ -1535,6 +1657,68 @@ async def _resolve_joins(
 # ---------------------------------------------------------------------------
 # Filter processing
 # ---------------------------------------------------------------------------
+
+
+def _remap_renamed_aliases_in_filter(
+    *,
+    pf: ParsedFilter,
+    canonical_to_user_name: Dict[str, str],
+) -> None:
+    """DEV-1443: rewrite canonical-agg aliases in a parsed query filter
+    to the user-supplied alias when the same node renamed the measure.
+
+    Eligibility: ``c in pf.synthesized_aliases`` — only remap names the
+    parser saw as colon-syntax in *this* filter. A literal column reference
+    (no colon syntax) is left alone since the parser would not have
+    synthesized it.
+
+    Mutates ``pf.sql`` and ``pf.columns`` in place. ``synthesized_aliases``
+    and ``agg_refs`` are left intact (they're parser provenance, not the
+    rendered SQL).
+
+    Note: the case where ``canonical_name`` is also the name of a source
+    ``Column`` on the model is rejected up front at measure enrichment
+    (DEV-1443 Codex-review on PR #133). By the time this helper runs the
+    mapping is guaranteed not to alias a source column, so any
+    ``\\bcanonical\\b`` occurrence in ``pf.sql`` came from colon syntax
+    and is safe to rewrite — outside of quoted string literals.
+
+    DEV-1443 (CodeRabbit thread on PR #133): the regex sub must not touch
+    string-literal contents. Mask single-quoted spans with placeholders
+    before applying the rewrite, then restore them. Otherwise
+    ``country:first = 'country_first'`` with the measure renamed to
+    ``primary_country`` becomes ``primary_country = 'primary_country'``
+    and the filter compares the column to itself.
+    """
+    if not canonical_to_user_name:
+        return
+    eligible = {
+        c: u for c, u in canonical_to_user_name.items()
+        if c in pf.synthesized_aliases
+    }
+    if not eligible:
+        return
+    # Mask single-quoted spans so the identifier sub below can't reach
+    # into string literals. ``_STRING_LITERAL_RE`` is the same pattern
+    # used elsewhere in the codebase for this purpose
+    # (slayer/core/formula.py).
+    literal_re = re.compile(r"'(?:[^'\\]|\\.)*'")
+    literals = literal_re.findall(pf.sql)
+    masked = literal_re.sub("\x00LIT\x00", pf.sql)
+    for canonical, user_name in eligible.items():
+        # Word-boundary regex mirroring ``_resolve_sql`` (line ~393) so
+        # canonical names embedded inside dotted paths or already-quoted
+        # identifiers are not rewritten.
+        masked = re.sub(
+            rf'(?<![."\w])\b{re.escape(canonical)}\b(?![\w."])',
+            user_name,
+            masked,
+        )
+    # Restore literals in original order.
+    for literal in literals:
+        masked = masked.replace("\x00LIT\x00", literal, 1)
+    pf.sql = masked
+    pf.columns = [eligible.get(c, c) for c in pf.columns]
 
 
 def extract_filter_transforms(

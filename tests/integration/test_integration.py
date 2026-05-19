@@ -3446,3 +3446,30 @@ async def test_query_filter_with_replace_runs(integration_env):
     )
     response = await engine.execute(query)
     assert response.data[0]["orders._count"] == 3
+
+
+async def test_filter_renamed_measure_colon_syntax(integration_env):
+    """DEV-1443: filter on the raw colon-syntax formula must resolve to the
+    user alias when the measure is renamed on the same node. Without the
+    fix the query fails at execution time (column-not-found on the inner
+    SELECT). With the fix it executes correctly as HAVING on the aggregate.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        dimensions=[ColumnRef(name="status")],
+        measures=[
+            ModelMeasure(formula="customer_id:count_distinct", name="num_customers"),
+        ],
+        filters=["customer_id:count_distinct >= 2"],
+    )
+    response = await engine.execute(query)
+
+    # Test data: completed=3 orders / 2 customers; pending=2 orders / 2
+    # customers; cancelled=1 order / 1 customer. With the >= 2 cutoff only
+    # completed and pending survive.
+    surviving = {row["orders.status"]: row["orders.num_customers"] for row in response.data}
+    assert surviving == {"completed": 2, "pending": 2}, (
+        f"unexpected rows from renamed-measure HAVING filter: {response.data}"
+    )
