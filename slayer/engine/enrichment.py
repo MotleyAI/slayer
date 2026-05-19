@@ -782,6 +782,41 @@ async def enrich_query(
                         f"source column, or reference the measure by its user "
                         f"alias '{qfield.name}'."
                     )
+                # DEV-1443 (CodeRabbit review round 2 on PR #133): if the
+                # rename target equals the canonical alias of another query
+                # measure, ``_ensure_aggregated_measure`` would dedupe the
+                # second measure onto the renamed first measure's alias
+                # (alias-keyed dedup at the top of that helper) — two
+                # distinct aggregates collapse into one. Refuse the
+                # collision; the user is naming two different things the
+                # same name.
+                for qf_other in (query.measures or []):
+                    if qf_other is qfield:
+                        continue
+                    spec_other = parse_formula(
+                        qf_other.formula,
+                        extra_agg_names=custom_agg_names,
+                        named_measures=named_measures,
+                    )
+                    if not isinstance(spec_other, AggregatedMeasureRef):
+                        continue
+                    other_canonical = _canonical_agg_name(
+                        measure_name=spec_other.measure_name,
+                        aggregation_name=spec_other.aggregation_name,
+                        agg_args=spec_other.agg_args,
+                        agg_kwargs=spec_other.agg_kwargs,
+                    )
+                    if other_canonical == qfield.name:
+                        raise ValueError(
+                            f"Measure '{qfield.formula}' renamed to "
+                            f"'{qfield.name}', but that name collides with "
+                            f"the canonical alias of another query measure "
+                            f"'{qf_other.formula}' (also canonicalises to "
+                            f"'{qfield.name}'). Two distinct aggregates would "
+                            f"otherwise be silently merged into one column. "
+                            f"Pick a different `name`, or rename the other "
+                            f"measure too."
+                        )
                 user_alias = f"{model_name_str}.{qfield.name}"
                 for m in measures:
                     if m.alias == f"{model_name_str}.{canonical_name}":

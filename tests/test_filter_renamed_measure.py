@@ -238,6 +238,43 @@ class TestOrderByRenamedMeasureRemap:
 class TestRemapEdgeCases:
     """Codex F1 + F2 — corner cases around the remap."""
 
+    async def test_rename_collides_with_other_measure_canonical_raises(
+        self,
+    ) -> None:
+        """DEV-1443 (CodeRabbit review on PR #133): if a query measure's
+        ``name`` equals the canonical alias of another measure in the same
+        query, ``_ensure_aggregated_measure``'s alias-based dedup would
+        silently merge the two aggregates — both filter refs would resolve
+        to the SAME underlying aggregate even though the user declared two
+        distinct measures. Refuse the query at enrichment time.
+
+        Example: ``revenue:sum`` renamed to ``profit_avg`` AND a separate
+        ``profit:avg`` measure both end up at ``<model>.profit_avg``.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
+                Column(name="profit", sql="profit", type=DataType.DOUBLE),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                # Rename to a name that collides with the second measure's
+                # auto-canonical (``profit_avg``).
+                ModelMeasure(formula="revenue:sum", name="profit_avg"),
+                ModelMeasure(formula="profit:avg"),  # canonical = "profit_avg"
+            ],
+        )
+        with pytest.raises(ValueError, match=r"collides with .*measure"):
+            await _enrich(query, model)
+
     async def test_filter_canonical_name_collides_with_source_column_raises(
         self,
     ) -> None:
