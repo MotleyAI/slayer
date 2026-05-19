@@ -1,6 +1,7 @@
 """Python client for SLayer API."""
 
 import logging
+from collections.abc import Mapping as ABCMapping, Sequence as ABCSequence
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -133,28 +134,32 @@ class SlayerClient:
         """
         if isinstance(query, str):
             body: Dict[str, Any] = {"name": query}
-        elif isinstance(query, list):
+        elif isinstance(query, SlayerQuery):
+            body = query.model_dump(mode="json", exclude_none=True)
+        elif isinstance(query, ABCSequence) and not isinstance(
+            query, (bytes, bytearray)
+        ):
+            # ``str`` is also a Sequence but already handled above; guard the
+            # binary string types here too so they raise via the else-branch.
             serialised: List[Dict[str, Any]] = []
             for i, item in enumerate(query):
                 if isinstance(item, SlayerQuery):
                     serialised.append(
                         item.model_dump(mode="json", exclude_none=True)
                     )
-                elif isinstance(item, dict):
+                elif isinstance(item, ABCMapping):
                     serialised.append(dict(item))
                 else:
                     raise TypeError(
-                        f"query[{i}] must be SlayerQuery or dict; got "
+                        f"query[{i}] must be SlayerQuery or Mapping; got "
                         f"{type(item).__name__}"
                     )
             body = {"queries": serialised}
-        elif isinstance(query, SlayerQuery):
-            body = query.model_dump(mode="json", exclude_none=True)
-        elif isinstance(query, dict):
+        elif isinstance(query, ABCMapping):
             body = dict(query)
         else:
             raise TypeError(
-                "query must be SlayerQuery, dict, list, or str; got "
+                "query must be SlayerQuery, Mapping, Sequence, or str; got "
                 f"{type(query).__name__}"
             )
         if dry_run:

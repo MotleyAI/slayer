@@ -9,7 +9,8 @@ on list/str inputs is what the original report describes.
 """
 
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import pytest
 
@@ -443,6 +444,36 @@ class TestHttpBodyShape:
                 [{"source_model": "orders"}, 42]  # type: ignore[list-item]
             )
         assert cap.last_body is None
+
+    # --- non-dict/list runtime shapes (Mapping / Sequence) ------------- #
+
+    def test_mappingproxy_body_shape(
+        self,
+        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        """``MappingProxyType`` is a ``Mapping`` but not a ``dict`` — the
+        helper must honour the declared ``Mapping[str, Any]`` contract."""
+        client, cap = http_client_with_capture
+        payload: Mapping[str, Any] = MappingProxyType(
+            {"source_model": "orders", "measures": [{"formula": "amount:sum"}]}
+        )
+        client.query_sync(payload)
+        assert cap.last_body == dict(payload)
+
+    def test_tuple_body_shape(
+        self,
+        http_client_with_capture: Tuple[SlayerClient, _CapturedRequests],
+    ) -> None:
+        """``tuple`` is a ``Sequence`` but not a ``list`` — honoured."""
+        client, cap = http_client_with_capture
+        items = (
+            {"name": "a", "source_model": "orders"},
+            {"source_model": "a"},
+        )
+        client.query_sync(items)
+        body = cap.last_body
+        assert body is not None
+        assert body["queries"] == list(items)
 
     # --- pass-through of variables (DEV-1438 ergonomics live in body) -- #
 
