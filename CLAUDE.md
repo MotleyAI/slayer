@@ -129,6 +129,7 @@ poetry run ruff check slayer/ tests/
 - **SQL client**: Uses native async drivers for Postgres (`asyncpg`) and MySQL (`aiomysql`). Falls back to `asyncio.to_thread` for SQLite, DuckDB, ClickHouse. Connection pools are cached per `SlayerSQLClient` instance.
 - **Tests use `pytest-asyncio`** with `asyncio_mode = "auto"` — test functions can be `async def` and `await` directly.
 - **Sync wrappers**: `run_sync()` in `async_utils.py` bridges async→sync for CLI and MCP tools. Handles both "no event loop" and "inside Jupyter" cases.
+- **Client mirrors engine union** (DEV-1437): every `SlayerClient` query entry point — `query`, `query_sync`, `sql`, `sql_sync`, `explain`, `explain_sync`, `query_df` — accepts the same input shapes as `engine.execute`: `SlayerQuery | dict | list[SlayerQuery | dict] | str`. The list form is the multi-stage DAG (`{"queries": [...]}` body in HTTP mode, same shape as MCP `query_nested`); `str` is run-by-name. `SlayerClient._build_query_body` is the single source of truth for the HTTP body shape; the local-engine path defers all validation to `engine.execute_sync` / `engine.execute`. `variables=` and `data_source=` kwarg forwarding is tracked separately as DEV-1438.
 
 ## CLI
 
