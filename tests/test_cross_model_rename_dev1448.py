@@ -47,7 +47,7 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.yaml_storage import YAMLStorage
@@ -805,6 +805,40 @@ class TestCrossModelRenameLabelAndType:
 # ---------------------------------------------------------------------------
 # Group G — Filter / ORDER BY interaction with the rename.
 # ---------------------------------------------------------------------------
+
+
+class TestCrossModelRenameOrderBy:
+    """ORDER BY via the bare user alias for a renamed cross-model measure
+    resolves correctly (via ``SQLGenerator._resolve_order_column``'s
+    ``alias_lookup[cm.name] = cm.alias`` mapping) — pinned by Codex
+    review round 5 on PR #136 after a doc/code mismatch was flagged.
+    Filters via the bare user alias DON'T resolve (DEV-1445); ORDER BY
+    DOES."""
+
+    async def test_order_by_user_alias_resolves_to_cross_model_cte_column(
+        self, orders_customers_engine,
+    ) -> None:
+        """``order=[{"column": "cust_rev"}]`` referencing the renamed
+        cross-model measure must emit ``ORDER BY "orders.customers.cust_rev"``
+        — the cross-model CTE's output column. This is the existing
+        ``alias_lookup`` path; the rename block populates
+        ``cm.name=qf.name`` and the SQL generator's order-resolver maps
+        it back to ``cm.alias``."""
+        engine, orders = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            order=[OrderItem(column=ColumnRef(name="cust_rev"), direction="desc")],
+        )
+        enriched = await engine._enrich(query=query, model=orders)
+        sql = SQLGenerator(dialect="postgres").generate(enriched=enriched)
+        assert "ORDER BY" in sql, sql
+        order_clause = sql.split("ORDER BY", 1)[1]
+        assert '"orders.customers.cust_rev"' in order_clause, (
+            f"ORDER BY via bare user alias must resolve to the cross-model "
+            f"CTE's output column:\n{sql}"
+        )
 
 
 class TestCrossModelRenameFilters:
