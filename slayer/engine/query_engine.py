@@ -1889,7 +1889,18 @@ class SlayerQueryEngine:
             # encoding. Auto-derived names always contain a dot (e.g.
             # ``customers.revenue_sum``) so they fall through to the legacy
             # ``_alias_to_short`` flatten path.
-            short = cm.name if cm.name and "." not in cm.name else _alias_to_short(cm.alias)
+            #
+            # Codex review round 3 on PR #136: gate the short-circuit on
+            # ``cm.user_declared`` — hidden cross-model measures auto-
+            # extracted from arithmetic / transform formulas (in enrichment.py
+            # ``_ensure_measure_from_spec`` / ``_flatten_spec``) have bare
+            # internal placeholder names (e.g. ``__agg0__``) that must NOT
+            # leak into the virtual model's column set. Only user-declared
+            # renames qualify for the bare-name short.
+            if cm.user_declared and cm.name and "." not in cm.name:
+                short = cm.name
+            else:
+                short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner

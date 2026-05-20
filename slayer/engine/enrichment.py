@@ -885,17 +885,29 @@ async def enrich_query(
         )
         renamed = bool(qf.name) and qf.name != canonical
         if is_cross_model:
-            hop = sp.measure_name.rsplit(".", 1)[0]
+            # Codex review round 3 on PR #136: mirror the actual canonical
+            # construction in ``_resolve_cross_model_measure`` (the leaf-
+            # only form, with ``*`` collapsing to ``_<agg>``) rather than
+            # the full-name ``_canonical_agg_name`` form. The two differ
+            # for ``<hop>.*:<agg>`` (the resolver emits ``_<agg>``; the
+            # full canonical would emit ``*_<agg>``) — and the public
+            # alias we need to compare against is the one the resolver
+            # actually produces.
+            hop, leaf = sp.measure_name.rsplit(".", 1)
+            cm_leaf = (
+                f"_{sp.aggregation_name}" if leaf == "*"
+                else f"{leaf}_{sp.aggregation_name}"
+            )
             if renamed:
                 public = f"{model_name_str}.{hop}.{qf.name}"
                 short = qf.name
             else:
-                public = f"{model_name_str}.{canonical}"
+                public = f"{model_name_str}.{hop}.{cm_leaf}"
                 # _query_as_model derives the downstream short from
                 # _alias_to_short(cm.alias) for unrenamed cross-model:
                 # the source-model prefix is stripped, then dots are
                 # converted to ``__``. Mirror that here.
-                short = canonical.replace(".", "__")
+                short = f"{hop}.{cm_leaf}".replace(".", "__")
         else:
             if renamed:
                 public = f"{model_name_str}.{qf.name}"
@@ -904,6 +916,20 @@ async def enrich_query(
                 public = f"{model_name_str}.{canonical}"
                 short = canonical
         return public, short
+
+    # CodeRabbit review round 3 on PR #136: seed the collision set with
+    # the already-enriched dimension + time-dimension aliases so a renamed
+    # cross-model measure whose alias collides with a dim/time-dim alias
+    # (e.g. ``dimensions=[customers.region_id]`` + ``measures=[{"formula":
+    # "customers.revenue:sum", "name": "region_id"}]`` both producing
+    # ``orders.customers.region_id``) is caught. The source-column guard
+    # at lines 871-878 only catches collisions with columns on the OUTER
+    # source model — not with columns surfaced via joined dims.
+    _occupied_aliases: Dict[str, str] = {}
+    for _d in dimensions:
+        _occupied_aliases[_d.alias] = f"dimension '{_d.name}'"
+    for _td in time_dimensions:
+        _occupied_aliases[_td.alias] = f"time dimension '{_td.name}'"
 
     _surfaces: list = []
     for qf_pre in (query.measures or []):
@@ -921,6 +947,16 @@ async def enrich_query(
             agg_args=sp_pre.agg_args,
             agg_kwargs=sp_pre.agg_kwargs,
         )
+        # CodeRabbit round 3: catch measure-vs-(dim|time-dim) alias collisions.
+        if public_pre in _occupied_aliases:
+            owner = _occupied_aliases[public_pre]
+            raise ValueError(
+                f"Measure '{qf_pre.formula}' surfaces as '{public_pre}', "
+                f"which collides with the {owner} on the same query — the "
+                f"outer projection key would be duplicated and the result "
+                f"shape could silently merge values. Pick a different "
+                f"`name`, or remove the duplicate dimension."
+            )
         for qf_other, sp_other, public_other, short_other, canonical_other in _surfaces:
             if public_pre == public_other:
                 raise ValueError(

@@ -323,6 +323,47 @@ class TestCrossModelRenameNestedDAG:
             f"{resp.columns!r}"
         )
 
+    async def test_hidden_cross_model_measure_kept_user_declared_false(
+        self, orders_customers_engine,
+    ) -> None:
+        """Codex review round 3 on PR #136: hidden cross-model measures
+        auto-extracted from arithmetic / transform formulas (in
+        ``_ensure_measure_from_spec`` / ``_flatten_spec``) must keep
+        ``user_declared=False``. The ``_query_as_model`` cross-model
+        short-circuit (which uses bare ``cm.name`` as the downstream
+        short) is gated on ``cm.user_declared`` — without that gate, a
+        hidden measure's internal placeholder name (e.g. ``__agg0__``)
+        would leak into the virtual model's column set as a bare
+        identifier and downstream stages could accidentally bind to it.
+        This test pins that the flag stays False for hidden measures so
+        the gate's discriminator remains valid.
+        """
+        engine, _ = orders_customers_engine
+        stage1 = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            # Arithmetic formula referencing a cross-model aggregate ->
+            # the inner ref is hoisted as a hidden CrossModelMeasure.
+            measures=[ModelMeasure(formula="customers.revenue:sum / 100")],
+        )
+        orders = await engine.storage.get_model(name="orders")
+        enriched = await engine._enrich(query=stage1, model=orders)
+        # Every CrossModelMeasure on this enriched query is hidden — the
+        # outer expression (the division) is the user-declared entity
+        # and lives in enriched.expressions, not cross_model_measures.
+        assert enriched.cross_model_measures, (
+            "expected at least one CrossModelMeasure from the arithmetic "
+            "formula's cross-model inner ref"
+        )
+        for cm in enriched.cross_model_measures:
+            assert cm.user_declared is False, (
+                f"hidden cross-model measure must remain user_declared=False; "
+                f"got {cm.name!r} user_declared={cm.user_declared!r}. "
+                f"_query_as_model's bare-name short-circuit relies on this "
+                f"flag to discriminate user-renamed measures from hidden "
+                f"internal placeholders."
+            )
+
     async def test_cross_model_rename_downstream_stage_does_not_see_canonical(
         self, orders_customers_engine,
     ) -> None:
@@ -529,6 +570,58 @@ class TestCrossModelRenameCollisionGuards:
             ],
         )
         with pytest.raises(ValueError, match=r"both declare name"):
+            await engine._enrich(query=query, model=orders)
+
+    async def test_cross_model_star_count_collision_with_renamed_sibling_raises(
+        self, orders_customers_engine,
+    ) -> None:
+        """Codex review round 3 on PR #136: the pre-pass uses
+        ``_canonical_agg_name("customers.*", "count")`` which returns
+        ``"customers.*_count"`` — but the cross-model resolver actually
+        aliases ``customers.*:count`` as ``orders.customers._count`` (leaf
+        ``*`` collapsed to ``_count``, not ``*_count``). So a sibling
+        measure renamed to ``_count`` would silently produce a duplicate
+        ``orders.customers._count`` projection. The pre-pass's canonical
+        construction for cross-model must mirror what the actual resolver
+        emits, not what ``_canonical_agg_name`` returns."""
+        engine, orders = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="customers.*:count"),
+                # Renamed to a leaf that matches the actual canonical for
+                # the unrenamed *:count above (``_count``). Both produce
+                # ``orders.customers._count``.
+                ModelMeasure(formula="customers.revenue:sum", name="_count"),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"silently merged|collide"):
+            await engine._enrich(query=query, model=orders)
+
+    async def test_cross_model_rename_collides_with_dimension_raises(
+        self, orders_customers_engine,
+    ) -> None:
+        """CodeRabbit review round 3 on PR #136: the pre-pass only
+        compares measure-vs-measure. A renamed cross-model measure
+        whose public alias matches a dimension's alias silently
+        duplicates the outer projection key.
+
+        Setup: ``dimensions=[customers.region_id]`` produces alias
+        ``orders.customers.region_id``. A measure renamed to
+        ``name="region_id"`` on a cross-model hop through ``customers``
+        also produces ``orders.customers.region_id``. ``region_id`` is
+        NOT a column on the outer ``orders`` model, so the existing
+        source-column guard doesn't fire — only the new pre-pass
+        catches the dim/measure alias collision.
+        """
+        engine, orders = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customers.region_id")],
+            measures=[ModelMeasure(formula="customers.revenue:sum", name="region_id")],
+        )
+        with pytest.raises(ValueError, match=r"silently merged|collide"):
             await engine._enrich(query=query, model=orders)
 
     async def test_two_local_renames_distinct_canonicals_pass(
