@@ -35,7 +35,7 @@ from slayer.core.formula import (
     parse_filter,
     parse_formula,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
 from slayer.engine.column_expansion import _is_trivial_base, expand_derived_refs
@@ -599,12 +599,62 @@ async def enrich_query(
         )
         known_aliases[name] = alias
 
+    async def _try_intercept_cross_model_as_local(
+        ref, field_name: str,
+    ) -> Optional[str]:
+        """DEV-1449: when ``model`` is a virtual stage (has
+        ``source_model_origin``) and the cross-model agg's canonical
+        flat name already exists as a local column, emit a local
+        re-aggregated EnrichedMeasure instead of building a cross-model
+        CTE. Returns the full enriched alias (``<model_name_str>.<canonical>``)
+        the caller can append to ``user_projection`` / store in
+        ``known_aliases``, or ``None`` if the intercept didn't apply.
+
+        Parameterized aggregations (``agg_args`` / ``agg_kwargs``)
+        fall through to the existing CTE path because
+        ``resolve_cross_model_measure`` canonicalizes with no args/kwargs
+        participation — the inner stage's flat column name we'd be
+        looking for doesn't account for params either.
+        """
+        if model.source_model_origin is None:
+            return None
+        if ref.agg_args or ref.agg_kwargs:
+            return None
+        leaf = ref.measure_name.rsplit(".", 1)[-1]
+        canonical_leaf_agg = (
+            f"_{ref.aggregation_name}" if leaf == "*"
+            else f"{leaf}_{ref.aggregation_name}"
+        )
+        hop_parts = ref.measure_name.split(".")
+        flat_with_agg = "__".join(hop_parts[:-1] + [canonical_leaf_agg])
+        if model.get_column(flat_with_agg) is None:
+            return None
+        await _ensure_aggregated_measure(
+            alias_key=field_name,
+            measure_name=flat_with_agg,
+            aggregation_name=ref.aggregation_name,
+            agg_args=ref.agg_args,
+            agg_kwargs=ref.agg_kwargs,
+        )
+        # `_ensure_aggregated_measure` already populated
+        # `known_aliases[field_name]` with the full enriched alias —
+        # read it back and return.
+        return known_aliases[field_name]
+
     async def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
         """Ensure a measure is resolved — handles agg refs only."""
         agg_refs = agg_refs or {}
         if mname in agg_refs:
             ref = agg_refs[mname]
             if "." in ref.measure_name and ref.measure_name != "*":
+                # DEV-1449: cross-model agg ref against a virtual stage
+                # whose inner stage already projected the flat alias →
+                # emit a local re-aggregated measure instead of a CTE.
+                local_alias = await _try_intercept_cross_model_as_local(
+                    ref=ref, field_name=mname,
+                )
+                if local_alias is not None:
+                    return
                 # Cross-model aggregated measure inside an expression —
                 # resolve as a CrossModelMeasure (gets its own CTE).
                 cm = await resolve_cross_model_measure(
@@ -652,6 +702,13 @@ async def enrich_query(
     async def _flatten_spec(spec, field_name: str) -> str:
         if isinstance(spec, AggregatedMeasureRef):
             if "." in spec.measure_name and spec.measure_name != "*":
+                # DEV-1449: cross-model agg ref against a virtual stage
+                # whose inner stage already projected the flat alias.
+                local_alias = await _try_intercept_cross_model_as_local(
+                    ref=spec, field_name=field_name,
+                )
+                if local_alias is not None:
+                    return local_alias
                 # Cross-model aggregated measure
                 cm = await resolve_cross_model_measure(
                     spec_name=spec.measure_name,
@@ -892,6 +949,26 @@ async def enrich_query(
                 field_name = canonical_name
 
             if "." in spec.measure_name and spec.measure_name != "*":
+                # DEV-1449: cross-model agg ref against a virtual stage
+                # whose inner stage already projected the flat alias →
+                # emit a local re-aggregated measure instead of a CTE.
+                local_alias = await _try_intercept_cross_model_as_local(
+                    ref=spec, field_name=field_name,
+                )
+                if local_alias is not None:
+                    # Propagate qfield metadata onto the
+                    # created-or-reused EnrichedMeasure (matches the
+                    # existing local-agg branch handling).
+                    for em in measures:
+                        if em.alias == local_alias:
+                            if qfield.label is not None:
+                                em.label = qfield.label
+                            if qfield.type is not None:
+                                em.type = qfield.type
+                            break
+                    _mark_user_declared(local_alias)
+                    user_projection.append(local_alias)
+                    continue
                 # Cross-model aggregated measure
                 cm = await resolve_cross_model_measure(
                     spec_name=spec.measure_name,
@@ -1370,6 +1447,58 @@ async def _maybe_expand(
     )
 
 
+def resolve_via_stage_origin(
+    *, model: SlayerModel, parts: List[str],
+) -> Optional[Column]:
+    """DEV-1449: Resolve a dotted reference against a virtual stage
+    model produced by ``_query_as_model``.
+
+    Returns the matching ``Column`` from ``model.columns``, or ``None``
+    if ``model`` is not a virtual stage model OR no flat candidate
+    matches. The shared callee for the four cross-stage resolution
+    paths (dimensions, time dimensions, cross-model measures, filters)
+    when the standard join-walk doesn't apply.
+
+    Lookup procedure (both candidates are first-class — neither is a
+    "fallback" semantically; the order is just deterministic precedence
+    for the rare collision case):
+
+      Candidate A — ancestor-stripped flat:
+          If ``parts[0]`` matches the ``name`` of any ancestor in the
+          ``source_model_origin`` chain, drop it and ``__``-join the rest.
+      Candidate B — full flat:
+          ``__``-join all ``parts`` verbatim.
+
+    Try A first; if no match, try B. Returns the first match.
+
+    Why both: ``_alias_to_short`` (query_engine.py) strips only the
+    immediate inner-model prefix at each ``_query_as_model`` call. At
+    depth 1, the original source-model name IS the immediate prefix, so
+    A matches. At depth >= 2 with a source-prefixed user ref, the
+    ancestor lives inside the flat column name; only B matches.
+    """
+    if model.source_model_origin is None:
+        return None
+    ancestor_names: set[str] = set()
+    cursor = model.source_model_origin
+    while cursor is not None:
+        ancestor_names.add(cursor.name)
+        cursor = cursor.parent
+    # Candidate A — ancestor-stripped.
+    if parts and parts[0] in ancestor_names:
+        stripped = parts[1:]
+        if stripped:
+            col = model.get_column("__".join(stripped))
+            if col is not None:
+                return col
+    # Candidate B — full-flat.
+    if parts:
+        col = model.get_column("__".join(parts))
+        if col is not None:
+            return col
+    return None
+
+
 async def _resolve_dimensions(
     query: SlayerQuery,
     model: SlayerModel,
@@ -1396,6 +1525,19 @@ async def _resolve_dimensions(
             )
             dim_def, terminal_model = _unpack_dim_resolution(raw)
             effective_model = "__".join(dim_ref.model.split("."))
+            # DEV-1449: if the join-walk found nothing AND ``model`` is a
+            # virtual stage produced by ``_query_as_model``, try the
+            # stage-origin resolver — the dotted ref likely names a
+            # flat column on the wrapped projection. On miss, fall
+            # through to today's lenient behavior (default-typed
+            # EnrichedDimension); cross-model CTE re-rooting depends
+            # on that fall-through.
+            if dim_def is None and model.source_model_origin is not None:
+                stage_col = resolve_via_stage_origin(model=model, parts=parts)
+                if stage_col is not None:
+                    dim_def = stage_col
+                    terminal_model = model
+                    effective_model = model_name_str  # local to the virtual stage
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,
@@ -1446,6 +1588,14 @@ async def _resolve_time_dimensions(
             )
             dim_def, terminal_model = _unpack_dim_resolution(raw)
             td_model_name = "__".join(td.dimension.model.split("."))
+            # DEV-1449: virtual-stage fallback (symmetric with
+            # `_resolve_dimensions`).
+            if dim_def is None and model.source_model_origin is not None:
+                stage_col = resolve_via_stage_origin(model=model, parts=parts)
+                if stage_col is not None:
+                    dim_def = stage_col
+                    terminal_model = model
+                    td_model_name = model_name_str
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,
@@ -2210,6 +2360,28 @@ async def resolve_filter_columns(
                 #   paths are valid SQL even when sqlglot's join walker
                 #   doesn't know about them.
                 if strict:
+                    # DEV-1449: virtual-stage fallback. When ``model`` is
+                    # a virtual stage produced by ``_query_as_model`` and
+                    # the dotted ref resolves to a flat column on the
+                    # wrapped projection, rewrite the filter SQL to use
+                    # ``<model_name>.<flat_col>`` and skip the strict-error
+                    # branches. Lenient (`strict=False`) callers never see
+                    # virtual stages because `_query_as_model` does not
+                    # propagate inner-model `filters` to the wrapped model
+                    # — so the resolver lives inside `if strict:` only.
+                    if model.source_model_origin is not None:
+                        stage_col = resolve_via_stage_origin(
+                            model=model, parts=path_parts + [dim_name],
+                        )
+                        if stage_col is not None:
+                            qualified = f"{model.name}.{stage_col.name}"
+                            resolved_sql = _re.sub(
+                                rf"(?<!\w)\b{_re.escape(col_name)}\b",
+                                qualified,
+                                resolved_sql,
+                            )
+                            resolved_columns.append(qualified)
+                            continue
                     if drop_if_unresolved:
                         # Re-rooted CTE path: drop the filter rather than
                         # raise. The cross-model machinery inherits the
