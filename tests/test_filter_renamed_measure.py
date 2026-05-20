@@ -275,50 +275,30 @@ class TestRemapEdgeCases:
             f"remap clobbered the literal 'country_first': filters={relevant!r}"
         )
 
-    async def test_duplicate_explicit_name_across_arithmetic_measures_raises(
-        self,
-    ) -> None:
-        """DEV-1443 (CodeRabbit round 3 thread + Codex round 4): the
-        duplicate-explicit-name check must cover non-aggregate measure
-        shapes too (arithmetic / transform formulas), not just the local
-        AggregatedMeasureRef rename branch. Two computed measures sharing
-        a `name` would otherwise silently collapse to one EnrichedExpression
-        alias.
-        """
-        model = SlayerModel(
-            name="orders",
-            sql_table="public.orders",
-            data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="profit", sql="profit", type=DataType.DOUBLE),
-            ],
-        )
-        query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="amount:sum / 100", name="metric"),
-                ModelMeasure(formula="profit:avg * 2", name="metric"),
-            ],
-        )
-        with pytest.raises(ValueError, match=r"both declare name"):
-            await _enrich(query, model)
-
+    @pytest.mark.parametrize(
+        ("formula_a", "formula_b"),
+        [
+            # Two plain colon-syntax aggregates — Codex round 3 finding.
+            ("amount:sum", "profit:avg"),
+            # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
+            # round 4: the duplicate-name check must cover all measure
+            # kinds, not just the local AggregatedMeasureRef rename branch.
+            ("amount:sum / 100", "profit:avg * 2"),
+        ],
+        ids=["plain_agg", "arithmetic"],
+    )
     async def test_duplicate_explicit_name_across_measures_raises(
         self,
+        formula_a: str,
+        formula_b: str,
     ) -> None:
-        """DEV-1443 (Codex review on PR #133 round 3): two query measures
-        with the same explicit ``name`` produce two ``EnrichedMeasure``
-        entries that share an alias — filters/ORDER BY referencing the
-        alias would bind to whichever measure happened to be first in
-        iteration order. Refuse at enrichment time.
-
-        Same shape as the previous round's CodeRabbit finding (rename
-        colliding with another measure's auto-canonical), but for the
-        symmetric explicit-name case.
+        """DEV-1443 (CodeRabbit + Codex review rounds 3-4 on PR #133): two
+        query measures sharing the same explicit ``name`` would otherwise
+        silently collapse to one alias, making filter/ORDER BY refs bind
+        to whichever measure was processed first. The pre-pass validator
+        must reject the collision regardless of measure shape — plain
+        colon aggregates, cross-model aggregates, or arithmetic /
+        transform expressions.
         """
         model = SlayerModel(
             name="orders",
@@ -335,8 +315,8 @@ class TestRemapEdgeCases:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="amount:sum", name="metric"),
-                ModelMeasure(formula="profit:avg", name="metric"),
+                ModelMeasure(formula=formula_a, name="metric"),
+                ModelMeasure(formula=formula_b, name="metric"),
             ],
         )
         with pytest.raises(ValueError, match=r"both declare name"):
