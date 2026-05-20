@@ -26,42 +26,43 @@ if __name__ == "__main__":
     check("4 models (no rollup)", len(models) == 4)
     check_rollup(expect_rollup=False)
     # Regression for issue #62 — ClickHouse Int32 / Float64 / DateTime must
-    # round-trip as the right DataType, not as STRING. Note: DataType.TIMESTAMP
-    # serialises as the string "time" (see slayer/core/enums.py).
+    # round-trip as the right DataType, not as STRING. DataType vocabulary is
+    # the sqlglot-aligned set from DEV-1361 (INT / DOUBLE / TEXT / TIMESTAMP /
+    # DATE / BOOLEAN).
     check_column_types(
         model_name="orders",
         expected_types={
-            "id": "number",
-            "customer_id": "number",
-            "product_id": "number",
-            "quantity": "number",
-            "status": "string",
-            "created_at": "time",
+            "id": "INT",
+            "customer_id": "INT",
+            "product_id": "INT",
+            "quantity": "INT",
+            "status": "TEXT",
+            "created_at": "TIMESTAMP",
         },
     )
     check_column_types(
         model_name="customers",
         expected_types={
-            "id": "number",
-            "name": "string",
-            "email": "string",
-            "region_id": "number",
+            "id": "INT",
+            "name": "TEXT",
+            "email": "TEXT",
+            "region_id": "INT",
         },
     )
     check_column_types(
         model_name="products",
         expected_types={
-            "id": "number",
-            "name": "string",
-            "category": "string",
-            "price": "number",
+            "id": "INT",
+            "name": "TEXT",
+            "category": "TEXT",
+            "price": "DOUBLE",
         },
     )
     check_column_types(
         model_name="regions",
         expected_types={
-            "id": "number",
-            "name": "string",
+            "id": "INT",
+            "name": "TEXT",
         },
     )
     # Exercises the parametric quantile(p)(x) syntax SLayer emits for ClickHouse.

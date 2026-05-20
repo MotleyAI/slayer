@@ -238,18 +238,67 @@ class TestOrderByRenamedMeasureRemap:
 class TestRemapEdgeCases:
     """Codex F1 + F2 — corner cases around the remap."""
 
-    async def test_duplicate_explicit_name_across_measures_raises(
+    async def test_remap_does_not_rewrite_quoted_string_literal(
         self,
     ) -> None:
-        """DEV-1443 (Codex review on PR #133 round 3): two query measures
-        with the same explicit ``name`` produce two ``EnrichedMeasure``
-        entries that share an alias — filters/ORDER BY referencing the
-        alias would bind to whichever measure happened to be first in
-        iteration order. Refuse at enrichment time.
+        """DEV-1443 (CodeRabbit thread 2): the filter remap is identifier-
+        level only — canonical-name matches inside quoted string literals
+        must NOT be rewritten. Example: filter ``country:first = 'country_first'``
+        with the measure renamed to ``primary_country`` must remap the
+        first occurrence (the alias) but leave the literal
+        ``'country_first'`` alone, otherwise the filter compares the
+        renamed-alias column to itself instead of the original constant.
+        """
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="country", sql="country", type=DataType.TEXT),
+            ],
+        )
+        query = SlayerQuery(
+            source_model="orders",
+            measures=[
+                ModelMeasure(formula="country:first", name="primary_country"),
+            ],
+            filters=["country:first = 'country_first'"],
+        )
+        enriched = await _enrich(query, model)
+        # The literal 'country_first' must still appear in the predicate
+        # text — the remap must not have rewritten it.
+        relevant = [f.sql for f in enriched.filters]
+        assert any("'country_first'" in s for s in relevant), (
+            f"remap clobbered the literal 'country_first': filters={relevant!r}"
+        )
 
-        Same shape as the previous round's CodeRabbit finding (rename
-        colliding with another measure's auto-canonical), but for the
-        symmetric explicit-name case.
+    @pytest.mark.parametrize(
+        ("formula_a", "formula_b"),
+        [
+            # Two plain colon-syntax aggregates — Codex round 3 finding.
+            ("amount:sum", "profit:avg"),
+            # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
+            # round 4: the duplicate-name check must cover all measure
+            # kinds, not just the local AggregatedMeasureRef rename branch.
+            ("amount:sum / 100", "profit:avg * 2"),
+        ],
+        ids=["plain_agg", "arithmetic"],
+    )
+    async def test_duplicate_explicit_name_across_measures_raises(
+        self,
+        formula_a: str,
+        formula_b: str,
+    ) -> None:
+        """DEV-1443 (CodeRabbit + Codex review rounds 3-4 on PR #133): two
+        query measures sharing the same explicit ``name`` would otherwise
+        silently collapse to one alias, making filter/ORDER BY refs bind
+        to whichever measure was processed first. The pre-pass validator
+        must reject the collision regardless of measure shape — plain
+        colon aggregates, cross-model aggregates, or arithmetic /
+        transform expressions.
         """
         model = SlayerModel(
             name="orders",
@@ -266,8 +315,8 @@ class TestRemapEdgeCases:
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
             measures=[
-                ModelMeasure(formula="amount:sum", name="metric"),
-                ModelMeasure(formula="profit:avg", name="metric"),
+                ModelMeasure(formula=formula_a, name="metric"),
+                ModelMeasure(formula=formula_b, name="metric"),
             ],
         )
         with pytest.raises(ValueError, match=r"both declare name"):

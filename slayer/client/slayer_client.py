@@ -1,7 +1,17 @@
 """Python client for SLayer API."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from collections.abc import Mapping as ABCMapping, Sequence as ABCSequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Union,
+)
 from urllib.parse import quote
 
 from slayer.core.query import SlayerQuery
@@ -15,6 +25,20 @@ if TYPE_CHECKING:
     from slayer.search.service import SearchResponse
 
 logger = logging.getLogger(__name__)
+
+
+# DEV-1437: the full input union accepted by every public query entry point,
+# mirroring ``SlayerQueryEngine.execute`` / ``execute_sync``. The list form is
+# the multi-stage DAG that ``query_nested`` (MCP) and ``POST /query`` with
+# ``{"queries": [...]}`` (REST) also accept; ``str`` runs a query-backed model
+# by name. ``Mapping``/``Sequence`` (not ``Dict``/``List``) so callers passing
+# ``list[dict[str, str]]`` aren't rejected by pyright's invariance check.
+QueryInput = Union[
+    SlayerQuery,
+    Mapping[str, Any],
+    Sequence[Union[SlayerQuery, Mapping[str, Any]]],
+    str,
+]
 
 
 class SlayerClient:
@@ -85,6 +109,107 @@ class SlayerClient:
             return resp.json()
 
     @staticmethod
+    def _validated_dump(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Round-trip a single-query payload through ``SlayerQuery`` so
+        the server sees the normalised JSON-mode shape. Necessary because
+        the server's ``QueryRequest`` declares ``measures`` /
+        ``dimensions`` as ``List[Dict[str, Any]]`` and FastAPI rejects
+        string-shorthand entries with HTTP 422 before the server can
+        re-coerce them — whereas ``SlayerQuery`` itself accepts shorthand
+        and normalises it to dict form.
+        """
+        return SlayerQuery.model_validate(dict(payload)).model_dump(
+            mode="json", exclude_none=True
+        )
+
+    @staticmethod
+    def _build_query_body(
+        query: QueryInput,
+        *,
+        dry_run: bool = False,
+        explain: bool = False,
+    ) -> Dict[str, Any]:
+        """Convert any accepted input shape into the JSON body for
+        ``POST /query``. Single source of truth shared by sync + async
+        transports. Never mutates caller-owned dicts or lists.
+
+        Shapes (mirroring ``engine.execute``):
+
+        * ``str`` → ``{"name": <str>}`` (run-by-name)
+        * ``Sequence`` (list/tuple/...) → ``{"queries": [<item-dict>, ...]}``
+          — each item is either a ``SlayerQuery`` or a ``Mapping``; both
+          are normalised through ``SlayerQuery`` so string-shorthand
+          measures / dimensions round-trip cleanly.
+        * ``Mapping`` (dict/MappingProxyType/...) → normalised
+          ``SlayerQuery`` JSON dump (same reason as above).
+        * ``SlayerQuery`` → ``model_dump(mode="json", exclude_none=True)``
+
+        ``dry_run`` and ``explain`` are appended at the top of the body
+        when truthy (the server's ``QueryRequest`` and ``QueryListRequest``
+        both accept them).
+        """
+        if isinstance(query, str):
+            body: Dict[str, Any] = {"name": query}
+        elif isinstance(query, SlayerQuery):
+            body = query.model_dump(mode="json", exclude_none=True)
+        elif isinstance(query, ABCSequence) and not isinstance(
+            query, (bytes, bytearray)
+        ):
+            # ``str`` is also a Sequence but already handled above; guard the
+            # binary string types here too so they raise via the else-branch.
+            serialised: List[Dict[str, Any]] = []
+            for i, item in enumerate(query):
+                if isinstance(item, SlayerQuery):
+                    serialised.append(
+                        item.model_dump(mode="json", exclude_none=True)
+                    )
+                elif isinstance(item, ABCMapping):
+                    serialised.append(SlayerClient._validated_dump(item))
+                else:
+                    raise TypeError(
+                        f"query[{i}] must be SlayerQuery or Mapping; got "
+                        f"{type(item).__name__}"
+                    )
+            body = {"queries": serialised}
+        elif isinstance(query, ABCMapping):
+            body = SlayerClient._validated_dump(query)
+        else:
+            raise TypeError(
+                "query must be SlayerQuery, Mapping, Sequence, or str; got "
+                f"{type(query).__name__}"
+            )
+        if dry_run:
+            body["dry_run"] = True
+        if explain:
+            body["explain"] = True
+        return body
+
+    @staticmethod
+    def _normalize_for_engine(query: QueryInput) -> Any:
+        """Coerce ``Mapping``/``Sequence`` inputs to concrete ``dict`` /
+        ``list`` before forwarding to ``engine.execute`` / ``execute_sync``.
+        The engine's dispatch uses ``isinstance(query, dict)`` and
+        ``isinstance(query, list)`` directly, so a tuple or
+        ``MappingProxyType`` would fall through to the SlayerQuery branch
+        and crash. Mirrors the runtime contract advertised by
+        ``QueryInput`` on both local and HTTP transports.
+        """
+        if isinstance(query, str) or isinstance(query, SlayerQuery):
+            return query
+        if isinstance(query, ABCSequence) and not isinstance(
+            query, (bytes, bytearray)
+        ):
+            return [
+                item if isinstance(item, SlayerQuery)
+                else dict(item) if isinstance(item, ABCMapping)
+                else item  # engine raises with the per-item context.
+                for item in query
+            ]
+        if isinstance(query, ABCMapping):
+            return dict(query)
+        return query  # engine raises with the per-input context.
+
+    @staticmethod
     def _parse_response(result: dict) -> SlayerResponse:
         """Parse an API JSON response into a SlayerResponse."""
         from slayer.core.format import NumberFormat
@@ -114,32 +239,39 @@ class SlayerClient:
 
     async def query(
         self,
-        query,
+        query: QueryInput,
         *,
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Execute a query asynchronously. Accepts SlayerQuery or dict."""
-        if isinstance(query, dict):
-            query = SlayerQuery.model_validate(query)
+        """Execute a query asynchronously. Accepts ``SlayerQuery``, ``dict``,
+        ``list[SlayerQuery | dict]`` (multi-stage DAG; last element is the
+        root), or ``str`` (run a query-backed model by name).
+        """
         if self._engine is not None:
             return await self._engine.execute(
-                query=query, dry_run=dry_run, explain=explain
+                query=self._normalize_for_engine(query),
+                dry_run=dry_run,
+                explain=explain,
             )
-        body = query.model_dump(exclude_none=True)
-        if dry_run:
-            body["dry_run"] = True
-        if explain:
-            body["explain"] = True
+        body = self._build_query_body(
+            query, dry_run=dry_run, explain=explain
+        )
         result = await self._request(method="POST", path="/query", json=body)
         return self._parse_response(result)
 
-    async def sql(self, query) -> str:
-        """Generate SQL for a query without executing it."""
+    async def sql(self, query: QueryInput) -> str:
+        """Generate SQL for a query without executing it.
+
+        Accepts the same input union as ``query``.
+        """
         return (await self.query(query=query, dry_run=True)).sql
 
-    async def explain(self, query) -> SlayerResponse:
-        """Run EXPLAIN ANALYZE on a query."""
+    async def explain(self, query: QueryInput) -> SlayerResponse:
+        """Run EXPLAIN ANALYZE on a query.
+
+        Accepts the same input union as ``query``.
+        """
         return await self.query(query=query, explain=True)
 
     async def list_models(self, data_source: Optional[str] = None) -> List[str]:
@@ -327,36 +459,46 @@ class SlayerClient:
 
     def query_sync(
         self,
-        query,
+        query: QueryInput,
         *,
         dry_run: bool = False,
         explain: bool = False,
     ) -> SlayerResponse:
-        """Execute a query synchronously. Accepts SlayerQuery or dict."""
-        if isinstance(query, dict):
-            query = SlayerQuery.model_validate(query)
+        """Execute a query synchronously. Accepts ``SlayerQuery``, ``dict``,
+        ``list[SlayerQuery | dict]`` (multi-stage DAG; last element is the
+        root), or ``str`` (run a query-backed model by name).
+        """
         if self._engine is not None:
             return self._engine.execute_sync(
-                query=query, dry_run=dry_run, explain=explain
+                query=self._normalize_for_engine(query),
+                dry_run=dry_run,
+                explain=explain,
             )
-        body = query.model_dump(exclude_none=True)
-        if dry_run:
-            body["dry_run"] = True
-        if explain:
-            body["explain"] = True
+        body = self._build_query_body(
+            query, dry_run=dry_run, explain=explain
+        )
         result = self._request_sync(method="POST", path="/query", json=body)
         return self._parse_response(result)
 
-    def sql_sync(self, query) -> str:
-        """Generate SQL synchronously."""
+    def sql_sync(self, query: QueryInput) -> str:
+        """Generate SQL synchronously.
+
+        Accepts the same input union as ``query_sync``.
+        """
         return self.query_sync(query=query, dry_run=True).sql
 
-    def explain_sync(self, query) -> SlayerResponse:
-        """Run EXPLAIN ANALYZE synchronously."""
+    def explain_sync(self, query: QueryInput) -> SlayerResponse:
+        """Run EXPLAIN ANALYZE synchronously.
+
+        Accepts the same input union as ``query_sync``.
+        """
         return self.query_sync(query=query, explain=True)
 
-    def query_df(self, query: SlayerQuery):
-        """Execute a query and return a pandas DataFrame (sync)."""
+    def query_df(self, query: QueryInput):
+        """Execute a query and return a pandas DataFrame (sync).
+
+        Accepts the same input union as ``query_sync``.
+        """
         try:
             import pandas as pd
         except ImportError:

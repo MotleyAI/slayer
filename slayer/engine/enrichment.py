@@ -836,6 +836,27 @@ async def enrich_query(
     # user-declared qfield and refuse the duplicate.
     user_declared_canon_keys: Dict[Tuple[Any, ...], str] = {}
 
+    # DEV-1443 (CodeRabbit thread + Codex round 4 on PR #133): the
+    # duplicate-explicit-name check must run for every query measure
+    # kind, not just inside the local AggregatedMeasureRef rename branch.
+    # Cross-model aggregates ``continue`` before reaching that branch and
+    # arithmetic/transform measures fall through to ``_flatten_spec``; in
+    # both cases a duplicate ``name`` would silently collapse two
+    # measures onto a single alias. Run the pairwise check once up front.
+    _seen_explicit_names: Dict[str, str] = {}
+    for qf in (query.measures or []):
+        if not qf.name:
+            continue
+        if qf.name in _seen_explicit_names:
+            raise ValueError(
+                f"Measure '{qf.formula}' and measure "
+                f"'{_seen_explicit_names[qf.name]}' both declare name "
+                f"'{qf.name}'. Two distinct aggregates would otherwise be "
+                f"silently merged into one column. Pick a different `name` "
+                f"for one of them."
+            )
+        _seen_explicit_names[qf.name] = qf.formula
+
     # Process each query field
     for qfield in query.measures or []:
         spec = parse_formula(
@@ -968,21 +989,11 @@ async def enrich_query(
                 # same name.
                 # DEV-1443 (Codex review round 3 on PR #133): the symmetric
                 # case — two query measures sharing the same explicit
-                # ``name`` — also collapses to a single alias and leaves
-                # filter/ORDER BY refs binding to whichever measure was
-                # processed first. Same rejection applies.
+                # ``name`` — is handled by the pre-pass above; this branch
+                # only handles the rename-vs-other-canonical case below.
                 for qf_other in (query.measures or []):
                     if qf_other is qfield:
                         continue
-                    if qf_other.name and qf_other.name == qfield.name:
-                        raise ValueError(
-                            f"Measure '{qfield.formula}' and measure "
-                            f"'{qf_other.formula}' both declare name "
-                            f"'{qfield.name}'. Two distinct aggregates "
-                            f"would otherwise be silently merged into one "
-                            f"column. Pick a different `name` for one of "
-                            f"them."
-                        )
                     spec_other = parse_formula(
                         qf_other.formula,
                         extra_agg_names=custom_agg_names,
@@ -1871,7 +1882,14 @@ def _remap_renamed_aliases_in_filter(
     (DEV-1443 Codex-review on PR #133). By the time this helper runs the
     mapping is guaranteed not to alias a source column, so any
     ``\\bcanonical\\b`` occurrence in ``pf.sql`` came from colon syntax
-    and is safe to rewrite.
+    and is safe to rewrite — outside of quoted string literals.
+
+    DEV-1443 (CodeRabbit thread on PR #133): the regex sub must not touch
+    string-literal contents. Mask single-quoted spans with placeholders
+    before applying the rewrite, then restore them. Otherwise
+    ``country:first = 'country_first'`` with the measure renamed to
+    ``primary_country`` becomes ``primary_country = 'primary_country'``
+    and the filter compares the column to itself.
     """
     if not canonical_to_user_name:
         return
@@ -1881,15 +1899,26 @@ def _remap_renamed_aliases_in_filter(
     }
     if not eligible:
         return
+    # Mask single-quoted spans so the identifier sub below can't reach
+    # into string literals. ``_STRING_LITERAL_RE`` is the same pattern
+    # used elsewhere in the codebase for this purpose
+    # (slayer/core/formula.py).
+    literal_re = re.compile(r"'(?:[^'\\]|\\.)*'")
+    literals = literal_re.findall(pf.sql)
+    masked = literal_re.sub("\x00LIT\x00", pf.sql)
     for canonical, user_name in eligible.items():
         # Word-boundary regex mirroring ``_resolve_sql`` (line ~393) so
         # canonical names embedded inside dotted paths or already-quoted
         # identifiers are not rewritten.
-        pf.sql = re.sub(
+        masked = re.sub(
             rf'(?<![."\w])\b{re.escape(canonical)}\b(?![\w."])',
             user_name,
-            pf.sql,
+            masked,
         )
+    # Restore literals in original order.
+    for literal in literals:
+        masked = masked.replace("\x00LIT\x00", literal, 1)
+    pf.sql = masked
     pf.columns = [eligible.get(c, c) for c in pf.columns]
 
 

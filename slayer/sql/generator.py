@@ -2430,6 +2430,20 @@ class SQLGenerator:
             # dialect (e.g., var_samp → VARIANCE on SQLite/DuckDB/MySQL,
             # var_pop → VARIANCE_POP on SQLite/MySQL). Both spellings
             # resolve via the SQLite UDF aliases.
+            #
+            # MySQL exception: sqlglot's MySQL dialect rewrites
+            # ``VAR_POP`` → ``VARIANCE_POP`` (no such function in MySQL —
+            # only VAR_POP / VARIANCE exist) and ``VAR_SAMP`` →
+            # ``VARIANCE`` (silently wrong, since MySQL's ``VARIANCE``
+            # equals ``VAR_POP`` — sample variance gets aliased to
+            # population variance). Bypass both by emitting the
+            # MySQL-native names through ``exp.Anonymous``, which
+            # sqlglot leaves verbatim.
+            if self.dialect == "mysql" and agg_name in {"var_samp", "var_pop"}:
+                return exp.Anonymous(
+                    this=agg_name.upper(),
+                    expressions=[self._parse(col_expr)],
+                )
             sql_str = f"{agg_name.upper()}({col_expr})"
 
         return self._parse(sql_str)

@@ -2447,11 +2447,16 @@ class TestStatAggsPerDialect:
         "dialect,expected",
         [
             ("postgres", "VAR_SAMP(orders.amount)"),
-            # sqlglot rewrites VAR_SAMP → VARIANCE on SQLite/DuckDB/MySQL;
-            # the SQLite UDF must therefore be registered under the alias
-            # `variance` so generator output still resolves at runtime.
+            # sqlglot rewrites VAR_SAMP → VARIANCE on SQLite/DuckDB; the
+            # SQLite UDF is therefore registered under the alias `variance`
+            # so generator output still resolves at runtime. MySQL is the
+            # exception: sqlglot's MySQL dialect rewrites the same way, but
+            # MySQL's ``VARIANCE`` is an alias for ``VAR_POP`` (population
+            # variance), so the rewritten SQL would silently return the
+            # wrong value. The generator emits ``VAR_SAMP`` directly on
+            # MySQL via ``exp.Anonymous`` to bypass the transpile.
             ("duckdb", "VARIANCE(orders.amount)"),
-            ("mysql", "VARIANCE(orders.amount)"),
+            ("mysql", "VAR_SAMP(orders.amount)"),
             ("sqlite", "VARIANCE(orders.amount)"),
         ],
     )
@@ -2468,8 +2473,11 @@ class TestStatAggsPerDialect:
         [
             ("postgres", "VAR_POP(orders.amount)"),
             ("duckdb", "VAR_POP(orders.amount)"),
-            # sqlglot rewrites VAR_POP → VARIANCE_POP on SQLite/MySQL.
-            ("mysql", "VARIANCE_POP(orders.amount)"),
+            # sqlglot rewrites VAR_POP → VARIANCE_POP on SQLite (handled by
+            # a registered UDF alias). MySQL gets the same buggy rewrite,
+            # but ``VARIANCE_POP`` is not a real MySQL function — the
+            # generator emits ``VAR_POP`` directly via ``exp.Anonymous``.
+            ("mysql", "VAR_POP(orders.amount)"),
             ("sqlite", "VARIANCE_POP(orders.amount)"),
         ],
     )
