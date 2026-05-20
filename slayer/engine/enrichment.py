@@ -1004,10 +1004,43 @@ async def enrich_query(
                 # DEV-1449: cross-model agg ref against a virtual stage
                 # whose inner stage already projected the flat alias →
                 # emit a local re-aggregated measure instead of a CTE.
+                #
+                # Codex review on PR #137: refuse two intercepted qfields
+                # that canonicalise to the same cross-stage aggregate
+                # but with different names. Without this, the second
+                # call's rename mutates the first call's EnrichedMeasure
+                # alias and `user_projection` is left pointing at the
+                # pre-rename alias with no backing measure. Mirrors the
+                # same guard the standard local-agg branch runs below.
+                cross_canon_key = (
+                    "agg",
+                    spec.measure_name,
+                    spec.aggregation_name,
+                    tuple(spec.agg_args),
+                    tuple(sorted(spec.agg_kwargs.items())),
+                )
+                if cross_canon_key in user_declared_canon_keys:
+                    prior_name = user_declared_canon_keys[cross_canon_key]
+                    this_name = qfield.name or canonical_name
+                    if prior_name != this_name:
+                        raise ValueError(
+                            f"Measure '{qfield.formula}' (surfacing as "
+                            f"'{this_name}') canonicalises to the same "
+                            f"cross-stage aggregation as an earlier query "
+                            f"measure (surfacing as '{prior_name}'). Two "
+                            f"user-declared measures with the same canonical "
+                            f"aggregation would otherwise collapse into one "
+                            f"column, leaving the second name with no backing "
+                            f"aggregate. Pick a single name, or drop the "
+                            f"duplicate."
+                        )
                 local_alias = await _try_intercept_cross_model_as_local(
                     ref=spec, field_name=field_name,
                 )
                 if local_alias is not None:
+                    user_declared_canon_keys[cross_canon_key] = (
+                        qfield.name or canonical_name
+                    )
                     # CodeRabbit review on PR #137: mirror the standard
                     # local-aggregate branch's rename bookkeeping so a
                     # qfield with an explicit `name` surfaces under the

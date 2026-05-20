@@ -1206,17 +1206,16 @@ class TestCrossModelStarCountCrossStage:
                 f"the inner per-group count).\n"
                 f"got SUM targets: {sum_targets}\nSQL:\n{sql}"
             )
-            # And explicitly NO outer COUNT against the stage rows.
-            outer_count_targets = []
-            for count_call in outer_select.find_all(exp.Count):
-                if count_call.parent_select is not outer_select:
-                    continue
-                outer_count_targets.extend(
-                    (c.table, c.name) for c in count_call.find_all(exp.Column)
-                )
-            assert ("s1", "customers___count") not in outer_count_targets, (
-                f"Outer must NOT COUNT(s1.customers___count) — that would "
-                f"count groups, not rows.\nSQL:\n{sql}"
+            # And explicitly NO outer COUNT of any shape — COUNT(*) and
+            # COUNT(<col>) are both wrong here (the intercept re-maps to
+            # SUM; any outer COUNT means a regression).
+            outer_count_calls = [
+                c for c in outer_select.find_all(exp.Count)
+                if c.parent_select is outer_select
+            ]
+            assert not outer_count_calls, (
+                f"Outer must not use COUNT for re-aggregation; expected "
+                f"SUM over s1.customers___count.\nSQL:\n{sql}"
             )
         finally:
             tmp.cleanup()
@@ -1413,19 +1412,65 @@ class TestCrossModelInterceptRenameBookkeeping:
             # NOT appear in WHERE/HAVING as a bare column.
             where = outer_select.args.get("where")
             having = outer_select.args.get("having")
+            # CodeRabbit review round 2 on PR #137: assert the filter
+            # didn't get silently dropped (at least one of WHERE/HAVING
+            # must exist), and that it doesn't reference the internal
+            # `_sum_sum` canonical alias the intercept's outer
+            # aggregation produces internally.
+            assert where is not None or having is not None, (
+                f"Expected rewritten filter in WHERE or HAVING — neither "
+                f"present means the filter was silently dropped.\nSQL:\n{sql}"
+            )
             for clause in (where, having):
                 if clause is None:
                     continue
                 clause_cols = {(c.table, c.name) for c in clause.find_all(exp.Column)}
-                # Must not reference the raw `customers__revenue_sum`
-                # column — the remap should have rewritten to the rename.
-                # (The exact placement is implementation-defined; we
-                # just pin that the broken canonical form isn't there.)
+                # Must not reference the doubled-up `customers__revenue_sum_sum`
+                # internal alias — the remap should have rewritten to either
+                # the aggregation expression over `customers__revenue_sum`
+                # (HAVING-style) or the rename `rev`. Note: in standard SQL,
+                # HAVING references the aggregation expression directly, not
+                # the projection alias, so we can't pin "must reference rev".
                 broken = [t for t in clause_cols if t[1] == "customers__revenue_sum_sum"]
                 assert not broken, (
-                    f"Filter must not reference internal canonical alias.\n"
+                    f"Filter must not reference internal double-sum alias.\n"
                     f"got: {clause_cols}\nSQL:\n{sql}"
                 )
+        finally:
+            tmp.cleanup()
+
+
+# ===========================================================================
+# Codex review round 2 on PR #137 — refuse two intercepted qfields that
+# canonicalise to the same cross-stage aggregate with different `name`s.
+# Without the guard, the second rename mutates the first call's
+# EnrichedMeasure alias and `user_projection` is left pointing at an
+# orphan.
+# ===========================================================================
+class TestCrossModelInterceptDuplicateQfieldGuard:
+    async def test_two_intercepted_qfields_same_canonical_different_names_raises(
+        self,
+    ) -> None:
+        """Both qfields canonicalise to `customers.revenue_sum`. The
+        intercept must raise rather than silently corrupting the
+        projection."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[
+                    {"formula": "customers.revenue:sum", "name": "rev1"},
+                    {"formula": "customers.revenue:sum", "name": "rev2"},
+                ],
+            )
+            with pytest.raises(ValueError, match="canonicalises to the same"):
+                await engine.execute(query=[inner, outer], dry_run=True)
         finally:
             tmp.cleanup()
 
