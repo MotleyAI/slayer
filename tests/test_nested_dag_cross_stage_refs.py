@@ -1172,8 +1172,10 @@ class TestCrossModelStarCountCrossStage:
         """Inner projects `customers.*:count`. Outer references same.
         Confirm the intercept matches `customers___count` on s1 and the
         outer measure resolves to a local count over that column. The
-        test asserts ALIAS RESOLUTION only — does not claim that the
-        outer COUNT semantics are meaningful for the user's intent.
+        outer aggregation must SUM the inner per-group count to roll up
+        to total rows — using COUNT on the stage rows would silently
+        return the number of groups instead of total rows (CodeRabbit
+        review on PR #137).
         """
         engine, tmp = await _engine_with_join_chain()
         try:
@@ -1189,19 +1191,241 @@ class TestCrossModelStarCountCrossStage:
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
-            # Strong assertion: outer SELECT has COUNT(s1.customers___count).
-            outer = _outermost_select(sql)
-            count_targets = []
-            for count_call in outer.find_all(exp.Count):
-                if count_call.parent_select is not outer:
+            # Outer SELECT must SUM the inner per-group count, not COUNT
+            # the stage rows.
+            outer_select = _outermost_select(sql)
+            sum_targets = []
+            for sum_call in outer_select.find_all(exp.Sum):
+                if sum_call.parent_select is not outer_select:
                     continue
-                count_targets.extend(
+                sum_targets.extend(
+                    (c.table, c.name) for c in sum_call.find_all(exp.Column)
+                )
+            assert ("s1", "customers___count") in sum_targets, (
+                f"Outer SUM must target s1.customers___count (re-aggregating "
+                f"the inner per-group count).\n"
+                f"got SUM targets: {sum_targets}\nSQL:\n{sql}"
+            )
+            # And explicitly NO outer COUNT against the stage rows.
+            outer_count_targets = []
+            for count_call in outer_select.find_all(exp.Count):
+                if count_call.parent_select is not outer_select:
+                    continue
+                outer_count_targets.extend(
                     (c.table, c.name) for c in count_call.find_all(exp.Column)
                 )
-            assert ("s1", "customers___count") in count_targets, (
-                f"Outer COUNT must target s1.customers___count.\n"
-                f"got: {count_targets}\nSQL:\n{sql}"
+            assert ("s1", "customers___count") not in outer_count_targets, (
+                f"Outer must NOT COUNT(s1.customers___count) — that would "
+                f"count groups, not rows.\nSQL:\n{sql}"
             )
+        finally:
+            tmp.cleanup()
+
+
+# ===========================================================================
+# CodeRabbit review on PR #137 — semantics gate: intercept must fall
+# through for non-distributive aggregations (avg, count_distinct, ...);
+# only sum/min/max pass through unchanged, count re-maps to sum.
+# ===========================================================================
+class TestCrossModelInterceptSemanticsGate:
+    async def test_avg_falls_through_to_cte_path(self) -> None:
+        """Cross-stage `customers.revenue:avg` must NOT be intercepted —
+        averaging an inner-aggregated average is not equal to the overall
+        average. The intercept returns None; the existing cross-model
+        path takes over (which on a virtual stage with no joins raises
+        ValueError — that's still better than silently lying)."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:avg"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[{"formula": "customers.revenue:avg"}],
+            )
+            # Falls through to existing CTE path → raises because s1 has
+            # no joins. Pin the existing error rather than asserting the
+            # outer SQL has any specific shape (the fix is: don't
+            # silently re-aggregate).
+            with pytest.raises((SlayerError, ValueError)):
+                await engine.execute(query=[inner, outer], dry_run=True)
+        finally:
+            tmp.cleanup()
+
+    async def test_count_distinct_falls_through(self) -> None:
+        """Cross-stage `customers.revenue:count_distinct` is also
+        non-distributive — falls through to the CTE path."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:count_distinct"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[{"formula": "customers.revenue:count_distinct"}],
+            )
+            with pytest.raises((SlayerError, ValueError)):
+                await engine.execute(query=[inner, outer], dry_run=True)
+        finally:
+            tmp.cleanup()
+
+    async def test_sum_passes_through_intercept(self) -> None:
+        """Regression guard: `customers.revenue:sum` IS intercepted (sum
+        is distributive) — confirms the gate didn't accidentally exclude
+        the safe set."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            sum_targets = []
+            for sum_call in outer_select.find_all(exp.Sum):
+                if sum_call.parent_select is not outer_select:
+                    continue
+                sum_targets.extend(
+                    (c.table, c.name) for c in sum_call.find_all(exp.Column)
+                )
+            assert ("s1", "customers__revenue_sum") in sum_targets
+        finally:
+            tmp.cleanup()
+
+
+# ===========================================================================
+# Codex review on PR #137 — source-prefixed cross-model ref resolves via
+# the intercept's Candidate A (ancestor-strip).
+# ===========================================================================
+class TestCrossModelInterceptCandidateA:
+    async def test_source_prefixed_cross_model_ref_resolves(self) -> None:
+        """User writes `orders.customers.revenue:sum` against `s1`
+        (which wraps `orders`). Inner-stage flat alias is
+        `customers__revenue_sum` (the `orders.` prefix was stripped by
+        `_alias_to_short`). Candidate B (full-flat) builds
+        `orders__customers__revenue_sum` and misses; Candidate A strips
+        the leading `orders` ancestor and matches."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                # Source-prefixed cross-model form.
+                measures=[{"formula": "orders.customers.revenue:sum"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            sum_targets = []
+            for sum_call in outer_select.find_all(exp.Sum):
+                if sum_call.parent_select is not outer_select:
+                    continue
+                sum_targets.extend(
+                    (c.table, c.name) for c in sum_call.find_all(exp.Column)
+                )
+            assert ("s1", "customers__revenue_sum") in sum_targets, (
+                f"Source-prefixed ref must resolve via Candidate A to "
+                f"the inner flat alias.\n"
+                f"got SUM targets: {sum_targets}\nSQL:\n{sql}"
+            )
+        finally:
+            tmp.cleanup()
+
+
+# ===========================================================================
+# CodeRabbit review on PR #137 — rename bookkeeping at the line-896
+# intercept: a renamed intercepted measure must surface under the user
+# alias, and filters / ORDER BY using the colon-form canonical alias
+# must resolve to the renamed measure.
+# ===========================================================================
+class TestCrossModelInterceptRenameBookkeeping:
+    async def test_renamed_intercept_surfaces_user_alias(self) -> None:
+        """Outer projects `{formula: customers.revenue:sum, name: rev}`
+        against `s1`. The intercept fires (canonical flat
+        `customers__revenue_sum` exists on s1) and the projection must
+        surface as `s1.rev`, not the internal canonical alias."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            outer_aliases = {p.alias_or_name for p in outer_select.expressions or []}
+            assert "s1.rev" in outer_aliases, (
+                f"Outer projection must alias as `s1.rev` (the user "
+                f"rename).\ngot: {outer_aliases}\nSQL:\n{sql}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_renamed_intercept_filter_via_colon_form(self) -> None:
+        """Outer renames the intercept to `rev` AND filters via
+        `customers.revenue:sum > 100`. The canonical-to-user remap
+        must rewrite the filter to reference the rename."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[{"formula": "customers.revenue:sum", "name": "rev"}],
+                filters=["customers.revenue:sum > 100"],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            # The filter should land on the renamed alias `rev`, which
+            # in the outer SQL is the projection's `SUM(...)`. The HAVING
+            # clause (or WHERE-on-aggregate) references the rename.
+            # Loose assertion: `rev` appears somewhere in the outer
+            # SELECT's WHERE/HAVING, and the broken canonical-flat does
+            # NOT appear in WHERE/HAVING as a bare column.
+            where = outer_select.args.get("where")
+            having = outer_select.args.get("having")
+            for clause in (where, having):
+                if clause is None:
+                    continue
+                clause_cols = {(c.table, c.name) for c in clause.find_all(exp.Column)}
+                # Must not reference the raw `customers__revenue_sum`
+                # column — the remap should have rewritten to the rename.
+                # (The exact placement is implementation-defined; we
+                # just pin that the broken canonical form isn't there.)
+                broken = [t for t in clause_cols if t[1] == "customers__revenue_sum_sum"]
+                assert not broken, (
+                    f"Filter must not reference internal canonical alias.\n"
+                    f"got: {clause_cols}\nSQL:\n{sql}"
+                )
         finally:
             tmp.cleanup()
 

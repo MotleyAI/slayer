@@ -599,6 +599,16 @@ async def enrich_query(
         )
         known_aliases[name] = alias
 
+    # DEV-1449: aggregations whose group-wise results can be re-aggregated
+    # to an equivalent overall result. `sum`/`min`/`max` are distributive
+    # (re-aggregating with the same op is exact). `count` is additive — the
+    # outer must use `sum` over the inner per-group count, not `count` of
+    # stage rows (which would just count groups). Everything else (avg,
+    # count_distinct, median, percentile, stddev, ...) is non-distributive
+    # and silently changes semantics under re-aggregation, so the intercept
+    # falls through to the cross-model CTE path for them.
+    _DISTRIBUTIVE_AGGS = frozenset({"sum", "min", "max"})
+
     async def _try_intercept_cross_model_as_local(
         ref, field_name: str,
     ) -> Optional[str]:
@@ -606,33 +616,75 @@ async def enrich_query(
         ``source_model_origin``) and the cross-model agg's canonical
         flat name already exists as a local column, emit a local
         re-aggregated EnrichedMeasure instead of building a cross-model
-        CTE. Returns the full enriched alias (``<model_name_str>.<canonical>``)
-        the caller can append to ``user_projection`` / store in
-        ``known_aliases``, or ``None`` if the intercept didn't apply.
+        CTE. Returns the full enriched alias the caller can append to
+        ``user_projection`` / store in ``known_aliases``, or ``None``
+        if the intercept didn't apply.
 
-        Parameterized aggregations (``agg_args`` / ``agg_kwargs``)
-        fall through to the existing CTE path because
-        ``resolve_cross_model_measure`` canonicalizes with no args/kwargs
-        participation — the inner stage's flat column name we'd be
-        looking for doesn't account for params either.
+        Lookup candidates (Codex review): the source-prefixed user ref
+        (``orders.customers.revenue:sum`` against an ``s1`` that wraps
+        ``orders``) lands on ``customers__revenue_sum``, not
+        ``orders__customers__revenue_sum`` — ``_alias_to_short`` strips
+        the immediate ancestor name on every ``_query_as_model`` call.
+        Mirror ``resolve_via_stage_origin``'s Candidate A/B order: try
+        the ancestor-stripped flat first, then the full flat.
+
+        Semantics gate (CodeRabbit review): only intercept aggregations
+        that re-aggregate to an equivalent result. ``sum``/``min``/``max``
+        pass through unchanged; ``count`` re-maps to ``sum`` over the
+        inner per-group count; anything else returns ``None`` and falls
+        through.
+
+        Parameterized aggregations (``agg_args`` / ``agg_kwargs``) fall
+        through too — ``resolve_cross_model_measure`` canonicalizes with
+        no args/kwargs participation, so the inner stage's flat column
+        name we'd be looking for doesn't account for params either.
         """
         if model.source_model_origin is None:
             return None
         if ref.agg_args or ref.agg_kwargs:
             return None
+        # Semantics gate.
+        if ref.aggregation_name in _DISTRIBUTIVE_AGGS:
+            outer_agg = ref.aggregation_name
+        elif ref.aggregation_name == "count":
+            outer_agg = "sum"
+        else:
+            return None
+        # Canonical-leaf-agg uses the INNER stage's aggregation_name
+        # (count → `_count` / `<col>_count`), independent of the outer
+        # remap. That's the form `_alias_to_short` produced on the
+        # inner stage's cm.alias.
         leaf = ref.measure_name.rsplit(".", 1)[-1]
         canonical_leaf_agg = (
             f"_{ref.aggregation_name}" if leaf == "*"
             else f"{leaf}_{ref.aggregation_name}"
         )
         hop_parts = ref.measure_name.split(".")
-        flat_with_agg = "__".join(hop_parts[:-1] + [canonical_leaf_agg])
-        if model.get_column(flat_with_agg) is None:
+        # Candidate A — strip a leading ancestor name from the hop path
+        # (e.g. `orders.customers.revenue` → `customers.revenue` when
+        # `s1` wraps `orders`).
+        ancestor_names: set[str] = set()
+        cursor = model.source_model_origin
+        while cursor is not None:
+            ancestor_names.add(cursor.name)
+            cursor = cursor.parent
+        flat_with_agg: Optional[str] = None
+        if hop_parts and hop_parts[0] in ancestor_names and len(hop_parts) >= 2:
+            stripped = hop_parts[1:-1] + [canonical_leaf_agg]
+            candidate = "__".join(stripped)
+            if model.get_column(candidate) is not None:
+                flat_with_agg = candidate
+        # Candidate B — full flat (existing behaviour).
+        if flat_with_agg is None:
+            candidate = "__".join(hop_parts[:-1] + [canonical_leaf_agg])
+            if model.get_column(candidate) is not None:
+                flat_with_agg = candidate
+        if flat_with_agg is None:
             return None
         await _ensure_aggregated_measure(
             alias_key=field_name,
             measure_name=flat_with_agg,
-            aggregation_name=ref.aggregation_name,
+            aggregation_name=outer_agg,
             agg_args=ref.agg_args,
             agg_kwargs=ref.agg_kwargs,
         )
@@ -956,18 +1008,42 @@ async def enrich_query(
                     ref=spec, field_name=field_name,
                 )
                 if local_alias is not None:
+                    # CodeRabbit review on PR #137: mirror the standard
+                    # local-aggregate branch's rename bookkeeping so a
+                    # qfield with an explicit `name` surfaces under the
+                    # user alias and filters / ORDER BY references using
+                    # the colon-form canonical alias resolve to it.
+                    surfaced_alias = local_alias
+                    if qfield.name and qfield.name != canonical_name:
+                        user_alias = f"{model_name_str}.{qfield.name}"
+                        prev_alias = local_alias
+                        for em in measures:
+                            if em.alias == prev_alias:
+                                em.name = qfield.name
+                                em.alias = user_alias
+                                break
+                        known_aliases[qfield.name] = user_alias
+                        known_aliases[canonical_name] = user_alias
+                        # DEV-1444 provenance merge: any canonical key
+                        # currently pointing at the pre-rename alias must
+                        # follow the rename.
+                        for k, v in list(measure_canonical_key_to_alias.items()):
+                            if v == prev_alias:
+                                measure_canonical_key_to_alias[k] = user_alias
+                        canonical_to_user_name[canonical_name] = qfield.name
+                        surfaced_alias = user_alias
                     # Propagate qfield metadata onto the
                     # created-or-reused EnrichedMeasure (matches the
-                    # existing local-agg branch handling).
+                    # standard local-agg branch handling).
                     for em in measures:
-                        if em.alias == local_alias:
+                        if em.alias == surfaced_alias:
                             if qfield.label is not None:
                                 em.label = qfield.label
                             if qfield.type is not None:
                                 em.type = qfield.type
                             break
-                    _mark_user_declared(local_alias)
-                    user_projection.append(local_alias)
+                    _mark_user_declared(surfaced_alias)
+                    user_projection.append(surfaced_alias)
                     continue
                 # Cross-model aggregated measure
                 cm = await resolve_cross_model_measure(
