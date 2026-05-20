@@ -660,6 +660,41 @@ class TestCrossModelRenameCollisionGuards:
         with pytest.raises(ValueError, match=r"silently merged|collide"):
             await engine._enrich(query=query, model=orders)
 
+    async def test_cross_model_rename_collides_with_arithmetic_mangled_name_raises(
+        self, orders_customers_engine,
+    ) -> None:
+        """Codex review round 6 on PR #136: the pre-pass skipped non-
+        ``AggregatedMeasureRef`` query measures, so a renamed cross-
+        model measure could collide with an arithmetic / transform
+        measure's downstream short name.
+
+        Setup:
+        * arithmetic measure ``revenue:sum / 100`` (no name) — the
+          formula's mangled ``field_name`` is ``"revenue_sum__div__100"``
+          (the enrichment loop's mangling: ``" "`` → ``"_"`` then
+          ``"/"`` → ``"_div_"`` then ``":"`` → ``"_"``). ``_query_as_model``
+          emits this as a virtual-model column under ``e.name`` →
+          ``revenue_sum__div__100``.
+        * cross-model rename ``{"formula": "customers.revenue:sum",
+          "name": "revenue_sum__div__100"}`` — user_declared, ``cm.name``
+          is bare so the gated short-circuit in ``_query_as_model``
+          uses it directly → ``revenue_sum__div__100``.
+
+        Both produce the same virtual-model column name. Downstream
+        references would be ambiguous.
+        """
+        engine, orders = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="customers.revenue:sum", name="revenue_sum__div__100"),
+                ModelMeasure(formula="revenue:sum / 100"),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"silently merged|collide"):
+            await engine._enrich(query=query, model=orders)
+
     async def test_two_local_renames_distinct_canonicals_pass(
         self, orders_customers_engine,
     ) -> None:

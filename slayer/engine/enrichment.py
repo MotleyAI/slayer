@@ -951,6 +951,29 @@ async def enrich_query(
             f"time dimension '{_td.name}'"
         )
 
+    # Codex review round 6 on PR #136: the pre-pass previously skipped
+    # non-``AggregatedMeasureRef`` qfields (arithmetic / transform / mixed
+    # formulas), but those measures also surface in ``_query_as_model``
+    # via their ``field_name`` (= ``qf.name`` or the mangled formula).
+    # A renamed cross-model measure whose ``name`` matches another
+    # measure's mangled ``field_name`` would still emit two columns with
+    # the same short in the virtual model. Compute (public, short) for
+    # every qfield kind so the collision checks below cover all
+    # combinations. ``canonical_pre`` is only meaningful for aggregated
+    # refs (used by the logical canonical-name check); other kinds get
+    # an empty string which never matches a real canonical.
+    def _mangled_formula(formula: str) -> str:
+        # Mirror the field-name mangling at the top of the per-qfield
+        # loop (line ~879) so the pre-pass sees the same ``field_name``
+        # ``_flatten_spec`` will emit for non-renamed arithmetic /
+        # transform measures.
+        return (
+            formula.replace(" ", "_")
+                   .replace("/", "_div_")
+                   .replace(":", "_")
+                   .replace("*", "")
+        )
+
     _surfaces: list = []
     for qf_pre in (query.measures or []):
         sp_pre = parse_formula(
@@ -958,15 +981,20 @@ async def enrich_query(
             extra_agg_names=custom_agg_names,
             named_measures=named_measures,
         )
-        if not isinstance(sp_pre, AggregatedMeasureRef):
-            continue
-        public_pre, short_pre = _surfaces_for(qf_pre, sp_pre)
-        canonical_pre = _canonical_agg_name(
-            measure_name=sp_pre.measure_name,
-            aggregation_name=sp_pre.aggregation_name,
-            agg_args=sp_pre.agg_args,
-            agg_kwargs=sp_pre.agg_kwargs,
-        )
+        if isinstance(sp_pre, AggregatedMeasureRef):
+            public_pre, short_pre = _surfaces_for(qf_pre, sp_pre)
+            canonical_pre = _canonical_agg_name(
+                measure_name=sp_pre.measure_name,
+                aggregation_name=sp_pre.aggregation_name,
+                agg_args=sp_pre.agg_args,
+                agg_kwargs=sp_pre.agg_kwargs,
+            )
+        else:
+            # Arithmetic / transform / mixed: surfaced via _flatten_spec.
+            field_name_pre = qf_pre.name or _mangled_formula(qf_pre.formula)
+            public_pre = f"{model_name_str}.{field_name_pre}"
+            short_pre = field_name_pre
+            canonical_pre = ""  # no meaningful canonical for this kind
         # CodeRabbit round 3: catch measure-vs-(dim|time-dim) public-alias
         # collisions.
         if public_pre in _occupied_aliases:
@@ -1018,8 +1046,11 @@ async def enrich_query(
             # rationale was that ``_ensure_aggregated_measure``'s alias-
             # keyed dedup would still collapse the two aggregates under
             # subtle processing-order conditions. Keep both directions of
-            # the comparison so the guard runs symmetrically.
-            if qf_pre.name and qf_pre.name == canonical_other:
+            # the comparison so the guard runs symmetrically. Only
+            # meaningful when both sides are ``AggregatedMeasureRef``
+            # — non-Agg measures have ``canonical = ""`` (empty sentinel)
+            # which never matches a real ``qf.name``.
+            if qf_pre.name and canonical_other and qf_pre.name == canonical_other:
                 raise ValueError(
                     f"Measure '{qf_pre.formula}' renamed to "
                     f"'{qf_pre.name}', but that name collides with the "
@@ -1030,7 +1061,7 @@ async def enrich_query(
                     f"Pick a different `name`, or rename the other "
                     f"measure too."
                 )
-            if qf_other.name and qf_other.name == canonical_pre:
+            if qf_other.name and canonical_pre and qf_other.name == canonical_pre:
                 raise ValueError(
                     f"Measure '{qf_other.formula}' renamed to "
                     f"'{qf_other.name}', but that name collides with the "
