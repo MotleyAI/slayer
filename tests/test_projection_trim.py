@@ -1667,7 +1667,7 @@ class TestOuterOrderByQualifierStripping:
         inner-CTE qualifiers from the detached ORDER BY so the outer
         reference uses the bare alias (which ``_outer`` exposes).
         """
-        engine, orders = orders_customers_engine
+        engine, _ = orders_customers_engine
         # Cross-model measure forces the combined-CTE path; an unbound
         # ORDER BY aggregate adds a hidden hoist that forces the wrap.
         query = SlayerQuery(
@@ -1690,8 +1690,8 @@ class TestOuterOrderByQualifierStripping:
                 f"got col {col.sql()!r}.\nSQL:\n{sql}"
             )
 
-    async def test_public_projection_aliases_fallback_includes_measures(
-        self, orders_model: SlayerModel,
+    def test_public_projection_aliases_fallback_includes_measures(
+        self,
     ) -> None:
         """When ``EnrichedQuery`` is constructed directly (bypassing
         ``enrich_query``) and ``user_projection`` is empty, the fallback
@@ -1720,7 +1720,7 @@ class TestOuterOrderByQualifierStripping:
             "filter only applies when user_projection is populated)."
         )
 
-    async def test_public_projection_aliases_fallback_excludes_internal_prefixes(
+    def test_public_projection_aliases_fallback_excludes_internal_prefixes(
         self,
     ) -> None:
         """Internal-prefixed names (``_inner_*`` / ``_ft*`` / ``_ts*``)
