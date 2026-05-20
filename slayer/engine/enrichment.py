@@ -857,6 +857,43 @@ async def enrich_query(
             )
         _seen_explicit_names[qf.name] = qf.formula
 
+    # DEV-1448: lift the canonical-collision guard out of the local-rename
+    # branch so it runs symmetrically for local AND cross-model renames. A
+    # query measure whose ``name`` equals the canonical alias of another
+    # sibling measure would otherwise let ``_ensure_aggregated_measure``'s
+    # alias-keyed dedup silently merge two distinct aggregates into one
+    # column. Run the pairwise check once up front for every qfield kind.
+    for qfield_pre in (query.measures or []):
+        if not qfield_pre.name:
+            continue
+        for qf_other in (query.measures or []):
+            if qf_other is qfield_pre:
+                continue
+            spec_other = parse_formula(
+                qf_other.formula,
+                extra_agg_names=custom_agg_names,
+                named_measures=named_measures,
+            )
+            if not isinstance(spec_other, AggregatedMeasureRef):
+                continue
+            other_canonical = _canonical_agg_name(
+                measure_name=spec_other.measure_name,
+                aggregation_name=spec_other.aggregation_name,
+                agg_args=spec_other.agg_args,
+                agg_kwargs=spec_other.agg_kwargs,
+            )
+            if other_canonical == qfield_pre.name:
+                raise ValueError(
+                    f"Measure '{qfield_pre.formula}' renamed to "
+                    f"'{qfield_pre.name}', but that name collides with "
+                    f"the canonical alias of another query measure "
+                    f"'{qf_other.formula}' (also canonicalises to "
+                    f"'{qfield_pre.name}'). Two distinct aggregates would "
+                    f"otherwise be silently merged into one column. "
+                    f"Pick a different `name`, or rename the other "
+                    f"measure too."
+                )
+
     # Process each query field
     for qfield in query.measures or []:
         spec = parse_formula(
@@ -914,6 +951,35 @@ async def enrich_query(
                 # in the public projection.
                 cm.user_declared = True
                 cross_model_measures.append(cm)
+                # DEV-1448: when the user supplies an explicit ``name`` on a
+                # cross-model measure spec, surface it as the
+                # CrossModelMeasure's outer handle so the public projection
+                # and downstream nested stages emit the user's chosen alias
+                # instead of the canonical ``<query_model>.<hop_path>.<col>_<agg>``
+                # form. Only the **leaf** of the dotted path is swapped to
+                # the user name; the hop path is preserved (e.g.
+                # ``customers.regions.population:sum`` + ``name="region_pop"``
+                # surfaces as ``orders.customers.regions.region_pop``). This
+                # matches the dot-syntax convention every other multi-hop
+                # caller-facing key in SLayer uses. Downstream-stage virtual
+                # models then use the bare ``cm.name`` (no ``__`` flattening)
+                # via a special-case in ``_query_as_model`` so callers can
+                # reference the user's chosen name directly. Cross-model
+                # canonicals always contain dots and ``ModelMeasure.name``
+                # rejects dots, so the ``!= canonical_name`` guard is
+                # structurally true when ``qfield.name`` is supplied; we
+                # keep the explicit check for forward-compat. Filter /
+                # ORDER BY remap of the colon-form ``<other>.<col>:<agg>``
+                # is intentionally NOT wired up here (DEV-1445 territory);
+                # ``known_aliases[qfield.name]`` only registers the user
+                # alias so user-alias-form filters / ORDER BY resolve via
+                # the existing alias-lookup path.
+                if qfield.name and qfield.name != canonical_name:
+                    hop_path = spec.measure_name.rsplit(".", 1)[0]
+                    user_alias = f"{model_name_str}.{hop_path}.{qfield.name}"
+                    cm.alias = user_alias
+                    cm.name = qfield.name
+                    known_aliases[qfield.name] = user_alias
                 user_projection.append(cm.alias)
                 continue
 
@@ -979,45 +1045,11 @@ async def enrich_query(
                         f"source column, or reference the measure by its user "
                         f"alias '{qfield.name}'."
                     )
-                # DEV-1443 (CodeRabbit review round 2 on PR #133): if the
-                # rename target equals the canonical alias of another query
-                # measure, ``_ensure_aggregated_measure`` would dedupe the
-                # second measure onto the renamed first measure's alias
-                # (alias-keyed dedup at the top of that helper) — two
-                # distinct aggregates collapse into one. Refuse the
-                # collision; the user is naming two different things the
-                # same name.
-                # DEV-1443 (Codex review round 3 on PR #133): the symmetric
-                # case — two query measures sharing the same explicit
-                # ``name`` — is handled by the pre-pass above; this branch
-                # only handles the rename-vs-other-canonical case below.
-                for qf_other in (query.measures or []):
-                    if qf_other is qfield:
-                        continue
-                    spec_other = parse_formula(
-                        qf_other.formula,
-                        extra_agg_names=custom_agg_names,
-                        named_measures=named_measures,
-                    )
-                    if not isinstance(spec_other, AggregatedMeasureRef):
-                        continue
-                    other_canonical = _canonical_agg_name(
-                        measure_name=spec_other.measure_name,
-                        aggregation_name=spec_other.aggregation_name,
-                        agg_args=spec_other.agg_args,
-                        agg_kwargs=spec_other.agg_kwargs,
-                    )
-                    if other_canonical == qfield.name:
-                        raise ValueError(
-                            f"Measure '{qfield.formula}' renamed to "
-                            f"'{qfield.name}', but that name collides with "
-                            f"the canonical alias of another query measure "
-                            f"'{qf_other.formula}' (also canonicalises to "
-                            f"'{qfield.name}'). Two distinct aggregates would "
-                            f"otherwise be silently merged into one column. "
-                            f"Pick a different `name`, or rename the other "
-                            f"measure too."
-                        )
+                # DEV-1448: the rename-vs-other-canonical collision guard
+                # previously inlined here was lifted into the pre-pass at
+                # the top of this function so it runs symmetrically for
+                # local AND cross-model renames. See the pre-pass next to
+                # ``_seen_explicit_names``.
                 user_alias = f"{model_name_str}.{qfield.name}"
                 prev_alias = f"{model_name_str}.{canonical_name}"
                 for m in measures:
@@ -1240,6 +1272,12 @@ async def enrich_query(
     _query_aliases.update(m.name for m in measures if m.name)
     _query_aliases.update(t.name for t in enriched_transforms if t.name)
     _query_aliases.update(e.name for e in enriched_expressions if e.name)
+    # DEV-1448: cross-model measures' user-facing names (the user-supplied
+    # ``name`` after rename, or the canonical short name otherwise) must
+    # also resolve as filter / ORDER BY targets — otherwise a renamed
+    # cross-model measure is only half-usable (projections rename, but
+    # filters referencing the new name fail strict resolution).
+    _query_aliases.update(cm.name for cm in cross_model_measures if cm.name)
     # DEV-1378: model filters and query filters resolve under different
     # strictness rules. Model filters are SQL-mode and may reference any
     # column on the underlying table even when not declared as a

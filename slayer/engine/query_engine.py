@@ -1882,7 +1882,14 @@ class SlayerQueryEngine:
                 (e.alias, e.name, DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for cm in enriched.cross_model_measures:
-            short = _alias_to_short(cm.alias)
+            # DEV-1448: when the user supplied an explicit ``name``, cm.name is
+            # a bare identifier (ModelMeasure.name forbids dots). Use it
+            # directly as the downstream short form so callers reference the
+            # user's chosen name without learning the ``__``-flattened
+            # encoding. Auto-derived names always contain a dot (e.g.
+            # ``customers.revenue_sum``) so they fall through to the legacy
+            # ``_alias_to_short`` flatten path.
+            short = cm.name if cm.name and "." not in cm.name else _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
