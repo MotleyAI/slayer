@@ -618,7 +618,7 @@ class TestCrossStageOrderBy:
 # at depth ≥ 2.
 # ===========================================================================
 class TestChainedDAGCandidates:
-    async def test_resolver_candidate_a_at_depth_1(self) -> None:
+    def test_resolver_candidate_a_at_depth_1(self) -> None:
         """At s1 (depth 1), Candidate A (ancestor-strip) matches the
         source-prefixed dotted ref because `_alias_to_short` stripped the
         immediate source-model prefix `orders` on the inner stage."""
@@ -641,7 +641,7 @@ class TestChainedDAGCandidates:
         assert col is not None, "Candidate A should resolve orders.customers.regions.name"
         assert col.name == "customers__regions__name"
 
-    async def test_resolver_candidate_b_at_depth_2_with_source_prefix(self) -> None:
+    def test_resolver_candidate_b_at_depth_2_with_source_prefix(self) -> None:
         """At s2 (depth 2) with source-prefixed form: Candidate A strips
         the immediate `orders` ancestor and tries `customers__regions__name`,
         which MISSES on s2 (s2 has the deeper-flattened
@@ -681,7 +681,7 @@ class TestChainedDAGCandidates:
             f"Candidate B should match deeper-flattened name. Got: {col.name}"
         )
 
-    async def test_resolver_candidate_b_at_depth_2_without_source_prefix(self) -> None:
+    def test_resolver_candidate_b_at_depth_2_without_source_prefix(self) -> None:
         """At s2 (depth 2) with non-prefixed form: parts[0] is not in
         ancestor chain so Candidate A skips. Candidate B's full-flat
         matches the column s2 actually has when the user uses the
@@ -787,7 +787,7 @@ class TestNegativePath:
 # Test #11 — engineered collision: Candidate A wins over Candidate B.
 # ===========================================================================
 class TestCandidatePrecedence:
-    async def test_candidate_a_wins_over_b(self) -> None:
+    def test_candidate_a_wins_over_b(self) -> None:
         """When both Candidate A (ancestor-strip) and Candidate B
         (full-flat) match distinct columns, A wins."""
         # Construct a virtual stage where:
@@ -820,7 +820,7 @@ class TestCandidatePrecedence:
 # Test #12 — non-virtual model: resolver returns None (no regression).
 # ===========================================================================
 class TestNonVirtualModel:
-    async def test_resolver_returns_none_for_table_backed_model(self) -> None:
+    def test_resolver_returns_none_for_table_backed_model(self) -> None:
         """Real table-backed model has no `source_model_origin`; the
         resolver returns None, leaving the existing join-walk to handle
         resolution as today."""

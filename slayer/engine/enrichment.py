@@ -1620,6 +1620,42 @@ def resolve_via_stage_origin(
     return None
 
 
+async def _resolve_dotted_dim_with_stage_fallback(
+    *,
+    dim_ref_model: str,
+    dim_ref_name: str,
+    model: SlayerModel,
+    model_name_str: str,
+    named_queries: dict,
+    resolve_dimension_via_joins,
+) -> "tuple[Optional[Column], Optional[SlayerModel], str]":
+    """Resolve a dotted dim / time-dim reference for one query field.
+
+    Shared by ``_resolve_dimensions`` and ``_resolve_time_dimensions``
+    (DEV-1449 / Sonar S3776). Tries the standard join-walk first; if
+    that returns nothing AND ``model`` is a virtual stage produced by
+    ``_query_as_model``, tries the stage-origin resolver. On stage-origin
+    miss, falls through to today's lenient behavior (returns ``None``
+    dim_def + the join-walk's `__`-flattened effective_model); cross-model
+    CTE re-rooting depends on that fall-through.
+    """
+    parts = dim_ref_model.split(".") + [dim_ref_name]
+    raw = await resolve_dimension_via_joins(
+        model=model,
+        parts=parts,
+        named_queries=named_queries,
+    )
+    dim_def, terminal_model = _unpack_dim_resolution(raw)
+    effective_model = "__".join(dim_ref_model.split("."))
+    if dim_def is None and model.source_model_origin is not None:
+        stage_col = resolve_via_stage_origin(model=model, parts=parts)
+        if stage_col is not None:
+            dim_def = stage_col
+            terminal_model = model
+            effective_model = model_name_str  # local to the virtual stage
+    return dim_def, terminal_model, effective_model
+
+
 async def _resolve_dimensions(
     query: SlayerQuery,
     model: SlayerModel,
@@ -1638,27 +1674,16 @@ async def _resolve_dimensions(
             effective_model = model_name_str
             terminal_model = model
         else:
-            parts = dim_ref.model.split(".") + [dim_ref.name]
-            raw = await resolve_dimension_via_joins(
-                model=model,
-                parts=parts,
-                named_queries=named_queries,
+            dim_def, terminal_model, effective_model = (
+                await _resolve_dotted_dim_with_stage_fallback(
+                    dim_ref_model=dim_ref.model,
+                    dim_ref_name=dim_ref.name,
+                    model=model,
+                    model_name_str=model_name_str,
+                    named_queries=named_queries,
+                    resolve_dimension_via_joins=resolve_dimension_via_joins,
+                )
             )
-            dim_def, terminal_model = _unpack_dim_resolution(raw)
-            effective_model = "__".join(dim_ref.model.split("."))
-            # DEV-1449: if the join-walk found nothing AND ``model`` is a
-            # virtual stage produced by ``_query_as_model``, try the
-            # stage-origin resolver — the dotted ref likely names a
-            # flat column on the wrapped projection. On miss, fall
-            # through to today's lenient behavior (default-typed
-            # EnrichedDimension); cross-model CTE re-rooting depends
-            # on that fall-through.
-            if dim_def is None and model.source_model_origin is not None:
-                stage_col = resolve_via_stage_origin(model=model, parts=parts)
-                if stage_col is not None:
-                    dim_def = stage_col
-                    terminal_model = model
-                    effective_model = model_name_str  # local to the virtual stage
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,
@@ -1701,22 +1726,16 @@ async def _resolve_time_dimensions(
             td_model_name = model_name_str
             terminal_model = model
         else:
-            parts = td.dimension.model.split(".") + [td.dimension.name]
-            raw = await resolve_dimension_via_joins(
-                model=model,
-                parts=parts,
-                named_queries=named_queries,
+            dim_def, terminal_model, td_model_name = (
+                await _resolve_dotted_dim_with_stage_fallback(
+                    dim_ref_model=td.dimension.model,
+                    dim_ref_name=td.dimension.name,
+                    model=model,
+                    model_name_str=model_name_str,
+                    named_queries=named_queries,
+                    resolve_dimension_via_joins=resolve_dimension_via_joins,
+                )
             )
-            dim_def, terminal_model = _unpack_dim_resolution(raw)
-            td_model_name = "__".join(td.dimension.model.split("."))
-            # DEV-1449: virtual-stage fallback (symmetric with
-            # `_resolve_dimensions`).
-            if dim_def is None and model.source_model_origin is not None:
-                stage_col = resolve_via_stage_origin(model=model, parts=parts)
-                if stage_col is not None:
-                    dim_def = stage_col
-                    terminal_model = model
-                    td_model_name = model_name_str
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,
