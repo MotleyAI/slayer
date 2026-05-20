@@ -5201,6 +5201,21 @@ psycopg = ">=3.0.0"
 pytest = ">=8.2"
 
 [[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+description = "pytest plugin to abort hanging tests"
+optional = false
+python-versions = ">=3.7"
+groups = ["dev"]
+files = [
+    {file = "pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2"},
+    {file = "pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a"},
+]
+
+[package.dependencies]
+pytest = ">=7.0.0"
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 description = "Extensions to the standard Python datetime module"
@@ -7195,4 +7210,4 @@ postgres = ["asyncpg", "psycopg2-binary"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "eb194c1d42dcb3d64f3b26198015f43b3e6c7817f09eed4e38952b6a7af90036"
+content-hash = "77b9f8a31246fc84fbc747f476d2a0a61d2949c7d7e25455523d44cfda7597cc"

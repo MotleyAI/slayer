@@ -80,6 +80,7 @@ slayer = "slayer.cli:main"
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
 pytest-cov = ">=5.0"
+pytest-timeout = ">=2.3"
 ruff = ">=0.4"
 pytest-postgresql = "^8.0.0"
 psycopg2-binary = "^2.9.11"
