@@ -160,7 +160,7 @@ Surfaces: Python SDK `engine.execute(query=[...])`; CLI `slayer query @file.json
 
 ## Result format
 
-Column keys use `model_name.column_name` format: `"orders._count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. The response also includes `attributes` — a `ResponseAttributes` object with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata` (label, format).
+Column keys use `model_name.column_name` format: `"orders._count"`, `"orders.revenue_sum"`. For multi-hop joined dimensions, the full path is included: `"orders.customers.regions.name"`. An explicit `name` on a measure spec swaps the canonical leaf — local (`{"formula": "amount:sum", "name": "rev"}` → `"orders.rev"`) or cross-model (`{"formula": "customers.revenue:sum", "name": "cust_rev"}` → `"orders.customers.cust_rev"`, hop path preserved). In any downstream stage of a `query_nested` DAG the column is exposed under the bare `name` (e.g. `cust_rev`) — that's what you type in stage 2's `formula` to reference the value. The response also includes `attributes` — a `ResponseAttributes` object with `.dimensions` and `.measures` dicts, each mapping column alias → `FieldMetadata` (label, format).
 
 ## Strict validation (v3)
 

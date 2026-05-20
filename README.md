@@ -29,7 +29,7 @@ SLayer naturally evolves when the agent uses it. For example, if a query require
 
 SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/) and much more.
 
-SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
+SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), and [Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) (JDBC, BI-tool compatible) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
 
 ### Example
 
