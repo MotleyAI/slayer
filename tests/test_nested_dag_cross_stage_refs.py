@@ -1508,19 +1508,24 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
     async def test_intercepted_unrenamed_works_as_middle_stage_in_three_stage_dag(
         self,
     ) -> None:
-        """Codex round 5: an unrenamed intercepted CMM must wrap
-        cleanly when its stage becomes the inner of a 3-stage DAG.
-        The intercepted EnrichedMeasure's alias is set to the
-        cross-model canonical (`s1.customers.revenue_sum` — has dots),
-        but `_query_as_model` uses `em.name` as the wrapped virtual
-        model's `Column.name`, which rejects dots. So `em.name` must
-        remain a simple identifier (the internal flat form), not the
-        dotted alias."""
+        """Codex rounds 5+6: an unrenamed intercepted CMM must wrap
+        cleanly AND its column must be exposed to downstream stages
+        under the same flat alias a single-stage cross-model query
+        would produce. The intercepted EnrichedMeasure's alias is
+        set to the cross-model canonical (`s1.customers.revenue_sum`
+        — dotted), but `em.name` (which `_query_as_model` uses as the
+        wrapped virtual model's `Column.name`) must be the flat
+        single-_sum form (`customers__revenue_sum`), NOT the dotted
+        alias (would fail Column.name validation) NOR the
+        doubled-sum internal form `customers__revenue_sum_sum`
+        (would break a third stage's intercept lookup).
+
+        This test pins the END-TO-END 3-stage chain: stage 2 wraps
+        stage 1 (intercepts), stage 3 wraps stage 2 (intercept must
+        find the flat alias on s2.columns and re-aggregate).
+        """
         engine, tmp = await _engine_with_join_chain()
         try:
-            # 3-stage DAG: s1 (orders → flatten regions name),
-            # s2 (intercept customers.revenue:sum cross-stage),
-            # s3 (re-aggregate s2's projected measure further).
             s1 = SlayerQuery(
                 name="s1",
                 source_model="orders",
@@ -1530,22 +1535,34 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             s2 = SlayerQuery(
                 name="s2",
                 source_model="s1",
-                # Intercept fires here (s1.customers__revenue_sum exists).
                 measures=[{"formula": "customers.revenue:sum"}],
             )
             s3 = SlayerQuery(
                 source_model="s2",
-                # Reference s2's projected measure. The exact key
-                # depends on column-name flattening; we accept either
-                # the internal flat form or the surfaced dotted form
-                # depending on how `_query_as_model` short-named it.
-                measures=[{"formula": "*:count"}],
+                # Reference cross-model form AGAIN — third stage's
+                # intercept must find the flat alias on s2.columns.
+                # Without the round-6 fix, s2 had the doubled-sum form
+                # and the third stage's intercept missed.
+                measures=[{"formula": "customers.revenue:sum"}],
             )
-            # Without the fix, the s2 wrap step fails with a
-            # Column.name validation error on the dotted `em.name`.
-            # With the fix, the chain succeeds.
             resp = await engine.execute(query=[s1, s2, s3], dry_run=True)
             assert resp.sql is not None, "3-stage DAG must render SQL"
+            # The outer SELECT (s3) should SUM the s2-projected
+            # cross-model column. Walk the AST to confirm.
+            outer_select = _outermost_select(resp.sql)
+            outer_sum_targets = []
+            for s in outer_select.find_all(exp.Sum):
+                if s.parent_select is not outer_select:
+                    continue
+                outer_sum_targets.extend(
+                    (c.table, c.name) for c in s.find_all(exp.Column)
+                )
+            # s3's intercept should have resolved against s2's flat
+            # alias `customers__revenue_sum` (single _sum).
+            assert ("s2", "customers__revenue_sum") in outer_sum_targets, (
+                f"Third-stage intercept must SUM the flat alias on s2.\n"
+                f"got: {outer_sum_targets}\nSQL:\n{resp.sql}"
+            )
         finally:
             tmp.cleanup()
 
