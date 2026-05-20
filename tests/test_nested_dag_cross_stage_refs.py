@@ -1569,6 +1569,45 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    async def test_intercept_skips_user_named_local_measure_that_looks_like_cmm_canonical(
+        self,
+    ) -> None:
+        """Codex review on PR #137 round 10: a user-named local
+        measure whose name coincidentally matches a cross-model
+        canonical-flat shape must NOT be picked up by the cross-stage
+        intercept. The intercept's `agg_column_names` set only
+        includes auto-derived cross-model canonical-flats, so a
+        renamed local measure like
+        `{"formula": "amount:sum", "name": "customers__revenue_sum"}`
+        on the inner stage stays distinct from a cross-model
+        `customers.revenue:sum` reference on the outer."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            # Inner has a local `amount:sum` renamed to
+            # `customers__revenue_sum`. There is NO real
+            # `customers.revenue:sum` cross-model measure projected.
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "amount:sum", "name": "customers__revenue_sum"}],
+            )
+            # Outer references `customers.revenue:sum` — the intercept
+            # candidate computes `customers__revenue_sum` and the
+            # column exists on s1, BUT it isn't an auto-derived cross-
+            # model canonical-flat (it's the user-renamed local
+            # measure). The intercept must skip it and fall through
+            # to the cross-model CTE path, which raises because s1
+            # has no joins.
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            with pytest.raises((SlayerError, ValueError)):
+                await engine.execute(query=[inner, outer], dry_run=True)
+        finally:
+            tmp.cleanup()
+
     def test_intercept_skips_dim_columns_that_look_like_aggregations(
         self,
     ) -> None:

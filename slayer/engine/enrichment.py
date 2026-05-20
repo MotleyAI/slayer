@@ -687,7 +687,17 @@ async def enrich_query(
             agg_args=ref.agg_args,
             agg_kwargs=ref.agg_kwargs,
         )
-        return known_aliases[field_name]
+        local_alias = known_aliases[field_name]
+        # Codex round 10: mark the created-or-reused EnrichedMeasure
+        # as intercept-produced so `_query_as_model` includes its
+        # downstream short in `agg_column_names`. Downstream stages
+        # then recognise it as a safe cross-model re-aggregation
+        # source on equal footing with auto-derived CMM canonicals.
+        for em in measures:
+            if em.alias == local_alias:
+                em.from_cross_model_intercept = True
+                break
+        return local_alias
 
     async def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
         """Ensure a measure is resolved — handles agg refs only."""
@@ -1294,6 +1304,13 @@ async def enrich_query(
                         agg_kwargs=spec.agg_kwargs,
                     )
                     local_alias = known_aliases[field_name]
+                    # Codex round 10: mark the EnrichedMeasure as
+                    # intercept-produced (see
+                    # `_try_intercept_cross_model_as_local`).
+                    for em in measures:
+                        if em.alias == local_alias:
+                            em.from_cross_model_intercept = True
+                            break
                     user_declared_canon_keys[cross_canon_key] = (
                         qfield.name or canonical_name
                     )

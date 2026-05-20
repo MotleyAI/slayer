@@ -1920,24 +1920,26 @@ class SlayerQueryEngine:
         for _, short, dtype, label, desc, fmt in column_map:
             cols.append(Column(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
 
-        # DEV-1449 / Codex round 9: record which downstream short names
-        # correspond to AGGREGATED columns (cross_model_measures + plain
-        # measures + transforms + expressions). The cross-stage intercept
-        # uses this set to refuse re-aggregating dim columns that happen
-        # to look like an aggregation canonical (e.g. a user dim named
-        # ``customers__revenue_sum``).
+        # DEV-1449 / Codex round 10: record only columns that are
+        # reliably the same cross-model aggregate the outer-stage
+        # intercept would resolve a `customers.revenue:sum` reference
+        # to. Includes:
+        #   * Auto-derived cross-model canonical-flats (`_alias_to_short(cm.alias)`).
+        #   * Intercept-produced EnrichedMeasures (from a downstream
+        #     stage re-using the intercepted projection).
+        # Excludes:
+        #   * User-renamed CMM shorts: a user-supplied `name` could
+        #     coincidentally match a different aggregate's canonical-flat.
+        #   * Plain measures / transforms / expressions: their names are
+        #     user-supplied and could collide with cross-model canonicals
+        #     by coincidence.
         agg_shorts = set()
-        for m in enriched.measures:
-            agg_shorts.add(m.name)
-        for t in enriched.transforms:
-            agg_shorts.add(t.name)
-        for e in enriched.expressions:
-            agg_shorts.add(e.name)
         for cm in enriched.cross_model_measures:
-            if cm.user_declared and cm.name and "." not in cm.name:
-                agg_shorts.add(cm.name)
-            else:
+            if not (cm.user_declared and cm.name and "." not in cm.name):
                 agg_shorts.add(_alias_to_short(cm.alias))
+        for m in enriched.measures:
+            if m.from_cross_model_intercept:
+                agg_shorts.add(m.name)
 
         # DEV-1449: record the lineage breadcrumb so outer-stage dotted-ref
         # lookup can strip the right ancestor prefix and find the flat
