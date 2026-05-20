@@ -112,22 +112,29 @@ def _ensure_jvm_started_for_arrow(jar_path: Path) -> None:
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
-    """Shut down the JVM after the integration suite finishes.
+    """Remember the pytest exit status for ``pytest_unconfigure`` to use."""
+    session.config._slayer_jvm_exit_status = exitstatus
+
+
+def pytest_unconfigure(config) -> None:
+    """Force-exit if JPype started a JVM during the session.
 
     JPype's ``startJVM`` spins up non-daemon Java threads (Reference
     Handler, Finalizer, Common-Cleaner) that keep the Python process
-    alive after pytest's test session ends. On a local shell that's
-    invisible (the next prompt kills the process); on GitHub Actions
-    the pytest worker turns into a 16-minute orphan that ultimately
-    hits the 20-minute step ceiling. Explicit shutdown is the
-    documented fix.
+    alive after pytest's session ends. ``jpype.shutdownJVM()`` itself
+    deadlocks here because JayDeBeAPI leaves JDBC connections dangling.
+    Locally the next shell prompt kills the orphan; on GitHub Actions
+    we sat for 16 minutes until the 20-minute step ceiling. ``os._exit``
+    bypasses every atexit hook and lets pytest's exit code propagate.
     """
     try:
         import jpype
     except ImportError:
         return
-    if jpype.isJVMStarted():
-        jpype.shutdownJVM()
+    if not jpype.isJVMStarted():
+        return
+    import os
+    os._exit(getattr(config, "_slayer_jvm_exit_status", 0))
 
 
 @pytest.fixture
