@@ -1569,7 +1569,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
-    async def test_intercept_skips_dim_columns_that_look_like_aggregations(
+    def test_intercept_skips_dim_columns_that_look_like_aggregations(
         self,
     ) -> None:
         """Codex review on PR #137 round 9: if the inner stage projects
