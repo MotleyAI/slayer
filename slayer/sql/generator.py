@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Optional
+from typing import List, Optional
 
 import sqlglot
 from sqlglot import exp
@@ -19,7 +19,7 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
-from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery
+from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
 
 
@@ -110,6 +110,11 @@ _SELF_JOIN_TRANSFORMS = {"time_shift"}
 # WHERE/HAVING clause; extracted as a constant so Sonar S1192 doesn't flag it
 # at every join site.
 _SQL_AND_JOINER = " AND "
+
+# DEV-1444: separator used between pretty-printed SELECT projection columns
+# (",\n    "). Extracted as a constant so Sonar S1192 doesn't flag every
+# join site that follows the same pattern.
+_SQL_COL_SEP = ",\n    "
 
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
@@ -304,6 +309,68 @@ def _filter_references_available(f, available_aliases: set) -> bool:
     return True
 
 
+# DEV-1444: digit-suffix tail patterns for OFFSET / LIMIT, each bounded
+# (`\d+`) so neither matches an unbounded run of arbitrary characters.
+# LIMIT and LIMIT-OFFSET are split into two separate regexes (rather
+# than one with an optional group) so Sonar's S5852 analyzer can
+# clearly bound each — the analyzer flags optional-group + greedy-
+# quantifier combinations even when both quantifiers are over `\d+`.
+# ORDER BY uses a non-regex ``rfind`` strategy below — its tail can
+# include arbitrary expressions and a regex would either need an
+# unbounded character class (Sonar S5852 polynomial backtracking
+# warning) or an artificial length cap.
+_TRAILING_OFFSET_RE = re.compile(r"(?is)\s*OFFSET\s+\d+\s*\Z")
+_TRAILING_LIMIT_OFFSET_RE = re.compile(
+    r"(?is)\s*LIMIT\s+\d+\s+OFFSET\s+\d+\s*\Z"
+)
+_TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
+
+
+def _strip_trailing_pagination(sql: str) -> str:
+    """DEV-1444: remove trailing ORDER BY / LIMIT / OFFSET clauses that
+    SLayer's generator appends as raw string segments after the inner
+    SELECT body. Used by ``_apply_outer_projection_trim`` so the outer
+    wrapper owns pagination without it appearing twice.
+
+    Works on the trailing tail only — preserves any ORDER BY / LIMIT /
+    OFFSET that appears inside nested CTEs or sub-queries (they have a
+    closing ``)`` after them).
+    """
+    s = sql.rstrip()
+    # OFFSET / LIMIT use narrow digit-bounded regexes. LIMIT-OFFSET is
+    # checked before bare OFFSET / LIMIT so the combined form is peeled
+    # in a single pass.
+    for pattern in (
+        _TRAILING_LIMIT_OFFSET_RE,
+        _TRAILING_OFFSET_RE,
+        _TRAILING_LIMIT_RE,
+    ):
+        m = pattern.search(s)
+        if not m or m.start() == 0:
+            continue
+        tail = s[m.start():]
+        if tail.count("(") != tail.count(")"):
+            continue
+        s = s[:m.start()].rstrip()
+    # ORDER BY: use rfind on the upper-cased copy (case-insensitive
+    # match) instead of a regex with an unbounded character class. Same
+    # paren-balance check confirms the clause is at the outermost
+    # nesting level.
+    upper = s.upper()
+    pos = upper.rfind("ORDER BY")
+    if pos > 0:
+        # Word-boundary on the left (preceding whitespace or newline)
+        # and after (the BY must be followed by whitespace or end).
+        left_ok = upper[pos - 1] in " \t\n\r"
+        right_idx = pos + len("ORDER BY")
+        right_ok = right_idx >= len(upper) or upper[right_idx] in " \t\n\r"
+        if left_ok and right_ok:
+            tail = s[pos:]
+            if tail.count("(") == tail.count(")"):
+                s = s[:pos].rstrip()
+    return s
+
+
 class SQLGenerator:
     """Generates SQL from an EnrichedQuery."""
 
@@ -366,7 +433,12 @@ class SQLGenerator:
             tree = rewrite_sqlite_json_extract(tree)
         return tree.transform(self._rewrite_log_aliases)
 
-    def generate(self, enriched: EnrichedQuery) -> str:
+    def generate(
+        self,
+        enriched: EnrichedQuery,
+        *,
+        render_mode: str = "outer",
+    ) -> str:
         """Generate SQL from a fully resolved EnrichedQuery.
 
         Architecture:
@@ -374,7 +446,21 @@ class SQLGenerator:
         2. Per-measure CTEs: cross-model measures + cross-model-filtered measures
         3. Combined: LEFT JOIN base + measure CTEs on shared dimensions
         4. Expressions/transforms stacked on top of combined
+
+        Args:
+            enriched: Fully resolved query.
+            render_mode: ``"outer"`` (default) — SQL will be executed and
+                shown to the user; the outermost SELECT is trimmed to
+                ``public_projection_aliases(enriched)`` (DEV-1444).
+                ``"wrapped"`` — SQL is embedded into a larger structure
+                (``_query_as_model`` inner_sql, inner stages of
+                ``source_queries``); the outer SELECT keeps every alias
+                downstream references can reach.
         """
+        if render_mode not in ("outer", "wrapped"):
+            raise ValueError(
+                f"render_mode must be 'outer' or 'wrapped', got {render_mode!r}"
+            )
         has_isolated = any(_has_cross_model_filter(m) for m in enriched.measures)
         has_windowed = any(_is_windowed_measure(m) for m in enriched.measures)
         has_cross_model = bool(enriched.cross_model_measures)
@@ -389,19 +475,128 @@ class SQLGenerator:
         base_sql = self._generate_base(enriched=enriched, skip_isolated=has_measure_ctes)
 
         if not has_measure_ctes and not has_computed and not has_post_filters:
-            return base_sql
-
-        if has_measure_ctes:
+            sql = base_sql
+        elif has_measure_ctes:
             # Get structured CTE definitions (no WITH wrapper)
             measure_ctes = self._build_combined(enriched=enriched, base_sql=base_sql)
             if has_computed or has_post_filters:
                 # Pass CTE list to computed layer — it merges into a flat WITH
-                return self._generate_with_computed(enriched=enriched, prefix_ctes=measure_ctes)
-            # No expressions: assemble CTEs + outer SELECT + pagination
-            return self._assemble_combined_sql(enriched=enriched, measure_ctes=measure_ctes)
+                sql = self._generate_with_computed(enriched=enriched, prefix_ctes=measure_ctes)
+            else:
+                # No expressions: assemble CTEs + outer SELECT + pagination
+                sql = self._assemble_combined_sql(enriched=enriched, measure_ctes=measure_ctes)
+        else:
+            # No measure CTEs, just computed columns or post-filters
+            sql = self._generate_with_computed(enriched=enriched, base_sql=base_sql)
 
-        # No measure CTEs, just computed columns or post-filters
-        return self._generate_with_computed(enriched=enriched, base_sql=base_sql)
+        if render_mode == "outer":
+            sql = self._apply_outer_projection_trim(sql=sql, enriched=enriched)
+        return sql
+
+    def _apply_outer_projection_trim(
+        self, *, sql: str, enriched: EnrichedQuery,
+    ) -> str:
+        """DEV-1444: wrap ``sql`` so its outermost SELECT projects exactly
+        the user-declared ``public_projection_aliases`` of ``enriched``,
+        in declared order.
+
+        When the inner SELECT already projects exactly the public list,
+        the trim is a no-op (``sql`` returned unchanged). Otherwise an
+        outer wrapper is emitted::
+
+            SELECT <public_aliases>
+            FROM   (<inner sql, with ORDER/LIMIT/OFFSET moved out>) AS _outer
+            ORDER BY ... LIMIT N OFFSET M
+
+        Moving ORDER BY / LIMIT / OFFSET to the outer wrapper preserves the
+        rendered SQL's row-ordering contract while keeping every hoisted
+        intermediate accessible inside the subquery scope (so the ORDER BY
+        can still reference a hidden alias like ``"orders.revenue_sum"``
+        when no matching declared measure exists).
+        """
+        public = public_projection_aliases(enriched)
+        if not public:
+            return sql
+        parsed = self._safe_parse_outer(sql)
+        if parsed is None:
+            return sql
+        # Fast path: when the inner SELECT already projects exactly the
+        # public alias list (in order), no wrapper is needed.
+        inner_aliases = [n.alias_or_name for n in parsed.expressions]
+        if inner_aliases == public:
+            return sql
+        # Detach ORDER BY / LIMIT / OFFSET from the inner so the outer
+        # wrapper can own them; the FROM-subquery scope exposes every
+        # alias their references may need.
+        order = parsed.args.pop("order", None)
+        limit = parsed.args.pop("limit", None)
+        offset_arg = parsed.args.pop("offset", None)
+        return self._build_outer_wrap(
+            inner_sql=sql,
+            public=public,
+            order=order,
+            limit=limit,
+            offset_arg=offset_arg,
+        )
+
+    def _safe_parse_outer(self, sql: str):
+        """Parse ``sql`` via the generator's ``_parse`` (so AST rewrites
+        like LOG10/LOG2 alias preservation survive a round-trip).
+        Returns the ``exp.Select`` root or ``None`` when parsing fails
+        or the root isn't a Select — both signals tell the trim caller
+        to leave ``sql`` untouched.
+        """
+        try:
+            parsed = self._parse(sql)
+        except Exception:
+            return None
+        if not isinstance(parsed, exp.Select):
+            return None
+        return parsed
+
+    def _build_outer_wrap(
+        self,
+        *,
+        inner_sql: str,
+        public: List[str],
+        order,
+        limit,
+        offset_arg,
+    ) -> str:
+        """Emit ``SELECT <public> FROM (<inner>) AS _outer [ORDER/LIMIT/OFFSET]``.
+
+        ``inner_sql`` is used as-is to preserve its formatting (callers
+        diff against literal ``OVER (...)`` substrings). Trailing
+        ORDER/LIMIT/OFFSET segments are stripped from ``inner_sql`` and
+        re-emitted on the outer wrapper.
+        """
+        outer_select = _SQL_COL_SEP.join(f'"{a}"' for a in public)
+        if order is None and limit is None and offset_arg is None:
+            return (
+                f"SELECT\n    {outer_select}\n"
+                f"FROM (\n{inner_sql.rstrip()}\n) AS _outer"
+            )
+        inner_no_pag = _strip_trailing_pagination(inner_sql)
+        out = (
+            f"SELECT\n    {outer_select}\n"
+            f"FROM (\n{inner_no_pag.rstrip()}\n) AS _outer"
+        )
+        if order is not None:
+            # DEV-1444 (Codex review on PR #134): the detached ORDER BY
+            # may carry inner-CTE qualifiers like ``_base."col"`` from
+            # ``_assemble_combined_sql``; those don't resolve at the
+            # outer wrapper level (only ``_outer`` is in scope). Strip
+            # every Column's table qualifier — the outer scope exposes
+            # each column by its bare alias name.
+            for col in order.find_all(exp.Column):
+                if col.args.get("table") is not None:
+                    col.set("table", None)
+            out += "\n" + order.sql(dialect=self.dialect, pretty=True)
+        if limit is not None:
+            out += "\n" + limit.sql(dialect=self.dialect, pretty=True)
+        if offset_arg is not None:
+            out += "\n" + offset_arg.sql(dialect=self.dialect, pretty=True)
+        return out
 
     def _build_combined(self, enriched: EnrichedQuery,
                          base_sql: str) -> list[tuple[str, str]]:
@@ -1330,7 +1525,7 @@ class SQLGenerator:
             # Emit window layer CTE if anything was added
             if added_this_layer:
                 layer_name = f"step{layer_num}"
-                layer_select = "SELECT\n    " + ",\n    ".join(layer_parts)
+                layer_select = "SELECT\n    " + _SQL_COL_SEP.join(layer_parts)
                 ctes.append((layer_name, f"{layer_select}\nFROM {prev_cte}"))
                 available_aliases.update(added_this_layer)
 
@@ -1414,7 +1609,7 @@ class SQLGenerator:
                 window_sql = wrapped.sql(dialect=self.dialect)
             final_parts.append(f'{window_sql} AS "{t.alias}"')
 
-        outer_select = "SELECT\n    " + ",\n    ".join(final_parts)
+        outer_select = "SELECT\n    " + _SQL_COL_SEP.join(final_parts)
 
         sql = f"{cte_clause}\n{outer_select}\nFROM {final_cte}"
 
