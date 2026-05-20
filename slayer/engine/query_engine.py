@@ -1920,6 +1920,25 @@ class SlayerQueryEngine:
         for _, short, dtype, label, desc, fmt in column_map:
             cols.append(Column(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
 
+        # DEV-1449 / Codex round 9: record which downstream short names
+        # correspond to AGGREGATED columns (cross_model_measures + plain
+        # measures + transforms + expressions). The cross-stage intercept
+        # uses this set to refuse re-aggregating dim columns that happen
+        # to look like an aggregation canonical (e.g. a user dim named
+        # ``customers__revenue_sum``).
+        agg_shorts = set()
+        for m in enriched.measures:
+            agg_shorts.add(m.name)
+        for t in enriched.transforms:
+            agg_shorts.add(t.name)
+        for e in enriched.expressions:
+            agg_shorts.add(e.name)
+        for cm in enriched.cross_model_measures:
+            if cm.user_declared and cm.name and "." not in cm.name:
+                agg_shorts.add(cm.name)
+            else:
+                agg_shorts.add(_alias_to_short(cm.alias))
+
         # DEV-1449: record the lineage breadcrumb so outer-stage dotted-ref
         # lookup can strip the right ancestor prefix and find the flat
         # column in this wrapped projection. ``parent`` carries any
@@ -1935,6 +1954,7 @@ class SlayerQueryEngine:
                 name=inner_model.name,
                 data_source=inner_model.data_source,
                 parent=inner_model.source_model_origin,
+                agg_column_names=frozenset(agg_shorts),
             ),
         )
 

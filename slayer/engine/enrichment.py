@@ -650,16 +650,23 @@ async def enrich_query(
         while cursor is not None:
             ancestor_names.add(cursor.name)
             cursor = cursor.parent
+        # Codex review on PR #137 round 9: gate the candidate on the
+        # column being an AGGREGATION projection from the inner stage
+        # (not a dim that coincidentally matches the canonical-flat
+        # shape). ``agg_column_names`` is populated by
+        # ``_query_as_model`` from the inner enriched query's measures
+        # / cross_model_measures / transforms / expressions.
+        agg_names = model.source_model_origin.agg_column_names
         # Candidate A — strip a leading ancestor name from the hop path.
         if hop_parts and hop_parts[0] in ancestor_names and len(hop_parts) >= 2:
             stripped = hop_parts[1:-1] + [canonical_leaf_agg]
             candidate = "__".join(stripped)
-            if model.get_column(candidate) is not None:
+            if candidate in agg_names and model.get_column(candidate) is not None:
                 return candidate, outer_agg
         # Candidate B — full flat.
         if hop_parts:
             candidate = "__".join(hop_parts[:-1] + [canonical_leaf_agg])
-            if model.get_column(candidate) is not None:
+            if candidate in agg_names and model.get_column(candidate) is not None:
                 return candidate, outer_agg
         return None
 
@@ -2811,13 +2818,18 @@ async def resolve_filter_columns(
                     # stages because `_query_as_model` does not propagate
                     # inner-model `filters` to the wrapped model — so the
                     # resolver lives inside `if strict:` only.
-                    leaf_is_agg_canonical = any(
-                        dim_name.endswith(f"_{agg}") or dim_name == f"_{agg}"
-                        for agg in BUILTIN_AGGREGATIONS
-                    )
+                    # Codex review on PR #137 round 9: use parser
+                    # provenance (`filter_synthesized_aliases`) to
+                    # distinguish a colon-syntax-synthesized aggregate
+                    # alias from a user-typed literal dim ref. The
+                    # earlier suffix heuristic falsely blocked real
+                    # dims whose leaf happened to end with an
+                    # aggregation suffix (e.g. a dim literally named
+                    # `customers.revenue_sum`).
+                    is_synthesized_agg_alias = col_name in filter_synthesized_aliases
                     if (
                         model.source_model_origin is not None
-                        and not leaf_is_agg_canonical
+                        and not is_synthesized_agg_alias
                     ):
                         stage_col = resolve_via_stage_origin(
                             model=model, parts=path_parts + [dim_name],

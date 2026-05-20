@@ -376,6 +376,16 @@ class SourceModelOrigin(BaseModel):
     upstream's name; walking ``parent`` reaches the original
     table-backed (or sql-backed) root.
 
+    ``agg_column_names`` (Codex review on PR #137 round 9) records the
+    flat names of columns on this stage that came from
+    ``cross_model_measures`` or aggregated ``measures`` in the inner
+    query's enrichment — i.e. the columns the cross-stage intercept
+    is safe to re-aggregate. Without this provenance, a user-defined
+    dimension whose name happens to look like an aggregation canonical
+    (e.g. ``customers__revenue_sum``) would be silently re-summed by
+    the intercept. Empty by default; only ``_query_as_model``
+    populates it.
+
     The field is in-memory only — virtual stage models are not
     persisted, and `SlayerModel.source_model_origin` carries
     ``exclude=True`` so accidental save paths drop it cleanly.
@@ -383,6 +393,7 @@ class SourceModelOrigin(BaseModel):
     name: str
     data_source: Optional[str] = None
     parent: Optional["SourceModelOrigin"] = None
+    agg_column_names: frozenset[str] = Field(default_factory=frozenset)
 
 
 class ModelJoin(BaseModel):
