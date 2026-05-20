@@ -309,15 +309,14 @@ def _filter_references_available(f, available_aliases: set) -> bool:
     return True
 
 
-# DEV-1444: pagination-clause tail patterns used by
-# ``_strip_trailing_pagination``. Three narrow patterns instead of one
-# alternation reduce regex complexity (Sonar S5843) and avoid the
-# theoretical polynomial backtracking of an unbounded ``.*`` head.
+# DEV-1444: digit-suffix tail patterns for OFFSET / LIMIT, each bounded
+# (`\d+`) so neither matches an unbounded run of arbitrary characters.
+# ORDER BY uses a non-regex ``rfind`` strategy below — its tail can
+# include arbitrary expressions and a regex would either need an
+# unbounded character class (Sonar S5852 polynomial backtracking
+# warning) or an artificial length cap.
 _TRAILING_OFFSET_RE = re.compile(r"(?is)\s*OFFSET\s+\d+\s*\Z")
 _TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*(?:OFFSET\s+\d+)?\s*\Z")
-_TRAILING_ORDER_BY_RE = re.compile(
-    r"(?is)\s*ORDER\s+BY\b[^()]*\Z"
-)
 
 
 def _strip_trailing_pagination(sql: str) -> str:
@@ -331,9 +330,8 @@ def _strip_trailing_pagination(sql: str) -> str:
     closing ``)`` after them).
     """
     s = sql.rstrip()
-    # Tail clauses are appended in the order ORDER → LIMIT → OFFSET, so
-    # strip in reverse (OFFSET → LIMIT → ORDER) to peel any combination.
-    for pattern in (_TRAILING_OFFSET_RE, _TRAILING_LIMIT_RE, _TRAILING_ORDER_BY_RE):
+    # OFFSET / LIMIT use narrow digit-bounded regexes.
+    for pattern in (_TRAILING_OFFSET_RE, _TRAILING_LIMIT_RE):
         m = pattern.search(s)
         if not m or m.start() == 0:
             continue
@@ -341,6 +339,22 @@ def _strip_trailing_pagination(sql: str) -> str:
         if tail.count("(") != tail.count(")"):
             continue
         s = s[:m.start()].rstrip()
+    # ORDER BY: use rfind on the upper-cased copy (case-insensitive
+    # match) instead of a regex with an unbounded character class. Same
+    # paren-balance check confirms the clause is at the outermost
+    # nesting level.
+    upper = s.upper()
+    pos = upper.rfind("ORDER BY")
+    if pos > 0:
+        # Word-boundary on the left (preceding whitespace or newline)
+        # and after (the BY must be followed by whitespace or end).
+        left_ok = upper[pos - 1] in " \t\n\r"
+        right_idx = pos + len("ORDER BY")
+        right_ok = right_idx >= len(upper) or upper[right_idx] in " \t\n\r"
+        if left_ok and right_ok:
+            tail = s[pos:]
+            if tail.count("(") == tail.count(")"):
+                s = s[:pos].rstrip()
     return s
 
 
@@ -546,6 +560,15 @@ class SQLGenerator:
                 f"FROM (\n{inner_no_pag.rstrip()}\n) AS _outer"
             )
             if order is not None:
+                # DEV-1444 (Codex review on PR #134): the detached ORDER
+                # BY may carry inner-CTE qualifiers like ``_base."col"``
+                # from ``_assemble_combined_sql``; those don't resolve at
+                # the outer wrapper level (only ``_outer`` is in scope).
+                # Strip every Column's table qualifier — the outer scope
+                # exposes each column by its bare alias name.
+                for col in order.find_all(exp.Column):
+                    if col.args.get("table") is not None:
+                        col.set("table", None)
                 wrapped_sql += "\n" + order.sql(dialect=self.dialect, pretty=True)
             if limit is not None:
                 wrapped_sql += "\n" + limit.sql(dialect=self.dialect, pretty=True)

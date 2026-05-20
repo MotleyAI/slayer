@@ -263,18 +263,33 @@ def public_projection_aliases(enriched: EnrichedQuery) -> List[str]:
     truth.
 
     Order is determined by ``enriched.user_projection`` when populated;
-    otherwise the helper falls back to ``dimensions + time_dimensions +
-    user-declared measures/expressions/transforms/cross_model_measures``
-    in their enriched-bucket order so legacy callers that never set
-    ``user_projection`` still get a sensible projection.
+    otherwise the helper falls back to the legacy bucket-union (every
+    entry whose ``name`` doesn't start with an internal prefix). The
+    fallback intentionally does NOT filter by ``user_declared`` — a
+    caller that constructs ``EnrichedQuery`` directly (e.g. tests
+    exercising specific rendered SQL shapes) has no obligation to flip
+    the flag, and filtering by ``user_declared=False`` (the default)
+    would drop every measure from the projection.
     """
     if enriched.user_projection:
         return list(enriched.user_projection)
-    # Fallback: declared-order union by bucket, filtering hidden entries.
+    # Fallback: declared-order bucket union, filtering ONLY entries whose
+    # names begin with one of the engine's internal-hoist prefixes
+    # (``_inner_*`` from nested-transform inner-arg hoists, ``_ft*`` from
+    # filter-transform extraction, ``_ts*`` from change/change_pct
+    # desugaring). Matches the pre-DEV-1444 ``expected_columns`` rule
+    # in ``query_engine.py``.
+    internal_prefixes = ("_inner_", "_ft", "_ts")
     out: List[str] = [d.alias for d in enriched.dimensions]
     out.extend(td.alias for td in enriched.time_dimensions)
-    out.extend(m.alias for m in enriched.measures if m.user_declared)
-    out.extend(e.alias for e in enriched.expressions if e.user_declared)
-    out.extend(t.alias for t in enriched.transforms if t.user_declared)
-    out.extend(cm.alias for cm in enriched.cross_model_measures if cm.user_declared)
+    out.extend(
+        m.alias for m in enriched.measures
+        if not m.name.startswith(internal_prefixes)
+    )
+    out.extend(e.alias for e in enriched.expressions)
+    out.extend(
+        t.alias for t in enriched.transforms
+        if not t.name.startswith(internal_prefixes)
+    )
+    out.extend(cm.alias for cm in enriched.cross_model_measures)
     return out

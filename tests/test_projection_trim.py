@@ -26,6 +26,7 @@ from slayer.engine.enriched import (
     CrossModelMeasure,
     EnrichedExpression,
     EnrichedMeasure,
+    EnrichedQuery,
     EnrichedTransform,
 )
 from slayer.engine.enrichment import enrich_query
@@ -1648,3 +1649,103 @@ class TestDuplicateUserDeclaredCanonical:
         )
         with pytest.raises(ValueError):
             await _enrich(query, orders_model)
+
+
+# ===========================================================================
+# Codex review on PR #134: outer ORDER BY references after wrap path.
+# ===========================================================================
+class TestOuterOrderByQualifierStripping:
+    async def test_combined_cte_order_by_inner_qualifier_stripped(
+        self, orders_customers_engine,
+    ) -> None:
+        """Reproduces the bug Codex flagged on PR #134: when
+        ``_assemble_combined_sql`` emits ``ORDER BY _base."x"`` AND the
+        outer trim wrapper actually fires (because a hoisted hidden
+        aggregate forces the wrap path), the detached order ends up at
+        the outer ``SELECT public FROM (<inner>) AS _outer`` scope where
+        ``_base`` is not in scope. The trim wrapper must strip such
+        inner-CTE qualifiers from the detached ORDER BY so the outer
+        reference uses the bare alias (which ``_outer`` exposes).
+        """
+        engine, orders = orders_customers_engine
+        # Cross-model measure forces the combined-CTE path; an unbound
+        # ORDER BY aggregate adds a hidden hoist that forces the wrap.
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
+            order=[OrderItem(column="revenue:sum", direction="desc")],
+            limit=5,
+        )
+        resp = await engine.execute(query=query, dry_run=True)
+        sql = resp.sql or ""
+        # Outer SQL must not have ``_base.`` in the outermost ORDER BY.
+        parsed = sqlglot.parse_one(sql, dialect="postgres")
+        assert isinstance(parsed, exp.Select)
+        order = parsed.args.get("order")
+        assert order is not None, f"no ORDER BY in outer SQL.\n{sql}"
+        for col in order.find_all(exp.Column):
+            assert col.args.get("table") is None, (
+                f"Outermost ORDER BY must not carry inner-CTE qualifiers, "
+                f"got col {col.sql()!r}.\nSQL:\n{sql}"
+            )
+
+    async def test_public_projection_aliases_fallback_includes_measures(
+        self, orders_model: SlayerModel,
+    ) -> None:
+        """When ``EnrichedQuery`` is constructed directly (bypassing
+        ``enrich_query``) and ``user_projection`` is empty, the fallback
+        path must still surface measures / expressions / transforms /
+        cross_model_measures whose names are NOT internal-prefixed.
+        Filtering by ``user_declared=False`` (the default) would drop
+        them entirely."""
+        # Directly construct an EnrichedQuery without calling enrich_query.
+        enriched = EnrichedQuery(
+            model_name="orders",
+            sql_table="public.orders",
+            dimensions=[],
+            measures=[
+                EnrichedMeasure(
+                    name="revenue_sum",
+                    sql="amount",
+                    aggregation="sum",
+                    alias="orders.revenue_sum",
+                    model_name="orders",
+                ),
+            ],
+        )
+        # Fallback must include the measure even though user_declared=False.
+        assert "orders.revenue_sum" in public_projection_aliases(enriched), (
+            "fallback must include non-internal measures (user_declared "
+            "filter only applies when user_projection is populated)."
+        )
+
+    async def test_public_projection_aliases_fallback_excludes_internal_prefixes(
+        self,
+    ) -> None:
+        """Internal-prefixed names (``_inner_*`` / ``_ft*`` / ``_ts*``)
+        stay excluded in the fallback — they're auto-extracted hoists,
+        never user-visible."""
+        enriched = EnrichedQuery(
+            model_name="orders",
+            sql_table="public.orders",
+            measures=[
+                EnrichedMeasure(
+                    name="_inner_rank_arg",
+                    sql="amount",
+                    aggregation="sum",
+                    alias="orders._inner_rank_arg",
+                    model_name="orders",
+                ),
+                EnrichedMeasure(
+                    name="revenue_sum",
+                    sql="amount",
+                    aggregation="sum",
+                    alias="orders.revenue_sum",
+                    model_name="orders",
+                ),
+            ],
+        )
+        out = public_projection_aliases(enriched)
+        assert "orders.revenue_sum" in out
+        assert "orders._inner_rank_arg" not in out
