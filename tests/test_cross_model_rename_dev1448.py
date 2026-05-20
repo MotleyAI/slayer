@@ -1,27 +1,37 @@
 """DEV-1448 — user-supplied ``name`` on a join-traversed (cross-model) measure
 must propagate to the rendered SQL projection and to downstream nested-DAG
-stages, exactly like the local-column rename does today.
+stages.
 
 Bug shape: stage 1 declares ``{"formula": "<other>.<col>:<agg>", "name": "x"}``.
-The current cross-model branch in ``slayer/engine/enrichment.py`` (lines
-894-918) calls ``_resolve_cross_model_measure`` and ignores ``qfield.name`` —
-the returned ``CrossModelMeasure.alias`` keeps the canonical
+The original cross-model branch in ``slayer/engine/enrichment.py`` called
+``_resolve_cross_model_measure`` and ignored ``qfield.name`` — the returned
+``CrossModelMeasure.alias`` kept the canonical
 ``<query_model>.<hop_path>.<col>_<agg>`` form. Result: the top-level result
-column key surfaces as the canonical form, and the downstream-stage virtual
+column key surfaced as the canonical form, and the downstream-stage virtual
 model (built by ``_query_as_model`` via ``_alias_to_short(cm.alias)``)
-exposes the column as ``<hop_path>__<col>_<agg>`` — so a downstream
-``x:max`` reference fails with ``Column 'x' not found``.
+exposed the column as ``<hop_path>__<col>_<agg>`` — so a downstream
+``x:max`` reference failed with ``Column 'x' not found``.
 
 Fix: after the cross-model branch appends the ``CrossModelMeasure``, mutate
-``cm.alias`` and ``cm.name`` to the user-supplied form when ``qfield.name``
-is non-redundant — symmetric with the local-measure rename at lines
-1021-1029. The alias drops the hop path entirely (``orders.x``), so the
-downstream virtual model column becomes ``x`` and ``x:max`` resolves.
+``cm.alias`` and ``cm.name``. Only the **canonical leaf** of the dotted path
+is swapped to the user name; the hop path is preserved (same dot-syntax
+shape every other multi-hop caller-facing key uses). So
+``customers.revenue:sum`` with ``name="cust_rev"`` surfaces as
+``orders.customers.cust_rev`` (one-hop) and
+``customers.regions.population:sum`` with ``name="region_pop"`` as
+``orders.customers.regions.region_pop`` (multi-hop). For the downstream-
+stage virtual model column, a special-case in ``_query_as_model``'s cross-
+model loop short-circuits the ``_alias_to_short`` ``__``-flattening when
+``cm.name`` is a bare identifier — so stage 2's ``cust_rev:max`` resolves
+against the bare user name rather than a flattened encoding.
 
 Companion / deferred scope:
-* DEV-1445 — cross-model colon-form filter remap (e.g. ``customers.revenue:sum
-  > 100`` resolving to user alias). Not in scope here. Tests that probe this
-  boundary are marked ``pytest.mark.skip``.
+* DEV-1445 — cross-model filter remap (neither colon form
+  ``customers.revenue:sum > 100`` nor bare user alias ``cust_rev > 100``
+  currently resolves; the SQL generator has no path to route either to the
+  cross-model CTE's output column). Tests that probe this boundary either
+  ``pytest.raises`` against the current strict-resolution error or are
+  marked ``pytest.mark.skip``.
 * DEV-1446 — transform-wrapped agg refs (e.g. ``cumsum(customers.revenue:sum)``
   with ``name``). Out of scope; pinned via a skipped test.
 """
@@ -409,7 +419,39 @@ class TestCrossModelRenameCollisionGuards:
                 ModelMeasure(formula="revenue:sum"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
             ],
         )
-        with pytest.raises(ValueError, match=r"collides with .*measure|silently merged"):
+        with pytest.raises(ValueError, match=r"silently merged|collide"):
+            await engine._enrich(query=query, model=orders)
+
+    async def test_cross_model_rename_leaf_collides_with_sibling_canonical_leaf_raises(
+        self, orders_customers_engine,
+    ) -> None:
+        """Codex review round 2 on PR #136: with the hop-path-preserved
+        alias shape (``orders.<hop>.<leaf>``), two cross-model measures
+        sharing the same hop path can produce identical full aliases when
+        one is renamed to match the other's canonical leaf — even though
+        the bare ``name`` (``"id_count_distinct"``) differs from the
+        sibling's full canonical (``"customers.id_count_distinct"``).
+
+        Setup:
+        * ``customers.revenue:sum`` renamed to ``name="id_count_distinct"``
+          → alias ``orders.customers.id_count_distinct``
+        * unrenamed ``customers.id:count_distinct`` → canonical alias
+          ``orders.customers.id_count_distinct``
+
+        Both produce the SAME public alias and would silently merge into
+        one column. The collision guard must compare CONSTRUCTED PUBLIC
+        ALIASES, not just the bare names against full canonical names.
+        """
+        engine, orders = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status")],
+            measures=[
+                ModelMeasure(formula="customers.revenue:sum", name="id_count_distinct"),
+                ModelMeasure(formula="customers.id:count_distinct"),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"collides|silently merged"):
             await engine._enrich(query=query, model=orders)
 
     async def test_two_local_renames_mutually_colliding_canonicals_raises(
@@ -436,7 +478,7 @@ class TestCrossModelRenameCollisionGuards:
                 ModelMeasure(formula="revenue:avg", name="revenue_sum"),
             ],
         )
-        with pytest.raises(ValueError, match=r"collides with .*measure|silently merged"):
+        with pytest.raises(ValueError, match=r"silently merged|collide"):
             await engine._enrich(query=query, model=orders)
 
     async def test_cross_model_rename_collides_with_outer_source_column_raises(

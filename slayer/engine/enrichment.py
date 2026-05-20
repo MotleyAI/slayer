@@ -859,40 +859,119 @@ async def enrich_query(
 
     # DEV-1448: lift the canonical-collision guard out of the local-rename
     # branch so it runs symmetrically for local AND cross-model renames. A
-    # query measure whose ``name`` equals the canonical alias of another
-    # sibling measure would otherwise let ``_ensure_aggregated_measure``'s
-    # alias-keyed dedup silently merge two distinct aggregates into one
-    # column. Run the pairwise check once up front for every qfield kind.
-    for qfield_pre in (query.measures or []):
-        if not qfield_pre.name:
+    # query measure whose surfaced public alias OR downstream short name
+    # equals another sibling's would otherwise let
+    # ``_ensure_aggregated_measure``'s alias-keyed dedup (or the virtual-
+    # model column-name dedup in ``_query_as_model``) silently merge two
+    # distinct aggregates into one column. Compute the would-be public
+    # alias + downstream short for each ``AggregatedMeasureRef`` qfield
+    # and check for pairwise collisions on either axis.
+    #
+    # Codex review round 2 on PR #136: the prior version compared only
+    # ``qfield.name`` against the sibling's full canonical name, so
+    # ``customers.revenue:sum`` renamed to ``"id_count_distinct"`` alongside
+    # an unrenamed ``customers.id:count_distinct`` slipped through because
+    # ``"id_count_distinct"`` != ``"customers.id_count_distinct"`` — yet
+    # both surface at ``orders.customers.id_count_distinct``.
+    def _surfaces_for(qf, sp):
+        canonical = _canonical_agg_name(
+            measure_name=sp.measure_name,
+            aggregation_name=sp.aggregation_name,
+            agg_args=sp.agg_args,
+            agg_kwargs=sp.agg_kwargs,
+        )
+        is_cross_model = (
+            "." in sp.measure_name and sp.measure_name != "*"
+        )
+        renamed = bool(qf.name) and qf.name != canonical
+        if is_cross_model:
+            hop = sp.measure_name.rsplit(".", 1)[0]
+            if renamed:
+                public = f"{model_name_str}.{hop}.{qf.name}"
+                short = qf.name
+            else:
+                public = f"{model_name_str}.{canonical}"
+                # _query_as_model derives the downstream short from
+                # _alias_to_short(cm.alias) for unrenamed cross-model:
+                # the source-model prefix is stripped, then dots are
+                # converted to ``__``. Mirror that here.
+                short = canonical.replace(".", "__")
+        else:
+            if renamed:
+                public = f"{model_name_str}.{qf.name}"
+                short = qf.name
+            else:
+                public = f"{model_name_str}.{canonical}"
+                short = canonical
+        return public, short
+
+    _surfaces: list = []
+    for qf_pre in (query.measures or []):
+        sp_pre = parse_formula(
+            qf_pre.formula,
+            extra_agg_names=custom_agg_names,
+            named_measures=named_measures,
+        )
+        if not isinstance(sp_pre, AggregatedMeasureRef):
             continue
-        for qf_other in (query.measures or []):
-            if qf_other is qfield_pre:
-                continue
-            spec_other = parse_formula(
-                qf_other.formula,
-                extra_agg_names=custom_agg_names,
-                named_measures=named_measures,
-            )
-            if not isinstance(spec_other, AggregatedMeasureRef):
-                continue
-            other_canonical = _canonical_agg_name(
-                measure_name=spec_other.measure_name,
-                aggregation_name=spec_other.aggregation_name,
-                agg_args=spec_other.agg_args,
-                agg_kwargs=spec_other.agg_kwargs,
-            )
-            if other_canonical == qfield_pre.name:
+        public_pre, short_pre = _surfaces_for(qf_pre, sp_pre)
+        canonical_pre = _canonical_agg_name(
+            measure_name=sp_pre.measure_name,
+            aggregation_name=sp_pre.aggregation_name,
+            agg_args=sp_pre.agg_args,
+            agg_kwargs=sp_pre.agg_kwargs,
+        )
+        for qf_other, sp_other, public_other, short_other, canonical_other in _surfaces:
+            if public_pre == public_other:
                 raise ValueError(
-                    f"Measure '{qfield_pre.formula}' renamed to "
-                    f"'{qfield_pre.name}', but that name collides with "
-                    f"the canonical alias of another query measure "
-                    f"'{qf_other.formula}' (also canonicalises to "
-                    f"'{qfield_pre.name}'). Two distinct aggregates would "
+                    f"Measure '{qf_pre.formula}' and measure "
+                    f"'{qf_other.formula}' both surface as "
+                    f"'{public_pre}'. Two distinct aggregates would "
                     f"otherwise be silently merged into one column. "
                     f"Pick a different `name`, or rename the other "
                     f"measure too."
                 )
+            if short_pre == short_other:
+                raise ValueError(
+                    f"Measure '{qf_pre.formula}' and measure "
+                    f"'{qf_other.formula}' both produce the downstream "
+                    f"short name '{short_pre}' — the alias a nested-DAG "
+                    f"stage would use to reference the value. Two "
+                    f"distinct aggregates would otherwise collide in "
+                    f"the downstream stage's virtual model. Pick a "
+                    f"different `name`, or rename the other measure too."
+                )
+            # DEV-1443 logical-canonical guard (retained alongside the
+            # alias / short collision checks above): a rename whose target
+            # equals another measure's canonical alias is rejected even
+            # when the constructed public aliases differ. The original
+            # rationale was that ``_ensure_aggregated_measure``'s alias-
+            # keyed dedup would still collapse the two aggregates under
+            # subtle processing-order conditions. Keep both directions of
+            # the comparison so the guard runs symmetrically.
+            if qf_pre.name and qf_pre.name == canonical_other:
+                raise ValueError(
+                    f"Measure '{qf_pre.formula}' renamed to "
+                    f"'{qf_pre.name}', but that name collides with the "
+                    f"canonical alias of another query measure "
+                    f"'{qf_other.formula}' (also canonicalises to "
+                    f"'{qf_pre.name}'). Two distinct aggregates would "
+                    f"otherwise be silently merged into one column. "
+                    f"Pick a different `name`, or rename the other "
+                    f"measure too."
+                )
+            if qf_other.name and qf_other.name == canonical_pre:
+                raise ValueError(
+                    f"Measure '{qf_other.formula}' renamed to "
+                    f"'{qf_other.name}', but that name collides with the "
+                    f"canonical alias of another query measure "
+                    f"'{qf_pre.formula}' (also canonicalises to "
+                    f"'{qf_other.name}'). Two distinct aggregates would "
+                    f"otherwise be silently merged into one column. "
+                    f"Pick a different `name`, or rename the other "
+                    f"measure too."
+                )
+        _surfaces.append((qf_pre, sp_pre, public_pre, short_pre, canonical_pre))
 
     # Process each query field
     for qfield in query.measures or []:
