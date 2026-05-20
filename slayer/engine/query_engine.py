@@ -1882,7 +1882,25 @@ class SlayerQueryEngine:
                 (e.alias, e.name, DataType.DOUBLE, e.label, None, NumberFormat(type=NumberFormatType.FLOAT))
             )
         for cm in enriched.cross_model_measures:
-            short = _alias_to_short(cm.alias)
+            # DEV-1448: when the user supplied an explicit ``name``, cm.name is
+            # a bare identifier (ModelMeasure.name forbids dots). Use it
+            # directly as the downstream short form so callers reference the
+            # user's chosen name without learning the ``__``-flattened
+            # encoding. Auto-derived names always contain a dot (e.g.
+            # ``customers.revenue_sum``) so they fall through to the legacy
+            # ``_alias_to_short`` flatten path.
+            #
+            # Codex review round 3 on PR #136: gate the short-circuit on
+            # ``cm.user_declared`` — hidden cross-model measures auto-
+            # extracted from arithmetic / transform formulas (in enrichment.py
+            # ``_ensure_measure_from_spec`` / ``_flatten_spec``) have bare
+            # internal placeholder names (e.g. ``__agg0__``) that must NOT
+            # leak into the virtual model's column set. Only user-declared
+            # renames qualify for the bare-name short.
+            if cm.user_declared and cm.name and "." not in cm.name:
+                short = cm.name
+            else:
+                short = _alias_to_short(cm.alias)
             column_map.append((cm.alias, short, DataType.DOUBLE, cm.label, None, cm.format))
 
         # Wrap inner SQL: SELECT "orders.id" AS id, "orders.count" AS count, ... FROM (inner) AS _inner
