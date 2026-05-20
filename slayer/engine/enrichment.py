@@ -697,6 +697,21 @@ async def enrich_query(
             if em.alias == local_alias:
                 em.from_cross_model_intercept = True
                 break
+        # Codex round 11: register the dotted cross-model canonical
+        # in `field_name_aliases` so `generator._resolve_order_column`'s
+        # qualified-match branch finds it. This is what allows
+        # `order=[{"column":"customers.revenue:sum"}]` to resolve when
+        # the user didn't also declare the measure as a query measure
+        # (which would go through the qfield-site path that already
+        # registers the alias). The intercept-via-`_flatten_spec` /
+        # `_ensure_measure_from_spec` paths reach here.
+        ref_canonical = _canonical_agg_name(
+            measure_name=ref.measure_name,
+            aggregation_name=ref.aggregation_name,
+            agg_args=ref.agg_args,
+            agg_kwargs=ref.agg_kwargs,
+        )
+        field_name_aliases[ref_canonical] = local_alias
         return local_alias
 
     async def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):

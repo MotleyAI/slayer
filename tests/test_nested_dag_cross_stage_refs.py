@@ -1689,6 +1689,51 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    async def test_intercepted_cmm_order_only_no_qfield_registers_alias(
+        self,
+    ) -> None:
+        """Codex round 11: when an outer query uses
+        `order=[{"column":"customers.revenue:sum"}]` WITHOUT also
+        declaring the measure as a query measure, the order
+        enrichment routes through `_flatten_spec`'s intercept branch
+        (not the qfield-site path that already registers the alias).
+        That helper must also register the dotted canonical in
+        `field_name_aliases` so `_resolve_order_column`'s
+        qualified-match branch finds the intercepted projection
+        instead of falling through to a non-existent bare column."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            # Outer: order-only ref to the cross-stage CMM, NOT in
+            # the projection. Must still resolve.
+            outer = SlayerQuery(
+                source_model="s1",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "*:count"}],
+                order=[{"column": "customers.revenue:sum"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            order = outer_select.args.get("order")
+            assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
+            order_cols = list(order.find_all(exp.Column))
+            order_col_names = {c.name for c in order_cols}
+            # Must resolve to a projection alias the intercept
+            # produced — NOT a bare `revenue_sum` on a non-existent
+            # `customers` table.
+            assert "customers" not in {c.table for c in order_cols if c.table}, (
+                f"ORDER BY must not reference a bare `customers` table.\n"
+                f"got: {order_col_names}\nSQL:\n{sql}"
+            )
+        finally:
+            tmp.cleanup()
+
     async def test_unrenamed_intercepted_cmm_order_by_colon_form_resolves(
         self,
     ) -> None:
