@@ -83,6 +83,10 @@ _ARROW_JVM_OPENS = (
     "--add-opens=java.base/java.nio=ALL-UNNAMED",
     "--add-opens=java.base/java.lang=ALL-UNNAMED",
     "--add-opens=java.base/java.util=ALL-UNNAMED",
+    # SecureRandom uses /dev/random by default; on fresh CI containers it
+    # can block for many minutes waiting for entropy. Point it at urandom
+    # so the JVM bootstrap doesn't stall before the first gRPC call.
+    "-Djava.security.egd=file:/dev/./urandom",
 )
 
 
