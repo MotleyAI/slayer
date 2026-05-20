@@ -609,78 +609,70 @@ async def enrich_query(
     # falls through to the cross-model CTE path for them.
     _DISTRIBUTIVE_AGGS = frozenset({"sum", "min", "max"})
 
-    async def _try_intercept_cross_model_as_local(
-        ref, field_name: str,
-    ) -> Optional[str]:
-        """DEV-1449: when ``model`` is a virtual stage (has
-        ``source_model_origin``) and the cross-model agg's canonical
-        flat name already exists as a local column, emit a local
-        re-aggregated EnrichedMeasure instead of building a cross-model
-        CTE. Returns the full enriched alias the caller can append to
-        ``user_projection`` / store in ``known_aliases``, or ``None``
-        if the intercept didn't apply.
+    def _intercept_candidate_for_cross_model(ref) -> "Optional[Tuple[str, str]]":
+        """DEV-1449: return ``(flat_with_agg, outer_agg)`` if the
+        intercept would resolve a virtual-stage cross-model agg ref to a
+        local re-aggregation on a flat column, or ``None`` if the
+        intercept doesn't apply.
 
-        Lookup candidates (Codex review): the source-prefixed user ref
-        (``orders.customers.revenue:sum`` against an ``s1`` that wraps
-        ``orders``) lands on ``customers__revenue_sum``, not
-        ``orders__customers__revenue_sum`` — ``_alias_to_short`` strips
-        the immediate ancestor name on every ``_query_as_model`` call.
-        Mirror ``resolve_via_stage_origin``'s Candidate A/B order: try
-        the ancestor-stripped flat first, then the full flat.
+        Pure / side-effect-free: callers use this first to build a
+        dup-guard key on the *resolved* flat name (so two refs that
+        differ only in source-prefix and resolve to the same underlying
+        column collide in the guard), then call
+        ``_try_intercept_cross_model_as_local`` to actually apply.
 
-        Semantics gate (CodeRabbit review): only intercept aggregations
-        that re-aggregate to an equivalent result. ``sum``/``min``/``max``
-        pass through unchanged; ``count`` re-maps to ``sum`` over the
-        inner per-group count; anything else returns ``None`` and falls
-        through.
-
-        Parameterized aggregations (``agg_args`` / ``agg_kwargs``) fall
-        through too — ``resolve_cross_model_measure`` canonicalizes with
-        no args/kwargs participation, so the inner stage's flat column
-        name we'd be looking for doesn't account for params either.
+        Lookup candidates: try ancestor-stripped flat first, then full
+        flat, mirroring ``resolve_via_stage_origin``'s Candidate A/B.
+        Semantics gate: only ``sum``/``min``/``max``/``count`` are
+        distributive enough to re-aggregate. Parameterized aggs are
+        skipped — ``resolve_cross_model_measure`` canonicalizes with
+        no args/kwargs participation, so the inner flat name we'd look
+        for doesn't account for params either.
         """
         if model.source_model_origin is None:
             return None
         if ref.agg_args or ref.agg_kwargs:
             return None
-        # Semantics gate.
         if ref.aggregation_name in _DISTRIBUTIVE_AGGS:
             outer_agg = ref.aggregation_name
         elif ref.aggregation_name == "count":
             outer_agg = "sum"
         else:
             return None
-        # Canonical-leaf-agg uses the INNER stage's aggregation_name
-        # (count → `_count` / `<col>_count`), independent of the outer
-        # remap. That's the form `_alias_to_short` produced on the
-        # inner stage's cm.alias.
         leaf = ref.measure_name.rsplit(".", 1)[-1]
         canonical_leaf_agg = (
             f"_{ref.aggregation_name}" if leaf == "*"
             else f"{leaf}_{ref.aggregation_name}"
         )
         hop_parts = ref.measure_name.split(".")
-        # Candidate A — strip a leading ancestor name from the hop path
-        # (e.g. `orders.customers.revenue` → `customers.revenue` when
-        # `s1` wraps `orders`).
         ancestor_names: set[str] = set()
         cursor = model.source_model_origin
         while cursor is not None:
             ancestor_names.add(cursor.name)
             cursor = cursor.parent
-        flat_with_agg: Optional[str] = None
+        # Candidate A — strip a leading ancestor name from the hop path.
         if hop_parts and hop_parts[0] in ancestor_names and len(hop_parts) >= 2:
             stripped = hop_parts[1:-1] + [canonical_leaf_agg]
             candidate = "__".join(stripped)
             if model.get_column(candidate) is not None:
-                flat_with_agg = candidate
-        # Candidate B — full flat (existing behaviour).
-        if flat_with_agg is None:
+                return candidate, outer_agg
+        # Candidate B — full flat.
+        if hop_parts:
             candidate = "__".join(hop_parts[:-1] + [canonical_leaf_agg])
             if model.get_column(candidate) is not None:
-                flat_with_agg = candidate
-        if flat_with_agg is None:
+                return candidate, outer_agg
+        return None
+
+    async def _try_intercept_cross_model_as_local(
+        ref, field_name: str,
+    ) -> Optional[str]:
+        """Apply the intercept (computes candidate + builds the
+        EnrichedMeasure). Returns the full enriched alias the caller
+        can use, or ``None`` if no candidate."""
+        candidate = _intercept_candidate_for_cross_model(ref=ref)
+        if candidate is None:
             return None
+        flat_with_agg, outer_agg = candidate
         await _ensure_aggregated_measure(
             alias_key=field_name,
             measure_name=flat_with_agg,
@@ -688,9 +680,6 @@ async def enrich_query(
             agg_args=ref.agg_args,
             agg_kwargs=ref.agg_kwargs,
         )
-        # `_ensure_aggregated_measure` already populated
-        # `known_aliases[field_name]` with the full enriched alias —
-        # read it back and return.
         return known_aliases[field_name]
 
     async def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
@@ -1005,39 +994,82 @@ async def enrich_query(
                 # whose inner stage already projected the flat alias →
                 # emit a local re-aggregated measure instead of a CTE.
                 #
-                # Codex review on PR #137: refuse two intercepted qfields
-                # that canonicalise to the same cross-stage aggregate
-                # but with different names. Without this, the second
-                # call's rename mutates the first call's EnrichedMeasure
-                # alias and `user_projection` is left pointing at the
-                # pre-rename alias with no backing measure. Mirrors the
-                # same guard the standard local-agg branch runs below.
-                cross_canon_key = (
-                    "agg",
-                    spec.measure_name,
-                    spec.aggregation_name,
-                    tuple(spec.agg_args),
-                    tuple(sorted(spec.agg_kwargs.items())),
+                # Codex review on PR #137 (rounds 2+4): key the
+                # duplicate-canonical guard on the RESOLVED flat column,
+                # not the raw `spec.measure_name`. Otherwise two qfields
+                # like `orders.customers.revenue:sum` (Candidate A
+                # strips `orders`) and `customers.revenue:sum`
+                # (Candidate B) — which both land on
+                # `customers__revenue_sum` — slip past the guard and
+                # corrupt the projection.
+                intercept_candidate = _intercept_candidate_for_cross_model(
+                    ref=spec,
                 )
-                if cross_canon_key in user_declared_canon_keys:
-                    prior_name = user_declared_canon_keys[cross_canon_key]
-                    this_name = qfield.name or canonical_name
-                    if prior_name != this_name:
-                        raise ValueError(
-                            f"Measure '{qfield.formula}' (surfacing as "
-                            f"'{this_name}') canonicalises to the same "
-                            f"cross-stage aggregation as an earlier query "
-                            f"measure (surfacing as '{prior_name}'). Two "
-                            f"user-declared measures with the same canonical "
-                            f"aggregation would otherwise collapse into one "
-                            f"column, leaving the second name with no backing "
-                            f"aggregate. Pick a single name, or drop the "
-                            f"duplicate."
-                        )
-                local_alias = await _try_intercept_cross_model_as_local(
-                    ref=spec, field_name=field_name,
-                )
-                if local_alias is not None:
+                if intercept_candidate is not None:
+                    flat_with_agg, outer_agg = intercept_candidate
+                    cross_canon_key = (
+                        "agg-intercept", flat_with_agg, outer_agg,
+                    )
+                    if cross_canon_key in user_declared_canon_keys:
+                        prior_name = user_declared_canon_keys[cross_canon_key]
+                        this_name = qfield.name or canonical_name
+                        if prior_name != this_name:
+                            raise ValueError(
+                                f"Measure '{qfield.formula}' (surfacing as "
+                                f"'{this_name}') canonicalises to the same "
+                                f"cross-stage aggregation as an earlier query "
+                                f"measure (surfacing as '{prior_name}'). Two "
+                                f"user-declared measures with the same "
+                                f"canonical aggregation would otherwise "
+                                f"collapse into one column, leaving the "
+                                f"second name with no backing aggregate. "
+                                f"Pick a single name, or drop the duplicate."
+                            )
+                    # CodeRabbit review on PR #137 round 4: refuse a
+                    # rename target that collides with another query
+                    # measure's canonical alias. `_ensure_aggregated_measure`'s
+                    # alias-keyed dedup would otherwise silently collapse
+                    # two distinct aggregates onto the renamed first one.
+                    # Mirrors the guard the standard local-agg branch
+                    # runs below.
+                    if qfield.name and qfield.name != canonical_name:
+                        for qf_other in (query.measures or []):
+                            if qf_other is qfield:
+                                continue
+                            spec_other = parse_formula(
+                                qf_other.formula,
+                                extra_agg_names=custom_agg_names,
+                                named_measures=named_measures,
+                            )
+                            if not isinstance(spec_other, AggregatedMeasureRef):
+                                continue
+                            other_canonical = _canonical_agg_name(
+                                measure_name=spec_other.measure_name,
+                                aggregation_name=spec_other.aggregation_name,
+                                agg_args=spec_other.agg_args,
+                                agg_kwargs=spec_other.agg_kwargs,
+                            )
+                            if other_canonical == qfield.name:
+                                raise ValueError(
+                                    f"Measure '{qfield.formula}' renamed to "
+                                    f"'{qfield.name}', but that name "
+                                    f"collides with the canonical alias of "
+                                    f"another query measure "
+                                    f"'{qf_other.formula}' (also "
+                                    f"canonicalises to '{qfield.name}'). "
+                                    f"Two distinct aggregates would "
+                                    f"otherwise be silently merged into "
+                                    f"one column. Pick a different `name`, "
+                                    f"or rename the other measure too."
+                                )
+                    await _ensure_aggregated_measure(
+                        alias_key=field_name,
+                        measure_name=flat_with_agg,
+                        aggregation_name=outer_agg,
+                        agg_args=spec.agg_args,
+                        agg_kwargs=spec.agg_kwargs,
+                    )
+                    local_alias = known_aliases[field_name]
                     user_declared_canon_keys[cross_canon_key] = (
                         qfield.name or canonical_name
                     )

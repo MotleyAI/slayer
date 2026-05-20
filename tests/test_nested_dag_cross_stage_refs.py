@@ -1477,6 +1477,66 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    async def test_source_prefixed_and_unprefixed_resolve_same_flat_raises(
+        self,
+    ) -> None:
+        """Codex round 4: `orders.customers.revenue:sum` and
+        `customers.revenue:sum` both resolve to the inner flat column
+        `customers__revenue_sum` (Candidate A vs Candidate B). With
+        different `name`s, the dup guard must catch the collision —
+        keying on raw `spec.measure_name` alone would miss this."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[
+                    {"formula": "orders.customers.revenue:sum", "name": "rev_a"},
+                    {"formula": "customers.revenue:sum", "name": "rev_b"},
+                ],
+            )
+            with pytest.raises((SlayerError, ValueError), match="canonicalises to the same"):
+                await engine.execute(query=[inner, outer], dry_run=True)
+        finally:
+            tmp.cleanup()
+
+    async def test_intercepted_rename_colliding_with_other_canonical_raises(
+        self,
+    ) -> None:
+        """CodeRabbit review round 4: an intercepted measure renamed
+        to match another query measure's canonical alias must raise.
+        Without this, `_ensure_aggregated_measure`'s alias-keyed dedup
+        silently collapses the two distinct aggregates onto the
+        renamed first one."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            # First qfield: intercepted cross-model rev:sum, renamed
+            # to `customer_id_max` — which is the canonical alias of
+            # the second qfield. Without the guard, dedup would
+            # collapse the second qfield onto the first.
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[
+                    {"formula": "customers.revenue:sum", "name": "customer_id_max"},
+                    {"formula": "customer_id:max"},
+                ],
+            )
+            with pytest.raises((SlayerError, ValueError), match="collides with the canonical alias"):
+                await engine.execute(query=[inner, outer], dry_run=True)
+        finally:
+            tmp.cleanup()
+
 
 # ===========================================================================
 # Test #20 dropped — was for Mode A lenient model-filter path on virtual
