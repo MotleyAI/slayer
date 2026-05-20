@@ -1566,6 +1566,42 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    async def test_unrenamed_intercepted_cmm_colon_filter_does_not_get_rewritten_as_where(
+        self,
+    ) -> None:
+        """Codex round 7: a `customers.revenue:sum > 100` filter on an
+        outer query whose intercepted measure is unrenamed must NOT be
+        silently rewritten to `WHERE s1.customers__revenue_sum > 100`
+        — that applies the predicate BEFORE the outer SUM, not as
+        HAVING on the re-aggregated measure.
+
+        The fallback gating recognises the aggregation-canonical leaf
+        and skips the dim-style rewrite. The standard strict path
+        then raises (DEV-1445 territory: cross-model measure filters
+        are not yet auto-resolved). The unrenamed case is the same
+        — users must reference via the renamed alias, restructure
+        with multi-stage, or wait for DEV-1445."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                measures=[{"formula": "customers.revenue:sum"}],
+                filters=["customers.revenue:sum > 100"],
+            )
+            # The strict path raises rather than silently emitting a
+            # WHERE that would clip rows before the outer aggregation.
+            # (The rename path test pins the WORKING case.)
+            with pytest.raises((SlayerError, ValueError)):
+                await engine.execute(query=[inner, outer], dry_run=True)
+        finally:
+            tmp.cleanup()
+
     async def test_intercepted_rename_colliding_with_other_canonical_raises(
         self,
     ) -> None:

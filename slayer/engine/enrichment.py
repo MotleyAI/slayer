@@ -2558,11 +2558,33 @@ async def resolve_filter_columns(
                     # the dotted ref resolves to a flat column on the
                     # wrapped projection, rewrite the filter SQL to use
                     # ``<model_name>.<flat_col>`` and skip the strict-error
-                    # branches. Lenient (`strict=False`) callers never see
-                    # virtual stages because `_query_as_model` does not
-                    # propagate inner-model `filters` to the wrapped model
-                    # — so the resolver lives inside `if strict:` only.
-                    if model.source_model_origin is not None:
+                    # branches.
+                    #
+                    # Codex review on PR #137 round 7: this fallback was
+                    # designed for DIMENSION refs (e.g. `customers.regions.name`)
+                    # cross-stage. If the leaf looks like an aggregated
+                    # canonical (``<col>_<agg>`` / ``_<agg>``), the user
+                    # is filtering on a re-aggregated MEASURE and the
+                    # right SQL placement is HAVING over the projection
+                    # alias, not WHERE on the inner flat column. The
+                    # intercept-as-local path leaves cross-model measure
+                    # filters in DEV-1445 territory (not yet
+                    # auto-resolved); skip the fallback for those leaves
+                    # so the standard strict-error fires rather than
+                    # silently emitting a wrong WHERE.
+                    #
+                    # Lenient (`strict=False`) callers never see virtual
+                    # stages because `_query_as_model` does not propagate
+                    # inner-model `filters` to the wrapped model — so the
+                    # resolver lives inside `if strict:` only.
+                    leaf_is_agg_canonical = any(
+                        dim_name.endswith(f"_{agg}") or dim_name == f"_{agg}"
+                        for agg in BUILTIN_AGGREGATIONS
+                    )
+                    if (
+                        model.source_model_origin is not None
+                        and not leaf_is_agg_canonical
+                    ):
                         stage_col = resolve_via_stage_origin(
                             model=model, parts=path_parts + [dim_name],
                         )
