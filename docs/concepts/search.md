@@ -196,14 +196,16 @@ bulky example queries cannot crowd out small learning-only notes.
 
 ```python
 class MemoryHit(BaseModel):
-    id: int                          # memory id (forget_memory(id=hit.id) works)
+    id: str                          # memory id (forget_memory(id=hit.id) works)
     score: float                     # RRF-fused (or single-channel raw)
     text: str                        # full indexed text (no truncation)
     matched_entities: List[str]      # canonical entities that channel-1 input
-                                     # overlapped with the memory's tags
+                                     # overlapped with the memory's tags;
+                                     # stale tags are filtered before this is
+                                     # computed (DEV-1428 lazy GC).
 
 class ExampleQueryHit(BaseModel):
-    id: int                          # memory id
+    id: str                          # memory id
     score: float                     # RRF-fused
     text: str                        # full indexed text
     matched_entities: List[str]
@@ -222,6 +224,28 @@ class SearchResponse(BaseModel):
     resolved_input_entities: List[str]   # echo of the resolver output
     warnings: List[str]
 ```
+
+### Lenient input validation (DEV-1428)
+
+Unresolved entity / memory references in `search(entities=...)` and
+`search(query=...)` are demoted to warnings rather than raising. The
+dropped token does not appear in `resolved_input_entities`, but the
+search proceeds against whatever did resolve. Examples:
+
+- `entities=["mydb.orders.amount", "memory:nonexistent"]` returns a
+  normal response; `warnings` includes
+  `entity 'memory:nonexistent' dropped: No memory with id 'nonexistent'.`
+- A stale entity tag inside a saved memory does not contribute to
+  channel-1 BM25 ranking, and is excluded from any hit's
+  `matched_entities` list.
+- An `example_queries` hit whose attached `Memory.query` references a
+  vanished column gets the warning
+  `example_query memory:<id>: attached query has stale references (...); re-save to clean.`
+  but is still surfaced with its stored query intact.
+
+`memory:<id>` is also accepted in `entities` (cross-memory linking) —
+the resolver checks the memory exists and the canonical form
+round-trips as-is.
 
 ## Sample-value cache
 

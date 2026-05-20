@@ -1013,6 +1013,20 @@ class SlayerQueryEngine:
         # Re-validate via Pydantic, then save.
         SlayerModel.model_validate(updated.model_dump())
         await self.storage.save_model(updated)
+        # DEV-1428: cascade-strip dropped leaves from every memory's
+        # entity tags. Joins / filters don't cascade — filters are not
+        # named entities, and a joined-leaf ref canonicalizes to the
+        # target model's own ``<ds>.<model>.<leaf>`` (independent of
+        # the source model's join edge).
+        existing_ds = existing.data_source
+        for removed in (
+            list(cols_to_remove)
+            + list(measures_to_remove)
+            + list(aggs_to_remove)
+        ):
+            await self.storage.strip_dangling_entities_from_memories(
+                canonical_id=f"{existing_ds}.{model_name}.{removed}",
+            )
         return updated
 
     async def delete_model_by_name(

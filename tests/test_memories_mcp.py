@@ -196,10 +196,10 @@ class TestSaveMemoryEntityList:
         )
         payload = _try_parse_json(result)
         assert payload is not None, f"non-JSON response: {result}"
-        assert payload["memory_id"] == 1
+        assert payload["memory_id"] == "1"
         assert payload["resolved_entities"] == ["mydb.orders.amount"]
         assert payload["warnings"] == []
-        loaded = await seeded.get_memory(1)
+        loaded = await seeded.get_memory("1")
         assert loaded.learning == "treat NULL is_returned as not returned"
         assert loaded.query is None
 
@@ -252,7 +252,7 @@ class TestSaveMemoryEntityList:
     async def test_id_monotonic(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
-        for expected in (1, 2, 3):
+        for expected in ("1", "2", "3"):
             result = await _call(
                 mcp_server,
                 name="save_memory",
@@ -291,11 +291,11 @@ class TestSaveMemoryQuery:
         )
         payload = _try_parse_json(result)
         assert payload is not None, result
-        assert payload["memory_id"] == 1
+        assert payload["memory_id"] == "1"
         assert "mydb.orders" in payload["resolved_entities"]
         assert "mydb.orders.status" in payload["resolved_entities"]
         assert "mydb.orders.amount" in payload["resolved_entities"]
-        loaded = await seeded.get_memory(1)
+        loaded = await seeded.get_memory("1")
         assert isinstance(loaded.query, SlayerQuery)
         assert loaded.query.source_model == "orders"
         assert loaded.learning == "Paid revenue by status"
@@ -317,8 +317,8 @@ class TestSaveMemoryQuery:
         )
         payload = _try_parse_json(result)
         assert payload is not None, result
-        assert payload["memory_id"] == 1
-        loaded = await seeded.get_memory(1)
+        assert payload["memory_id"] == "1"
+        loaded = await seeded.get_memory("1")
         assert isinstance(loaded.query, SlayerQuery)
 
     async def test_source_model_always_tagged(

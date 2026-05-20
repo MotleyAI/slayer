@@ -173,9 +173,8 @@ def test_empty_corpus_returns_empty_results() -> None:
     assert hits == []
 
 
-def test_memory_id_round_trips_as_integer() -> None:
-    """`MemoryHit.id` must be the int memory id — the index doc-id namespacing
-    is internal."""
+def test_memory_id_round_trips_as_string() -> None:
+    """DEV-1428: ``IndexHit.memory_id`` is now the str memory id."""
     idx = build_in_memory_index(
         memories=_make_memories(),
         models=_make_models(),
@@ -183,7 +182,7 @@ def test_memory_id_round_trips_as_integer() -> None:
     )
     hits = search_index(index=idx, question="anonymous checkouts", limit=10)
     memory_hits = [h for h in hits if h.kind == "memory"]
-    assert any(h.memory_id == 2 for h in memory_hits)
+    assert any(h.memory_id == "2" for h in memory_hits)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 """Shared test fixtures."""
 
+import os
 import tempfile
+from typing import AsyncIterator
 
 import pytest
 
@@ -68,4 +70,33 @@ def yaml_storage(sample_datasource: DatasourceConfig) -> YAMLStorage:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         storage.save_datasource(sample_datasource)
+        yield storage
+
+
+@pytest.fixture
+async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
+    """DEV-1428: a YAMLStorage seeded with a single ``mydb`` datasource
+    and a minimal ``orders`` model (id PK + amount column). Shared by
+    every DEV-1428 test that just needs *some* live entity to resolve
+    memory references against; centralised here to keep the per-test
+    setup blocks from drifting into Sonar duplication-density failures.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
+        await storage.save_datasource(
+            DatasourceConfig(
+                name="mydb", type="sqlite", database=":memory:",
+            )
+        )
+        await storage.save_model(
+            SlayerModel(
+                name="orders",
+                sql_table="orders",
+                data_source="mydb",
+                columns=[
+                    Column(name="id", sql="id", primary_key=True),
+                    Column(name="amount", sql="amount"),
+                ],
+            )
+        )
         yield storage

@@ -203,9 +203,22 @@ def render_aggregation_text(*, model: SlayerModel, aggregation: Aggregation) -> 
 
 
 def render_memory_text(*, memory: Memory) -> str:
-    """Memory doc: learning text + tagged canonical entities so the memory
-    surfaces both via natural-language search and via exact-entity search."""
+    """Memory doc for tantivy: learning text + tagged canonical entities
+    so the memory surfaces both via natural-language search and via
+    exact-entity search."""
     lines: List[str] = [memory.learning]
     if memory.entities:
         lines.append("Tagged entities: " + ", ".join(memory.entities))
     return "\n".join(lines)
+
+
+def render_memory_text_for_embedding(*, memory: Memory) -> str:
+    """Memory doc for embeddings: learning text ONLY.
+
+    DEV-1428: by excluding the entity tags from the embedded text, the
+    cascade-strip path (which rewrites the tag list) does not change the
+    embedding content hash, so the per-memory refresh hash-skips. This
+    is what lets the cascade live entirely in the storage layer with
+    zero embedding cost per deleted entity.
+    """
+    return memory.learning

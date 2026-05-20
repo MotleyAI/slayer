@@ -138,9 +138,9 @@ class TestPostMemories:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["memory_id"] == 1
+        assert body["memory_id"] == "1"
         assert body["resolved_entities"] == ["mydb.orders.amount"]
-        loaded = await seeded.get_memory(1)
+        loaded = await seeded.get_memory("1")
         assert loaded.learning == "orders.amount is in cents"
         assert loaded.query is None
 
@@ -159,10 +159,10 @@ class TestPostMemories:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["memory_id"] == 1
+        assert body["memory_id"] == "1"
         assert "mydb.orders" in body["resolved_entities"]
         assert "mydb.orders.amount" in body["resolved_entities"]
-        loaded = await seeded.get_memory(1)
+        loaded = await seeded.get_memory("1")
         assert loaded.query is not None
 
     async def test_resolution_error_returns_400(  # NOSONAR(S7503) — keeps a uniform async signature across the class so the seeded async fixture binds the same way for every test

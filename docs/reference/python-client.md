@@ -48,6 +48,26 @@ data = client.query(query)
 df = client.query_df(query)
 ```
 
+### Accepted Input Shapes
+
+`client.query` / `query_sync` / `sql` / `sql_sync` / `explain` / `explain_sync` / `query_df` all accept the same input union (mirroring `engine.execute`):
+
+- A **dict** — a single query.
+- A **`SlayerQuery`** instance.
+- A **list of dicts or `SlayerQuery`** — a multi-stage DAG. Earlier stages are named sub-queries; the last entry is the root. Order doesn't matter (the engine auto-sorts). See [Query Lists](../concepts/queries.md#query-lists).
+- A **string** — runs the backing query of a query-backed model by name.
+
+```python
+# Multi-stage DAG
+client.query_sync([
+    {"name": "by_customer", "source_model": "orders", "measures": [{"formula": "amount:sum"}], "dimensions": [{"name": "customer_id"}]},
+    {"source_model": "by_customer", "measures": [{"formula": "amount_sum:avg"}]},
+])
+
+# Run-by-name (query-backed model)
+client.query_sync("rev_by_region")
+```
+
 ### Other Methods
 
 ```python

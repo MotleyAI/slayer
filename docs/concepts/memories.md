@@ -57,19 +57,27 @@ Memory retrieval is part of [`search`](search.md) (one tool covers
 both memories and canonical entity discovery). This page covers only
 the write side.
 
-### `save_memory(learning, linked_entities)`
+### `save_memory(learning, linked_entities, id=None)`
 
 Persist a memory. `linked_entities` accepts either form:
 
 - **List of entity strings** — each is resolved strictly; ambiguous
-  bare-column matches and unknown segments raise.
+  bare-column matches and unknown segments raise. `memory:<id>`
+  references to other memories are also valid (cross-memory linking).
 - **An inline `SlayerQuery` (dict)** — the entity extractor walks
   `source_model`, `dimensions`, `time_dimensions`, `measures`, and
   `filters`; resolution warnings are non-fatal. The query is also
   stored on the memory.
 
-Returns `memory_id` (a positive int), the canonical entities stored,
-and any non-fatal warnings.
+`id` is optional. Omit it to let the allocator pick the next monotonic
+int-shaped id (`"1"`, `"2"`, ...). Supply a string for a stable
+user-controlled id (`"kb.policy.42"`) — useful for knowledge-base
+ingestion pipelines. Charset excludes `:`, `/`, `?`, `#`, whitespace,
+and ASCII control characters. Duplicate id → unconditional **upsert**,
+`created_at` preserved.
+
+Returns `memory_id` (a non-empty string), the canonical entities
+stored, and any non-fatal warnings.
 
 **Embedding side effect.** When the `embedding_search` extra is
 installed and `SLAYER_EMBEDDING_MODEL` resolves to a configured
@@ -103,9 +111,14 @@ Query-bearing form:
 
 ### `forget_memory(id)`
 
-Delete by id. Accepts a positive int (the `memory_id` returned by
-`save_memory`); decimal-string forms (`"42"`) are also accepted. Raises
-a friendly error if the id is invalid or the memory does not exist.
+Delete by id. Accepts the canonical string id (`"1"`, `"kb.policy.42"`)
+or — for back-compat — a legacy int that is stringified decimally.
+Raises a friendly error if the id is invalid or the memory does not
+exist.
+
+**Cascade-on-delete.** Removing a memory also strips every
+`memory:<id>` reference to it from every other memory's `entities`
+list (exact-match only — `memory:42` never strips `memory:421`).
 
 ## Recommended agent workflow
 
@@ -151,10 +164,58 @@ YAML uses a single `memories.yaml` file alongside the model and
 datasource folders. SQLite uses a `memories` table plus a
 `memory_entities` index table for the entity-overlap filter.
 
-IDs are positive ints that increase monotonically while the corpus
-grows. The next id is derived from the existing corpus directly
-(`last_row.id + 1` for YAML, `SELECT MAX(id) + 1 FROM memories` for
-SQLite) — there is no separate counter store (DEV-1405). Ids of
-deleted memories may be reused by future saves; `delete_memory`
-already cascades to drop the matching embedding row, so reuse never
-strands data.
+IDs are non-empty strings (DEV-1428). The auto-allocator walks
+`max(int-shaped id) + 1` over the existing corpus where "int-shaped"
+means pure-digit, no-leading-zero (`"42"` counts; `"001"` and
+`"42abc"` do not). User-supplied ids share the namespace; duplicates
+upsert (and preserve the original `created_at`). Ids of deleted
+memories may be reused by the allocator; `delete_memory` cascades to
+drop the matching embedding row AND strips every other memory's
+`memory:<id>` reference to it, so reuse never strands data.
+
+### Cascade-on-delete
+
+When a `delete_model` / `delete_datasource` / `forget_memory` /
+`edit_model_remove` call removes a leaf, every dangling reference to
+it is stripped from every memory's `entities` list. The match
+predicate splits by ref kind:
+
+- `<ds>.<model>[.<leaf>]` — exact match OR strict dotted-path
+  descendant (`mydb.orders` strips both `mydb.orders` and
+  `mydb.orders.amount`; `mydb.orders_archive` is **not** touched).
+- `memory:<id>` — exact-match only (`memory:42` does not strip
+  `memory:421` or `memory:42.y`).
+
+Memories with zero entities after the strip are kept — the learning
+text stands alone, and the memory still surfaces via the tantivy and
+embedding channels.
+
+The embedded text for a memory is `learning` only (entity tags are
+excluded), so cascade-strip rewrites do **not** change the embedding
+content hash and the per-memory refresh hash-skips. Zero embedding
+calls per deleted entity.
+
+### Defense-in-depth cleanup at ingest
+
+`slayer ingest` / `--ingest-on-startup` runs a second cleanup pass
+over each datasource's memories: every reference is probed against
+storage, and ones that resolve to a definitive "not found" are
+stripped from the persisted `entities` list. Transient lookup failures
+keep the reference (a raise is treated as "ref intact"), so infra
+hiccups never drop data.
+
+Stale `Memory.query` (the optional inline query attached to
+example-queries memories) gets a warning rather than a rewrite — the
+query is left alone, and an agent reading the warning re-saves the
+memory to clean it.
+
+### Search-time semantics
+
+`search(entities=...)` is **lenient**: unresolved entities and memory
+references become warnings rather than raising. The surviving
+canonical set shows up in `resolved_input_entities`.
+
+Stale tags on persisted memories are filtered out at retrieval time
+(belt) before BM25 ranking, so they neither contribute to scoring nor
+surface in `matched_entities`. No write-back — the persisted entity
+list is unchanged.

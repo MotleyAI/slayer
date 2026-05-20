@@ -10,11 +10,11 @@ runs at open time to upgrade legacy v3 single-PK databases in place.
 import asyncio
 import json
 import sqlite3
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.memories.models import Memory
+from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import StorageBackend, _validate_path_component
 from slayer.storage.sidecar_embedding_store import (
     SidecarEmbeddingsMixin,
@@ -32,11 +32,96 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         self.db_path = db_path
         # Idempotent: rebuilds a v3 ``models`` table if needed; no-op on v4.
         migrate_sqlite_schema(db_path)
+        self._migrate_memories_to_text_pk()
         self._init_db()
         # DEV-1386 / DEV-1405: the embeddings sidecar owns its own table
         # + index. CREATE-IF-NOT-EXISTS makes co-existence with our own
         # schema trivial.
         self._embeddings_store = SidecarEmbeddingStore(db_path=self.db_path)
+
+    def _migrate_memories_to_text_pk(self) -> None:
+        """DEV-1428: rebuild pre-DEV-1428 ``memories`` / ``memory_entities``
+        tables whose primary key / foreign key columns are INTEGER so
+        string ids can be stored.
+
+        Idempotent under partial state: a crash after the first rebuild
+        but before the second leaves ``memories.id`` as TEXT and
+        ``memory_entities.memory_id`` still INTEGER. The next startup
+        must recognise the split state and finish the migration — so we
+        check each table independently, and combine both rebuilds into
+        a single transaction whenever both need migrating.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            memories_needs_rebuild = self._memories_needs_text_pk(conn)
+            me_needs_rebuild = self._memory_entities_needs_text_fk(conn)
+            if not memories_needs_rebuild and not me_needs_rebuild:
+                return
+            # Combine into one transaction so the cross-table FK rebuild
+            # is atomic. Each ALTER/INSERT/DROP gated by the per-table
+            # flags above; an empty branch is a no-op (no DDL emitted).
+            script_parts: List[str] = ["BEGIN;"]
+            if memories_needs_rebuild:
+                script_parts.append(
+                    "ALTER TABLE memories RENAME TO _memories_legacy;"
+                )
+                script_parts.append(
+                    "CREATE TABLE memories ("
+                    "id TEXT PRIMARY KEY, data TEXT NOT NULL);"
+                )
+                script_parts.append(
+                    "INSERT INTO memories (id, data) "
+                    "SELECT CAST(id AS TEXT), data FROM _memories_legacy;"
+                )
+                script_parts.append("DROP TABLE _memories_legacy;")
+            if me_needs_rebuild:
+                script_parts.append(
+                    "ALTER TABLE memory_entities RENAME TO _memory_entities_legacy;"
+                )
+                script_parts.append(
+                    "CREATE TABLE memory_entities ("
+                    "memory_id TEXT NOT NULL REFERENCES memories(id) "
+                    "ON DELETE CASCADE, "
+                    "entity TEXT NOT NULL, "
+                    "PRIMARY KEY (memory_id, entity));"
+                )
+                script_parts.append(
+                    "INSERT INTO memory_entities (memory_id, entity) "
+                    "SELECT CAST(memory_id AS TEXT), entity "
+                    "FROM _memory_entities_legacy;"
+                )
+                script_parts.append("DROP TABLE _memory_entities_legacy;")
+                script_parts.append(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_entities_entity "
+                    "ON memory_entities(entity);"
+                )
+            script_parts.append("COMMIT;")
+            conn.executescript("\n".join(script_parts))
+
+    @staticmethod
+    def _memories_needs_text_pk(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='memories'"
+        )
+        if cur.fetchone() is None:
+            return False
+        cur = conn.execute("PRAGMA table_info(memories)")
+        cols = cur.fetchall()
+        id_col = next((c for c in cols if c[1] == "id"), None)
+        return id_col is not None and id_col[2].upper() != "TEXT"
+
+    @staticmethod
+    def _memory_entities_needs_text_fk(conn: sqlite3.Connection) -> bool:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='memory_entities'"
+        )
+        if cur.fetchone() is None:
+            return False
+        cur = conn.execute("PRAGMA table_info(memory_entities)")
+        me_cols = cur.fetchall()
+        me_col = next((c for c in me_cols if c[1] == "memory_id"), None)
+        return me_col is not None and me_col[2].upper() != "TEXT"
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -60,16 +145,16 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     value TEXT NOT NULL
                 )
             """)
-            # DEV-1357 v2: unified memories.
+            # DEV-1357 v2 / DEV-1428: unified memories with string ids.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY,
+                    id TEXT PRIMARY KEY,
                     data TEXT NOT NULL
                 )
             """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory_entities (
-                    memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                    memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                     entity TEXT NOT NULL,
                     PRIMARY KEY (memory_id, entity)
                 )
@@ -280,43 +365,104 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     # Any legacy ``id_counters`` table on a pre-DEV-1405 DB is left in
     # place as harmless dead data; nothing reads it.
 
+    @staticmethod
+    def _is_int_shaped_id(value: Any) -> bool:
+        """DEV-1428 allocator predicate: pure-digit, no-leading-zero
+        string. ``"0"`` counts; ``"001"`` / ``"42abc"`` do not."""
+        if not isinstance(value, str) or not value:
+            return False
+        if not value.isdigit():
+            return False
+        if value != "0" and value.startswith("0"):
+            return False
+        return True
+
     def _save_memory_atomic_sync(
         self,
+        *,
+        memory_id: Optional[str],
         learning: str,
         entities: List[str],
         query: Optional[SlayerQuery],
     ) -> Memory:
-        """Reserve the next id and persist the new memory inside one
-        SQLite transaction. Returns the persisted :class:`Memory` with
-        the DB-assigned ``id``."""
-        with sqlite3.connect(self.db_path) as conn:
+        """Reserve / accept an id and persist the new memory inside one
+        SQLite transaction. Returns the persisted :class:`Memory`.
+
+        DEV-1428: ``memory_id=None`` triggers allocator (max int-shaped
+        id + 1); ``memory_id="..."`` is a user-supplied id — upserts on
+        collision, preserving ``created_at``.
+
+        Concurrency: opens with ``isolation_level=None`` and starts an
+        explicit ``BEGIN IMMEDIATE`` so the SELECT-then-INSERT sequence
+        runs under SQLite's write lock. Two concurrent saves block each
+        other rather than racing on a stale max.
+        """
+        # ``isolation_level=None`` puts us in autocommit; the explicit
+        # BEGIN IMMEDIATE acquires a write lock at the start of the
+        # transaction (cf. SQLite's default deferred BEGIN, which only
+        # promotes to a write lock when a write actually happens — by
+        # which time another writer may have updated ``memories``).
+        conn = sqlite3.connect(self.db_path, isolation_level=None, timeout=30.0)
+        try:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
-            # Reserve an id atomically. SQLite's ``INTEGER PRIMARY KEY``
-            # is a rowid alias; inserting NULL assigns the next free id
-            # inside the write lock (max(rowid) + 1 semantics; reuses
-            # ids of tail-deleted rows per DEV-1405).
-            cursor = conn.execute(
-                "INSERT INTO memories (data) VALUES ('') RETURNING id"
-            )
-            row = cursor.fetchone()
-            memory_id = int(row[0])
-            memory = Memory(
-                id=memory_id,
-                learning=learning,
-                entities=list(entities),
-                query=query,
-            )
-            conn.execute(
-                "UPDATE memories SET data = ? WHERE id = ?",
-                (json.dumps(memory.model_dump(mode="json")), memory_id),
-            )
-            for entity in entities:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                preserved_created_at = None
+                if memory_id is None:
+                    memory_id = self._next_memory_seq_sync_from_conn(conn)
+                else:
+                    existing_row = conn.execute(
+                        "SELECT data FROM memories WHERE id = ?",
+                        (memory_id,),
+                    ).fetchone()
+                    if existing_row is not None:
+                        existing_memory = Memory.model_validate(
+                            json.loads(existing_row[0])
+                        )
+                        preserved_created_at = existing_memory.created_at
+                kwargs: Dict[str, Any] = {
+                    "id": memory_id,
+                    "learning": learning,
+                    "entities": list(entities),
+                    "query": query,
+                }
+                if preserved_created_at is not None:
+                    kwargs["created_at"] = preserved_created_at
+                memory = Memory(**kwargs)
                 conn.execute(
-                    "INSERT OR IGNORE INTO memory_entities "
-                    "(memory_id, entity) VALUES (?, ?)",
-                    (memory_id, entity),
+                    "INSERT OR REPLACE INTO memories (id, data) VALUES (?, ?)",
+                    (memory_id, json.dumps(memory.model_dump(mode="json"))),
                 )
+                conn.execute(
+                    "DELETE FROM memory_entities WHERE memory_id = ?",
+                    (memory_id,),
+                )
+                for entity in entities:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_entities "
+                        "(memory_id, entity) VALUES (?, ?)",
+                        (memory_id, entity),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
         return memory
+
+    def _next_memory_seq_sync_from_conn(
+        self, conn: sqlite3.Connection,
+    ) -> str:
+        """Allocator on an open connection (so it can share a write lock
+        with the surrounding transaction)."""
+        rows = conn.execute("SELECT id FROM memories").fetchall()
+        max_id = 0
+        for (raw,) in rows:
+            value = raw if isinstance(raw, str) else str(raw)
+            if self._is_int_shaped_id(value):
+                max_id = max(max_id, int(value))
+        return str(max_id + 1)
 
     async def save_memory(
         self,
@@ -324,20 +470,23 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         learning: str,
         entities: List[str],
         query: Optional[SlayerQuery] = None,
+        id: Optional[str] = None,  # noqa: A002 — public kwarg
     ) -> Memory:
+        if id is not None:
+            _validate_memory_id_charset(id)
         return await asyncio.to_thread(
             self._save_memory_atomic_sync,
+            memory_id=id,
             learning=learning,
             entities=list(entities),
             query=query,
         )
 
     # ``_save_memory_row`` and ``_next_memory_seq`` are kept to satisfy
-    # the ABC contract (third-party code or migrations that bypass the
-    # public ``save_memory`` API still expect these primitives). Both
-    # implementations match the documented contract and would themselves
-    # be racy under concurrent writes — callers should use the public
-    # ``save_memory`` above, which holds SQLite's write lock atomically.
+    # the ABC contract (third-party code or the cascade-strip path that
+    # bypasses the public ``save_memory`` API still expect these
+    # primitives). The cascade write path calls ``_save_memory_row``
+    # directly to avoid triggering ``EmbeddingService.refresh_memory``.
 
     def _save_memory_sync(self, memory: Memory) -> None:
         data = json.dumps(memory.model_dump(mode="json"))
@@ -361,24 +510,21 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _save_memory_row(self, memory: Memory) -> None:
         await asyncio.to_thread(self._save_memory_sync, memory)
 
-    def _next_memory_seq_sync(self) -> int:
+    def _next_memory_seq_sync(self) -> str:
         with sqlite3.connect(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(id), 0) + 1 FROM memories"
-            ).fetchone()
-        return int(row[0])
+            return self._next_memory_seq_sync_from_conn(conn)
 
-    async def _next_memory_seq(self) -> int:
+    async def _next_memory_seq(self) -> str:
         return await asyncio.to_thread(self._next_memory_seq_sync)
 
-    def _get_memory_sync(self, memory_id: int) -> Optional[str]:
+    def _get_memory_sync(self, memory_id: str) -> Optional[str]:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM memories WHERE id = ?", (memory_id,)
             ).fetchone()
         return row[0] if row else None
 
-    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
+    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
         raw = await asyncio.to_thread(self._get_memory_sync, memory_id)
         return Memory.model_validate(json.loads(raw)) if raw else None
 
@@ -409,7 +555,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         raws = await asyncio.to_thread(self._list_memories_sync, entities)
         return [Memory.model_validate(json.loads(r)) for r in raws]
 
-    def _delete_memory_sync(self, memory_id: int) -> bool:
+    def _delete_memory_sync(self, memory_id: str) -> bool:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(_PRAGMA_FOREIGN_KEYS_ON)
             cursor = conn.execute(
@@ -417,7 +563,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             )
             return cursor.rowcount > 0
 
-    async def _delete_memory_row(self, memory_id: int) -> bool:
+    async def _delete_memory_row(self, memory_id: str) -> bool:
         return await asyncio.to_thread(self._delete_memory_sync, memory_id)
 
     # Embedding CRUD lives in :class:`SidecarEmbeddingsMixin`, which

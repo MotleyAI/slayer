@@ -2608,6 +2608,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def save_memory(
         learning: str,
         linked_entities: Any,
+        id: Optional[str] = None,  # noqa: A002 — MCP arg name
     ) -> str:
         """Save an agent memory: a free-form note plus the SLayer
         entities it concerns.
@@ -2617,7 +2618,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         * a list of entity reference strings — each item is resolved to
           the canonical ``<datasource>.<model>[.<leaf>]`` form. Bare
           names use the datasource priority list; ambiguous bare-column
-          matches are rejected.
+          matches are rejected. ``memory:<id>`` is also valid here
+          (cross-memory references; the target memory must exist).
         * a ``SlayerQuery`` (dict) — entities are auto-extracted from
           ``source_model``, ``dimensions``, ``time_dimensions``,
           ``measures``, and ``filters``; resolution warnings are
@@ -2626,13 +2628,30 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
           ``example_queries`` list (vs the ``memories`` list for
           entity-list memories).
 
-        Returns the assigned ``memory_id`` (a positive int), the
-        canonical entities stored, and any non-fatal warnings.
+        DEV-1428: ``id`` is an optional canonical memory id. Omit to
+        auto-allocate a monotonic int-shaped id (``"1"``, ``"2"``, ...);
+        supply a string for a stable user-controlled id
+        (``"kb.policy.42"``). Charset excludes ``:``, ``/``, ``?``,
+        ``#``, whitespace. Duplicate id → unconditional upsert,
+        ``created_at`` preserved.
+
+        Returns the assigned ``memory_id`` (string), the canonical
+        entities stored, and any non-fatal warnings.
+
+        Cascade-on-delete: when a model / datasource / measure is
+        deleted, every ``memory:<id>`` and ``<ds>.<model>[.<leaf>]``
+        reference under it is automatically stripped from every other
+        memory's ``entities`` list. Memories with zero entities after
+        the strip are kept (the learning text stands alone).
+
+        Search is lenient: stale entity tags in saved memories are
+        filtered out at retrieval time rather than raising.
 
         Args:
             learning: The note text. Required, non-empty.
             linked_entities: List of entity strings, or an inline
                 ``SlayerQuery`` payload.
+            id: Optional canonical memory id (see above).
 
         Examples:
             save_memory(
@@ -2647,11 +2666,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     "measures": [{"formula": "amount:sum"}],
                     "filters": ["status = 'paid'"],
                 },
+                id="kb.paid-revenue",
             )
         """
         try:
             response = await memory_service.save_memory(
-                learning=learning, linked_entities=linked_entities
+                learning=learning,
+                linked_entities=linked_entities,
+                id=id,
             )
         except (
             EntityResolutionError,
@@ -2665,9 +2687,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def forget_memory(id: Any) -> str:  # noqa: A002 — MCP arg name
         """Delete a memory by id.
 
+        Cascades: every other memory's ``memory:<id>`` reference to
+        this id is automatically stripped from its ``entities`` list.
+
         Args:
-            id: The ``memory_id`` returned by ``save_memory`` (a positive
-                int). String forms (``"42"``) are accepted and coerced.
+            id: The ``memory_id`` returned by ``save_memory``. Accepts
+                strings (the canonical form, including user-supplied
+                ``"kb.policy"``-style ids) as well as legacy ints
+                (coerced to their decimal string form).
 
         Raises a friendly error if the id is invalid or the memory does
         not exist.

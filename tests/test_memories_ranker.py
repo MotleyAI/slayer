@@ -7,6 +7,8 @@ from slayer.memories.ranker import bm25_rank
 
 
 def _mem(memory_id: int, entities: list[str]) -> Memory:
+    # DEV-1428: memory ids are str; tests still pass int for readability.
+    # The Memory model stringifies via its ``id`` before-validator.
     return Memory(id=memory_id, learning=f"mem-{memory_id}", entities=entities)
 
 
@@ -25,7 +27,7 @@ def test_single_doc_single_term_match():
     m = _mem(memory_id=1, entities=["mydb.orders.amount"])
     ranked = bm25_rank(memories=[m], query_entities=["mydb.orders.amount"])
     assert len(ranked) == 1
-    assert ranked[0][0].id == 1
+    assert ranked[0][0].id == "1"
     assert ranked[0][1] > 0
 
 
@@ -47,7 +49,7 @@ def test_dev_1365_fix_precise_outranks_overbroad():
         query_entities=["mydb.orders.amount"],
     )
     ids_in_order = [m.id for m, _ in ranked]
-    assert ids_in_order[0] == 1, (
+    assert ids_in_order[0] == "1", (
         "precise memory must outrank over-broad memory; "
         f"got order {ids_in_order}"
     )
@@ -73,7 +75,7 @@ def test_term_in_every_doc_still_returned():
     b = _mem(memory_id=2, entities=["x"])
     c = _mem(memory_id=3, entities=["x"])
     ranked = bm25_rank(memories=[a, b, c], query_entities=["x"])
-    assert {m.id for m, _ in ranked} == {1, 2, 3}
+    assert {m.id for m, _ in ranked} == {"1", "2", "3"}
 
 
 def test_memory_with_empty_entities_does_not_crash_and_is_dropped():
@@ -84,8 +86,8 @@ def test_memory_with_empty_entities_does_not_crash_and_is_dropped():
         query_entities=["mydb.orders.amount"],
     )
     ids = [m.id for m, _ in ranked]
-    assert 1 not in ids, "memory with no entities cannot match anything"
-    assert 2 in ids
+    assert "1" not in ids, "memory with no entities cannot match anything"
+    assert "2" in ids
 
 
 def test_defensive_dedup_on_memory_entities():
@@ -98,7 +100,7 @@ def test_defensive_dedup_on_memory_entities():
     other = _mem(memory_id=3, entities=["y"])
     ranked = bm25_rank(memories=[dup, single, other], query_entities=["x"])
     score_by_id = {m.id: s for m, s in ranked}
-    assert score_by_id[1] == score_by_id[2], (
+    assert score_by_id["1"] == score_by_id["2"], (
         "duplicate entities must not change BM25 score; "
         f"got {score_by_id}"
     )

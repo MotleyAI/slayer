@@ -23,13 +23,14 @@ from slayer.core.models import SlayerModel
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.client import current_model, embed_batch
 from slayer.embeddings.models import Embedding, EntityKind
+from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
 from slayer.search.render import (
     render_aggregation_text,
     render_column_text,
     render_datasource_text,
     render_measure_text,
-    render_memory_text,
+    render_memory_text_for_embedding,
     render_model_text,
 )
 from slayer.storage.base import StorageBackend
@@ -42,8 +43,8 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _memory_canonical_id(memory_id: int) -> str:
-    return f"memory:{memory_id}"
+def _memory_canonical_id(memory_id: str) -> str:
+    return f"{_MEMORY_PREFIX}{memory_id}"
 
 
 def _model_canonical_id(model: SlayerModel) -> str:
@@ -119,7 +120,7 @@ class EmbeddingService:
         pending = _PendingRefresh(
             canonical_id=_memory_canonical_id(memory.id),
             entity_kind="memory",
-            text=render_memory_text(memory=memory),
+            text=render_memory_text_for_embedding(memory=memory),
         )
         return await self._apply_pending([pending])
 

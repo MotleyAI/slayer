@@ -211,10 +211,14 @@ async def test_negative_caps_rejected(service: SearchService) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_entity_raises_resolution_error(service: SearchService) -> None:
-    from slayer.core.errors import EntityResolutionError
-    with pytest.raises(EntityResolutionError):
-        await service.search(entities=["warehouse.nonexistent.col"])
+async def test_unknown_entity_becomes_warning(service: SearchService) -> None:
+    """DEV-1428: search is lenient on unresolved refs; unknown entities
+    surface as warnings rather than raising."""
+    response = await service.search(entities=["warehouse.nonexistent.col"])
+    assert any(
+        "warehouse.nonexistent.col" in w for w in response.warnings
+    )
+    assert response.resolved_input_entities == []
 
 
 # ---------------------------------------------------------------------------
@@ -223,11 +227,12 @@ async def test_unknown_entity_raises_resolution_error(service: SearchService) ->
 
 
 @pytest.mark.asyncio
-async def test_memory_hit_id_is_int(service: SearchService) -> None:
+async def test_memory_hit_id_is_str(service: SearchService) -> None:
+    """DEV-1428: ``MemoryHit.id`` is the str memory id."""
     response = await service.search(entities=["warehouse.orders.amount_paid"])
     for hit in response.memories:
-        assert isinstance(hit.id, int)
-        assert hit.id > 0
+        assert isinstance(hit.id, str)
+        assert hit.id != ""
 
 
 @pytest.mark.asyncio

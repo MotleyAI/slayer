@@ -36,8 +36,16 @@ def api(method, path, body=None):
         headers={"Content-Type": "application/json"} if data else {},
         method=method,
     )
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        print(f"  HTTP {e.code} on {method} {path}", file=sys.stderr)
+        if body:
+            print(f"    request body: {json.dumps(body)}", file=sys.stderr)
+        print(f"    response body: {body_text}", file=sys.stderr)
+        raise
 
 
 def check(name, condition):

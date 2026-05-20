@@ -9,7 +9,11 @@ from slayer.core.errors import AmbiguousModelError, MemoryNotFoundError
 from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
-from slayer.memories.models import Memory
+from slayer.memories.models import (
+    MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX,
+    Memory,
+    _validate_memory_id_charset,
+)
 from slayer.storage import migrations as _mig
 from slayer.storage.type_refinement import (
     has_refineable_columns,
@@ -55,6 +59,22 @@ def default_storage_path() -> str:
 
 
 _PATH_COMPONENT_DISALLOWED = ("/", "\\", "\x00", ".")
+
+
+def _entity_matches_cascade(
+    *, entry: str, canonical_id: str, is_memory_ref: bool,
+) -> bool:
+    """Match predicate for ``strip_dangling_entities_from_memories``.
+
+    Split per the plan: ``memory:<id>`` refs are exact-match only;
+    ``<ds>[.<model>[.<leaf>]]`` refs match exactly OR as strict
+    dotted-path descendants.
+    """
+    if is_memory_ref:
+        return entry == canonical_id
+    if entry == canonical_id:
+        return True
+    return entry.startswith(f"{canonical_id}.")
 
 
 def _validate_path_component(value: str, *, kind: str) -> None:
@@ -179,8 +199,12 @@ class StorageBackend(ABC):
             data_source=resolved_data_source, name=resolved_name,
         )
         if deleted:
+            canonical = f"{resolved_data_source}.{resolved_name}"
             await self.delete_embeddings_for_canonical(
-                canonical_id_prefix=f"{resolved_data_source}.{resolved_name}",
+                canonical_id_prefix=canonical,
+            )
+            await self.strip_dangling_entities_from_memories(
+                canonical_id=canonical,
             )
         return deleted
 
@@ -314,6 +338,9 @@ class StorageBackend(ABC):
             await self.delete_embeddings_for_canonical(
                 canonical_id_prefix=name,
             )
+            await self.strip_dangling_entities_from_memories(
+                canonical_id=name,
+            )
         return deleted
 
     @abstractmethod
@@ -433,24 +460,32 @@ class StorageBackend(ABC):
                 return (ds, name)
         raise AmbiguousModelError(name=name, candidates=candidates)
 
-    # ---- memories (DEV-1357 v2) -------------------------------------------
+    # ---- memories (DEV-1357 v2 / DEV-1428) -------------------------------
     #
-    # Positive-int ids derived from the current ``memories`` corpus
-    # (DEV-1405). Ids increase monotonically while the corpus only grows;
-    # ids belonging to deleted memories may be reused by future saves.
-    # Cascade-on-delete in ``delete_memory`` removes any embedding rows
-    # under the freed id, so reuse strands no data. The missing-row →
-    # ``MemoryNotFoundError`` policy lives on this class so it can never
-    # diverge between backends. Backends only implement the row-shaped
-    # CRUD primitives + the next-seq derivation below.
+    # DEV-1428: memory ids are non-empty strings. Auto-allocation walks
+    # ``max(int-shaped id) + 1`` over the existing corpus where
+    # "int-shaped" means pure-digit, no-leading-zero. User-supplied ids
+    # share the namespace and may collide with prior rows → upsert
+    # unconditionally (``created_at`` of the original row preserved).
+    # Cascade-on-delete in ``delete_memory`` strips any embedding rows
+    # under the freed id AND drops the corresponding ``memory:<id>`` ref
+    # from every other memory's ``entities`` list (defense layer 1).
 
     @abstractmethod
     async def _save_memory_row(self, memory: Memory) -> None:
-        """Persist a fully-populated ``Memory`` (id and created_at set)."""
+        """Persist a fully-populated ``Memory`` (id and created_at set).
+        Backends upsert by id; ``created_at`` of the existing row must
+        be preserved when present."""
 
     @abstractmethod
-    async def _get_memory_row(self, memory_id: int) -> Optional[Memory]:
+    async def _get_memory_row(self, memory_id: str) -> Optional[Memory]:
         """Read a ``Memory`` by id; return ``None`` when not present."""
+
+    async def get_memory_row(self, memory_id: str) -> Optional[Memory]:
+        """Non-raising existence check / fetch. Public so the resolver
+        and the ingest-time cleanup pass can probe without catching
+        ``MemoryNotFoundError``."""
+        return await self._get_memory_row(memory_id)
 
     @abstractmethod
     async def _list_memories_rows(
@@ -462,16 +497,16 @@ class StorageBackend(ABC):
         empty)."""
 
     @abstractmethod
-    async def _delete_memory_row(self, memory_id: int) -> bool:
+    async def _delete_memory_row(self, memory_id: str) -> bool:
         """Delete by id; return ``True`` if a row was removed, ``False``
         when the id did not exist."""
 
     @abstractmethod
-    async def _next_memory_seq(self) -> int:
-        """Return the next positive int memory id, strictly above any id
-        currently held by the corpus. Backends derive this from
-        ``memories.yaml`` / the ``memories`` table directly; deleted ids
-        may be reused (DEV-1405)."""
+    async def _next_memory_seq(self) -> str:
+        """Return the next int-shaped memory id (as a string), strictly
+        above any int-shaped id currently held by the corpus. Pure-digit,
+        no-leading-zero ids count toward the max walk; ``"42abc"`` and
+        ``"001"`` are ignored. Empty corpus → ``"1"``."""
 
     async def save_memory(
         self,
@@ -479,19 +514,38 @@ class StorageBackend(ABC):
         learning: str,
         entities: List[str],
         query: Optional[SlayerQuery] = None,
+        id: Optional[str] = None,  # noqa: A002 — public kwarg matching MCP / REST
     ) -> Memory:
-        """Allocate the next id, persist the memory, return it."""
-        seq = await self._next_memory_seq()
-        memory = Memory(
-            id=seq,
-            learning=learning,
-            entities=list(entities),
-            query=query,
-        )
+        """Persist a memory.
+
+        * ``id=None`` → allocator picks the next int-shaped id (``str``).
+        * ``id="some-string"`` → user-supplied; rejected on bad charset
+          or empty. Duplicate id → unconditional upsert; ``created_at``
+          of the original row is preserved.
+        """
+        if id is not None:
+            _validate_memory_id_charset(id)
+            existing = await self._get_memory_row(id)
+            assigned_id = id
+            preserved_created_at = (
+                existing.created_at if existing is not None else None
+            )
+        else:
+            assigned_id = await self._next_memory_seq()
+            preserved_created_at = None
+        kwargs: Dict[str, Any] = {
+            "id": assigned_id,
+            "learning": learning,
+            "entities": list(entities),
+            "query": query,
+        }
+        if preserved_created_at is not None:
+            kwargs["created_at"] = preserved_created_at
+        memory = Memory(**kwargs)
         await self._save_memory_row(memory)
         return memory
 
-    async def get_memory(self, memory_id: int) -> Memory:
+    async def get_memory(self, memory_id: str) -> Memory:
         row = await self._get_memory_row(memory_id)
         if row is None:
             raise MemoryNotFoundError(memory_id)
@@ -502,14 +556,110 @@ class StorageBackend(ABC):
     ) -> List[Memory]:
         return await self._list_memories_rows(entities=entities)
 
-    async def delete_memory(self, memory_id: int) -> None:
+    async def delete_memory(self, memory_id: str) -> None:
         if not await self._delete_memory_row(memory_id):
             raise MemoryNotFoundError(memory_id)
         # Cascade: drop any embedding rows tagged with this memory's
         # canonical id so an orphan embedding never survives its source.
         await self.delete_embeddings_for_canonical(
-            canonical_id_prefix=f"memory:{memory_id}",
+            canonical_id_prefix=f"{_MEMORY_PREFIX}{memory_id}",
         )
+        # DEV-1428 cascade-strip: drop ``memory:<id>`` refs from every
+        # other memory's ``entities`` list.
+        await self.strip_dangling_entities_from_memories(
+            canonical_id=f"{_MEMORY_PREFIX}{memory_id}",
+        )
+
+    async def strip_dangling_entities_from_memories(
+        self, *, canonical_id: str,
+    ) -> int:
+        """DEV-1428 defense layer 1: remove ``canonical_id`` from every
+        memory's ``entities`` list.
+
+        Match predicate is split by ref kind:
+
+        * ``memory:<id>`` → exact-match only (memory ids are opaque
+          strings after the prefix; ``memory:42`` must not strip
+          ``memory:421`` or ``memory:42.y``).
+        * ``<ds>[.<model>[.<leaf>]]`` → exact-match OR strict dotted
+          descendant (per the same rule used by
+          ``delete_embeddings_for_canonical``).
+
+        Per-row read-modify-write: re-fetches each candidate row, drops
+        matching entries, and writes back via ``_save_memory_row``
+        directly — does NOT route through ``MemoryService.save_memory``.
+        With memory embeddings rendered from ``learning`` alone (no tags)
+        the content hash never changes, so no embedding refresh fires.
+
+        Returns the number of memories rewritten.
+        """
+        if not canonical_id:
+            return 0
+        is_memory_ref = canonical_id.startswith(_MEMORY_PREFIX)
+        memories = await self._list_memories_rows(entities=None)
+        rewritten = 0
+        for memory in memories:
+            if not self._memory_has_cascade_candidate(
+                memory=memory,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            ):
+                continue
+            if await self._rewrite_memory_dropping_entity(
+                memory_id=memory.id,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            ):
+                rewritten += 1
+        return rewritten
+
+    @staticmethod
+    def _memory_has_cascade_candidate(
+        *, memory: Memory, canonical_id: str, is_memory_ref: bool,
+    ) -> bool:
+        """Cheap snapshot check — does ``memory.entities`` contain any
+        entry the cascade would strip? Used to skip the read-modify-write
+        round-trip for memories the cascade can't touch."""
+        if not memory.entities:
+            return False
+        return any(
+            _entity_matches_cascade(
+                entry=e,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            )
+            for e in memory.entities
+        )
+
+    async def _rewrite_memory_dropping_entity(
+        self, *, memory_id: str, canonical_id: str, is_memory_ref: bool,
+    ) -> bool:
+        """Re-fetch the row, drop matching entities, write back via
+        ``_save_memory_row``. Returns ``True`` if a write happened.
+
+        Re-fetch is what makes the cascade safe under concurrent saves:
+        the snapshot check above is racy against a write that lands
+        between the read and the cascade rewrite, but the per-row
+        write here always operates on the freshest stored state.
+        """
+        fresh = await self._get_memory_row(memory_id)
+        if fresh is None:
+            # Concurrent delete won the race; nothing to write.
+            return False
+        fresh_kept = [
+            e for e in fresh.entities
+            if not _entity_matches_cascade(
+                entry=e,
+                canonical_id=canonical_id,
+                is_memory_ref=is_memory_ref,
+            )
+        ]
+        if fresh_kept == fresh.entities:
+            return False
+        await self._save_memory_row(
+            fresh.model_copy(update={"entities": fresh_kept})
+        )
+        return True
 
     # ---- embeddings sidecar (DEV-1386) ------------------------------------
     #
