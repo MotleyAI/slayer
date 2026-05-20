@@ -1129,6 +1129,15 @@ async def enrich_query(
                         # change the user-visible name.
                         if qfield.name and qfield.name != canonical_name:
                             canonical_to_user_name[canonical_name] = qfield.name
+                        # Codex review on PR #137 round 8: register the
+                        # dotted canonical name as a field-name alias so
+                        # ORDER BY's qualified-match branch
+                        # (generator._resolve_order_column) can resolve
+                        # ``order=[{"column":"customers.revenue:sum"}]``
+                        # to the projection alias instead of falling
+                        # through to a non-existent
+                        # ``customers.revenue_sum`` bare column.
+                        field_name_aliases[canonical_name] = target_alias
                     surfaced_alias = target_alias
                     # Propagate qfield metadata onto the
                     # created-or-reused EnrichedMeasure (matches the

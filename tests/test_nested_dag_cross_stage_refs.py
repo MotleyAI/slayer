@@ -1602,6 +1602,46 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    async def test_unrenamed_intercepted_cmm_order_by_colon_form_resolves(
+        self,
+    ) -> None:
+        """Codex round 8: ORDER BY by colon/canonical form on an
+        unrenamed intercepted cross-model measure must resolve to
+        the projection alias `s1.customers.revenue_sum`, not fall
+        through to a non-existent `customers.revenue_sum` bare
+        column. The intercept registers `canonical_name` in
+        `field_name_aliases` so `_resolve_order_column`'s
+        qualified-match branch finds it."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            inner = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            outer = SlayerQuery(
+                source_model="s1",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+                order=[{"column": "customers.revenue:sum"}],
+            )
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            order = outer_select.args.get("order")
+            assert order is not None, f"Outer ORDER BY missing.\nSQL:\n{sql}"
+            order_cols = list(order.find_all(exp.Column))
+            order_col_names = {c.name for c in order_cols}
+            # Must reference the projection alias, not a bare
+            # `revenue_sum` on a non-existent `customers` table.
+            assert "s1.customers.revenue_sum" in order_col_names, (
+                f"ORDER BY must resolve to the projection alias.\n"
+                f"got: {order_col_names}\nSQL:\n{sql}"
+            )
+        finally:
+            tmp.cleanup()
+
     async def test_intercepted_rename_colliding_with_other_canonical_raises(
         self,
     ) -> None:
