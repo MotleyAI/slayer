@@ -1091,7 +1091,23 @@ async def enrich_query(
                         prev_alias = local_alias
                         for em in measures:
                             if em.alias == prev_alias:
-                                em.name = target_name
+                                # Codex review on PR #137 round 5: only
+                                # mutate `em.name` when the rename target
+                                # is a simple identifier (user-supplied
+                                # `qfield.name`). For the unrenamed case
+                                # where `target_name` is the cross-model
+                                # canonical with a dot (e.g.
+                                # `customers.revenue_sum`), keep
+                                # `em.name` as the internal flat form
+                                # that ``_ensure_aggregated_measure``
+                                # produced — `_query_as_model` uses
+                                # `em.name` as the wrapped virtual
+                                # model's ``Column.name``, which
+                                # rejects dots. The dotted form lives
+                                # only on `em.alias` (result key) and
+                                # `known_aliases` (filter / ORDER BY).
+                                if qfield.name and qfield.name != canonical_name:
+                                    em.name = qfield.name
                                 em.alias = target_alias
                                 break
                         known_aliases[target_name] = target_alias

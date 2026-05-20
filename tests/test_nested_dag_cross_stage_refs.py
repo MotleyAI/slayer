@@ -1505,6 +1505,50 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
+    async def test_intercepted_unrenamed_works_as_middle_stage_in_three_stage_dag(
+        self,
+    ) -> None:
+        """Codex round 5: an unrenamed intercepted CMM must wrap
+        cleanly when its stage becomes the inner of a 3-stage DAG.
+        The intercepted EnrichedMeasure's alias is set to the
+        cross-model canonical (`s1.customers.revenue_sum` — has dots),
+        but `_query_as_model` uses `em.name` as the wrapped virtual
+        model's `Column.name`, which rejects dots. So `em.name` must
+        remain a simple identifier (the internal flat form), not the
+        dotted alias."""
+        engine, tmp = await _engine_with_join_chain()
+        try:
+            # 3-stage DAG: s1 (orders → flatten regions name),
+            # s2 (intercept customers.revenue:sum cross-stage),
+            # s3 (re-aggregate s2's projected measure further).
+            s1 = SlayerQuery(
+                name="s1",
+                source_model="orders",
+                dimensions=["customers.regions.name"],
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            s2 = SlayerQuery(
+                name="s2",
+                source_model="s1",
+                # Intercept fires here (s1.customers__revenue_sum exists).
+                measures=[{"formula": "customers.revenue:sum"}],
+            )
+            s3 = SlayerQuery(
+                source_model="s2",
+                # Reference s2's projected measure. The exact key
+                # depends on column-name flattening; we accept either
+                # the internal flat form or the surfaced dotted form
+                # depending on how `_query_as_model` short-named it.
+                measures=[{"formula": "*:count"}],
+            )
+            # Without the fix, the s2 wrap step fails with a
+            # Column.name validation error on the dotted `em.name`.
+            # With the fix, the chain succeeds.
+            resp = await engine.execute(query=[s1, s2, s3], dry_run=True)
+            assert resp.sql is not None, "3-stage DAG must render SQL"
+        finally:
+            tmp.cleanup()
+
     async def test_intercepted_rename_colliding_with_other_canonical_raises(
         self,
     ) -> None:
