@@ -224,3 +224,5 @@ poetry run ruff check --fix slayer/ tests/
 4. **`docs/configuration/`** — datasources, storage backends
 
 When renaming a field, adding a parameter, or changing response structure, **grep all docs and skills** for the old name and update every occurrence.
+
+**Every page under `docs/` must be linked from `mkdocs.yml`.** When adding a new page, immediately add a corresponding entry to the `nav:` block in `mkdocs.yml` — otherwise it ships as an orphan file the published site can't reach. When renaming, moving, or deleting a page, update `mkdocs.yml` in the same commit. `docs/` and `mkdocs.yml` must stay in sync. The only intentional exceptions are `docs/CLAUDE.md` (doc-authoring style rules for Claude) and `docs/api_gaps.md` (internal punch list) — these are deliberately unlinked.

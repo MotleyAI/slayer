@@ -22,12 +22,20 @@ nav:
       - Models: concepts/models.md
       - Queries: concepts/queries.md
       - Formulas: concepts/formulas.md
+      - References (SQL vs DSL): concepts/references.md
       - Auto-Ingestion: concepts/ingestion.md
+      - Schema Drift: concepts/schema-drift.md
+      - Memories: concepts/memories.md
+      - Search: concepts/search.md
   - Reference:
       - MCP Server: reference/mcp.md
       - REST API: reference/rest-api.md
       - Python Client: reference/python-client.md
       - CLI: reference/cli.md
+      - Database Support: database-support.md
+  - dbt:
+      - SLayer vs dbt: dbt/slayer_vs_dbt.md
+      - Importing dbt definitions: dbt/dbt_import.md
   - Tutorials:
       - Make it dynamic: examples/01_dynamic/dynamic.md
       - SQL vs DSL:
@@ -51,6 +59,7 @@ nav:
       - Aggregations:
           - examples/07_aggregations/aggregations.md
           - Notebook: examples/07_aggregations/aggregations_nb.ipynb
+      - Schema Drift (worked example): examples/schema-drift.md
   - Configuration:
       - Datasources: configuration/datasources.md
       - Storage Backends: configuration/storage.md
