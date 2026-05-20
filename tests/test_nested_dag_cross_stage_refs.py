@@ -35,6 +35,7 @@ from slayer.core.models import (
 from slayer.core.query import ColumnRef, ModelExtension, SlayerQuery, TimeDimension
 from slayer.engine.enrichment import resolve_via_stage_origin
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -466,14 +467,17 @@ class TestCrossStageCrossModelMeasure:
         # SUM per region matches per-customer revenue; outer re-SUM
         # totals 1500.
         row = resp.data[0]
-        # The result key shape for the re-aggregated CMM:
-        # `s1.customers__revenue_sum_sum` per spec.
-        rev_key = next(
-            (k for k in row if "customers__revenue_sum" in k and k.endswith("_sum")),
-            None,
+        # Codex review round 3 on PR #137: intercepted measures surface
+        # under the cross-model canonical alias shape (`s1.customers.revenue_sum`),
+        # matching what a regular cross-model CTE query would produce.
+        # This keeps result keys, colon-form filter resolution, and
+        # ORDER BY consistent between the intercept and CTE paths.
+        assert "s1.customers.revenue_sum" in row, (
+            f"Re-aggregated CMM must surface under the cross-model "
+            f"canonical alias `s1.customers.revenue_sum`, not the "
+            f"intercept's internal `_sum_sum` form.\nrow: {row}"
         )
-        assert rev_key is not None, f"Re-aggregated key not found in row: {row}"
-        assert row[rev_key] == pytest.approx(1500.0), f"got {row[rev_key]}"
+        assert row["s1.customers.revenue_sum"] == pytest.approx(1500.0), row
 
 
 # ===========================================================================
@@ -1132,7 +1136,6 @@ class TestSerializationRoundtripStripsBreadcrumb:
     async def test_sqlite_storage_roundtrip_drops_origin(self, tmp_path) -> None:
         """Same as the YAML test but for SQLiteStorage — confirms the
         `exclude=True` field is honored across storage backends."""
-        from slayer.storage.sqlite_storage import SQLiteStorage
         db_path = tmp_path / "slayer.db"
         storage = SQLiteStorage(db_path=str(db_path))
         await storage.save_datasource(_ds())
@@ -1469,7 +1472,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                     {"formula": "customers.revenue:sum", "name": "rev2"},
                 ],
             )
-            with pytest.raises(ValueError, match="canonicalises to the same"):
+            with pytest.raises((SlayerError, ValueError), match="canonicalises to the same"):
                 await engine.execute(query=[inner, outer], dry_run=True)
         finally:
             tmp.cleanup()

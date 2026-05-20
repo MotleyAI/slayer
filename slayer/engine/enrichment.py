@@ -1041,30 +1041,42 @@ async def enrich_query(
                     user_declared_canon_keys[cross_canon_key] = (
                         qfield.name or canonical_name
                     )
-                    # CodeRabbit review on PR #137: mirror the standard
-                    # local-aggregate branch's rename bookkeeping so a
-                    # qfield with an explicit `name` surfaces under the
-                    # user alias and filters / ORDER BY references using
-                    # the colon-form canonical alias resolve to it.
-                    surfaced_alias = local_alias
-                    if qfield.name and qfield.name != canonical_name:
-                        user_alias = f"{model_name_str}.{qfield.name}"
+                    # Codex review round 3 on PR #137: the intercept
+                    # builds the EnrichedMeasure against the flat stage
+                    # column (e.g. `customers__revenue_sum`), so
+                    # `_ensure_aggregated_measure` produces an internal
+                    # alias like `s1.customers__revenue_sum_sum`. The
+                    # cross-model CTE path (the non-intercept fallback)
+                    # produces `s1.customers.revenue_sum` instead, and
+                    # that's the alias users expect for colon-form
+                    # filter / ORDER BY refs and as the public result
+                    # key. Unify by ALWAYS renaming the intercepted
+                    # measure to the cross-model canonical alias (or the
+                    # user-supplied `qfield.name` when set).
+                    target_name = qfield.name or canonical_name
+                    target_alias = f"{model_name_str}.{target_name}"
+                    if target_alias != local_alias:
                         prev_alias = local_alias
                         for em in measures:
                             if em.alias == prev_alias:
-                                em.name = qfield.name
-                                em.alias = user_alias
+                                em.name = target_name
+                                em.alias = target_alias
                                 break
-                        known_aliases[qfield.name] = user_alias
-                        known_aliases[canonical_name] = user_alias
+                        known_aliases[target_name] = target_alias
+                        known_aliases[canonical_name] = target_alias
                         # DEV-1444 provenance merge: any canonical key
                         # currently pointing at the pre-rename alias must
                         # follow the rename.
                         for k, v in list(measure_canonical_key_to_alias.items()):
                             if v == prev_alias:
-                                measure_canonical_key_to_alias[k] = user_alias
-                        canonical_to_user_name[canonical_name] = qfield.name
-                        surfaced_alias = user_alias
+                                measure_canonical_key_to_alias[k] = target_alias
+                        # canonical_to_user_name only fires when the
+                        # user explicitly renamed via qfield.name; the
+                        # auto-rename to cross-model canonical doesn't
+                        # change the user-visible name.
+                        if qfield.name and qfield.name != canonical_name:
+                            canonical_to_user_name[canonical_name] = qfield.name
+                    surfaced_alias = target_alias
                     # Propagate qfield metadata onto the
                     # created-or-reused EnrichedMeasure (matches the
                     # standard local-agg branch handling).
