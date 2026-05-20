@@ -35,7 +35,7 @@ from slayer.core.formula import (
     parse_filter,
     parse_formula,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import DOTTED_IDENT_REF_RE as _DOTTED_IDENT_REF_RE
 from slayer.engine.column_expansion import _is_trivial_base, expand_derived_refs
@@ -599,12 +599,135 @@ async def enrich_query(
         )
         known_aliases[name] = alias
 
+    # DEV-1449: aggregations whose group-wise results can be re-aggregated
+    # to an equivalent overall result. `sum`/`min`/`max` are distributive
+    # (re-aggregating with the same op is exact). `count` is additive — the
+    # outer must use `sum` over the inner per-group count, not `count` of
+    # stage rows (which would just count groups). Everything else (avg,
+    # count_distinct, median, percentile, stddev, ...) is non-distributive
+    # and silently changes semantics under re-aggregation, so the intercept
+    # falls through to the cross-model CTE path for them.
+    _DISTRIBUTIVE_AGGS = frozenset({"sum", "min", "max"})
+
+    def _intercept_candidate_for_cross_model(ref) -> "Optional[Tuple[str, str]]":
+        """DEV-1449: return ``(flat_with_agg, outer_agg)`` if the
+        intercept would resolve a virtual-stage cross-model agg ref to a
+        local re-aggregation on a flat column, or ``None`` if the
+        intercept doesn't apply.
+
+        Pure / side-effect-free: callers use this first to build a
+        dup-guard key on the *resolved* flat name (so two refs that
+        differ only in source-prefix and resolve to the same underlying
+        column collide in the guard), then call
+        ``_try_intercept_cross_model_as_local`` to actually apply.
+
+        Lookup candidates: try ancestor-stripped flat first, then full
+        flat, mirroring ``resolve_via_stage_origin``'s Candidate A/B.
+        Semantics gate: only ``sum``/``min``/``max``/``count`` are
+        distributive enough to re-aggregate. Parameterized aggs are
+        skipped — ``resolve_cross_model_measure`` canonicalizes with
+        no args/kwargs participation, so the inner flat name we'd look
+        for doesn't account for params either.
+        """
+        if model.source_model_origin is None:
+            return None
+        if ref.agg_args or ref.agg_kwargs:
+            return None
+        if ref.aggregation_name in _DISTRIBUTIVE_AGGS:
+            outer_agg = ref.aggregation_name
+        elif ref.aggregation_name == "count":
+            outer_agg = "sum"
+        else:
+            return None
+        leaf = ref.measure_name.rsplit(".", 1)[-1]
+        canonical_leaf_agg = (
+            f"_{ref.aggregation_name}" if leaf == "*"
+            else f"{leaf}_{ref.aggregation_name}"
+        )
+        hop_parts = ref.measure_name.split(".")
+        ancestor_names: set[str] = set()
+        cursor = model.source_model_origin
+        while cursor is not None:
+            ancestor_names.add(cursor.name)
+            cursor = cursor.parent
+        # Codex review on PR #137 round 9: gate the candidate on the
+        # column being an AGGREGATION projection from the inner stage
+        # (not a dim that coincidentally matches the canonical-flat
+        # shape). ``agg_column_names`` is populated by
+        # ``_query_as_model`` from the inner enriched query's measures
+        # / cross_model_measures / transforms / expressions.
+        agg_names = model.source_model_origin.agg_column_names
+        # Candidate A — strip a leading ancestor name from the hop path.
+        if hop_parts and hop_parts[0] in ancestor_names and len(hop_parts) >= 2:
+            stripped = hop_parts[1:-1] + [canonical_leaf_agg]
+            candidate = "__".join(stripped)
+            if candidate in agg_names and model.get_column(candidate) is not None:
+                return candidate, outer_agg
+        # Candidate B — full flat.
+        if hop_parts:
+            candidate = "__".join(hop_parts[:-1] + [canonical_leaf_agg])
+            if candidate in agg_names and model.get_column(candidate) is not None:
+                return candidate, outer_agg
+        return None
+
+    async def _try_intercept_cross_model_as_local(
+        ref, field_name: str,
+    ) -> Optional[str]:
+        """Apply the intercept (computes candidate + builds the
+        EnrichedMeasure). Returns the full enriched alias the caller
+        can use, or ``None`` if no candidate."""
+        candidate = _intercept_candidate_for_cross_model(ref=ref)
+        if candidate is None:
+            return None
+        flat_with_agg, outer_agg = candidate
+        await _ensure_aggregated_measure(
+            alias_key=field_name,
+            measure_name=flat_with_agg,
+            aggregation_name=outer_agg,
+            agg_args=ref.agg_args,
+            agg_kwargs=ref.agg_kwargs,
+        )
+        local_alias = known_aliases[field_name]
+        # Codex round 10: mark the created-or-reused EnrichedMeasure
+        # as intercept-produced so `_query_as_model` includes its
+        # downstream short in `agg_column_names`. Downstream stages
+        # then recognise it as a safe cross-model re-aggregation
+        # source on equal footing with auto-derived CMM canonicals.
+        for em in measures:
+            if em.alias == local_alias:
+                em.from_cross_model_intercept = True
+                break
+        # Codex round 11: register the dotted cross-model canonical
+        # in `field_name_aliases` so `generator._resolve_order_column`'s
+        # qualified-match branch finds it. This is what allows
+        # `order=[{"column":"customers.revenue:sum"}]` to resolve when
+        # the user didn't also declare the measure as a query measure
+        # (which would go through the qfield-site path that already
+        # registers the alias). The intercept-via-`_flatten_spec` /
+        # `_ensure_measure_from_spec` paths reach here.
+        ref_canonical = _canonical_agg_name(
+            measure_name=ref.measure_name,
+            aggregation_name=ref.aggregation_name,
+            agg_args=ref.agg_args,
+            agg_kwargs=ref.agg_kwargs,
+        )
+        field_name_aliases[ref_canonical] = local_alias
+        return local_alias
+
     async def _ensure_measure_from_spec(mname: str, agg_refs: Optional[dict] = None):
         """Ensure a measure is resolved — handles agg refs only."""
         agg_refs = agg_refs or {}
         if mname in agg_refs:
             ref = agg_refs[mname]
             if "." in ref.measure_name and ref.measure_name != "*":
+                # DEV-1449: cross-model agg ref against a virtual stage
+                # whose inner stage already projected the flat alias →
+                # emit a local re-aggregated measure instead of a CTE.
+                local_alias = await _try_intercept_cross_model_as_local(
+                    ref=ref, field_name=mname,
+                )
+                if local_alias is not None:
+                    return
                 # Cross-model aggregated measure inside an expression —
                 # resolve as a CrossModelMeasure (gets its own CTE).
                 cm = await resolve_cross_model_measure(
@@ -652,6 +775,13 @@ async def enrich_query(
     async def _flatten_spec(spec, field_name: str) -> str:
         if isinstance(spec, AggregatedMeasureRef):
             if "." in spec.measure_name and spec.measure_name != "*":
+                # DEV-1449: cross-model agg ref against a virtual stage
+                # whose inner stage already projected the flat alias.
+                local_alias = await _try_intercept_cross_model_as_local(
+                    ref=spec, field_name=field_name,
+                )
+                if local_alias is not None:
+                    return local_alias
                 # Cross-model aggregated measure
                 cm = await resolve_cross_model_measure(
                     spec_name=spec.measure_name,
@@ -1109,6 +1239,175 @@ async def enrich_query(
                 field_name = canonical_name
 
             if "." in spec.measure_name and spec.measure_name != "*":
+                # DEV-1449: cross-model agg ref against a virtual stage
+                # whose inner stage already projected the flat alias →
+                # emit a local re-aggregated measure instead of a CTE.
+                #
+                # Codex review on PR #137 (rounds 2+4): key the
+                # duplicate-canonical guard on the RESOLVED flat column,
+                # not the raw `spec.measure_name`. Otherwise two qfields
+                # like `orders.customers.revenue:sum` (Candidate A
+                # strips `orders`) and `customers.revenue:sum`
+                # (Candidate B) — which both land on
+                # `customers__revenue_sum` — slip past the guard and
+                # corrupt the projection.
+                intercept_candidate = _intercept_candidate_for_cross_model(
+                    ref=spec,
+                )
+                if intercept_candidate is not None:
+                    flat_with_agg, outer_agg = intercept_candidate
+                    cross_canon_key = (
+                        "agg-intercept", flat_with_agg, outer_agg,
+                    )
+                    if cross_canon_key in user_declared_canon_keys:
+                        prior_name = user_declared_canon_keys[cross_canon_key]
+                        this_name = qfield.name or canonical_name
+                        if prior_name != this_name:
+                            raise ValueError(
+                                f"Measure '{qfield.formula}' (surfacing as "
+                                f"'{this_name}') canonicalises to the same "
+                                f"cross-stage aggregation as an earlier query "
+                                f"measure (surfacing as '{prior_name}'). Two "
+                                f"user-declared measures with the same "
+                                f"canonical aggregation would otherwise "
+                                f"collapse into one column, leaving the "
+                                f"second name with no backing aggregate. "
+                                f"Pick a single name, or drop the duplicate."
+                            )
+                    # CodeRabbit review on PR #137 round 4: refuse a
+                    # rename target that collides with another query
+                    # measure's canonical alias. `_ensure_aggregated_measure`'s
+                    # alias-keyed dedup would otherwise silently collapse
+                    # two distinct aggregates onto the renamed first one.
+                    # Mirrors the guard the standard local-agg branch
+                    # runs below.
+                    if qfield.name and qfield.name != canonical_name:
+                        for qf_other in (query.measures or []):
+                            if qf_other is qfield:
+                                continue
+                            spec_other = parse_formula(
+                                qf_other.formula,
+                                extra_agg_names=custom_agg_names,
+                                named_measures=named_measures,
+                            )
+                            if not isinstance(spec_other, AggregatedMeasureRef):
+                                continue
+                            other_canonical = _canonical_agg_name(
+                                measure_name=spec_other.measure_name,
+                                aggregation_name=spec_other.aggregation_name,
+                                agg_args=spec_other.agg_args,
+                                agg_kwargs=spec_other.agg_kwargs,
+                            )
+                            if other_canonical == qfield.name:
+                                raise ValueError(
+                                    f"Measure '{qfield.formula}' renamed to "
+                                    f"'{qfield.name}', but that name "
+                                    f"collides with the canonical alias of "
+                                    f"another query measure "
+                                    f"'{qf_other.formula}' (also "
+                                    f"canonicalises to '{qfield.name}'). "
+                                    f"Two distinct aggregates would "
+                                    f"otherwise be silently merged into "
+                                    f"one column. Pick a different `name`, "
+                                    f"or rename the other measure too."
+                                )
+                    await _ensure_aggregated_measure(
+                        alias_key=field_name,
+                        measure_name=flat_with_agg,
+                        aggregation_name=outer_agg,
+                        agg_args=spec.agg_args,
+                        agg_kwargs=spec.agg_kwargs,
+                    )
+                    local_alias = known_aliases[field_name]
+                    # Codex round 10: mark the EnrichedMeasure as
+                    # intercept-produced (see
+                    # `_try_intercept_cross_model_as_local`).
+                    for em in measures:
+                        if em.alias == local_alias:
+                            em.from_cross_model_intercept = True
+                            break
+                    user_declared_canon_keys[cross_canon_key] = (
+                        qfield.name or canonical_name
+                    )
+                    # Codex review round 3 on PR #137: the intercept
+                    # builds the EnrichedMeasure against the flat stage
+                    # column (e.g. `customers__revenue_sum`), so
+                    # `_ensure_aggregated_measure` produces an internal
+                    # alias like `s1.customers__revenue_sum_sum`. The
+                    # cross-model CTE path (the non-intercept fallback)
+                    # produces `s1.customers.revenue_sum` instead, and
+                    # that's the alias users expect for colon-form
+                    # filter / ORDER BY refs and as the public result
+                    # key. Unify by ALWAYS renaming the intercepted
+                    # measure to the cross-model canonical alias (or the
+                    # user-supplied `qfield.name` when set).
+                    target_name = qfield.name or canonical_name
+                    target_alias = f"{model_name_str}.{target_name}"
+                    if target_alias != local_alias:
+                        prev_alias = local_alias
+                        for em in measures:
+                            if em.alias == prev_alias:
+                                # Codex review on PR #137 (rounds 5+6):
+                                # `em.name` becomes the wrapped virtual
+                                # model's `Column.name` when this stage
+                                # is the inner of a downstream stage —
+                                # `Column.name` forbids dots, and a
+                                # third stage's intercept looks up the
+                                # flat form a single-stage cross-model
+                                # query would produce (e.g.
+                                # `customers__revenue_sum`). So in the
+                                # unrenamed case, derive `em.name` from
+                                # the dotted cross-model canonical by
+                                # replacing dots with `__` (matching
+                                # `_alias_to_short`'s convention),
+                                # NOT keep the doubled-sum internal
+                                # form `_ensure_aggregated_measure`
+                                # produced. The dotted form lives only
+                                # on `em.alias` (public result key,
+                                # filter / ORDER BY remap).
+                                if qfield.name and qfield.name != canonical_name:
+                                    em.name = qfield.name
+                                else:
+                                    em.name = canonical_name.replace(".", "__")
+                                em.alias = target_alias
+                                break
+                        known_aliases[target_name] = target_alias
+                        known_aliases[canonical_name] = target_alias
+                        # DEV-1444 provenance merge: any canonical key
+                        # currently pointing at the pre-rename alias must
+                        # follow the rename.
+                        for k, v in list(measure_canonical_key_to_alias.items()):
+                            if v == prev_alias:
+                                measure_canonical_key_to_alias[k] = target_alias
+                        # canonical_to_user_name only fires when the
+                        # user explicitly renamed via qfield.name; the
+                        # auto-rename to cross-model canonical doesn't
+                        # change the user-visible name.
+                        if qfield.name and qfield.name != canonical_name:
+                            canonical_to_user_name[canonical_name] = qfield.name
+                        # Codex review on PR #137 round 8: register the
+                        # dotted canonical name as a field-name alias so
+                        # ORDER BY's qualified-match branch
+                        # (generator._resolve_order_column) can resolve
+                        # ``order=[{"column":"customers.revenue:sum"}]``
+                        # to the projection alias instead of falling
+                        # through to a non-existent
+                        # ``customers.revenue_sum`` bare column.
+                        field_name_aliases[canonical_name] = target_alias
+                    surfaced_alias = target_alias
+                    # Propagate qfield metadata onto the
+                    # created-or-reused EnrichedMeasure (matches the
+                    # standard local-agg branch handling).
+                    for em in measures:
+                        if em.alias == surfaced_alias:
+                            if qfield.label is not None:
+                                em.label = qfield.label
+                            if qfield.type is not None:
+                                em.type = qfield.type
+                            break
+                    _mark_user_declared(surfaced_alias)
+                    user_projection.append(surfaced_alias)
+                    continue
                 # Cross-model aggregated measure
                 cm = await resolve_cross_model_measure(
                     spec_name=spec.measure_name,
@@ -1595,6 +1894,94 @@ async def _maybe_expand(
     )
 
 
+def resolve_via_stage_origin(
+    *, model: SlayerModel, parts: List[str],
+) -> Optional[Column]:
+    """DEV-1449: Resolve a dotted reference against a virtual stage
+    model produced by ``_query_as_model``.
+
+    Returns the matching ``Column`` from ``model.columns``, or ``None``
+    if ``model`` is not a virtual stage model OR no flat candidate
+    matches. The shared callee for the four cross-stage resolution
+    paths (dimensions, time dimensions, cross-model measures, filters)
+    when the standard join-walk doesn't apply.
+
+    Lookup procedure (both candidates are first-class — neither is a
+    "fallback" semantically; the order is just deterministic precedence
+    for the rare collision case):
+
+      Candidate A — ancestor-stripped flat:
+          If ``parts[0]`` matches the ``name`` of any ancestor in the
+          ``source_model_origin`` chain, drop it and ``__``-join the rest.
+      Candidate B — full flat:
+          ``__``-join all ``parts`` verbatim.
+
+    Try A first; if no match, try B. Returns the first match.
+
+    Why both: ``_alias_to_short`` (query_engine.py) strips only the
+    immediate inner-model prefix at each ``_query_as_model`` call. At
+    depth 1, the original source-model name IS the immediate prefix, so
+    A matches. At depth >= 2 with a source-prefixed user ref, the
+    ancestor lives inside the flat column name; only B matches.
+    """
+    if model.source_model_origin is None:
+        return None
+    ancestor_names: set[str] = set()
+    cursor = model.source_model_origin
+    while cursor is not None:
+        ancestor_names.add(cursor.name)
+        cursor = cursor.parent
+    # Candidate A — ancestor-stripped.
+    if parts and parts[0] in ancestor_names:
+        stripped = parts[1:]
+        if stripped:
+            col = model.get_column("__".join(stripped))
+            if col is not None:
+                return col
+    # Candidate B — full-flat.
+    if parts:
+        col = model.get_column("__".join(parts))
+        if col is not None:
+            return col
+    return None
+
+
+async def _resolve_dotted_dim_with_stage_fallback(
+    *,
+    dim_ref_model: str,
+    dim_ref_name: str,
+    model: SlayerModel,
+    model_name_str: str,
+    named_queries: dict,
+    resolve_dimension_via_joins,
+) -> "tuple[Optional[Column], Optional[SlayerModel], str]":
+    """Resolve a dotted dim / time-dim reference for one query field.
+
+    Shared by ``_resolve_dimensions`` and ``_resolve_time_dimensions``
+    (DEV-1449 / Sonar S3776). Tries the standard join-walk first; if
+    that returns nothing AND ``model`` is a virtual stage produced by
+    ``_query_as_model``, tries the stage-origin resolver. On stage-origin
+    miss, falls through to today's lenient behavior (returns ``None``
+    dim_def + the join-walk's `__`-flattened effective_model); cross-model
+    CTE re-rooting depends on that fall-through.
+    """
+    parts = dim_ref_model.split(".") + [dim_ref_name]
+    raw = await resolve_dimension_via_joins(
+        model=model,
+        parts=parts,
+        named_queries=named_queries,
+    )
+    dim_def, terminal_model = _unpack_dim_resolution(raw)
+    effective_model = "__".join(dim_ref_model.split("."))
+    if dim_def is None and model.source_model_origin is not None:
+        stage_col = resolve_via_stage_origin(model=model, parts=parts)
+        if stage_col is not None:
+            dim_def = stage_col
+            terminal_model = model
+            effective_model = model_name_str  # local to the virtual stage
+    return dim_def, terminal_model, effective_model
+
+
 async def _resolve_dimensions(
     query: SlayerQuery,
     model: SlayerModel,
@@ -1613,14 +2000,16 @@ async def _resolve_dimensions(
             effective_model = model_name_str
             terminal_model = model
         else:
-            parts = dim_ref.model.split(".") + [dim_ref.name]
-            raw = await resolve_dimension_via_joins(
-                model=model,
-                parts=parts,
-                named_queries=named_queries,
+            dim_def, terminal_model, effective_model = (
+                await _resolve_dotted_dim_with_stage_fallback(
+                    dim_ref_model=dim_ref.model,
+                    dim_ref_name=dim_ref.name,
+                    model=model,
+                    model_name_str=model_name_str,
+                    named_queries=named_queries,
+                    resolve_dimension_via_joins=resolve_dimension_via_joins,
+                )
             )
-            dim_def, terminal_model = _unpack_dim_resolution(raw)
-            effective_model = "__".join(dim_ref.model.split("."))
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,
@@ -1663,14 +2052,16 @@ async def _resolve_time_dimensions(
             td_model_name = model_name_str
             terminal_model = model
         else:
-            parts = td.dimension.model.split(".") + [td.dimension.name]
-            raw = await resolve_dimension_via_joins(
-                model=model,
-                parts=parts,
-                named_queries=named_queries,
+            dim_def, terminal_model, td_model_name = (
+                await _resolve_dotted_dim_with_stage_fallback(
+                    dim_ref_model=td.dimension.model,
+                    dim_ref_name=td.dimension.name,
+                    model=model,
+                    model_name_str=model_name_str,
+                    named_queries=named_queries,
+                    resolve_dimension_via_joins=resolve_dimension_via_joins,
+                )
             )
-            dim_def, terminal_model = _unpack_dim_resolution(raw)
-            td_model_name = "__".join(td.dimension.model.split("."))
         expanded_sql = await _maybe_expand(
             sql=dim_def.sql if dim_def else None,
             terminal_model=terminal_model,
@@ -2435,6 +2826,55 @@ async def resolve_filter_columns(
                 #   paths are valid SQL even when sqlglot's join walker
                 #   doesn't know about them.
                 if strict:
+                    # DEV-1449: virtual-stage fallback. When ``model`` is
+                    # a virtual stage produced by ``_query_as_model`` and
+                    # the dotted ref resolves to a flat column on the
+                    # wrapped projection, rewrite the filter SQL to use
+                    # ``<model_name>.<flat_col>`` and skip the strict-error
+                    # branches.
+                    #
+                    # Codex review on PR #137 round 7: this fallback was
+                    # designed for DIMENSION refs (e.g. `customers.regions.name`)
+                    # cross-stage. If the leaf looks like an aggregated
+                    # canonical (``<col>_<agg>`` / ``_<agg>``), the user
+                    # is filtering on a re-aggregated MEASURE and the
+                    # right SQL placement is HAVING over the projection
+                    # alias, not WHERE on the inner flat column. The
+                    # intercept-as-local path leaves cross-model measure
+                    # filters in DEV-1445 territory (not yet
+                    # auto-resolved); skip the fallback for those leaves
+                    # so the standard strict-error fires rather than
+                    # silently emitting a wrong WHERE.
+                    #
+                    # Lenient (`strict=False`) callers never see virtual
+                    # stages because `_query_as_model` does not propagate
+                    # inner-model `filters` to the wrapped model — so the
+                    # resolver lives inside `if strict:` only.
+                    # Codex review on PR #137 round 9: use parser
+                    # provenance (`filter_synthesized_aliases`) to
+                    # distinguish a colon-syntax-synthesized aggregate
+                    # alias from a user-typed literal dim ref. The
+                    # earlier suffix heuristic falsely blocked real
+                    # dims whose leaf happened to end with an
+                    # aggregation suffix (e.g. a dim literally named
+                    # `customers.revenue_sum`).
+                    is_synthesized_agg_alias = col_name in filter_synthesized_aliases
+                    if (
+                        model.source_model_origin is not None
+                        and not is_synthesized_agg_alias
+                    ):
+                        stage_col = resolve_via_stage_origin(
+                            model=model, parts=path_parts + [dim_name],
+                        )
+                        if stage_col is not None:
+                            qualified = f"{model.name}.{stage_col.name}"
+                            resolved_sql = _re.sub(
+                                rf"(?<!\w)\b{_re.escape(col_name)}\b",
+                                qualified,
+                                resolved_sql,
+                            )
+                            resolved_columns.append(qualified)
+                            continue
                     if drop_if_unresolved:
                         # Re-rooted CTE path: drop the filter rather than
                         # raise. The cross-model machinery inherits the

@@ -366,6 +366,36 @@ def _coerce_source_queries(v: Any) -> Any:
     return result
 
 
+class SourceModelOrigin(BaseModel):
+    """Lineage breadcrumb for virtual stage models produced by
+    ``_query_as_model``. Records the chain of upstream source models so
+    outer-stage dotted-ref lookup can strip the right prefix and find
+    the flat column in the wrapped subquery's projection (DEV-1449).
+
+    Linked-list shape: each virtual model points at its direct
+    upstream's name; walking ``parent`` reaches the original
+    table-backed (or sql-backed) root.
+
+    ``agg_column_names`` (Codex review on PR #137 round 9) records the
+    flat names of columns on this stage that came from
+    ``cross_model_measures`` or aggregated ``measures`` in the inner
+    query's enrichment — i.e. the columns the cross-stage intercept
+    is safe to re-aggregate. Without this provenance, a user-defined
+    dimension whose name happens to look like an aggregation canonical
+    (e.g. ``customers__revenue_sum``) would be silently re-summed by
+    the intercept. Empty by default; only ``_query_as_model``
+    populates it.
+
+    The field is in-memory only — virtual stage models are not
+    persisted, and `SlayerModel.source_model_origin` carries
+    ``exclude=True`` so accidental save paths drop it cleanly.
+    """
+    name: str
+    data_source: Optional[str] = None
+    parent: Optional["SourceModelOrigin"] = None
+    agg_column_names: frozenset[str] = Field(default_factory=frozenset)
+
+
 class ModelJoin(BaseModel):
     """A join relationship to another model."""
     target_model: str                               # Name of the joined model
@@ -456,6 +486,10 @@ class SlayerModel(BaseModel):
     description: Optional[str] = None
     hidden: bool = False
     meta: Optional[Dict[str, Any]] = None
+    # DEV-1449: in-memory breadcrumb for virtual stage models produced by
+    # ``_query_as_model``. ``exclude=True`` keeps it out of YAML/SQLite
+    # roundtrips; virtual stage models are not persisted in the first place.
+    source_model_origin: Optional[SourceModelOrigin] = Field(default=None, exclude=True)
 
     @field_validator("filters")
     @classmethod

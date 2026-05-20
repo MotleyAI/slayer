@@ -13,7 +13,14 @@ from pydantic import BaseModel, Field as PydanticField, model_validator
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import (
+    Column,
+    DatasourceConfig,
+    ModelJoin,
+    ModelMeasure,
+    SlayerModel,
+    SourceModelOrigin,
+)
 from slayer.core.query import (
     ColumnRef,
     SlayerQuery,
@@ -1913,12 +1920,44 @@ class SlayerQueryEngine:
         for _, short, dtype, label, desc, fmt in column_map:
             cols.append(Column(name=short, sql=short, type=dtype, label=label, description=desc, format=fmt))
 
+        # DEV-1449 / Codex round 10: record only columns that are
+        # reliably the same cross-model aggregate the outer-stage
+        # intercept would resolve a `customers.revenue:sum` reference
+        # to. Includes:
+        #   * Auto-derived cross-model canonical-flats (`_alias_to_short(cm.alias)`).
+        #   * Intercept-produced EnrichedMeasures (from a downstream
+        #     stage re-using the intercepted projection).
+        # Excludes:
+        #   * User-renamed CMM shorts: a user-supplied `name` could
+        #     coincidentally match a different aggregate's canonical-flat.
+        #   * Plain measures / transforms / expressions: their names are
+        #     user-supplied and could collide with cross-model canonicals
+        #     by coincidence.
+        agg_shorts = set()
+        for cm in enriched.cross_model_measures:
+            if not (cm.user_declared and cm.name and "." not in cm.name):
+                agg_shorts.add(_alias_to_short(cm.alias))
+        for m in enriched.measures:
+            if m.from_cross_model_intercept:
+                agg_shorts.add(m.name)
+
+        # DEV-1449: record the lineage breadcrumb so outer-stage dotted-ref
+        # lookup can strip the right ancestor prefix and find the flat
+        # column in this wrapped projection. ``parent`` carries any
+        # existing chain on ``inner_model``, so chained nested-DAGs
+        # build a linked list down to the original table-backed root.
         return SlayerModel(
             name=virtual_name,
             sql=wrapped_sql,
             data_source=inner_model.data_source,
             columns=cols,
             default_time_dimension=inner_model.default_time_dimension,
+            source_model_origin=SourceModelOrigin(
+                name=inner_model.name,
+                data_source=inner_model.data_source,
+                parent=inner_model.source_model_origin,
+                agg_column_names=frozenset(agg_shorts),
+            ),
         )
 
     async def _resolve_dimension_via_joins(
