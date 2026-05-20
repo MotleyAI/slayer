@@ -311,12 +311,19 @@ def _filter_references_available(f, available_aliases: set) -> bool:
 
 # DEV-1444: digit-suffix tail patterns for OFFSET / LIMIT, each bounded
 # (`\d+`) so neither matches an unbounded run of arbitrary characters.
+# LIMIT and LIMIT-OFFSET are split into two separate regexes (rather
+# than one with an optional group) so Sonar's S5852 analyzer can
+# clearly bound each — the analyzer flags optional-group + greedy-
+# quantifier combinations even when both quantifiers are over `\d+`.
 # ORDER BY uses a non-regex ``rfind`` strategy below — its tail can
 # include arbitrary expressions and a regex would either need an
 # unbounded character class (Sonar S5852 polynomial backtracking
 # warning) or an artificial length cap.
 _TRAILING_OFFSET_RE = re.compile(r"(?is)\s*OFFSET\s+\d+\s*\Z")
-_TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*(?:OFFSET\s+\d+)?\s*\Z")
+_TRAILING_LIMIT_OFFSET_RE = re.compile(
+    r"(?is)\s*LIMIT\s+\d+\s+OFFSET\s+\d+\s*\Z"
+)
+_TRAILING_LIMIT_RE = re.compile(r"(?is)\s*LIMIT\s+\d+\s*\Z")
 
 
 def _strip_trailing_pagination(sql: str) -> str:
@@ -330,8 +337,14 @@ def _strip_trailing_pagination(sql: str) -> str:
     closing ``)`` after them).
     """
     s = sql.rstrip()
-    # OFFSET / LIMIT use narrow digit-bounded regexes.
-    for pattern in (_TRAILING_OFFSET_RE, _TRAILING_LIMIT_RE):
+    # OFFSET / LIMIT use narrow digit-bounded regexes. LIMIT-OFFSET is
+    # checked before bare OFFSET / LIMIT so the combined form is peeled
+    # in a single pass.
+    for pattern in (
+        _TRAILING_LIMIT_OFFSET_RE,
+        _TRAILING_OFFSET_RE,
+        _TRAILING_LIMIT_RE,
+    ):
         m = pattern.search(s)
         if not m or m.start() == 0:
             continue
