@@ -863,15 +863,20 @@ class TestNonVirtualModel:
 # Test #13 — DEV-1443 rename interaction: colon syntax does NOT auto-resolve.
 # ===========================================================================
 class TestRenamedInnerMeasureCrossStage:
-    async def test_renamed_cmm_colon_syntax_resolves_via_canonical_flat(
+    async def test_renamed_cmm_colon_syntax_no_longer_resolves_after_rename(
         self,
     ) -> None:
-        """Inner projects `{formula: customers.revenue:sum, name: rev}`.
-        For CROSS-MODEL measures, `_alias_to_short` uses the canonical
-        agg form (`cm.alias`), not `cm.name`. So s1.columns has the
-        canonical flat alias `customers__revenue_sum` regardless of
-        the rename — and the outer's colon-syntax reference resolves
-        via the intercept matching that canonical form."""
+        """Post-DEV-1448 (main): `_alias_to_short`/cm.name now
+        propagates the user-supplied rename to the wrapped virtual
+        model's column. So `{formula: customers.revenue:sum, name: rev}`
+        on s1 leaves s1.columns with `rev` (not the canonical flat
+        `customers__revenue_sum`). The outer's colon-syntax reference
+        `customers.revenue:sum` no longer matches the intercept's
+        candidate flat name → falls through to the cross-model CTE
+        path → raises on the virtual stage (no joins).
+
+        DEV-1445 territory: users renamed cross-model measures must
+        reference them by the rename on downstream stages."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -884,30 +889,16 @@ class TestRenamedInnerMeasureCrossStage:
                 source_model="s1",
                 measures=[{"formula": "customers.revenue:sum"}],
             )
-            resp = await engine.execute(query=[inner, outer], dry_run=True)
-            sql = resp.sql or ""
-            outer_select = _outermost_select(sql)
-            outer_sum_targets = []
-            for s in outer_select.find_all(exp.Sum):
-                if s.parent_select is not outer_select:
-                    continue
-                outer_sum_targets.extend(
-                    (c.table, c.name) for c in s.find_all(exp.Column)
-                )
-            assert ("s1", "customers__revenue_sum") in outer_sum_targets, (
-                f"Outer SUM must target canonical flat alias.\n"
-                f"got: {outer_sum_targets}\nSQL:\n{sql}"
-            )
+            with pytest.raises((SlayerError, ValueError)):
+                await engine.execute(query=[inner, outer], dry_run=True)
         finally:
             tmp.cleanup()
 
-    async def test_renamed_cmm_via_rename_does_not_resolve(self) -> None:
-        """Inner projects `{formula: customers.revenue:sum, name: rev}`.
-        The rename `rev` is the inner stage's user-facing alias for the
-        measure but it is NOT exposed as an s1 column (column_map for
-        cross_model_measures uses `_alias_to_short(cm.alias)`, not
-        `cm.name`). So `rev:sum` on the outer must NOT resolve — DEV-1449
-        does not extend rename remap to cross-model."""
+    async def test_renamed_cmm_via_rename_resolves(self) -> None:
+        """Post-DEV-1448 (main): the rename propagates to s1.columns,
+        so `rev:sum` on the outer DOES resolve (s1.get_column('rev')
+        finds it as a local column, the standard local-aggregate
+        path emits SUM(s1.rev))."""
         engine, tmp = await _engine_with_join_chain()
         try:
             inner = SlayerQuery(
@@ -920,8 +911,20 @@ class TestRenamedInnerMeasureCrossStage:
                 source_model="s1",
                 measures=[{"formula": "rev:sum"}],
             )
-            with pytest.raises((SlayerError, ValueError)):
-                await engine.execute(query=[inner, outer], dry_run=True)
+            resp = await engine.execute(query=[inner, outer], dry_run=True)
+            sql = resp.sql or ""
+            outer_select = _outermost_select(sql)
+            outer_sum_targets = []
+            for s in outer_select.find_all(exp.Sum):
+                if s.parent_select is not outer_select:
+                    continue
+                outer_sum_targets.extend(
+                    (c.table, c.name) for c in s.find_all(exp.Column)
+                )
+            assert ("s1", "rev") in outer_sum_targets, (
+                f"Outer SUM(s1.rev) expected after DEV-1448 rename "
+                f"propagation.\ngot: {outer_sum_targets}\nSQL:\n{sql}"
+            )
         finally:
             tmp.cleanup()
 
@@ -1649,27 +1652,39 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         to match another query measure's canonical alias must raise.
         Without this, `_ensure_aggregated_measure`'s alias-keyed dedup
         silently collapses the two distinct aggregates onto the
-        renamed first one."""
+        renamed first one.
+
+        Setup: outer's intercepted cross-model qfield gets renamed
+        to a name that collides with another outer qfield's
+        canonical (`customer_id_max`). The intercept's guard refuses
+        before dedup can corrupt the projection."""
         engine, tmp = await _engine_with_join_chain()
         try:
+            # Inner unrenamed so the cross-model flat
+            # `customers__revenue_sum` is on s1.columns (post-DEV-1448
+            # the rename would replace it).
             inner = SlayerQuery(
                 name="s1",
                 source_model="orders",
                 dimensions=["customers.regions.name"],
                 measures=[{"formula": "customers.revenue:sum"}],
             )
-            # First qfield: intercepted cross-model rev:sum, renamed
-            # to `customer_id_max` — which is the canonical alias of
-            # the second qfield. Without the guard, dedup would
-            # collapse the second qfield onto the first.
             outer = SlayerQuery(
                 source_model="s1",
                 measures=[
+                    # Intercepted cross-model, renamed to a name that
+                    # collides with the next measure's canonical.
                     {"formula": "customers.revenue:sum", "name": "customer_id_max"},
                     {"formula": "customer_id:max"},
                 ],
             )
-            with pytest.raises((SlayerError, ValueError), match="collides with the canonical alias"):
+            # Either my round-4 intercept guard ("collides with the
+            # canonical alias") or DEV-1448's downstream-short-name
+            # guard catches this — both are the right outcome.
+            with pytest.raises(
+                (SlayerError, ValueError),
+                match="collides with the canonical alias|downstream short name",
+            ):
                 await engine.execute(query=[inner, outer], dry_run=True)
         finally:
             tmp.cleanup()
