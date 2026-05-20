@@ -111,6 +111,25 @@ def _ensure_jvm_started_for_arrow(jar_path: Path) -> None:
     )
 
 
+def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
+    """Shut down the JVM after the integration suite finishes.
+
+    JPype's ``startJVM`` spins up non-daemon Java threads (Reference
+    Handler, Finalizer, Common-Cleaner) that keep the Python process
+    alive after pytest's test session ends. On a local shell that's
+    invisible (the next prompt kills the process); on GitHub Actions
+    the pytest worker turns into a 16-minute orphan that ultimately
+    hits the 20-minute step ceiling. Explicit shutdown is the
+    documented fix.
+    """
+    try:
+        import jpype
+    except ImportError:
+        return
+    if jpype.isJVMStarted():
+        jpype.shutdownJVM()
+
+
 @pytest.fixture
 def jaydebeapi_connect(jdbc_jar: Path) -> Callable[..., Any]:
     """Return a factory that opens a JayDeBeAPI connection to a Flight SQL URL."""
