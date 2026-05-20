@@ -925,11 +925,31 @@ async def enrich_query(
     # ``orders.customers.region_id``) is caught. The source-column guard
     # at lines 871-878 only catches collisions with columns on the OUTER
     # source model — not with columns surfaced via joined dims.
+    #
+    # Codex review round 4 on PR #136: also track each dim/time-dim's
+    # DOWNSTREAM SHORT (the ``_alias_to_short``-flattened form used as
+    # the virtual-model column name in ``_query_as_model``). A renamed
+    # measure with a matching downstream short would surface as a
+    # duplicate column on the virtual model even when the public
+    # aliases differ. ``_alias_to_short`` strips the source-model
+    # prefix (``model_name_str.`` portion) and converts remaining dots
+    # to ``__``.
+    def _alias_to_short_local(alias: str) -> str:
+        stripped = alias.split(".", 1)[-1] if "." in alias else alias
+        return stripped.replace(".", "__")
+
     _occupied_aliases: Dict[str, str] = {}
+    _occupied_shorts: Dict[str, str] = {}
     for _d in dimensions:
         _occupied_aliases[_d.alias] = f"dimension '{_d.name}'"
+        _occupied_shorts[_alias_to_short_local(_d.alias)] = (
+            f"dimension '{_d.name}'"
+        )
     for _td in time_dimensions:
         _occupied_aliases[_td.alias] = f"time dimension '{_td.name}'"
+        _occupied_shorts[_alias_to_short_local(_td.alias)] = (
+            f"time dimension '{_td.name}'"
+        )
 
     _surfaces: list = []
     for qf_pre in (query.measures or []):
@@ -947,7 +967,8 @@ async def enrich_query(
             agg_args=sp_pre.agg_args,
             agg_kwargs=sp_pre.agg_kwargs,
         )
-        # CodeRabbit round 3: catch measure-vs-(dim|time-dim) alias collisions.
+        # CodeRabbit round 3: catch measure-vs-(dim|time-dim) public-alias
+        # collisions.
         if public_pre in _occupied_aliases:
             owner = _occupied_aliases[public_pre]
             raise ValueError(
@@ -956,6 +977,19 @@ async def enrich_query(
                 f"outer projection key would be duplicated and the result "
                 f"shape could silently merge values. Pick a different "
                 f"`name`, or remove the duplicate dimension."
+            )
+        # Codex round 4: catch measure-vs-(dim|time-dim) DOWNSTREAM-short
+        # collisions. The public aliases may differ but the virtual-model
+        # column emitted by ``_query_as_model`` would still duplicate.
+        if short_pre in _occupied_shorts:
+            owner = _occupied_shorts[short_pre]
+            raise ValueError(
+                f"Measure '{qf_pre.formula}' produces the downstream "
+                f"short name '{short_pre}', which collides with the "
+                f"{owner} on the same query — a nested-DAG stage's "
+                f"virtual model would have two columns with the same "
+                f"alias. Pick a different `name`, or remove the "
+                f"duplicate dimension."
             )
         for qf_other, sp_other, public_other, short_other, canonical_other in _surfaces:
             if public_pre == public_other:

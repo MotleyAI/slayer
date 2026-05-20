@@ -599,6 +599,42 @@ class TestCrossModelRenameCollisionGuards:
         with pytest.raises(ValueError, match=r"silently merged|collide"):
             await engine._enrich(query=query, model=orders)
 
+    async def test_cross_model_rename_collides_with_dimension_downstream_short_raises(
+        self, orders_customers_engine,
+    ) -> None:
+        """Codex review round 4 on PR #136: the pre-pass seeds dim/time-
+        dim PUBLIC aliases but not their DOWNSTREAM SHORT names. A
+        renamed measure whose downstream short (used as the virtual-
+        model column for nested-DAG stages) collides with a dim's
+        ``__``-flattened short — even though the PUBLIC aliases
+        differ — would silently emit two columns with the same alias in
+        the wrapper that ``_query_as_model`` builds.
+
+        Setup:
+        * dimension ``customers.region_id`` → public alias
+          ``orders.customers.region_id``, downstream short
+          ``customers__region_id``.
+        * cross-model measure renamed to ``name="customers__region_id"``
+          → public alias ``orders.customers.customers__region_id``
+          (DIFFERENT from the dim's public — the existing guard misses
+          this), downstream short ``customers__region_id`` (SAME as
+          dim's short — the virtual model would have duplicate
+          columns).
+        """
+        engine, orders = orders_customers_engine
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customers.region_id")],
+            measures=[
+                ModelMeasure(
+                    formula="customers.revenue:sum",
+                    name="customers__region_id",
+                ),
+            ],
+        )
+        with pytest.raises(ValueError, match=r"silently merged|collide"):
+            await engine._enrich(query=query, model=orders)
+
     async def test_cross_model_rename_collides_with_dimension_raises(
         self, orders_customers_engine,
     ) -> None:
