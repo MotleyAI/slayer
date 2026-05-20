@@ -1272,12 +1272,19 @@ async def enrich_query(
     _query_aliases.update(m.name for m in measures if m.name)
     _query_aliases.update(t.name for t in enriched_transforms if t.name)
     _query_aliases.update(e.name for e in enriched_expressions if e.name)
-    # DEV-1448: cross-model measures' user-facing names (the user-supplied
-    # ``name`` after rename, or the canonical short name otherwise) must
-    # also resolve as filter / ORDER BY targets — otherwise a renamed
-    # cross-model measure is only half-usable (projections rename, but
-    # filters referencing the new name fail strict resolution).
-    _query_aliases.update(cm.name for cm in cross_model_measures if cm.name)
+    # DEV-1448 (Codex review on PR #136): we previously added cross-model
+    # measure names to ``_query_aliases`` so a same-stage filter
+    # ``"cust_rev > 100"`` would pass strict resolution. That admission was
+    # half-baked — the SQL generator has no path to route the bare name to
+    # the cross-model CTE's output column ``"orders.customers.cust_rev"``,
+    # so it qualified the bare alias as ``orders.cust_rev`` (a column that
+    # doesn't exist on the base table) and shipped invalid SQL. Until the
+    # full cross-model filter remap lands in DEV-1445, the bare user alias
+    # is NOT a valid filter / ORDER BY target on a renamed cross-model
+    # measure — strict resolution must reject it cleanly rather than
+    # silently produce broken SQL. The rename remains useful for the
+    # projection alias and the downstream-stage virtual model column,
+    # which is the ticket's actual repro shape.
     # DEV-1378: model filters and query filters resolve under different
     # strictness rules. Model filters are SQL-mode and may reference any
     # column on the underlying table even when not declared as a

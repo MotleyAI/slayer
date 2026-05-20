@@ -27,8 +27,6 @@ Companion / deferred scope:
 """
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from slayer.core.enums import DataType
@@ -408,7 +406,7 @@ class TestCrossModelRenameCollisionGuards:
             measures=[
                 # Cross-model rename target collides with local sibling's canonical.
                 ModelMeasure(formula="customers.revenue:sum", name="revenue_sum"),
-                ModelMeasure(formula="revenue:sum"),  # canonical = "revenue_sum"
+                ModelMeasure(formula="revenue:sum"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
             ],
         )
         with pytest.raises(ValueError, match=r"collides with .*measure|silently merged"):
@@ -639,18 +637,21 @@ class TestCrossModelRenameLabelAndType:
 
 
 class TestCrossModelRenameFilters:
-    async def test_filter_via_user_alias_resolves(
+    async def test_filter_via_user_alias_raises_until_dev_1445(
         self, orders_customers_engine,
     ) -> None:
-        """``filters=["cust_rev > 100"]`` referencing the user-renamed alias
-        must:
-          1. enrich without error (the rename registered the name in
-             ``known_aliases``),
-          2. produce at least one parsed filter that references the user
-             alias,
-          3. surface in the rendered SQL as a real predicate against the
-             cross-model output column (not just any occurrence of
-             ``cust_rev``).
+        """DEV-1445 boundary (revised after Codex review on PR #136):
+        same-stage filter ``"cust_rev > 100"`` referencing a renamed
+        cross-model measure currently raises ``ValueError`` at strict
+        resolution. The SQL generator has no path to route the bare user
+        alias to the cross-model CTE's output column, so admitting the
+        filter would emit broken SQL (``WHERE orders.cust_rev > 100``
+        against a column that doesn't exist on the base table). Until
+        DEV-1445 lands the full cross-model filter remap, the supported
+        workaround is to restructure as a multi-stage ``source_queries``
+        so the cross-model measure becomes a local measure in the
+        downstream stage. This test pins the clean-error boundary so we
+        notice if/when the behaviour changes.
         """
         engine, orders = orders_customers_engine
         query = SlayerQuery(
@@ -659,27 +660,8 @@ class TestCrossModelRenameFilters:
             measures=[ModelMeasure(formula="customers.revenue:sum", name="cust_rev")],
             filters=["cust_rev > 100"],
         )
-        enriched = await engine._enrich(query=query, model=orders)
-        # The filter must have parsed and reference the user alias.
-        relevant = [f for f in enriched.filters if "cust_rev" in f.sql]
-        assert relevant, (
-            f"filter referencing the renamed alias must surface in "
-            f"enriched.filters; got: {[f.sql for f in enriched.filters]!r}"
-        )
-
-        sql = SQLGenerator(dialect="postgres").generate(enriched=enriched)
-        # The predicate must appear as a real comparison against the renamed
-        # column, not as a bare substring. Accept either the quoted alias
-        # form (``"orders.cust_rev" > 100``) or the rendered cross-model
-        # output column form. The constant ``100`` MUST appear next to the
-        # alias — otherwise we're matching some unrelated occurrence.
-        predicate_pattern = re.compile(
-            r'("orders\.customers\.cust_rev"|cust_rev)\s*>\s*100',
-        )
-        assert predicate_pattern.search(sql), (
-            f"filter on renamed alias must surface as a real predicate "
-            f"against the renamed column:\n{sql}"
-        )
+        with pytest.raises(ValueError, match=r"unknown name 'cust_rev'"):
+            await engine._enrich(query=query, model=orders)
 
 
 class TestDeferredCrossModelFilterScope:
