@@ -43,6 +43,7 @@ from slayer.core.errors import (
     UnknownFunctionError,
     UnknownReferenceError,
 )
+from slayer.core.enums import DataType
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
     AggregateKey,
@@ -53,11 +54,13 @@ from slayer.core.keys import (
     Phase,
     ScalarCallKey,
     StarKey,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
+from slayer.core.query import TimeDimension
 from slayer.core.scope import ModelScope, StageSchema
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import (
@@ -81,8 +84,12 @@ __all__ = [
     "BoundFilter",
     "bind_expr",
     "bind_filter",
+    "bind_time_dimension",
     "walk_value_keys",
 ]
+
+
+_TEMPORAL_TYPES = frozenset({DataType.DATE, DataType.TIMESTAMP})
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +154,129 @@ def bind_expr(
     """
     value_key = _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
     return BoundExpr(value_key=value_key)
+
+
+def bind_time_dimension(
+    td: TimeDimension,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> BoundExpr:
+    """Bind a ``TimeDimension`` into a ``BoundExpr`` carrying a
+    ``TimeTruncKey``.
+
+    The underlying column is resolved against ``scope`` exactly like a
+    Mode-B identifier ref (local name or dotted-join path); the bound
+    column must be a plain ``ColumnKey`` whose ``Column.type`` is in the
+    temporal bucket (``DATE`` / ``TIMESTAMP``).
+
+    Stage 7b.3b limitations:
+
+    * Only ``ModelScope`` with a non-None ``source_model`` is accepted.
+      Downstream stages bind upstream-emitted truncated columns by flat
+      name through ``bind_expr``; they do not re-truncate at a different
+      grain through this entry point. Passing a ``StageSchema`` raises
+      ``IllegalScopeReferenceError``.
+    * Derived (``Column.sql`` is set) temporal columns route through
+      ``ColumnSqlKey`` rather than ``ColumnKey``, and ``TimeTruncKey``
+      is typed as ``column: ColumnKey``. Rather than silently widen the
+      typed key, this stage rejects derived-TD columns with
+      ``NotImplementedError`` and a clear message.
+    """
+    if isinstance(scope, StageSchema):
+        raise IllegalScopeReferenceError(
+            name=td.dimension.full_name,
+            scope_kind="StageSchema",
+            reason=(
+                "time dimensions only bind against a ModelScope; downstream "
+                "stages already see the truncated column as a flat name "
+                "from the upstream stage's schema."
+            ),
+        )
+
+    assert isinstance(scope, ModelScope)
+    if scope.source_model is None:
+        raise UnknownReferenceError(
+            name=td.dimension.full_name,
+            scope_kind="ModelScope",
+            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            suggestion=None,
+        )
+
+    full = td.dimension.full_name
+    if "." in full:
+        parts = tuple(full.split("."))
+        bound_col = _resolve_dotted(parts, scope=scope, bundle=bundle)
+    else:
+        bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
+
+    if isinstance(bound_col, ColumnSqlKey):
+        raise NotImplementedError(
+            f"TimeDimension {full!r} resolves to a derived column "
+            f"(Column.sql set); derived TD columns are not yet supported "
+            f"by the typed pipeline. Use the base temporal column "
+            f"directly, or apply the granularity in an upstream stage. "
+            f"(TimeTruncKey.column is typed as ColumnKey; widening it to "
+            f"accept ColumnSqlKey is tracked as a follow-up.)"
+        )
+    if not isinstance(bound_col, ColumnKey):
+        # Defensive — the binder should never produce a non-column key
+        # for an identifier ref against a ModelScope.
+        raise ValueError(
+            f"TimeDimension {full!r} did not resolve to a column "
+            f"reference (got {type(bound_col).__name__})."
+        )
+
+    terminal_model = _terminal_model_for_path(
+        path=bound_col.path,
+        scope=scope,
+        bundle=bundle,
+    )
+    if terminal_model is None:
+        # Shouldn't be reachable: _resolve_ref / _resolve_dotted would
+        # already have raised. Defensive only.
+        raise UnknownReferenceError(
+            name=full,
+            scope_kind="ModelScope",
+            scope_summary=f"could not resolve terminal model for {full!r}",
+            suggestion=None,
+        )
+    col = next(
+        (c for c in terminal_model.columns if c.name == bound_col.leaf),
+        None,
+    )
+    if col is None or col.type not in _TEMPORAL_TYPES:
+        observed = col.type if col is not None else "<missing>"
+        raise ValueError(
+            f"TimeDimension {full!r} must reference a temporal column "
+            f"(DATE / TIMESTAMP); got column type {observed!r}."
+        )
+
+    return BoundExpr(
+        value_key=TimeTruncKey(
+            column=bound_col, granularity=str(td.granularity.value),
+        ),
+    )
+
+
+def _terminal_model_for_path(
+    *,
+    path: Tuple[str, ...],
+    scope: ModelScope,
+    bundle: ResolvedSourceBundle,
+) -> Optional[SlayerModel]:
+    """Walk ``path`` from ``scope.source_model`` and return the terminal
+    model. Returns the host when ``path`` is empty.
+    """
+    current = scope.source_model
+    if current is None:
+        return None
+    for hop in path:
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            return None
+        current = nxt
+    return current
 
 
 def bind_filter(

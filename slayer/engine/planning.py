@@ -44,6 +44,7 @@ from slayer.core.keys import (
     Phase,
     ScalarCallKey,
     StarKey,
+    TimeTruncKey,
     TransformKey,
     ValueKey,
 )
@@ -111,11 +112,19 @@ class ValueRegistry:
         # Alias-collision validations (P4 / DEV-1443).
         # Exemption: a dimension whose public name IS its own column
         # name (``ColumnKey(path=(), leaf=X)`` declared as ``X``) is the
-        # column, not a rename of it — collision check skipped.
+        # column, not a rename of it — collision check skipped. Same
+        # exemption for a local ``TimeTruncKey`` over that same column
+        # since a time dimension on ``created_at`` projects the
+        # (truncated) ``created_at`` column rather than introducing a
+        # new alias.
         is_self_named_dimension = (
             isinstance(key, ColumnKey)
             and key.path == ()
             and public_name == key.leaf
+        ) or (
+            isinstance(key, TimeTruncKey)
+            and key.column.path == ()
+            and public_name == key.column.leaf
         )
         if (
             public_name is not None
@@ -310,7 +319,9 @@ class ProjectionPlan(BaseModel):
     order: List["OrderSpec"] = Field(default_factory=list)
 
 
-_SLOTTABLE_KIND = (ColumnKey, ColumnSqlKey, AggregateKey, TransformKey)
+_SLOTTABLE_KIND = (
+    ColumnKey, ColumnSqlKey, AggregateKey, TransformKey, TimeTruncKey,
+)
 
 
 def _iter_slot_deps(key: ValueKey):
@@ -323,6 +334,11 @@ def _iter_slot_deps(key: ValueKey):
     inside the aggregate, not as a separate slot). Recurses into
     ``TransformKey.input`` so a nested aggregate inside a transform
     gets its own hidden slot.
+
+    ``TimeTruncKey`` is itself the materialised slot (the generator
+    emits the DATE_TRUNC at SELECT time); the inner ColumnKey is not
+    yielded as a separate dependency — adding a time dimension must
+    not auto-add the raw column as an output (matches legacy).
     """
     if isinstance(key, AggregateKey):
         yield key
@@ -331,7 +347,7 @@ def _iter_slot_deps(key: ValueKey):
         yield key
         yield from _iter_slot_deps(key.input)
         return
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
+    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         yield key
         return
     if isinstance(key, ArithmeticKey):
@@ -418,6 +434,10 @@ def _canonical_name(key: ValueKey) -> str:
     if isinstance(key, ColumnSqlKey):
         prefix = "__".join(key.path) + "__" if key.path else ""
         return f"{prefix}{key.column_name}"
+    if isinstance(key, TimeTruncKey):
+        # Legacy alias contract: granularity is encoded in the SQL
+        # DATE_TRUNC, not in the alias.
+        return _canonical_name(key.column)
     if isinstance(key, AggregateKey):
         if isinstance(key.source, StarKey):
             return f"_{key.agg}"

@@ -31,7 +31,7 @@ from slayer.core.keys import Phase
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import canonical_agg_name
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
-from slayer.engine.binding import bind_expr, bind_filter
+from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension
 from slayer.engine.cross_model_planner import (
     CrossModelPlanner,
     IsolatedCteCrossModelPlanner,
@@ -198,6 +198,19 @@ def _declared_measures_from_query(
             declared_name=flat_name,
             public_name=flat_name,
             label=d.label,
+        ))
+    # Time dimensions follow dimensions in the public projection — matches
+    # the legacy ``user_projection`` order (dims, then time dims, then
+    # measures).
+    for td in (query.time_dimensions or []):
+        full = td.dimension.full_name
+        bound = bind_time_dimension(td, scope=scope, bundle=bundle)
+        flat_name = _flatten_dotted(full)
+        declared.append(DeclaredMeasure(
+            bound=bound,
+            declared_name=flat_name,
+            public_name=flat_name,
+            label=td.label,
         ))
     for m in (query.measures or []):
         formula = m.formula
