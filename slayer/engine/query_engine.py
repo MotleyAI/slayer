@@ -27,6 +27,8 @@ from slayer.engine.enriched import (
     public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
+from slayer.engine.path_resolution import NoJoinError as _NoJoinError
+from slayer.engine.path_resolution import walk_join_chain
 from slayer.sql.client import SlayerSQLClient
 from slayer.sql.generator import SQLGenerator
 from slayer.storage.base import StorageBackend
@@ -54,16 +56,6 @@ _join_target_resolving_var: ContextVar[Optional[set]] = ContextVar(
 _forbidden_sibling_refs_var: ContextVar[Optional[Dict[str, str]]] = ContextVar(
     "_forbidden_sibling_refs", default=None
 )
-
-
-class _NoJoinError(Exception):
-    """Internal sentinel raised by ``_walk_join_chain`` when
-    ``strict_missing_join=False`` and a hop has no matching join. Lets
-    callers like ``_resolve_dimension_with_terminal`` map a missing
-    join to a ``None`` return without re-walking the path."""
-    def __init__(self, hop_name: str) -> None:
-        super().__init__(f"no join target named {hop_name!r}")
-        self.hop_name = hop_name
 
 
 _EXPLAIN_PREFIX = {
@@ -1952,54 +1944,19 @@ class SlayerQueryEngine:
         named_queries: dict = None,
         strict_missing_join: bool = True,
     ) -> "tuple[SlayerModel, ModelJoin | None]":
-        """Walk the join graph from ``source_model`` through ``hop_names``,
-        returning ``(terminal_model, first_join)``. Single source of
-        truth for both dimension and cross-model-measure resolution
-        (DEV-1369 — consolidates two prior near-duplicate walkers).
+        """Thin shim — delegates to ``slayer.engine.path_resolution.walk_join_chain``.
 
-        Cycle detection: a hop name that already appears on the visited
-        stack (including ``source_model.name``) raises ``ValueError`` with
-        the offending path.
-
-        Missing-join behaviour:
-
-        * ``strict_missing_join=True`` (cross-model-measure callers) —
-          raise ``ValueError`` listing the available joins.
-        * ``strict_missing_join=False`` (dimension callers) — raise the
-          internal :class:`_NoJoinError` sentinel so the caller can map
-          to a ``None`` return.
+        Kept as an instance method so existing call sites
+        (``self._walk_join_chain(...)``) continue to work unchanged
+        after the DEV-1450 stage-3 extraction.
         """
-        current_model = source_model
-        visited = {source_model.name}
-        first_join: "ModelJoin | None" = None
-        for i, hop_name in enumerate(hop_names):
-            if hop_name in visited:
-                raise ValueError(
-                    f"Circular join detected while resolving "
-                    f"'{'.'.join(hop_names)}': '{hop_name}' already visited "
-                    f"({' → '.join(visited)} → {hop_name})"
-                )
-            join = next(
-                (j for j in current_model.joins if j.target_model == hop_name),
-                None,
-            )
-            if join is None:
-                if strict_missing_join:
-                    raise ValueError(
-                        f"Model '{current_model.name}' has no join to "
-                        f"'{hop_name}'. Available joins: "
-                        f"{[j.target_model for j in current_model.joins]}"
-                    )
-                raise _NoJoinError(hop_name)
-            if i == 0:
-                first_join = join
-            current_model = await self._resolve_model(
-                model_name=hop_name,
-                named_queries=named_queries or {},
-                prefer_data_source=current_model.data_source or None,
-            )
-            visited.add(hop_name)
-        return current_model, first_join
+        return await walk_join_chain(
+            source_model=source_model,
+            hop_names=hop_names,
+            resolve_model=self._resolve_model,
+            named_queries=named_queries,
+            strict_missing_join=strict_missing_join,
+        )
 
     async def _auto_move_fields_to_dimensions(
         self,
