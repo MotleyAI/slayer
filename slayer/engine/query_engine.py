@@ -14,6 +14,7 @@ from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType
 from slayer.core.errors import AmbiguousModelError
 from slayer.core.format import NumberFormat, NumberFormatType, format_number
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.warnings import NormalizationWarning
 from slayer.core.query import (
     ColumnRef,
     SlayerQuery,
@@ -27,6 +28,7 @@ from slayer.engine.enriched import (
     public_projection_aliases,
 )
 from slayer.engine.enrichment import enrich_query
+from slayer.engine.normalization import normalize_model, normalize_query
 from slayer.engine.path_resolution import NoJoinError as _NoJoinError
 from slayer.engine.path_resolution import walk_join_chain
 from slayer.sql.client import SlayerSQLClient
@@ -150,6 +152,13 @@ class SlayerResponse(BaseModel):
     columns: List[str] = PydanticField(default_factory=list)
     sql: Optional[str] = None
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
+    # DEV-1450 stage 6 — slack-normalization warnings.
+    # Structured payload for each slack rewrite the normalization layer
+    # performed on the input (function-style aggs, misplaced measures,
+    # AST-resolvable dotted refs in raw SQL). Empty for queries that
+    # arrived in canonical form. Surfaced alongside the result so
+    # REST / MCP / CLI consumers can echo the rewrites back to authors.
+    warnings: List[NormalizationWarning] = PydanticField(default_factory=list)
 
     @model_validator(mode="after")
     def _populate_columns(self) -> "SlayerResponse":
@@ -599,7 +608,19 @@ class SlayerQueryEngine:
             prefer_data_source=prefer_data_source,
         )
 
+        # DEV-1450 stage 6 — slack-normalization pass. Rewrites slack-but-
+        # unambiguous agent input (function-style aggs, misplaced bare
+        # measures) to canonical form before enrichment sees it. Emits
+        # structured NormalizationWarning payloads alongside the legacy
+        # per-rule UserWarnings (which still fire from the in-tree
+        # rewriters until stage 7b removes them).
+        norm = normalize_query(query, model=model)
+        query = norm.query if norm.query is not None else query
+        slack_warnings = list(norm.warnings)
+
         # Auto-correct: move bare field names to dimensions if they match
+        # (legacy path — runs on top of stage-6 normalization output;
+        # idempotent when the slack layer already rewrote.)
         query = await self._auto_move_fields_to_dimensions(query, model, named_queries)
 
         datasource = await self._resolve_datasource(model=model)
@@ -676,7 +697,10 @@ class SlayerQueryEngine:
 
         # dry_run: return SQL without executing
         if dry_run:
-            return SlayerResponse(data=[], columns=expected_columns, sql=sql, attributes=attributes)
+            return SlayerResponse(
+                data=[], columns=expected_columns, sql=sql,
+                attributes=attributes, warnings=slack_warnings,
+            )
 
         # Execute — reuse SQL client (and its connection pool) per datasource
         ds_key = datasource.get_connection_string()
@@ -694,7 +718,10 @@ class SlayerQueryEngine:
                     err=exc, model=model, enriched=enriched
                 )
                 raise
-            return SlayerResponse(data=rows, sql=sql, attributes=attributes)
+            return SlayerResponse(
+                data=rows, sql=sql, attributes=attributes,
+                warnings=slack_warnings,
+            )
 
         try:
             rows = await client.execute(sql=sql)
@@ -704,7 +731,10 @@ class SlayerQueryEngine:
             )
             raise
         columns = expected_columns if not rows else []  # fallback for empty results; [] triggers auto-derive
-        return SlayerResponse(data=rows, columns=columns, sql=sql, attributes=attributes)
+        return SlayerResponse(
+            data=rows, columns=columns, sql=sql, attributes=attributes,
+            warnings=slack_warnings,
+        )
 
     @staticmethod
     def _collect_query_backed_base_names(model: SlayerModel) -> "set[str]":
@@ -1467,7 +1497,15 @@ class SlayerQueryEngine:
         For query-backed models, rejects user-supplied cache fields and runs
         save-time dry-run validation before populating the cache. For non-
         query-backed models, persists as-is.
+
+        DEV-1450 stage 6 — runs the slack-normalization layer over the
+        incoming model so persisted formulas land in canonical form. The
+        legacy in-tree rewriters still fire during enrichment for callers
+        that load and re-execute persisted models.
         """
+        norm_model = normalize_model(model)
+        if norm_model.model is not None:
+            model = norm_model.model
         # Capture the *previous* data_source for this name so we can clean
         # up the old storage entry when a query-backed model's resolved
         # data_source changes (e.g. its backing query now points at a
