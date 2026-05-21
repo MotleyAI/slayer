@@ -111,6 +111,7 @@ class ValueRegistry:
         hidden: bool = False,
         label: Optional[str] = None,
         type: Optional[DataType] = None,
+        expression: Optional["BoundExpr"] = None,
     ) -> SlotId:
         # Alias-collision validations (P4 / DEV-1443).
         # Exemption: a dimension whose public name IS its own column
@@ -180,6 +181,7 @@ class ValueRegistry:
             phase=phase,
             label=label,
             type=type,
+            expression=expression if expression is not None else BoundExpr(value_key=key),
         )
         self._slots[sid] = slot
         self._by_key[key] = sid

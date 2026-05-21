@@ -125,10 +125,14 @@ class TestValueSlot:
             )
 
     def test_with_expression_payload(self):
-        # Codex review fix: ValueSlot can carry a BoundExpr so the SQL
-        # generator can render without a side map.
+        # ValueSlot carries a BoundExpr so the SQL generator can
+        # render without a side map. After 7b.6 the planned-side
+        # BoundExpr is a re-export of the binder's class; the
+        # ``sql_text`` cache field is gone (rendering walks the
+        # ``value_key`` against the slot registry instead of a
+        # cached string).
         key = ColumnKey(path=(), leaf="status")
-        expr = BoundExpr(value_key=key, sql_text="orders.status")
+        expr = BoundExpr(value_key=key)
         s = ValueSlot(
             id="s1",
             key=key,
@@ -137,7 +141,7 @@ class TestValueSlot:
             expression=expr,
         )
         assert s.expression is expr
-        assert s.expression.sql_text == "orders.status"
+        assert s.expression.value_key == key
 
 
 # ---------------------------------------------------------------------------

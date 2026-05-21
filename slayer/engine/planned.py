@@ -31,6 +31,7 @@ from slayer.core.enums import DataType, JoinType
 from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.keys import Phase, ValueKey
 from slayer.core.scope import StageSchema
+from slayer.engine.binding import BoundExpr  # re-exported below
 
 
 # Opaque identifier types — kept as plain ``str`` for now. SlotId is
@@ -42,30 +43,30 @@ BoundFilterId = str
 
 
 # ---------------------------------------------------------------------------
-# BoundExpr placeholder
+# BoundExpr — re-exported from slayer.engine.binding (DEV-1450 stage 7b.6).
 # ---------------------------------------------------------------------------
-
-
-class BoundExpr(BaseModel):
-    """Minimum scaffold for the bound-expression payload that the
-    binder (stage 7a.5) emits.
-
-    Carried by ``ValueSlot.expression`` and ``FilterPhase.expression``
-    so the SQL generator (stage 7b) can render a slot / filter
-    without re-parsing the input text or consulting an external side
-    map (the spec goal that ``PlannedQuery`` carries everything
-    downstream needs).
-
-    Today the type only stores the originating ``ValueKey`` and an
-    optional ``sql_text`` cache; stage 7a.5's binder may extend it
-    with a structured operator AST. Tests build the placeholder
-    directly for shape coverage.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    value_key: Optional[ValueKey] = None
-    sql_text: Optional[str] = None
+#
+# Until stage 7b.6 the planned-side BoundExpr was a separate scaffold
+# Pydantic class with an optional ``sql_text`` cache. The binder
+# produced its own ``BoundExpr`` shape, so ``ValueSlot.expression`` and
+# ``FilterPhase.expression`` could not store binder output directly
+# without type unification (Codex HIGH F2 in the earlier round). 7b.6
+# folds the two: the binder's ``BoundExpr(value_key=ValueKey)`` is the
+# canonical shape. The render artifact ``sql_text`` is dropped — the
+# generator renders from the typed ``value_key`` against the slot
+# registry, not a cached string.
+__all__ = [
+    "BoundExpr",
+    "BoundFilterId",
+    "CrossModelAggregatePlan",
+    "FilterPhase",
+    "JoinRequirement",
+    "OrderEntry",
+    "PlannedQuery",
+    "SlotId",
+    "TransformLayer",
+    "ValueSlot",
+]
 
 
 # ---------------------------------------------------------------------------

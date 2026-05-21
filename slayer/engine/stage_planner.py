@@ -109,7 +109,6 @@ def plan_query(
     )
 
     bound_filters: List[BoundFilter] = []
-    auto_filter_ids: set = set()
     for f in (query.filters or []):
         if not isinstance(f, str):
             continue
@@ -128,7 +127,6 @@ def plan_query(
         if not isinstance(scope, ModelScope):
             continue
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
-        auto_filter_ids.add(id(bf))
         bound_filters.append(bf)
 
     order_specs = []
@@ -154,20 +152,15 @@ def plan_query(
 
     filters_by_phase: List[FilterPhase] = []
     for i, bf in enumerate(bound_filters):
-        # Auto-generated date_range filters have no user text but DO
-        # need their bound expression carried through so the generator
-        # (slice 7b.11) can render them without re-parsing. User
-        # filters keep ``expression=None`` for now — the full
-        # ValueSlot / FilterPhase expression population unification
-        # lands in stage 7b.6.
-        expression = (
-            PlannedBoundExpr(value_key=bf.value_key)
-            if id(bf) in auto_filter_ids
-            else None
-        )
+        # Stage 7b.6: every FilterPhase carries an expression payload —
+        # auto-generated date_range filters AND user filters alike — so
+        # the SQL generator can render without re-parsing or consulting
+        # a side map. PlannedBoundExpr is now a re-export of the
+        # binder's BoundExpr (single canonical class).
         filters_by_phase.append(
             FilterPhase(
-                id=f"f{i}", phase=bf.phase, text=None, expression=expression,
+                id=f"f{i}", phase=bf.phase, text=None,
+                expression=PlannedBoundExpr(value_key=bf.value_key),
             ),
         )
     # Stage 7b.5 — cross-model planner wiring. For every aggregate slot
