@@ -1,0 +1,624 @@
+"""Stage 7a.5 (DEV-1450) — ExpressionBinder + FilterBinder.
+
+The binder consumes a ``ParsedExpr`` (from ``slayer/engine/syntax.py``)
+plus a scope (``ModelScope`` or ``StageSchema``) and a
+``ResolvedSourceBundle`` (for join resolution). It produces a typed
+``BoundExpr`` whose leaves are resolved ``ValueKey``s.
+
+Public surface:
+
+* ``bind_expr(parsed, *, scope, bundle) -> BoundExpr``
+* ``bind_filter(parsed, *, scope, bundle) -> BoundFilter``
+
+Two scope kinds (P5):
+
+* ``ModelScope``: joins exist; dotted refs walk the join graph rooted
+  at ``source_model``. ``__``-bearing refs raise
+  ``IllegalScopeReferenceError`` unless they exact-match a column on
+  the model. I2: ``source_model is not None`` is asserted.
+* ``StageSchema``: flat namespace; dotted refs raise
+  ``IllegalScopeReferenceError``; flat names with ``__`` are legal.
+
+C14: same-model self-prefix in Mode-B (`orders.status` over an
+``orders``-rooted query) is stripped before the join walk.
+
+FilterBinder layers on top: ``bind_expr`` + phase classification
+(``Phase.ROW`` / ``AGGREGATE`` / ``POST`` = the max phase of any
+referenced slot) + walk for the referenced ``ValueKey``s + reject
+filters that touch a windowed ``Column.sql``.
+
+Dormant in 7a — no engine wiring. The planner (7a.6) is the first
+consumer.
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional, Tuple, Union
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from slayer.core.errors import (
+    IllegalScopeReferenceError,
+    IllegalWindowInFilterError,
+    UnknownFunctionError,
+    UnknownReferenceError,
+)
+from slayer.core.keys import (
+    SCALAR_FUNCTIONS,
+    AggregateKey,
+    ArithmeticKey,
+    ColumnKey,
+    ColumnSqlKey,
+    LiteralKey,
+    Phase,
+    ScalarCallKey,
+    StarKey,
+    TransformKey,
+    ValueKey,
+    normalize_scalar,
+)
+from slayer.core.models import SlayerModel
+from slayer.core.scope import ModelScope, StageSchema
+from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.syntax import (
+    AggCall,
+    Arith,
+    BoolOp,
+    Cmp,
+    DottedRef,
+    Literal,
+    ParsedExpr,
+    Ref,
+    ScalarCall,
+    StarSource,
+    TransformCall,
+    UnaryOp,
+)
+from slayer.sql.sql_expr import has_window_function
+
+__all__ = [
+    "BoundExpr",
+    "BoundFilter",
+    "bind_expr",
+    "bind_filter",
+    "walk_value_keys",
+]
+
+
+# ---------------------------------------------------------------------------
+# BoundExpr / BoundFilter
+# ---------------------------------------------------------------------------
+
+
+class BoundExpr(BaseModel):
+    """A bound expression — its leaves are resolved ``ValueKey``s.
+
+    ``value_key`` is the structural identity of the entire expression.
+    ``phase`` is the property of ``value_key.phase`` (lifted for
+    convenience).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    value_key: ValueKey
+
+    @property
+    def phase(self) -> Phase:
+        return self.value_key.phase
+
+
+class BoundFilter(BaseModel):
+    """A bound filter predicate.
+
+    The same ``value_key`` shape as ``BoundExpr`` (boolean ops and
+    comparisons are encoded as ``ArithmeticKey`` with the corresponding
+    op string), plus:
+
+    * ``phase`` — the maximum phase any referenced slot reaches.
+    * ``referenced_keys`` — every ``ValueKey`` touched anywhere in the
+      bound tree (used by the cross-model planner's filter routing).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    value_key: ValueKey
+    phase: Phase
+    referenced_keys: Tuple[ValueKey, ...] = Field(default_factory=tuple)
+
+
+# ---------------------------------------------------------------------------
+# Public entry points
+# ---------------------------------------------------------------------------
+
+
+def bind_expr(
+    parsed: ParsedExpr,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> BoundExpr:
+    """Bind a parsed expression against a scope.
+
+    Returns a ``BoundExpr`` carrying the structural identity of the
+    entire expression. Raises ``UnknownReferenceError`` if a ref doesn't
+    resolve; ``IllegalScopeReferenceError`` if a dotted ref is used
+    against a ``StageSchema`` (or vice versa for ``__`` against a
+    ``ModelScope``).
+    """
+    value_key = _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
+    return BoundExpr(value_key=value_key)
+
+
+def bind_filter(
+    parsed: ParsedExpr,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> BoundFilter:
+    """Bind a parsed filter predicate + classify its phase.
+
+    Walks the bound tree to gather every referenced ``ValueKey`` and
+    raises ``IllegalWindowInFilterError`` if any referenced
+    ``Column.sql`` contains a window function (DEV-1369: no
+    auto-promotion).
+    """
+    value_key = _bind(parsed, scope=scope, bundle=bundle, in_filter=True)
+    refs = tuple(walk_value_keys(value_key))
+    phase = max(
+        (k.phase for k in refs),
+        default=value_key.phase,
+    )
+    _reject_windowed_column_sql(refs, scope=scope, bundle=bundle, parsed=parsed)
+    return BoundFilter(
+        value_key=value_key, phase=phase, referenced_keys=refs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Walk helper
+# ---------------------------------------------------------------------------
+
+
+_VALUE_KEY_TYPES = (
+    ColumnKey, ColumnSqlKey, StarKey, LiteralKey,
+    AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey,
+)
+
+
+def walk_value_keys(key: ValueKey):
+    """Yield every ``ValueKey`` reachable from ``key``, including ``key``."""
+    yield key
+    if isinstance(key, AggregateKey):
+        if isinstance(key.source, _VALUE_KEY_TYPES):
+            yield from walk_value_keys(key.source)
+        for a in key.args:
+            if isinstance(a, _VALUE_KEY_TYPES):
+                yield from walk_value_keys(a)
+        for _, v in key.kwargs:
+            if isinstance(v, _VALUE_KEY_TYPES):
+                yield from walk_value_keys(v)
+    elif isinstance(key, TransformKey):
+        if isinstance(key.input, _VALUE_KEY_TYPES):
+            yield from walk_value_keys(key.input)
+        for a in key.args:
+            if isinstance(a, _VALUE_KEY_TYPES):
+                yield from walk_value_keys(a)
+        for _, v in key.kwargs:
+            if isinstance(v, _VALUE_KEY_TYPES):
+                yield from walk_value_keys(v)
+        for pk in key.partition_keys:
+            yield from walk_value_keys(pk)
+        if key.time_key is not None:
+            yield from walk_value_keys(key.time_key)
+    elif isinstance(key, ArithmeticKey):
+        for op in key.operands:
+            yield from walk_value_keys(op)
+    elif isinstance(key, ScalarCallKey):
+        for arg in key.args:
+            if isinstance(arg, _VALUE_KEY_TYPES):
+                yield from walk_value_keys(arg)
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
+
+
+def _bind(
+    parsed: ParsedExpr,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    in_filter: bool,
+) -> ValueKey:
+    if isinstance(parsed, Literal):
+        return LiteralKey(value=normalize_scalar(parsed.value))
+
+    if isinstance(parsed, Ref):
+        return _resolve_ref(parsed.name, scope=scope, bundle=bundle)
+
+    if isinstance(parsed, DottedRef):
+        return _resolve_dotted(parsed.parts, scope=scope, bundle=bundle)
+
+    if isinstance(parsed, StarSource):
+        return StarKey()
+
+    if isinstance(parsed, AggCall):
+        return _bind_agg(parsed, scope=scope, bundle=bundle)
+
+    if isinstance(parsed, TransformCall):
+        return _bind_transform(parsed, scope=scope, bundle=bundle)
+
+    if isinstance(parsed, ScalarCall):
+        return _bind_scalar(parsed, scope=scope, bundle=bundle, in_filter=in_filter)
+
+    if isinstance(parsed, Arith):
+        return ArithmeticKey(
+            op=parsed.op,
+            operands=(
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter),
+            ),
+        )
+
+    if isinstance(parsed, UnaryOp):
+        return ArithmeticKey(
+            op=parsed.op,
+            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter),),
+        )
+
+    if isinstance(parsed, Cmp):
+        return ArithmeticKey(
+            op=parsed.op,
+            operands=(
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter),
+            ),
+        )
+
+    if isinstance(parsed, BoolOp):
+        operands = tuple(
+            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter)
+            for v in parsed.operands
+        )
+        return ArithmeticKey(op=parsed.op, operands=operands)
+
+    raise ValueError(
+        f"Unsupported ParsedExpr node: {type(parsed).__name__}"
+    )
+
+
+def _resolve_ref(
+    name: str,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> ValueKey:
+    """Resolve a bare identifier against the scope."""
+    if isinstance(scope, StageSchema):
+        col = scope.get(name)
+        if col is None:
+            raise UnknownReferenceError(
+                name=name,
+                scope_kind="StageSchema",
+                scope_summary=(
+                    f"stage {scope.relation_name!r} columns: "
+                    f"{[c.name for c in scope.columns]}"
+                ),
+                suggestion=None,
+            )
+        return ColumnKey(path=(), leaf=name)
+
+    assert isinstance(scope, ModelScope)
+    if scope.source_model is None:
+        raise UnknownReferenceError(
+            name=name,
+            scope_kind="ModelScope",
+            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            suggestion=None,
+        )
+    model = scope.source_model
+
+    if "__" in name:
+        # The Mode-B parser already rejects `__` for user input; this
+        # branch is reached only via direct ParsedExpr.Ref construction
+        # (e.g., downstream binders for StageSchema flat columns). The
+        # `__` is legal iff it exact-matches a column literally named
+        # that way on the model (legacy persisted query-backed columns).
+        if any(c.name == name for c in model.columns):
+            return ColumnKey(path=(), leaf=name)
+        raise IllegalScopeReferenceError(
+            name=name,
+            scope_kind="ModelScope",
+            reason=(
+                "`__` is reserved for internal join-path aliases. "
+                "Use single-dot DSL paths in queries."
+            ),
+        )
+
+    col = next((c for c in model.columns if c.name == name), None)
+    if col is None:
+        # Try ModelMeasure as a fallback for bare measure refs.
+        mm = next((m for m in model.measures if m.name == name), None)
+        if mm is not None:
+            # ModelMeasure expansion lives in the planner; the binder
+            # raises here so callers know expansion is required.
+            raise UnknownReferenceError(
+                name=name,
+                scope_kind="ModelScope",
+                scope_summary=f"model {model.name!r}",
+                suggestion=(
+                    f"{name!r} is a saved measure on {model.name!r}; "
+                    f"expand via ModelMeasure expansion before binding."
+                ),
+            )
+        raise UnknownReferenceError(
+            name=name,
+            scope_kind="ModelScope",
+            scope_summary=(
+                f"model {model.name!r} columns: "
+                f"{[c.name for c in model.columns]}"
+            ),
+            suggestion=None,
+        )
+
+    if col.sql is not None and col.sql.strip() != name:
+        return ColumnSqlKey(path=(), model=model.name, column_name=col.name)
+    return ColumnKey(path=(), leaf=col.name)
+
+
+def _resolve_dotted(
+    parts: Tuple[str, ...],
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> ValueKey:
+    """Resolve a dotted ref against the scope."""
+    if isinstance(scope, StageSchema):
+        raise IllegalScopeReferenceError(
+            name=".".join(parts),
+            scope_kind="StageSchema",
+            reason=(
+                "downstream stages see a flat schema — dotted refs are "
+                "not legal. Use the flat column name."
+            ),
+        )
+
+    assert isinstance(scope, ModelScope)
+    if scope.source_model is None:
+        raise UnknownReferenceError(
+            name=".".join(parts),
+            scope_kind="ModelScope",
+            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            suggestion=None,
+        )
+
+    # C14: strip same-model self-prefix.
+    host = scope.source_model
+    if parts and parts[0] == host.name:
+        parts = parts[1:]
+        if not parts:
+            raise UnknownReferenceError(
+                name=host.name,
+                scope_kind="ModelScope",
+                scope_summary=f"model {host.name!r}",
+                suggestion="self-prefix only — expected a column or join target.",
+            )
+        if len(parts) == 1:
+            return _resolve_ref(parts[0], scope=scope, bundle=bundle)
+
+    # parts now has the join walk to perform.
+    if len(parts) == 1:
+        # Single-segment after possible stripping — already a local ref.
+        return _resolve_ref(parts[0], scope=scope, bundle=bundle)
+
+    # Walk join chain. parts[:-1] are join targets; parts[-1] is the leaf column.
+    hop_path = parts[:-1]
+    leaf = parts[-1]
+    current = host
+    for hop in hop_path:
+        join = next(
+            (j for j in current.joins if j.target_model == hop), None,
+        )
+        if join is None:
+            raise UnknownReferenceError(
+                name=".".join(parts),
+                scope_kind="ModelScope",
+                scope_summary=(
+                    f"model {current.name!r} joins: "
+                    f"{[j.target_model for j in current.joins]}"
+                ),
+                suggestion=f"no join from {current.name!r} to {hop!r}.",
+            )
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            raise UnknownReferenceError(
+                name=".".join(parts),
+                scope_kind="ModelScope",
+                scope_summary=f"target {hop!r} not in source bundle",
+                suggestion=None,
+            )
+        current = nxt
+
+    # `current` is the terminal model; `leaf` is the column on it.
+    col = next((c for c in current.columns if c.name == leaf), None)
+    if col is None:
+        raise UnknownReferenceError(
+            name=".".join(parts),
+            scope_kind="ModelScope",
+            scope_summary=(
+                f"model {current.name!r} columns: "
+                f"{[c.name for c in current.columns]}"
+            ),
+            suggestion=None,
+        )
+
+    if col.sql is not None and col.sql.strip() != leaf:
+        # Derived column on a joined model. The path is part of the key
+        # so the cross-model planner can route via the join graph.
+        return ColumnSqlKey(
+            path=tuple(hop_path), model=current.name, column_name=leaf,
+        )
+    return ColumnKey(path=tuple(hop_path), leaf=leaf)
+
+
+def _bind_agg(
+    parsed: AggCall, *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> AggregateKey:
+    if isinstance(parsed.source, StarSource):
+        source = StarKey()
+    else:
+        bound_source = _bind(
+            parsed.source, scope=scope, bundle=bundle, in_filter=False,
+        )
+        if not isinstance(bound_source, (ColumnKey, ColumnSqlKey, StarKey)):
+            raise ValueError(
+                f"Aggregation source must resolve to a column / star, "
+                f"got {type(bound_source).__name__}."
+            )
+        source = bound_source
+
+    # Bind args / kwargs. For aggregations, identifier args/kwargs become
+    # ColumnKey via the binder; scalars normalise.
+    args = tuple(
+        _bind_agg_arg(a, scope=scope, bundle=bundle) for a in parsed.args
+    )
+    kwargs = tuple(
+        (k, _bind_agg_arg(v, scope=scope, bundle=bundle))
+        for k, v in parsed.kwargs
+    )
+    return AggregateKey(
+        source=source, agg=parsed.agg, args=args, kwargs=kwargs,
+    )
+
+
+def _bind_agg_arg(
+    parsed: ParsedExpr, *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+):
+    """Bind one positional / kwarg argument of an aggregation.
+
+    The AggregateKey shape stores Scalars inline (not as LiteralKey)
+    so identity matches the spec — see ``slayer/core/keys.py``.
+    Identifier args become ``ColumnKey`` / ``ColumnSqlKey``; literal
+    args normalise via ``normalize_scalar``.
+    """
+    if isinstance(parsed, Literal):
+        return normalize_scalar(parsed.value)
+    if isinstance(parsed, (Ref, DottedRef)):
+        return _bind(parsed, scope=scope, bundle=bundle, in_filter=False)
+    raise ValueError(
+        f"Aggregation argument of kind {type(parsed).__name__} is not "
+        f"supported. Pass a column reference or a scalar."
+    )
+
+
+def _bind_transform(
+    parsed: TransformCall, *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> TransformKey:
+    inp = _bind(parsed.input, scope=scope, bundle=bundle, in_filter=False)
+    # Transform args/kwargs: bind any references, normalise literals.
+    args: List = []
+    for a in parsed.args:
+        if isinstance(a, Literal):
+            args.append(normalize_scalar(a.value))
+        else:
+            # Non-literal positional args are unusual for transforms; bind
+            # for forward-compat.
+            args.append(_bind(a, scope=scope, bundle=bundle, in_filter=False))
+    kwargs: List = []
+    for k, v in parsed.kwargs:
+        if isinstance(v, Literal):
+            kwargs.append((k, normalize_scalar(v.value)))
+        else:
+            kwargs.append((k, _bind(v, scope=scope, bundle=bundle, in_filter=False)))
+    return TransformKey(
+        op=parsed.op,
+        input=inp,
+        args=tuple(args),
+        kwargs=tuple(kwargs),
+    )
+
+
+def _bind_scalar(
+    parsed: ScalarCall, *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    in_filter: bool,
+) -> ScalarCallKey:
+    if parsed.name not in SCALAR_FUNCTIONS:
+        # Defence in depth: the parser already enforces the allowlist,
+        # but direct ParsedExpr construction can bypass the parser.
+        # Re-check here so the typed key family is always sound.
+        raise UnknownFunctionError(
+            name=parsed.name,
+            location="(binder)",
+            suggestion=(
+                f"Mode-B scalar calls are restricted to "
+                f"{sorted(SCALAR_FUNCTIONS)}."
+            ),
+        )
+    args = tuple(
+        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter)
+        for a in parsed.args
+    )
+    return ScalarCallKey(name=parsed.name, args=args)
+
+
+def _reject_windowed_column_sql(
+    refs: Tuple[ValueKey, ...],
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    parsed: ParsedExpr,
+) -> None:
+    """Raise ``IllegalWindowInFilterError`` if any referenced
+    ``ColumnSqlKey`` has a windowed ``Column.sql`` body.
+
+    DEV-1369 removed predicate-promotion; filters touching a windowed
+    column SQL now raise.
+    """
+    if isinstance(scope, StageSchema):
+        # StageSchema columns don't carry Column.sql in the bundle;
+        # window detection is handled when the upstream stage was bound.
+        return
+    for k in refs:
+        if not isinstance(k, ColumnSqlKey):
+            continue
+        model = _lookup_model(name=k.model, scope=scope, bundle=bundle)
+        if model is None:
+            continue
+        col = next((c for c in model.columns if c.name == k.column_name), None)
+        if col is None or col.sql is None:
+            continue
+        if has_window_function(col.sql):
+            raise IllegalWindowInFilterError(
+                filter_expr=str(parsed),
+                source=(
+                    f"filter references column {k.column_name!r} on model "
+                    f"{k.model!r} whose Column.sql contains a window "
+                    f"function"
+                ),
+                suggestion=(
+                    "use a rank-family transform (rank, percent_rank, "
+                    "dense_rank, ntile) in the formula instead, or "
+                    "compute the windowed value in an earlier stage."
+                ),
+            )
+
+
+def _lookup_model(
+    *,
+    name: str,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> Optional[SlayerModel]:
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        if scope.source_model.name == name:
+            return scope.source_model
+    return bundle.get_referenced_model(name)

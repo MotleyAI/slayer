@@ -188,8 +188,15 @@ class ColumnSqlKey(_FrozenKey):
     The expansion AST is recovered from the model definition at binding
     time — the key only carries identity. Two references to the same
     derived column on the same model intern to one slot.
+
+    ``path`` is the join walk from the query's source model to the
+    model that owns the derived column — empty for local references,
+    non-empty for joined ones (``("customers",)``,
+    ``("customers", "regions")``, …). Cross-model planners use
+    ``path`` the same way they use ``ColumnKey.path``.
     """
 
+    path: Tuple[str, ...] = ()
     model: str
     column_name: str
 
@@ -208,6 +215,35 @@ class StarKey(_FrozenKey):
     @property
     def phase(self) -> Phase:
         return Phase.ROW
+
+
+class LiteralKey(_FrozenKey):
+    """Identity for a literal value inside an expression tree.
+
+    Used wherever an ``ArithmeticKey``, ``TransformKey``, or other
+    composite key needs a literal operand (``revenue:sum + 1`` — the
+    ``1`` is a ``LiteralKey``). Carries phase ROW so it doesn't
+    artificially elevate the phase of expressions it appears in.
+
+    Scalar normalization (int → Decimal, float → Decimal via str)
+    happens at the call site via ``normalize_scalar`` so equality
+    is type-stable (``LiteralKey(Decimal(1))`` and
+    ``LiteralKey(True)`` are distinct).
+    """
+
+    value: Union[Decimal, str, bool, None] = None
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+    def __hash__(self) -> int:
+        return hash(("LiteralKey", _typed_leaf(self.value)))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, LiteralKey):
+            return NotImplemented
+        return _typed_leaf(self.value) == _typed_leaf(other.value)
 
 
 class SqlExprKey(_FrozenKey):
@@ -420,6 +456,8 @@ class ScalarCallKey(_FrozenKey):
 ValueKey = Union[
     ColumnKey,
     ColumnSqlKey,
+    StarKey,
+    LiteralKey,
     AggregateKey,
     TransformKey,
     ArithmeticKey,
