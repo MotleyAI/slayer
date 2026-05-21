@@ -83,6 +83,17 @@ _STAT_AGG_NAMES: frozenset[str] = frozenset({
 # Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
+# DEV-1450 stage 7b.8: aggregations the local-slice generator handles
+# without needing ``aggregation_def`` or kwarg-column resolution. Custom
+# aggs, percentile, weighted_avg, and the stat-agg family route through
+# ``_build_formula_agg`` / ``_build_percentile`` / ``_build_stat_agg``
+# which reach for ``aggregation_def`` and resolve kwarg columns the
+# synthetic-EnrichedMeasure adapter doesn't yet support — those defer
+# to a later slice (Codex LOW fold-in).
+_BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = frozenset({
+    "sum", "avg", "min", "max", "count", "count_distinct", "median",
+})
+
 # DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
 # normalises both into a generic ``Log(this=Literal(base), expression=arg)``
 # AST and re-emits as ``LOG(base, x)`` for almost every dialect, which
@@ -2583,3 +2594,653 @@ class SQLGenerator:
             having_clause = self._parse_predicate(having_sql)
 
         return where_clause, having_clause
+
+    # ======================================================================
+    # DEV-1450 stage 7b.8 — PlannedQuery → SQL.
+    #
+    # The legacy generator (everything above) consumes EnrichedQuery. This
+    # new entry point consumes the typed PlannedQuery from
+    # slayer/engine/stage_planner.py. The two paths coexist until the
+    # engine cutover (stage 7b.15) flips the default path.
+    #
+    # 7b.8 scope: local-only single-model queries — row-phase dims, local
+    # aggregates, Mode-B row filters, ORDER BY / LIMIT / OFFSET, dim-only
+    # dedup. Cross-model, time dimensions, transforms, and aggregate
+    # filtering raise NotImplementedError with an explicit stage marker
+    # so silent parity drift is impossible.
+    # ======================================================================
+
+    def generate_from_planned(
+        self,
+        planned_query,
+        *,
+        bundle,
+    ) -> str:
+        """Render a typed ``PlannedQuery`` to SQL.
+
+        Mirrors the local-only branch of ``_generate_base`` but reads
+        from typed PlannedQuery fields (``row_slots`` / ``aggregate_slots``
+        / ``filters_by_phase`` / ``order``) instead of ``EnrichedQuery``.
+        Reuses legacy dialect helpers (``_resolve_sql`` / ``_build_agg``
+        / ``_wrap_cast_for_type`` / ``_parse_predicate``) so dialect-
+        specific behavior is rendered identically to the legacy
+        ``generate()`` path — the parity oracle in
+        ``tests/parity_oracle.py`` pins this contract.
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ColumnKey,
+            Phase,
+        )
+
+        source_model = bundle.source_model
+        if source_model is None:
+            raise ValueError(
+                "generate_from_planned requires bundle.source_model to be set",
+            )
+        source_relation = planned_query.source_relation
+
+        # Codex HIGH fold-in: SlayerModel.filters (always-applied WHERE,
+        # Mode A SQL) is included by legacy enrichment but not yet wired
+        # through the typed pipeline. Defer explicitly so the parity
+        # contract isn't silently violated when a model carries always-on
+        # filters (e.g. ``filters=["deleted_at IS NULL"]``).
+        if source_model.filters:
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.9+: SlayerModel.filters "
+                f"(always-applied WHERE) not yet emitted by the new "
+                f"pipeline. Model {source_model.name!r} carries "
+                f"filters={source_model.filters!r}; the planner must "
+                f"bind them via parse_sql_predicate and the generator "
+                f"must emit them ahead of query filters (mirroring "
+                f"slayer/engine/enrichment.py:1144-1154)."
+            )
+
+        # Codex MEDIUM fold-in: cross-model aggregate plans are produced
+        # by the planner whenever ANY aggregate slot has a non-empty
+        # join path — including hidden order-only / filter-only refs
+        # whose slot_ids never appear in the public projection. Guard
+        # at the top so an order-only cross-model ref can't slip through
+        # `_apply_order_limit_from_planned`.
+        if planned_query.cross_model_aggregate_plans:
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.12: cross_model_aggregate_plans "
+                f"({len(planned_query.cross_model_aggregate_plans)} plan(s)) "
+                f"deferred to the cross-model slice."
+            )
+
+        from_clause = self._build_from_clause_from_planned(
+            source_model=source_model, source_relation=source_relation,
+        )
+
+        slots_by_id = {
+            s.id: s
+            for s in (
+                list(planned_query.row_slots)
+                + list(planned_query.aggregate_slots)
+                + list(planned_query.combined_expression_slots)
+            )
+        }
+
+        select_columns: list[exp.Expression] = []
+        # group_by keyed by slot id so multi-alias dims emit GROUP BY once.
+        group_by_keys: dict[str, exp.Expression] = {}
+        has_aggregation = False
+        # Per-slot alias counter: matches stage_planner._emit_stage_schema —
+        # multi-alias declarations appear in ``projection`` once per alias,
+        # and we pick public_aliases[idx] on each visit (falling back to
+        # declared_name on overflow for symmetry with the planner).
+        alias_index: dict[str, int] = {}
+
+        for sid in planned_query.projection:
+            slot = slots_by_id[sid]
+            if slot.hidden:
+                continue
+            alias = self._pick_alias_for_planned_slot(
+                slot=slot, alias_index=alias_index,
+            )
+            full_alias = f"{source_relation}.{alias}"
+
+            if slot.phase == Phase.ROW:
+                key = slot.key
+                if isinstance(key, ColumnKey):
+                    if key.path != ():
+                        raise NotImplementedError(
+                            f"DEV-1450 stage 7b.12: cross-model dimension "
+                            f"refs (path={key.path!r}) deferred to the "
+                            f"cross-model slice."
+                        )
+                    col_expr = self._dim_column_expr_from_planned(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        leaf=key.leaf,
+                    )
+                    select_columns.append(col_expr.copy().as_(full_alias))
+                    group_by_keys.setdefault(sid, col_expr)
+                else:
+                    raise NotImplementedError(
+                        f"DEV-1450 stage 7b.9+: row-phase key type "
+                        f"{type(key).__name__} not supported in 7b.8."
+                    )
+
+            elif slot.phase == Phase.AGGREGATE:
+                key = slot.key
+                if not isinstance(key, AggregateKey):
+                    raise NotImplementedError(
+                        f"DEV-1450 stage 7b.10+: AGGREGATE-phase key "
+                        f"{type(key).__name__} not supported in 7b.8."
+                    )
+                agg_path = getattr(key.source, "path", ())
+                if agg_path:
+                    raise NotImplementedError(
+                        f"DEV-1450 stage 7b.12: cross-model aggregate "
+                        f"(source.path={agg_path!r}) deferred to the "
+                        f"cross-model slice."
+                    )
+                if key.column_filter_key is not None:
+                    raise NotImplementedError(
+                        f"DEV-1450 stage 7b.12: column_filter_key "
+                        f"(Column.filter on aggregated column) deferred "
+                        f"to the cross-model slice. Got "
+                        f"column_filter_key={key.column_filter_key!r}."
+                    )
+                synth = self._synthesize_enriched_measure_from_planned(
+                    slot=slot,
+                    key=key,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    full_alias=full_alias,
+                )
+                agg_expr, is_agg = self._build_agg(measure=synth)
+                if is_agg:
+                    agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
+                    has_aggregation = True
+                select_columns.append(agg_expr.copy().as_(full_alias))
+            else:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.10+: POST-phase slot in projection "
+                    f"deferred to transform-rendering slices. "
+                    f"slot id={slot.id!r} key={slot.key!r}."
+                )
+
+        where_clause, having_clause = self._build_where_having_from_planned(
+            planned_query=planned_query,
+            source_relation=source_relation,
+            source_model=source_model,
+        )
+
+        select = exp.Select()
+        for col in select_columns:
+            select = select.select(col)
+        select = select.from_(from_clause)
+
+        if where_clause is not None:
+            select = select.where(where_clause)
+
+        # Match legacy _generate_base:1375 — dim-only-dedup OR has_aggregation
+        # triggers GROUP BY (dim-only emits GROUP BY before LIMIT so unique
+        # dim tuples can't silently drop past row N).
+        dim_only_dedup = bool(group_by_keys) and not has_aggregation
+        needs_group_by = has_aggregation or dim_only_dedup
+        if needs_group_by and group_by_keys:
+            for gb in group_by_keys.values():
+                select = select.group_by(gb)
+
+        if having_clause is not None:
+            select = select.having(having_clause)
+
+        select = self._apply_order_limit_from_planned(
+            select=select,
+            planned_query=planned_query,
+            source_relation=source_relation,
+            slots_by_id=slots_by_id,
+        )
+
+        return select.sql(dialect=self.dialect, pretty=True)
+
+    @staticmethod
+    def _pick_alias_for_planned_slot(*, slot, alias_index: dict) -> str:
+        """Pick the next alias for a slot in projection order.
+
+        Mirrors ``stage_planner._emit_stage_schema``: per-slot index
+        picks the next ``public_aliases`` entry; falls back to
+        ``declared_name`` when the alias list is exhausted (kept
+        symmetric with the planner; unreachable for properly-interned
+        slots but defensive).
+        """
+        idx = alias_index.setdefault(slot.id, 0)
+        if idx < len(slot.public_aliases):
+            alias = slot.public_aliases[idx]
+        else:
+            alias = slot.declared_name
+        alias_index[slot.id] = idx + 1
+        return alias
+
+    def _build_from_clause_from_planned(
+        self,
+        *,
+        source_model,
+        source_relation: str,
+    ) -> exp.Expression:
+        if source_model.sql_table:
+            return exp.to_table(source_model.sql_table, alias=source_relation)
+        if source_model.sql:
+            return exp.Subquery(
+                this=self._parse(source_model.sql),
+                alias=exp.to_identifier(source_relation),
+            )
+        raise NotImplementedError(
+            f"DEV-1450 stage 7b.12+: query-backed models (source_queries) "
+            f"deferred to multi-stage slices. Model "
+            f"{source_model.name!r} has neither sql_table nor sql set."
+        )
+
+    def _dim_column_expr_from_planned(
+        self, *, source_model, source_relation: str, leaf: str,
+    ) -> exp.Expression:
+        col = next(
+            (c for c in source_model.columns if c.name == leaf), None,
+        )
+        if col is None:
+            raise ValueError(
+                f"Column {leaf!r} not found on model "
+                f"{source_model.name!r}",
+            )
+        return self._resolve_sql(
+            sql=col.sql, name=col.name, model_name=source_relation,
+            type=col.type,
+        )
+
+    def _synthesize_enriched_measure_from_planned(
+        self,
+        *,
+        slot,
+        key,
+        source_model,
+        source_relation: str,
+        full_alias: str,
+    ) -> EnrichedMeasure:
+        """Adapter: build an EnrichedMeasure from a planned aggregate
+        slot so ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type``
+        emit dialect-correct SQL without forking the agg-emission
+        codebase.
+
+        Mirrors ``enrichment.py:431`` ``sql = column.sql or column.name``
+        so ``COUNT(*)`` (StarKey source) and ``COUNT(col)`` (ColumnKey
+        source with sql=None on a bare column) take their distinct
+        legacy branches inside ``_build_agg``.
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
+
+        source = key.source
+        if isinstance(source, StarKey):
+            # Legacy enrichment (enrichment.py:~388) rejects any
+            # non-count aggregation on ``*`` — e.g. ``*:sum`` or
+            # ``*:median`` would otherwise plan and render as
+            # ``SUM(*)`` / ``MEDIAN(*)``, which is meaningless.
+            # Mirror that rejection here so the typed pipeline can't
+            # silently emit invalid SQL (Codex MEDIUM fold-in).
+            if key.agg != "count":
+                raise ValueError(
+                    f"Aggregation {key.agg!r} not allowed with measure "
+                    f"'*' — use '*:count' for COUNT(*)."
+                )
+            if key.args or key.kwargs:
+                raise ValueError(
+                    f"'*:count' takes no args or kwargs; got "
+                    f"args={key.args!r}, kwargs={key.kwargs!r}."
+                )
+            return EnrichedMeasure(
+                name="",
+                sql=None,
+                aggregation=key.agg,
+                alias=full_alias,
+                model_name=source_relation,
+                type=slot.type,
+            )
+        if isinstance(source, ColumnKey):
+            # Codex LOW fold-in: custom / parameterised aggregations
+            # (percentile, weighted_avg, corr, covar_samp/pop, stddev_*,
+            # var_*, plus any model-level custom agg) depend on
+            # ``aggregation_def`` and kwarg-column resolution that the
+            # synthetic adapter doesn't yet provide. Defer explicitly so
+            # the failure mode is a clear stage marker rather than a
+            # downstream KeyError or wrong-SQL emission.
+            if key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.10+/7b.13: aggregation "
+                    f"{key.agg!r} on {source_relation}.{source.leaf} not "
+                    f"yet wired through the new pipeline's synthetic "
+                    f"EnrichedMeasure adapter (needs aggregation_def + "
+                    f"kwarg-column resolution). Deferred to later slice."
+                )
+            if key.kwargs:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.10+/7b.13: aggregation kwargs "
+                    f"({list(dict(key.kwargs))!r}) on "
+                    f"{source_relation}.{source.leaf}:{key.agg} not yet "
+                    f"wired through the synthetic EnrichedMeasure "
+                    f"adapter. Deferred to later slice."
+                )
+            col = next(
+                (c for c in source_model.columns if c.name == source.leaf),
+                None,
+            )
+            if col is None:
+                raise ValueError(
+                    f"Aggregate source column {source.leaf!r} not found "
+                    f"on model {source_model.name!r}",
+                )
+            sql_text = col.sql if col.sql else col.name
+            return EnrichedMeasure(
+                name=col.name,
+                sql=sql_text,
+                aggregation=key.agg,
+                alias=full_alias,
+                model_name=source_relation,
+                type=slot.type,
+                column_type=col.type,
+            )
+        if isinstance(source, ColumnSqlKey):
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.10+: ColumnSqlKey aggregation sources "
+                f"(derived columns) deferred to later slice. "
+                f"model={source.model!r} column={source.column_name!r}.",
+            )
+        raise NotImplementedError(
+            f"AggregateKey source {type(source).__name__} not supported "
+            f"in 7b.8."
+        )
+
+    def _build_where_having_from_planned(
+        self,
+        *,
+        planned_query,
+        source_relation: str,
+        source_model,
+    ):
+        from slayer.core.keys import Phase
+
+        where_parts: list[str] = []
+        for fp in planned_query.filters_by_phase:
+            if fp.phase != Phase.ROW:
+                # 7b.8 only handles row filters. HAVING / post deferred.
+                if fp.phase == Phase.AGGREGATE:
+                    raise NotImplementedError(
+                        f"DEV-1450 stage 7b.10+: HAVING-phase filters "
+                        f"(filter on aggregate slot) deferred to later "
+                        f"slice. filter id={fp.id!r}."
+                    )
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.10+: POST-phase filters deferred "
+                    f"to transform-rendering slices. filter id={fp.id!r}."
+                )
+            if fp.expression is None:
+                raise ValueError(
+                    f"Filter id={fp.id!r} has no bound expression "
+                    f"(planner gap).",
+                )
+            rendered = self._render_value_key_for_filter(
+                key=fp.expression.value_key,
+                source_relation=source_relation,
+                source_model=source_model,
+            )
+            # Match the legacy DSL parser, which wraps top-level boolean
+            # expressions in parens — legacy WHERE for a compound filter
+            # emits ``WHERE (a AND b)`` rather than ``WHERE a AND b``.
+            # Wrapping at the top level only (not recursively) reproduces
+            # legacy output without affecting single-comparison filters.
+            if isinstance(rendered, (exp.And, exp.Or)):
+                rendered = exp.Paren(this=rendered)
+            where_parts.append(rendered.sql(dialect=self.dialect))
+
+        where_clause = None
+        if where_parts:
+            where_sql = _SQL_AND_JOINER.join(where_parts)
+            where_clause = self._parse_predicate(where_sql)
+        return where_clause, None  # No HAVING in 7b.8.
+
+    def _render_value_key_for_filter(
+        self,
+        *,
+        key,
+        source_relation: str,
+        source_model,
+    ) -> exp.Expression:
+        """Render a ValueKey tree to sqlglot for WHERE rendering.
+
+        7b.8 supports ``ColumnKey`` (local only), ``LiteralKey``,
+        ``ArithmeticKey`` (comparison / boolean / arithmetic),
+        ``ScalarCallKey`` (closed allowlist). Cross-model column refs
+        (``path != ()``) and ``AggregateKey`` / ``TransformKey`` /
+        ``TimeTruncKey`` are deferred to later slices.
+        """
+        from decimal import Decimal
+
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnKey,
+            ColumnSqlKey,
+            LiteralKey,
+            ScalarCallKey,
+            StarKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        if isinstance(key, ColumnKey):
+            if key.path != ():
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.12: cross-model column ref in "
+                    f"filter (path={key.path!r}) deferred to cross-model "
+                    f"slice."
+                )
+            col = next(
+                (c for c in source_model.columns if c.name == key.leaf),
+                None,
+            )
+            if col is None:
+                raise ValueError(
+                    f"Filter references column {key.leaf!r} which is "
+                    f"not found on model {source_model.name!r}",
+                )
+            return self._resolve_sql(
+                sql=col.sql,
+                name=col.name,
+                model_name=source_relation,
+                type=col.type,
+            )
+        if isinstance(key, LiteralKey):
+            return self._scalar_to_sqlglot(key.value)
+        if isinstance(key, ArithmeticKey):
+            operands = [
+                self._render_value_key_for_filter(
+                    key=o,
+                    source_relation=source_relation,
+                    source_model=source_model,
+                )
+                for o in key.operands
+            ]
+            return self._build_arithmetic_for_filter(
+                op=key.op, operands=operands,
+            )
+        if isinstance(key, ScalarCallKey):
+            args = []
+            for a in key.args:
+                if isinstance(a, (Decimal, str, bool)) or a is None:
+                    args.append(self._scalar_to_sqlglot(a))
+                else:
+                    args.append(self._render_value_key_for_filter(
+                        key=a,
+                        source_relation=source_relation,
+                        source_model=source_model,
+                    ))
+            return exp.Anonymous(this=key.name.upper(), expressions=args)
+        if isinstance(key, (
+            AggregateKey, TransformKey, TimeTruncKey,
+            StarKey, ColumnSqlKey,
+        )):
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.10+: filter rendering for "
+                f"{type(key).__name__} deferred to later slice."
+            )
+        raise NotImplementedError(
+            f"Unsupported ValueKey type in filter: {type(key).__name__}",
+        )
+
+    @staticmethod
+    def _scalar_to_sqlglot(v) -> exp.Expression:
+        from decimal import Decimal
+
+        if v is None:
+            return exp.Null()
+        if isinstance(v, bool):
+            return exp.Boolean(this=v)
+        if isinstance(v, Decimal):
+            return exp.Literal.number(str(v))
+        if isinstance(v, str):
+            return exp.Literal.string(v)
+        raise NotImplementedError(
+            f"Unsupported scalar in filter: type={type(v).__name__} "
+            f"value={v!r}",
+        )
+
+    @staticmethod
+    def _build_arithmetic_for_filter(
+        *, op: str, operands: list,
+    ) -> exp.Expression:
+        # DSL ``==``/``!=`` map to sqlglot EQ/NEQ; sqlglot then emits the
+        # dialect-correct SQL operator (postgres ``=``/``!=``).
+        if op in ("==", "="):
+            return exp.EQ(this=operands[0], expression=operands[1])
+        if op in ("!=", "<>"):
+            return exp.NEQ(this=operands[0], expression=operands[1])
+        if op == "<":
+            return exp.LT(this=operands[0], expression=operands[1])
+        if op == "<=":
+            return exp.LTE(this=operands[0], expression=operands[1])
+        if op == ">":
+            return exp.GT(this=operands[0], expression=operands[1])
+        if op == ">=":
+            return exp.GTE(this=operands[0], expression=operands[1])
+        if op == "+":
+            # Unary plus is a no-op; legacy never emits it explicitly.
+            if len(operands) == 1:
+                return operands[0]
+            return exp.Add(this=operands[0], expression=operands[1])
+        if op == "-":
+            # Unary minus: the binder represents ``-x`` / ``-10`` as
+            # ``ArithmeticKey(op="-", operands=(x,))`` — handle the
+            # single-operand form so a filter like ``amount > -10``
+            # doesn't crash with IndexError.
+            if len(operands) == 1:
+                return exp.Neg(this=operands[0])
+            return exp.Sub(this=operands[0], expression=operands[1])
+        if op == "*":
+            return exp.Mul(this=operands[0], expression=operands[1])
+        if op == "/":
+            return exp.Div(this=operands[0], expression=operands[1])
+        if op == "and":
+            result = operands[0]
+            for o in operands[1:]:
+                result = exp.And(this=result, expression=o)
+            return result
+        if op == "or":
+            result = operands[0]
+            for o in operands[1:]:
+                result = exp.Or(this=result, expression=o)
+            return result
+        if op == "not":
+            return exp.Not(this=operands[0])
+        raise NotImplementedError(
+            f"DEV-1450 stage 7b.8: ArithmeticKey op {op!r} not "
+            f"supported in filter rendering."
+        )
+
+    def _apply_order_limit_from_planned(
+        self,
+        *,
+        select: exp.Select,
+        planned_query,
+        source_relation: str,
+        slots_by_id: dict,
+    ) -> exp.Select:
+        """ORDER BY entries reference slot ids — resolve to the slot's
+        public alias and emit ``ORDER BY "source_relation.alias"
+        ASC|DESC`` (quoted-identifier form, matching legacy
+        ``_apply_order_limit``).
+        """
+        for order_entry in planned_query.order:
+            slot = slots_by_id.get(order_entry.slot_id)
+            if slot is None:
+                continue
+            # Codex MEDIUM fold-in: hidden row slots (e.g. a
+            # ``ColumnSqlKey`` derived column referenced only via order)
+            # are interned by the planner but the local-only generator
+            # doesn't materialise them in SELECT, so emitting
+            # ``ORDER BY "<source_relation>.<alias>"`` would reference
+            # an alias not in the projection. Defer with a stage marker
+            # — hidden ORDER BY targets surface when window / derived
+            # column rendering lands (7b.10+).
+            if slot.hidden:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.10+: ORDER BY references a "
+                    f"hidden slot (id={slot.id!r}, key="
+                    f"{type(slot.key).__name__}) not materialised in "
+                    f"the local-only SELECT. Deferred to a later slice."
+                )
+            if slot.public_aliases:
+                alias = slot.public_aliases[0]
+            elif slot.public_name:
+                alias = slot.public_name
+            else:
+                alias = slot.declared_name
+            full_alias = f"{source_relation}.{alias}"
+            order_col = exp.Column(
+                this=exp.to_identifier(full_alias, quoted=True),
+            )
+            ascending = order_entry.direction == "asc"
+            select = select.order_by(
+                exp.Ordered(this=order_col, desc=not ascending),
+            )
+
+        if planned_query.limit is not None:
+            select = select.limit(planned_query.limit)
+        if planned_query.offset is not None:
+            select = select.offset(planned_query.offset)
+
+        return select
+
+
+# ===========================================================================
+# DEV-1450 stage 7b.8 — module-level shim entry point.
+# ===========================================================================
+
+
+def generate_from_planned(
+    planned_query,
+    *,
+    bundle,
+    dialect: str = "postgres",
+) -> str:
+    """Render a ``PlannedQuery`` to SQL.
+
+    Module-level entry point: constructs an ``SQLGenerator`` for the
+    requested dialect and delegates to the instance method, which
+    reuses the legacy dialect helpers (``_resolve_sql`` /
+    ``_build_agg`` / ``_wrap_cast_for_type`` / ``_parse_predicate``)
+    so dialect-specific behavior is rendered identically to the
+    legacy ``SQLGenerator.generate()`` path.
+
+    Stage 7b.8 scope: single-model queries with dimensions, local
+    aggregates, Mode-B row filters, ORDER BY, LIMIT/OFFSET, and dim-
+    only deduplication. Cross-model aggregates, time dimensions,
+    window transforms, self-join CTE transforms, and HAVING-phase
+    filters raise ``NotImplementedError`` with a stage marker so
+    silent parity drift is impossible (slices 7b.9–7b.13 land each
+    behavior in turn).
+    """
+    return SQLGenerator(dialect=dialect).generate_from_planned(
+        planned_query, bundle=bundle,
+    )

@@ -54,6 +54,7 @@ from slayer.engine.cross_model_planner import (
     HostFilterRouting,
     IsolatedCteCrossModelPlanner,
 )
+from slayer.engine.measure_expansion import expand_model_measures
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
     FilterPhase,
@@ -108,6 +109,20 @@ def plan_query(
         query=query, scope=scope, bundle=bundle,
     )
 
+    # DEV-1450 stage 7b.8 — alias lookup for ORDER BY resolution.
+    # A user-supplied order column may reference the declared measure
+    # by its public name (user-supplied ``name``), declared name
+    # (canonical OR user), or canonical alias. The order pass below
+    # checks this map BEFORE falling back to ``bind_expr`` so refs to
+    # aggregate aliases like ``amount_sum`` resolve through the
+    # projection registry rather than against model scope (where they
+    # don't exist as columns).
+    declared_alias_to_bound: Dict[str, BinderBoundExpr] = {}
+    for dm in declared_measures:
+        for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
+            if alias is not None:
+                declared_alias_to_bound.setdefault(alias, dm.bound)
+
     bound_filters: List[BoundFilter] = []
     for f in (query.filters or []):
         if not isinstance(f, str):
@@ -132,7 +147,15 @@ def plan_query(
     order_specs = []
     for o in (query.order or []):
         col_name = o.column.name
-        bo = bind_expr(parse_expr(col_name), scope=scope, bundle=bundle)
+        # Prefer declared-measure alias resolution over model-scope
+        # binding (DEV-1450 stage 7b.8 — gap fix): aggregate canonical
+        # aliases like ``amount_sum`` are not columns on the model, so
+        # ``bind_expr`` would raise. The alias map covers user-supplied
+        # ``name``, canonical alias, and the declared name itself.
+        if col_name in declared_alias_to_bound:
+            bo = declared_alias_to_bound[col_name]
+        else:
+            bo = bind_expr(parse_expr(col_name), scope=scope, bundle=bundle)
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
     source_col_names = _source_column_names(scope)
@@ -304,7 +327,19 @@ def _declared_measures_from_query(
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
-        bound = bind_expr(parse_expr(formula), scope=scope, bundle=bundle)
+        parsed = parse_expr(formula)
+        # DEV-1450 stage 7b.8 — pre-bind ModelMeasure expansion. A bare
+        # ``Ref`` whose name matches a saved ``ModelMeasure`` on the
+        # host model is rewritten to the measure's formula AST so the
+        # binder resolves the underlying columns. Only applies against
+        # ModelScope (downstream stages bind against StageSchema and
+        # don't expose saved measures).
+        if isinstance(scope, ModelScope) and scope.source_model is not None:
+            parsed = expand_model_measures(
+                expr=parsed,
+                model=scope.source_model,
+            )
+        bound = bind_expr(parsed, scope=scope, bundle=bundle)
         # Sugar lowering for ``change`` / ``change_pct`` preserves the
         # inner aggregate's structural identity (DEV-1446) so a query
         # mixing ``change(amount:sum)`` with a bare ``amount:sum``
