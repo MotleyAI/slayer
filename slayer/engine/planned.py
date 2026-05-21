@@ -28,6 +28,7 @@ from typing import List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from slayer.core.enums import DataType, JoinType
+from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.keys import Phase, ValueKey
 from slayer.core.scope import StageSchema
 
@@ -161,6 +162,17 @@ class CrossModelAggregatePlan(BaseModel):
     or a future alternative — see ``cross_model_planner.py``) lives
     outside this struct; this is the typed result, not the algorithm.
 
+    Filter routing is route-explicit so the SQL generator (stage 7b)
+    can render each route without re-classifying:
+    - ``where_filter_ids`` — host filters propagated to the CTE's WHERE
+      (decision-table rows: host-local-but-targeted, joined-target-path).
+    - ``having_filter_ids`` — host filters propagated as HAVING (decision-
+      table row: cross-model agg-ref on the same target).
+    - ``target_model_filters`` — the target model's own
+      ``SlayerModel.filters`` (always-applied WHERE).
+    ``applied_filter_ids`` is the audit union of where + having for
+    backward compatibility with the spec's external surface.
+
     ``hidden=True`` is used for order-only / filter-only refs whose
     aggregate value is materialised but not surfaced in the public
     projection; ``public_alias`` is ``None`` in that case.
@@ -175,8 +187,11 @@ class CrossModelAggregatePlan(BaseModel):
     join_back_pairs: List[Tuple[ValueKey, ValueKey]] = Field(default_factory=list)
     cte_stage_schema: StageSchema
     shared_grain_slots: List[SlotId]
-    applied_filter_ids: List[BoundFilterId]
-    dropped_filter_warnings: List = Field(default_factory=list)
+    applied_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    having_filter_ids: List[BoundFilterId] = Field(default_factory=list)
+    target_model_filters: List[str] = Field(default_factory=list)
+    dropped_filter_warnings: List[UnreachableFilterDroppedWarning] = Field(default_factory=list)
     hidden: bool = False
     public_alias: Optional[str] = None
 
