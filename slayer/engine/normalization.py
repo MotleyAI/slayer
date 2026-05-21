@@ -18,10 +18,16 @@ Three seed rules:
   structured warning.
 
 - ``DOT_PATH_IN_SQL`` (Mode A only): sqlglot-AST ``Column`` node in root
-  scope whose dotted path resolves to a join chain → ``__`` alias form
-  (``customers.regions.name`` → ``customers__regions.name``). Stub in
-  this stage; full AST-based, scope-aware implementation arrives in a
-  follow-up.
+  scope whose dotted path's leading segment matches a known join target
+  on the host model → ``__`` alias form (``customers.regions.name`` →
+  ``customers__regions.name``). Scope-aware via lexical-ancestor walking
+  so refs inside subqueries / CTE bodies / set-op branches are left
+  alone. First-segment shadow detection covers CTE names, explicit
+  ``AS`` aliases, Subquery/CTE FROM sources, and schema/catalog
+  qualifiers on FROM tables (``FROM customers.regions`` → ``customers``
+  shadows). Shadowed cases emit an ambiguity warning without rewriting.
+  Wired into ``normalize_model`` over ``Column.sql``, ``Column.filter``,
+  and ``SlayerModel.filters``.
 
 Each rule emits a ``SlayerNormalizationWarning`` via ``warnings.warn(...)``
 AND appends a ``NormalizationWarning`` payload to the returned result,
@@ -33,8 +39,11 @@ from __future__ import annotations
 
 import re
 import warnings as _warnings_module
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.optimizer.scope import ScopeType, traverse_scope
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
@@ -42,6 +51,7 @@ from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENT_OR_PATH_RE
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
+from slayer.engine.column_expansion import _root_scope_column_ids
 
 
 # ---------------------------------------------------------------------------
@@ -309,23 +319,164 @@ def _apply_misplaced_measure(
 # ---------------------------------------------------------------------------
 
 
-def _apply_dot_path_in_sql(
-    sql_text: str, *, location: str, model: Optional[SlayerModel],
-) -> tuple[str, List[NormalizationWarning]]:
-    """Stage-6 stub.
+# Node types that have a "natural" root scope sqlglot can analyse directly.
+# Any other parsed input (a scalar expression like ``lower(a.b.c)``) gets
+# wrapped in a synthetic ``SELECT ... AS _`` for scope traversal — mirrors
+# the precedent in ``column_expansion._root_scope_column_ids``.
+_STATEMENT_TYPES: Tuple[type, ...] = (
+    exp.Select, exp.Union, exp.Intersect, exp.Except,
+)
 
-    The full implementation walks the sqlglot AST and rewrites
-    root-scope dotted refs (``customers.regions.name``) to the ``__``
-    alias form (``customers__regions.name``) when the leading segment
-    is a known join target. Scope-aware (skips subqueries / CTE-local
-    aliases / set-op branches), AST-based, reuses the
-    ``column_expansion.py`` precedent.
 
-    Stage 6 ships the slot so downstream wiring can be tested; the
-    rewrite itself lands in a later commit (tracked alongside the
-    `_rewrite_funcstyle_aggregations` deletion in stage 7b).
+def _dot_path_root_scope_analysis(
+    *, parsed: exp.Expression,
+) -> Tuple[Set[int], Set[str]]:
+    """Return ``(root_col_ids, shadow_names)`` for ``parsed``.
+
+    ``root_col_ids``: ids of ``exp.Column`` nodes whose innermost
+    scope-defining ancestor is parsed's root scope. Walks lexical
+    ancestors rather than trusting ``Scope.columns`` (which can include
+    correlated refs from inner subqueries).
+
+    ``shadow_names``: identifiers defined at the same root scope as:
+      - CTE definitions,
+      - FROM/JOIN sources introduced by an explicit ``AS`` alias OR by a
+        Subquery/CTE source (always alias-like),
+      - schema/catalog parts of qualified FROM tables (``mydb.foo`` →
+        ``mydb`` shadows; ``a.b.foo`` → both ``a`` and ``b`` shadow).
+    Unaliased plain ``FROM customers`` does NOT shadow per spec wording
+    ("AS alias, CTE name, or schema name").
     """
-    return sql_text, []
+    if isinstance(parsed, _STATEMENT_TYPES):
+        scope_id_to_type: dict[int, ScopeType] = {}
+        for scope in traverse_scope(parsed):
+            scope_id_to_type[id(scope.expression)] = scope.scope_type
+        root_scope_node_id = next(
+            (sid for sid, st in scope_id_to_type.items() if st == ScopeType.ROOT),
+            None,
+        )
+        if root_scope_node_id is None:
+            return set(), set()
+
+        root_col_ids: Set[int] = set()
+        for col in parsed.find_all(exp.Column):
+            node: Optional[exp.Expression] = col.parent
+            while node is not None:
+                if id(node) in scope_id_to_type:
+                    if id(node) == root_scope_node_id:
+                        root_col_ids.add(id(col))
+                    break
+                node = node.parent
+
+        shadow_names: Set[str] = set()
+        for scope in traverse_scope(parsed):
+            if scope.scope_type != ScopeType.ROOT:
+                continue
+            shadow_names |= set(scope.cte_sources)
+            for src_name, source in scope.sources.items():
+                if isinstance(source, exp.Table):
+                    # Explicit AS alias.
+                    if source.alias:
+                        shadow_names.add(src_name)
+                    # Schema / catalog qualifiers on the FROM table.
+                    for part_key in ("db", "catalog"):
+                        part = source.args.get(part_key)
+                        if part is not None:
+                            shadow_names.add(part.name)
+                else:
+                    # Subquery / CTE-referenced source — always alias-like.
+                    shadow_names.add(src_name)
+            break
+        return root_col_ids, shadow_names
+    return _root_scope_column_ids(parsed=parsed), set()
+
+
+def _apply_dot_path_in_sql(
+    sql_text: Optional[str], *, location: str, model: Optional[SlayerModel],
+) -> Tuple[Optional[str], List[NormalizationWarning]]:
+    """AST-based, scope-aware DOT_PATH_IN_SQL rewrite.
+
+    Rewrites root-scope dotted refs (``customers.regions.name``) to the
+    ``__`` alias form (``customers__regions.name``) when the leading
+    segment is a known join target on ``model``. Refs in subqueries /
+    CTE-local scopes / set-op branches are left alone (scope-aware).
+    Refs whose leading segment matches a join target AND is also a
+    CTE / FROM-alias in the same scope are flagged ambiguous: no
+    rewrite, one warning carrying ``normalized="(ambiguous: ...)"``.
+
+    Intermediate hops are not validated at normalize-time (no storage
+    access here); the contract is "first segment matches a join target
+    on the host model". Downstream join resolution catches an invalid
+    intermediate the same way it would for the canonical form.
+    """
+    if not sql_text or model is None or not model.joins:
+        return sql_text, []
+
+    try:
+        statements = sqlglot.parse(sql_text)
+    except Exception:
+        return sql_text, []
+    statements = [s for s in statements if s is not None]
+    if len(statements) != 1:
+        # Multi-statement (or empty) — slack input is contractually a single
+        # scalar expression / predicate. Leave alone.
+        return sql_text, []
+    parsed = statements[0]
+
+    join_target_names = {j.target_model for j in model.joins}
+    root_col_ids, shadow_names = _dot_path_root_scope_analysis(parsed=parsed)
+
+    emitted: List[NormalizationWarning] = []
+    changed = False
+
+    for col in list(parsed.find_all(exp.Column)):
+        if id(col) not in root_col_ids:
+            continue
+        parts = [p.name for p in col.parts]
+        if len(parts) < 3:
+            continue
+        first = parts[0]
+        if first not in join_target_names:
+            continue
+        original = ".".join(parts)
+
+        if first in shadow_names:
+            payload = NormalizationWarning(
+                rule_id="DOT_PATH_IN_SQL",
+                original=original,
+                normalized="(ambiguous: shadowed by local alias or CTE — not rewritten)",
+                location=location,
+                rule_doc_url="docs/agent_input_slack.md#dot-path-in-sql",
+            )
+            emitted.append(payload)
+            _warnings_module.warn(
+                SlayerNormalizationWarning(payload), stacklevel=2,
+            )
+            continue
+
+        new_table_name = "__".join(parts[:-1])
+        leaf_name = parts[-1]
+        normalized = f"{new_table_name}.{leaf_name}"
+        col.set("catalog", None)
+        col.set("db", None)
+        col.set("table", exp.to_identifier(new_table_name))
+
+        payload = NormalizationWarning(
+            rule_id="DOT_PATH_IN_SQL",
+            original=original,
+            normalized=normalized,
+            location=location,
+            rule_doc_url="docs/agent_input_slack.md#dot-path-in-sql",
+        )
+        emitted.append(payload)
+        _warnings_module.warn(
+            SlayerNormalizationWarning(payload), stacklevel=2,
+        )
+        changed = True
+
+    if not changed:
+        return sql_text, emitted
+    return parsed.sql(), emitted
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +572,45 @@ def normalize_model(model: SlayerModel) -> NormalizationResult:
             new_measures.append(mm)
         model = model.model_copy(update={"measures": new_measures})
 
-    # DOT_PATH_IN_SQL on Mode-A fields — stub call kept for wiring symmetry.
-    _, _ = _apply_dot_path_in_sql("", location="(model)", model=model)
+    # DOT_PATH_IN_SQL (Mode-A only): Column.sql, Column.filter, SlayerModel.filters.
+    if model.joins:
+        new_columns = []
+        column_changed = False
+        for i, c in enumerate(model.columns):
+            updates: dict = {}
+            if c.sql is not None:
+                rewritten_sql, ws = _apply_dot_path_in_sql(
+                    c.sql, location=f"columns[{i}].sql", model=model,
+                )
+                all_warnings.extend(ws)
+                if rewritten_sql != c.sql:
+                    updates["sql"] = rewritten_sql
+            if c.filter is not None:
+                rewritten_filter, ws = _apply_dot_path_in_sql(
+                    c.filter, location=f"columns[{i}].filter", model=model,
+                )
+                all_warnings.extend(ws)
+                if rewritten_filter != c.filter:
+                    updates["filter"] = rewritten_filter
+            if updates:
+                c = c.model_copy(update=updates)
+                column_changed = True
+            new_columns.append(c)
+        if column_changed:
+            model = model.model_copy(update={"columns": new_columns})
+
+        if model.filters:
+            new_filters = []
+            filters_changed = False
+            for i, f in enumerate(model.filters):
+                rewritten, ws = _apply_dot_path_in_sql(
+                    f, location=f"filters[{i}]", model=model,
+                )
+                all_warnings.extend(ws)
+                if rewritten != f:
+                    filters_changed = True
+                new_filters.append(rewritten if rewritten is not None else f)
+            if filters_changed:
+                model = model.model_copy(update={"filters": new_filters})
 
     return NormalizationResult(model=model, warnings=all_warnings)
