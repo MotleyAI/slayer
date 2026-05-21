@@ -205,6 +205,32 @@ class ColumnSqlKey(_FrozenKey):
         return Phase.ROW
 
 
+class TimeTruncKey(_FrozenKey):
+    """Row-level reference to a time-truncated column (DEV-1450 stage 7b.3).
+
+    Identifies a time dimension by ``(column, granularity)``. The
+    underlying column is recoverable via ``column`` so date-range filters
+    can bind against the raw column independently of the truncation.
+
+    Identity is structural: two ``TimeTruncKey``s with the same
+    ``ColumnKey`` and the same ``granularity`` intern to the same slot;
+    different granularities on the same column are distinct slots. This
+    lets the ``ValueRegistry`` keep month / day / raw uses of the same
+    column as separate materialised values without special-casing.
+
+    ``granularity`` is the string value of a ``TimeGranularity`` member
+    (``"day"`` / ``"month"`` / ...). Stored as ``str`` so the key stays
+    a pure-data frozen Pydantic model without an enum import here.
+    """
+
+    column: ColumnKey
+    granularity: str
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+
 class StarKey(_FrozenKey):
     """Sentinel source for ``*:count`` aggregations.
 
@@ -456,6 +482,7 @@ class ScalarCallKey(_FrozenKey):
 ValueKey = Union[
     ColumnKey,
     ColumnSqlKey,
+    TimeTruncKey,
     StarKey,
     LiteralKey,
     AggregateKey,
