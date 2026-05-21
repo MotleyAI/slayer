@@ -109,7 +109,19 @@ class ValueRegistry:
         type: Optional[DataType] = None,
     ) -> SlotId:
         # Alias-collision validations (P4 / DEV-1443).
-        if public_name is not None and public_name in self._source_columns:
+        # Exemption: a dimension whose public name IS its own column
+        # name (``ColumnKey(path=(), leaf=X)`` declared as ``X``) is the
+        # column, not a rename of it — collision check skipped.
+        is_self_named_dimension = (
+            isinstance(key, ColumnKey)
+            and key.path == ()
+            and public_name == key.leaf
+        )
+        if (
+            public_name is not None
+            and public_name in self._source_columns
+            and not is_self_named_dimension
+        ):
             raise MeasureNameCollidesWithColumnError(
                 name=public_name, model=self._host_model_name,
             )
