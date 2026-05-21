@@ -1,6 +1,6 @@
 # Models
 
-A model is SLayer's view of a database table. It declares the columns, named metric formulas, joins, and always-applied filters that queries can build on. Models are defined as YAML (one file per model under `models/<data_source>/`) or created via API/MCP — the two paths produce the same persisted object.
+A model is SLayer's view of a database table or an underlying SQL query. It declares the columns, named metric formulas, joins, and always-applied filters that queries can build on. Models are defined as YAML (one file per model under `models/<data_source>/`) or created via API/MCP — the two paths produce the same persisted object.
 
 A tiny example to anchor what follows:
 
@@ -154,7 +154,7 @@ A column's `sql` may contain a window function (`row_number() over (...)`, `dens
 
 ### SQL expression conventions
 
-Bare column names (`"amount"`) auto-qualify against the model's table at query time. For cross-column arithmetic in the same model, prefix with the model name: `"orders.amount * orders.quantity"`. For joined columns inside a model's own `sql`, use the `__` alias form (`customers__regions.name`) — see [Joins](#joins).
+Bare column names auto-qualify against the model's own table — single references (`"amount"`) and arithmetic alike (`"amount * quantity"`). Explicit `model.column` works too but adds nothing. For joined columns inside a model's own `sql`, use the `__` alias form (`customers__regions.name`) — see [Joins](#joins).
 
 ### SQLite JSON extraction
 
