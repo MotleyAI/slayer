@@ -444,6 +444,56 @@ class TestNormalizeScalar:
 # ---------------------------------------------------------------------------
 
 
+class TestBoolDecimalDisambiguation:
+    """Python collapses ``True == 1 == Decimal('1')`` and the same for
+    ``False`` / ``0``. The key classes must NOT intern across these
+    numerically-equal-but-type-distinct scalar leaves, or two semantically
+    different aggregations (``percentile(p=True)`` vs ``percentile(p=1)``)
+    would silently share a slot.
+    """
+
+    def test_aggregate_kwargs_bool_vs_decimal_distinct(self):
+        a = AggregateKey(
+            source=ColumnKey(path=(), leaf="x"),
+            agg="percentile",
+            kwargs=(("p", True),),
+        )
+        b = AggregateKey(
+            source=ColumnKey(path=(), leaf="x"),
+            agg="percentile",
+            kwargs=(("p", Decimal("1")),),
+        )
+        assert a != b
+        assert hash(a) != hash(b) or {a: 1}.get(b) is None
+
+    def test_aggregate_args_bool_vs_decimal_distinct(self):
+        a = AggregateKey(
+            source=ColumnKey(path=(), leaf="x"),
+            agg="sum",
+            args=(False,),
+        )
+        b = AggregateKey(
+            source=ColumnKey(path=(), leaf="x"),
+            agg="sum",
+            args=(Decimal("0"),),
+        )
+        assert a != b
+
+    def test_scalar_call_bool_vs_decimal_distinct(self):
+        a = ScalarCallKey(name="coalesce", args=(True,))
+        b = ScalarCallKey(name="coalesce", args=(Decimal("1"),))
+        assert a != b
+        # Must also not collapse in a dict.
+        d = {a: "bool-version"}
+        assert b not in d
+
+    def test_transform_kwargs_bool_vs_decimal_distinct(self):
+        agg = AggregateKey(source=ColumnKey(path=(), leaf="x"), agg="sum")
+        a = TransformKey(op="cumsum", input=agg, kwargs=(("n", True),))
+        b = TransformKey(op="cumsum", input=agg, kwargs=(("n", Decimal("1")),))
+        assert a != b
+
+
 class TestIdentityInterning:
     def test_three_occurrences_share_one_slot(self):
         # P2: revenue:sum as a declared measure, as the inner ref of

@@ -119,6 +119,42 @@ class _FrozenKey(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+def _typed_leaf(v):
+    """Return a hash- and equality-friendly representation of a scalar
+    leaf that does NOT conflate numerically-equal values of different
+    types.
+
+    Python collapses ``True == 1 == Decimal("1")`` (and the same for
+    ``False`` / ``0``), so a key built from ``args=(True,)`` would
+    intern with one built from ``args=(Decimal("1"),)`` if the
+    container's hash/eq blindly delegate to tuple-of-bare-values.
+    Wrapping the leaf in a ``(type_tag, value)`` pair at hash/eq time
+    restores the type distinction without changing the stored
+    representation users see via ``key.args[0]``.
+
+    ``ValueKey`` leaves (ColumnKey, AggregateKey, ...) are themselves
+    frozen Pydantic models with value-based equality — they're left
+    unwrapped.
+    """
+    if isinstance(v, bool):
+        return ("__bool__", v)
+    if v is None:
+        return ("__none__",)
+    if isinstance(v, Decimal):
+        return ("__num__", v)
+    if isinstance(v, str):
+        return ("__str__", v)
+    return v
+
+
+def _typed_args(args):
+    return tuple(_typed_leaf(a) for a in args)
+
+
+def _typed_kwargs(kwargs):
+    return tuple((k, _typed_leaf(v)) for k, v in kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Row-phase keys
 # ---------------------------------------------------------------------------
@@ -244,6 +280,27 @@ class AggregateKey(_FrozenKey):
     def phase(self) -> Phase:
         return Phase.AGGREGATE
 
+    def __hash__(self) -> int:
+        return hash((
+            "AggregateKey",
+            self.source,
+            self.agg,
+            _typed_args(self.args),
+            _typed_kwargs(self.kwargs),
+            self.column_filter_key,
+        ))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AggregateKey):
+            return NotImplemented
+        return (
+            self.source == other.source
+            and self.agg == other.agg
+            and _typed_args(self.args) == _typed_args(other.args)
+            and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
+            and self.column_filter_key == other.column_filter_key
+        )
+
 
 class TransformKey(_FrozenKey):
     """Identity for a transform slot (window / temporal operator over a value).
@@ -270,6 +327,29 @@ class TransformKey(_FrozenKey):
     @property
     def phase(self) -> Phase:
         return Phase.POST
+
+    def __hash__(self) -> int:
+        return hash((
+            "TransformKey",
+            self.op,
+            self.input,
+            _typed_args(self.args),
+            _typed_kwargs(self.kwargs),
+            self.partition_keys,
+            self.time_key,
+        ))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TransformKey):
+            return NotImplemented
+        return (
+            self.op == other.op
+            and self.input == other.input
+            and _typed_args(self.args) == _typed_args(other.args)
+            and _typed_kwargs(self.kwargs) == _typed_kwargs(other.kwargs)
+            and self.partition_keys == other.partition_keys
+            and self.time_key == other.time_key
+        )
 
 
 class ArithmeticKey(_FrozenKey):
@@ -319,6 +399,17 @@ class ScalarCallKey(_FrozenKey):
     def phase(self) -> Phase:
         phases = [p for a in self.args if (p := _arg_phase(a)) is not None]
         return max(phases) if phases else Phase.ROW
+
+    def __hash__(self) -> int:
+        return hash(("ScalarCallKey", self.name, _typed_args(self.args)))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ScalarCallKey):
+            return NotImplemented
+        return (
+            self.name == other.name
+            and _typed_args(self.args) == _typed_args(other.args)
+        )
 
 
 # ---------------------------------------------------------------------------

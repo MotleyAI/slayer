@@ -306,6 +306,39 @@ class TestEngineWiring:
             resp = await engine.execute(q, dry_run=True)
             assert resp.warnings == []
 
+    async def test_custom_agg_in_query_filter_recognised(self):
+        # Codex review fix: the engine threads custom aggregation names
+        # from the source model into normalize_query, so a slack-form
+        # `custom_sum(revenue)` in a query measure or filter is rewritten
+        # and surfaces in SlayerResponse.warnings just like built-ins.
+        from slayer.engine.query_engine import SlayerQueryEngine
+        from slayer.storage.yaml_storage import YAMLStorage
+        from slayer.core.models import Aggregation, DatasourceConfig
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            storage = YAMLStorage(base_dir=Path(td) / "models")
+            await storage.save_datasource(
+                DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
+            )
+            m = _orders().model_copy(update={
+                "aggregations": [Aggregation(name="custom_sum", formula="SUM({value})")],
+            })
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "custom_sum(revenue)"}],
+            )
+            resp = await engine.execute(q, dry_run=True)
+            assert any(
+                w.rule_id == "FUNC_STYLE_AGG"
+                and "custom_sum" in w.original
+                for w in resp.warnings
+            )
+
     async def test_save_model_normalizes_formulas(self):
         from slayer.engine.query_engine import SlayerQueryEngine
         from slayer.storage.yaml_storage import YAMLStorage

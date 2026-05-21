@@ -614,7 +614,17 @@ class SlayerQueryEngine:
         # structured NormalizationWarning payloads alongside the legacy
         # per-rule UserWarnings (which still fire from the in-tree
         # rewriters until stage 7b removes them).
-        norm = normalize_query(query, model=model)
+        #
+        # Thread custom aggregation names from the source model so
+        # ``custom_sum(revenue)`` slack input gets its structured warning
+        # too. Joined-model custom aggs aren't walked here — that needs
+        # the full reachable-agg-names pass and lives in stage 7a's
+        # binder; until then the legacy `_rewrite_funcstyle_aggregations`
+        # path during enrichment still picks them up.
+        custom_aggs: Optional[frozenset[str]] = None
+        if model is not None and model.aggregations:
+            custom_aggs = frozenset(a.name for a in model.aggregations)
+        norm = normalize_query(query, model=model, custom_agg_names=custom_aggs)
         query = norm.query if norm.query is not None else query
         slack_warnings = list(norm.warnings)
 
