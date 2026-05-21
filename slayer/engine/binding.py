@@ -522,17 +522,26 @@ def _bind_transform(
     bundle: ResolvedSourceBundle,
 ) -> TransformKey:
     inp = _bind(parsed.input, scope=scope, bundle=bundle, in_filter=False)
-    # Transform args/kwargs: bind any references, normalise literals.
     args: List = []
     for a in parsed.args:
         if isinstance(a, Literal):
             args.append(normalize_scalar(a.value))
         else:
-            # Non-literal positional args are unusual for transforms; bind
-            # for forward-compat.
             args.append(_bind(a, scope=scope, bundle=bundle, in_filter=False))
     kwargs: List = []
+    partition_keys: List = []
     for k, v in parsed.kwargs:
+        if k == "partition_by":
+            bound_v = _bind(v, scope=scope, bundle=bundle, in_filter=False)
+            if isinstance(bound_v, (ColumnKey, ColumnSqlKey)):
+                partition_keys.append(bound_v)
+            else:
+                raise ValueError(
+                    f"transform {parsed.op!r} partition_by must resolve "
+                    f"to a column reference; got "
+                    f"{type(bound_v).__name__}."
+                )
+            continue
         if isinstance(v, Literal):
             kwargs.append((k, normalize_scalar(v.value)))
         else:
@@ -542,6 +551,7 @@ def _bind_transform(
         input=inp,
         args=tuple(args),
         kwargs=tuple(kwargs),
+        partition_keys=frozenset(partition_keys),
     )
 
 
