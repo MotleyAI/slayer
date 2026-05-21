@@ -29,6 +29,7 @@ from typing import Dict, FrozenSet, List, Optional, Union
 
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.keys import (
+    AggregateKey,
     ArithmeticKey,
     ColumnKey,
     LiteralKey,
@@ -50,6 +51,7 @@ from slayer.engine.binding import (
 )
 from slayer.engine.cross_model_planner import (
     CrossModelPlanner,
+    HostFilterRouting,
     IsolatedCteCrossModelPlanner,
 )
 from slayer.engine.planned import (
@@ -65,6 +67,7 @@ from slayer.engine.planning import (
     OrderSpec,
     ProjectionPlanner,
     _iter_slot_deps,
+    filter_referenced_slot_ids,
     lower_sugar_transforms,
 )
 from slayer.engine.source_bundle import ResolvedSourceBundle
@@ -167,6 +170,46 @@ def plan_query(
                 id=f"f{i}", phase=bf.phase, text=None, expression=expression,
             ),
         )
+    # Stage 7b.5 — cross-model planner wiring. For every aggregate slot
+    # whose source carries a non-empty join path (cross-model agg-ref
+    # like ``customers.revenue:sum``), invoke the cross_model_planner
+    # to produce a CrossModelAggregatePlan with explicit WHERE/HAVING/
+    # target_model_filters routes. HostFilterRouting records carry the
+    # post-projection slot ids each filter references (via
+    # filter_referenced_slot_ids — Codex HIGH #3/#4 fold-in).
+    host_filter_routings: List[HostFilterRouting] = []
+    for fp, bf in zip(filters_by_phase, bound_filters):
+        # Sorted for deterministic plan snapshots and reproducible
+        # debug / warning output across runs (Codex LOW #3 fold-in).
+        host_filter_routings.append(HostFilterRouting(
+            filter_id=fp.id,
+            phase=bf.phase,
+            referenced_slot_ids=sorted(filter_referenced_slot_ids(
+                bf, projection.registry,
+            )),
+            text=fp.text,
+        ))
+
+    cross_model_plans = []
+    host_slots_for_classifier = projection.registry.slots
+    for slot in agg_slots:
+        key = slot.key
+        if not isinstance(key, AggregateKey):
+            continue
+        agg_path = getattr(key.source, "path", ())
+        if not agg_path:
+            continue
+        plan = cross_model_planner.plan(
+            aggregate_slot_id=slot.id,
+            aggregate_key=key,
+            bundle=bundle,
+            host_slots=host_slots_for_classifier,
+            host_filters=host_filter_routings,
+            public_alias=slot.public_name,
+            hidden=slot.hidden,
+        )
+        cross_model_plans.append(plan)
+
     order_entries = []
     for spec in order_specs:
         sid = projection.registry.find_by_key(spec.bound.value_key)
@@ -189,6 +232,7 @@ def plan_query(
         source_relation=source_relation,
         row_slots=row_slots,
         aggregate_slots=agg_slots,
+        cross_model_aggregate_plans=cross_model_plans,
         combined_expression_slots=combined_slots,
         transform_layers=transform_layers,
         filters_by_phase=filters_by_phase,

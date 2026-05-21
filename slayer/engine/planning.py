@@ -60,6 +60,8 @@ __all__ = [
     "ValueRegistry",
     "desugar_change",
     "desugar_change_pct",
+    "filter_referenced_slot_ids",
+    "lower_sugar_transforms",
 ]
 
 
@@ -525,3 +527,37 @@ def _canonical_name(key: ValueKey) -> str:
 
 
 ProjectionPlan.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# Stage 7b.5 — filter → slot id mapping for cross-model planner routing
+# ---------------------------------------------------------------------------
+
+
+def filter_referenced_slot_ids(
+    bound_filter: "BoundFilter",
+    registry: "ValueRegistry",
+) -> "set":
+    """Return the set of ``SlotId``s that ``bound_filter``'s predicate
+    references through interned slots.
+
+    Walks the predicate's ``ValueKey`` tree via ``_iter_slot_deps`` —
+    yielding only slot-worthy keys (``ColumnKey`` / ``ColumnSqlKey`` /
+    ``AggregateKey`` / ``TransformKey`` / ``TimeTruncKey``) and skipping
+    composite-only nodes (``ArithmeticKey``, ``ScalarCallKey``,
+    ``LiteralKey``, ``StarKey``). Each slot-worthy key is looked up in
+    the registry; keys without an interned slot are silently skipped
+    (filter literals, hidden registry misses).
+
+    Codex HIGH #3/#4 for DEV-1450: this helper exists so the
+    cross-model planner gets ``set[SlotId]`` instead of having to
+    classify ``BoundFilter.referenced_keys`` (which are
+    pre-interning ``ValueKey``s, not slot ids) or naively walking only
+    the top-level key (which misses composite-predicate leaves).
+    """
+    result: set = set()
+    for dep in _iter_slot_deps(bound_filter.value_key):
+        sid = registry.find_by_key(dep)
+        if sid is not None:
+            result.add(sid)
+    return result

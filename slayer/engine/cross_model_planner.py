@@ -56,6 +56,7 @@ from slayer.core.keys import (
     Phase,
 )
 from slayer.core.models import SlayerModel
+from slayer.core.refs import canonical_agg_name
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.engine.planned import (
     BoundFilterId,
@@ -265,12 +266,30 @@ def _walk_chain(
 def _aggregate_alias(*, key: AggregateKey) -> str:
     """Canonical alias for the aggregate's output column in the CTE.
 
-    Mirrors the result-key contract: ``leaf`` + ``_`` + ``agg``. The
+    Mirrors the result-key contract: ``leaf`` + ``_`` + ``agg`` plus an
+    args/kwargs signature suffix that disambiguates parameterised
+    aggregates (``revenue:percentile(p=0.5)`` vs ``p=0.95``). The
     ``*:count`` star form collapses to ``_count``.
+
+    Built on ``slayer.core.refs.canonical_agg_name`` so the signature
+    suffix matches the rest of the engine (legacy enrichment, search,
+    DBT converter).
     """
     if hasattr(key.source, "leaf"):
-        return f"{key.source.leaf}_{key.agg}"
-    return f"_{key.agg}"
+        measure_name = key.source.leaf
+    else:
+        measure_name = "*"
+    # AggregateKey.args / kwargs are normalised tuples of scalars /
+    # ColumnKey-shaped values; convert to the (List[str],
+    # Dict[str, Any]) shape ``canonical_agg_name`` expects.
+    args_list = [str(a) for a in key.args]
+    kwargs_dict = {k: str(v) for k, v in key.kwargs}
+    return canonical_agg_name(
+        measure_name=measure_name,
+        aggregation_name=key.agg,
+        agg_args=args_list or None,
+        agg_kwargs=kwargs_dict or None,
+    )
 
 
 def _make_cte_schema(
