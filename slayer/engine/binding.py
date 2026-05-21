@@ -646,20 +646,82 @@ def _bind_agg_arg(
     )
 
 
+_NOT_SCALAR = object()  # sentinel returned by _fold_to_scalar when the input isn't a literal-resolvable scalar
+
+
+def _fold_to_scalar(parsed: ParsedExpr):
+    """Resolve a parsed expression to a scalar literal if possible.
+
+    Folds ``Literal`` directly, and unary ``-`` over a numeric ``Literal``
+    (the AST shape Python emits for ``periods=-1``) into the negated
+    literal value. Returns ``_NOT_SCALAR`` for anything that doesn't
+    reduce — transform kwargs are typed as ``Scalar``, so a non-scalar
+    expression is a binding error.
+    """
+    if isinstance(parsed, Literal):
+        return normalize_scalar(parsed.value)
+    if (
+        isinstance(parsed, UnaryOp)
+        and parsed.op == "-"
+        and isinstance(parsed.operand, Literal)
+    ):
+        from decimal import Decimal
+
+        inner = parsed.operand.value
+        if isinstance(inner, bool):
+            # Reject explicitly — ``-True`` is nonsense and bool is an
+            # int subclass that would otherwise pass the next branch.
+            return _NOT_SCALAR
+        if isinstance(inner, (int, float, Decimal)):
+            return normalize_scalar(-inner)
+    return _NOT_SCALAR
+
+
+# Per-op kwarg whitelist for the typed pipeline. Broader than the legacy
+# ``slayer.core.formula._ALLOWED_TRANSFORM_KWARGS`` because the new
+# pipeline allows ``partition_by`` on more than just the rank family
+# (DEV-1450 C6: ``change(measure, partition_by=...)`` threads through to
+# the desugared time_shift). Every transform also implicitly accepts
+# ``partition_by`` — that branch is handled before the whitelist check.
+_TRANSFORM_KWARG_RULES: dict = {
+    "cumsum": frozenset(),
+    "change": frozenset(),
+    "change_pct": frozenset(),
+    "first": frozenset(),
+    "last": frozenset(),
+    "time_shift": frozenset({"periods"}),
+    "lag": frozenset({"periods"}),
+    "lead": frozenset({"periods"}),
+    "rank": frozenset(),
+    "percent_rank": frozenset(),
+    "dense_rank": frozenset(),
+    "ntile": frozenset({"n"}),
+    "consecutive_periods": frozenset({"period"}),
+}
+
+
 def _bind_transform(
     parsed: TransformCall, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> TransformKey:
     inp = _bind(parsed.input, scope=scope, bundle=bundle, in_filter=False)
+    # Typed pipeline: transforms take one positional (the value to
+    # transform) and the rest as kwargs. Reject any extra positional
+    # args to force the kwarg form (avoids ambiguity like
+    # ``lag(amount:sum, 2)`` where ``2`` might be ``periods``).
+    if parsed.args:
+        raise ValueError(
+            f"Transform {parsed.op!r} accepts exactly one positional "
+            f"argument (the value to transform); pass any offset, "
+            f"partition, or other settings as keyword arguments "
+            f"(e.g. ``{parsed.op}(value, periods=-1)``)."
+        )
     args: List = []
-    for a in parsed.args:
-        if isinstance(a, Literal):
-            args.append(normalize_scalar(a.value))
-        else:
-            args.append(_bind(a, scope=scope, bundle=bundle, in_filter=False))
     kwargs: List = []
     partition_keys: List = []
+    allowed_kwargs = _TRANSFORM_KWARG_RULES.get(parsed.op, frozenset())
+    seen_kwargs: set = set()
     for k, v in parsed.kwargs:
         if k == "partition_by":
             bound_v = _bind(v, scope=scope, bundle=bundle, in_filter=False)
@@ -672,10 +734,25 @@ def _bind_transform(
                     f"{type(bound_v).__name__}."
                 )
             continue
-        if isinstance(v, Literal):
-            kwargs.append((k, normalize_scalar(v.value)))
-        else:
-            kwargs.append((k, _bind(v, scope=scope, bundle=bundle, in_filter=False)))
+        if k not in allowed_kwargs:
+            raise ValueError(
+                f"Transform {parsed.op!r} does not accept keyword "
+                f"argument {k!r}. Accepted: "
+                f"{sorted(allowed_kwargs | {'partition_by'})}."
+            )
+        seen_kwargs.add(k)
+        scalar = _fold_to_scalar(v)
+        if scalar is _NOT_SCALAR:
+            raise ValueError(
+                f"Transform {parsed.op!r} keyword {k!r} must be a "
+                f"scalar literal; got expression of kind "
+                f"{type(v).__name__}."
+            )
+        kwargs.append((k, scalar))
+    # Per-op required-kwarg validation + defaults.
+    kwargs = _apply_transform_kwarg_defaults(
+        op=parsed.op, kwargs=kwargs, seen=seen_kwargs,
+    )
     return TransformKey(
         op=parsed.op,
         input=inp,
@@ -683,6 +760,73 @@ def _bind_transform(
         kwargs=tuple(kwargs),
         partition_keys=frozenset(partition_keys),
     )
+
+
+def _apply_transform_kwarg_defaults(
+    *, op: str, kwargs: list, seen: set,
+) -> list:
+    """Validate required kwargs and apply per-op defaults for the typed
+    TransformKey.
+
+    Validation:
+    * ``ntile`` requires ``n``; ``n`` must be a positive integer
+      (``bool`` rejected — it's an ``int`` subclass in Python but a
+      boolean ``True``/``False`` is never a sensible bucket count).
+    * ``time_shift`` requires ``periods`` (integer; may be negative).
+
+    Defaults:
+    * ``lag`` / ``lead`` default ``periods=1`` when missing so the
+      typed TransformKey carries the resolved kwarg list; the SQL
+      generator can render PARTITION/ORDER without re-applying defaults.
+
+    ``normalize_scalar`` wraps numeric literals in ``Decimal``, so the
+    integer checks accept ``Decimal`` whose value is integral as well
+    as plain ``int``.
+    """
+    from decimal import Decimal
+
+    def _ensure_positive_integer(value: object, *, kw: str) -> None:
+        if isinstance(value, bool):
+            raise ValueError(
+                f"Transform {op!r} keyword {kw} must be a positive "
+                f"integer; got {value!r}."
+            )
+        if isinstance(value, int):
+            ival = value
+        elif isinstance(value, Decimal):
+            if value != value.to_integral_value():
+                raise ValueError(
+                    f"Transform {op!r} keyword {kw} must be a positive "
+                    f"integer; got {value!r}."
+                )
+            ival = int(value)
+        else:
+            raise ValueError(
+                f"Transform {op!r} keyword {kw} must be a positive "
+                f"integer; got {value!r}."
+            )
+        if ival <= 0:
+            raise ValueError(
+                f"Transform {op!r} keyword {kw} must be a positive "
+                f"integer; got {value!r}."
+            )
+
+    if op == "ntile":
+        if "n" not in seen:
+            raise ValueError(
+                "Transform 'ntile' requires keyword argument n (the "
+                "number of buckets, a positive integer)."
+            )
+        n_value = next(v for k, v in kwargs if k == "n")
+        _ensure_positive_integer(n_value, kw="n")
+    if op == "time_shift" and "periods" not in seen:
+        raise ValueError(
+            "Transform 'time_shift' requires keyword argument periods "
+            "(the integer offset, negative for a backward shift)."
+        )
+    if op in ("lag", "lead") and "periods" not in seen:
+        kwargs.append(("periods", normalize_scalar(1)))
+    return kwargs
 
 
 def _bind_scalar(

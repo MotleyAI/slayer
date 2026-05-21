@@ -33,6 +33,7 @@ from slayer.core.keys import (
     ColumnKey,
     LiteralKey,
     Phase,
+    TransformKey,
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
@@ -40,6 +41,7 @@ from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.core.refs import canonical_agg_name
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import (
+    BoundExpr as BinderBoundExpr,
     BoundFilter,
     bind_expr,
     bind_filter,
@@ -55,12 +57,15 @@ from slayer.engine.planned import (
     FilterPhase,
     OrderEntry,
     PlannedQuery,
+    TransformLayer,
     ValueSlot,
 )
 from slayer.engine.planning import (
     DeclaredMeasure,
     OrderSpec,
     ProjectionPlanner,
+    _iter_slot_deps,
+    lower_sugar_transforms,
 )
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import parse_expr
@@ -170,6 +175,7 @@ def plan_query(
                 OrderEntry(slot_id=sid, direction=spec.direction),
             )
 
+    transform_layers = _emit_transform_layers(slots=projection.registry.slots)
     stage_schema = _emit_stage_schema(
         query=query, projection=projection,
     )
@@ -184,6 +190,7 @@ def plan_query(
         row_slots=row_slots,
         aggregate_slots=agg_slots,
         combined_expression_slots=combined_slots,
+        transform_layers=transform_layers,
         filters_by_phase=filters_by_phase,
         projection=projection.public_projection,
         order=order_entries,
@@ -261,6 +268,13 @@ def _declared_measures_from_query(
         formula = m.formula
         explicit_name = m.name
         bound = bind_expr(parse_expr(formula), scope=scope, bundle=bundle)
+        # Sugar lowering for ``change`` / ``change_pct`` preserves the
+        # inner aggregate's structural identity (DEV-1446) so a query
+        # mixing ``change(amount:sum)`` with a bare ``amount:sum``
+        # measure interns the same AggregateKey slot once.
+        lowered_key = lower_sugar_transforms(bound.value_key)
+        if lowered_key is not bound.value_key:
+            bound = BinderBoundExpr(value_key=lowered_key)
         canonical = _canonical_alias_for_formula(formula)
         declared_name = explicit_name or canonical
         public_name = explicit_name or canonical
@@ -413,6 +427,64 @@ def _emit_stage_schema(
         ))
     relation_name = query.name or "(unnamed_stage)"
     return StageSchema(relation_name=relation_name, columns=columns)
+
+
+def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
+    """One TransformLayer per ``TransformKey`` slot, emitted in
+    dependency order (innermost transform first).
+
+    Nested transforms (``cumsum(change(amount:sum))``) require
+    per-slot layers so the generator can render the inner window /
+    self-join before the outer one consumes it. Repeated ops at
+    different nesting levels stay in separate layers; collapsing by
+    op would lose the ordering invariant.
+
+    Per-slot transform metadata (partition_keys, time_key, args,
+    kwargs) lives on the slot's ``key`` (TransformKey); the generator
+    slices read it from there.
+    """
+    transform_slots = [
+        s for s in slots if isinstance(s.key, TransformKey)
+    ]
+    # Topological order: a slot whose TransformKey.input references
+    # another slot's key must come AFTER that other slot. Walk
+    # `_iter_slot_deps` to discover dependencies among transform slots.
+    slot_by_key = {s.key: s for s in transform_slots}
+    in_degree = {s.id: 0 for s in transform_slots}
+    deps_of: Dict[str, List[str]] = {s.id: [] for s in transform_slots}
+    for s in transform_slots:
+        # The slot's transform depends on whatever transform slots
+        # appear inside its ValueKey tree (e.g. cumsum(change(...))'s
+        # cumsum slot depends on the change/time_shift slot).
+        for dep in _iter_slot_deps(s.key):
+            if dep is s.key or not isinstance(dep, TransformKey):
+                continue
+            dep_slot = slot_by_key.get(dep)
+            if dep_slot is None:
+                continue
+            deps_of[dep_slot.id].append(s.id)
+            in_degree[s.id] += 1
+    # Kahn's algorithm: start from independent layers.
+    ready = [s.id for s in transform_slots if in_degree[s.id] == 0]
+    ordered_ids: List[str] = []
+    while ready:
+        nxt = ready.pop(0)
+        ordered_ids.append(nxt)
+        for child in deps_of[nxt]:
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                ready.append(child)
+    # Fallback: any remaining slots (shouldn't happen with the typed
+    # pipeline's identity-via-key, but guard) get appended in input order.
+    seen = set(ordered_ids)
+    for s in transform_slots:
+        if s.id not in seen:
+            ordered_ids.append(s.id)
+    by_id = {s.id: s for s in transform_slots}
+    return [
+        TransformLayer(op=by_id[sid].key.op, slot_ids=[sid])
+        for sid in ordered_ids
+    ]
 
 
 # ---------------------------------------------------------------------------

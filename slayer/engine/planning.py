@@ -47,6 +47,7 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    normalize_scalar,
 )
 from slayer.engine.binding import BoundExpr, BoundFilter
 from slayer.engine.planned import SlotId, ValueSlot
@@ -234,14 +235,16 @@ class ValueRegistry:
 
 
 def desugar_change(key: TransformKey) -> ArithmeticKey:
-    """``change(x)`` → ``x - time_shift(x, [partition_by=…])``.
+    """``change(x)`` → ``x - time_shift(x, periods=-1, [partition_by=…])``.
 
     The inner ``x`` is identity-preserving — the ``ArithmeticKey`` and
     the ``TransformKey`` use the SAME ``ValueKey`` instance, so a
     downstream ValueRegistry interns it as one slot (DEV-1446).
 
     ``partition_by`` (the binder put it on ``key.partition_keys``)
-    threads through to the underlying ``time_shift`` (C6).
+    threads through to the underlying ``time_shift`` (C6). ``periods``
+    is fixed at ``-1`` (one period back) because ``change`` has no
+    user-tunable offset.
     """
     if key.op != "change":
         raise ValueError(
@@ -251,14 +254,52 @@ def desugar_change(key: TransformKey) -> ArithmeticKey:
     shifted = TransformKey(
         op="time_shift",
         input=inner,
+        kwargs=(("periods", normalize_scalar(-1)),),
         partition_keys=key.partition_keys,
         time_key=key.time_key,
     )
     return ArithmeticKey(op="-", operands=(inner, shifted))
 
 
+def lower_sugar_transforms(key: ValueKey) -> ValueKey:
+    """Recursively lower ``change`` / ``change_pct`` TransformKeys to
+    their desugared arithmetic form, preserving the inner aggregate's
+    structural identity (DEV-1446). Other ValueKey shapes are walked
+    but otherwise unchanged.
+
+    The desugar functions preserve ``partition_keys`` / ``time_key`` on
+    the resulting ``time_shift`` TransformKey (DEV-1450 C6), so
+    ``change(amount:sum, partition_by=region)`` lowers to
+    ``amount:sum - time_shift(amount:sum, partition_by=region)``.
+    """
+    if isinstance(key, TransformKey):
+        new_input = lower_sugar_transforms(key.input)
+        if new_input is not key.input:
+            key = key.model_copy(update={"input": new_input})
+        if key.op == "change":
+            return desugar_change(key)
+        if key.op == "change_pct":
+            return desugar_change_pct(key)
+        return key
+    if isinstance(key, ArithmeticKey):
+        new_ops = tuple(lower_sugar_transforms(op) for op in key.operands)
+        if all(a is b for a, b in zip(new_ops, key.operands)):
+            return key
+        return ArithmeticKey(op=key.op, operands=new_ops)
+    if isinstance(key, ScalarCallKey):
+        new_args = tuple(
+            lower_sugar_transforms(a) if isinstance(a, _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey)) else a
+            for a in key.args
+        )
+        if all(a is b for a, b in zip(new_args, key.args)):
+            return key
+        return ScalarCallKey(name=key.name, args=new_args)
+    return key
+
+
 def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
-    """``change_pct(x)`` → ``(x - time_shift(x)) / time_shift(x)``.
+    """``change_pct(x)`` → ``(x - time_shift(x, periods=-1)) /
+    time_shift(x, periods=-1)``.
 
     Same identity-preservation as ``desugar_change``.
     """
@@ -270,6 +311,7 @@ def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
     shifted = TransformKey(
         op="time_shift",
         input=inner,
+        kwargs=(("periods", normalize_scalar(-1)),),
         partition_keys=key.partition_keys,
         time_key=key.time_key,
     )
@@ -346,6 +388,15 @@ def _iter_slot_deps(key: ValueKey):
     if isinstance(key, TransformKey):
         yield key
         yield from _iter_slot_deps(key.input)
+        # Transform aux deps: partition_keys and time_key must be
+        # materialised as their own slots so the SQL generator (slice
+        # 7b.10 / 7b.11) can render PARTITION BY / ORDER BY against
+        # named SELECT projections instead of re-walking the model
+        # graph.
+        for pk in key.partition_keys:
+            yield from _iter_slot_deps(pk)
+        if key.time_key is not None:
+            yield from _iter_slot_deps(key.time_key)
         return
     if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
         yield key
@@ -390,6 +441,21 @@ class ProjectionPlanner:
                 label=m.label,
             )
             public_projection.append(sid)
+            # Materialise any auxiliary slot-worthy deps of the measure
+            # as hidden slots (e.g. the inner AggregateKey of a transform,
+            # the partition columns, the time_key column). These are
+            # rendered by the generator into the inner SELECT but not
+            # surfaced in the public projection.
+            for dep in _iter_slot_deps(m.bound.value_key):
+                if dep == m.bound.value_key:
+                    continue
+                if registry.find_by_key(dep) is None:
+                    registry.intern(
+                        key=dep,
+                        declared_name=_canonical_name(dep),
+                        hidden=True,
+                        phase=dep.phase,
+                    )
 
         # Filter and order share the same dependency-selection rule: walk
         # the bound expression, intern each slot-worthy key as a hidden
