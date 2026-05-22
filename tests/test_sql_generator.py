@@ -1877,6 +1877,54 @@ class TestMultiDialectGeneration:
         sql_upper = sql.upper()
         assert any(fn in sql_upper for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE"])
 
+    @pytest.mark.parametrize("dialect", ["postgres", "mysql", "bigquery", "duckdb", "snowflake"])
+    async def test_date_trunc_casts_unknown_typed_time_dim(self, dialect: str) -> None:
+        """A time-dimension whose ``sql`` is a bare literal (or any expression
+        whose live type is ``unknown``) must be wrapped in ``CAST(... AS
+        TIMESTAMP)`` before being passed to ``DATE_TRUNC``. Postgres has
+        multiple overloads keyed on the second argument's type and rejects
+        ``DATE_TRUNC('month', '2025-12-01')`` with ``AmbiguousFunctionError``.
+
+        Bare column references stay unwrapped — their live DB type is known,
+        and forcing a cast could strip ``TIMESTAMPTZ`` to ``TIMESTAMP``.
+        """
+        gen = SQLGenerator(dialect=dialect)
+        model = SlayerModel(
+            name="orders",
+            sql_table="public.orders",
+            data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                Column(name="ts", sql="'2025-12-01'", type=DataType.TIMESTAMP),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            ],
+        )
+        # Bare-literal time dim — must be cast.
+        sql = await _generate(
+            gen,
+            SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="*:count")],
+                time_dimensions=[TimeDimension(dimension=ColumnRef(name="ts"), granularity=TimeGranularity.MONTH)],
+            ),
+            model,
+        )
+        # sqlglot transpiles ``TIMESTAMP`` → ``DATETIME`` on MySQL / BigQuery,
+        # so we don't assert the literal target-type spelling — only that the
+        # literal is wrapped in a CAST.
+        assert "CAST('2025-12-01' AS" in sql, sql
+        # Bare-column time dim — must NOT be cast.
+        sql = await _generate(
+            gen,
+            SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="*:count")],
+                time_dimensions=[TimeDimension(dimension=ColumnRef(name="created_at"), granularity=TimeGranularity.MONTH)],
+            ),
+            model,
+        )
+        assert "CAST(" not in sql.upper(), sql
+
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
     async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerModel) -> None:
         """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
