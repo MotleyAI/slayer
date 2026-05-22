@@ -29,7 +29,13 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
-from slayer.core.keys import ArithmeticKey, ColumnKey, LiteralKey, Phase
+from slayer.core.keys import (
+    ArithmeticKey,
+    BetweenKey,
+    ColumnKey,
+    LiteralKey,
+    Phase,
+)
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.engine.source_bundle import ResolvedSourceBundle
@@ -431,29 +437,26 @@ class TestResolveMainTimeDimension:
 # ---------------------------------------------------------------------------
 
 
-def _find_date_range_filter_on(*, planned, leaf: str) -> ArithmeticKey:
+def _find_date_range_filter_on(*, planned, leaf: str) -> BetweenKey:
     """Find the auto-generated date_range filter for a given column leaf.
 
     The planner emits exactly one filter per TD with a date_range; its
-    top-level shape is ``ArithmeticKey(op='and', operands=(ge, le))``
-    where each operand is a ``Cmp`` ArithmeticKey against the bare
-    underlying ColumnKey for ``leaf``.
+    top-level shape is ``BetweenKey(column=ColumnKey, low=LiteralKey,
+    high=LiteralKey)`` (DEV-1450 stage 7b.9 — closes the parity gap
+    with legacy ``BETWEEN``).
     """
     for f in planned.filters_by_phase:
         if f.expression is None:
             continue
         key = f.expression.value_key
-        # Walk down to the column to identify which TD this filter is on.
-        if isinstance(key, ArithmeticKey) and key.op == "and":
-            for op in key.operands:
-                if (
-                    isinstance(op, ArithmeticKey)
-                    and isinstance(op.operands[0], ColumnKey)
-                    and op.operands[0].leaf == leaf
-                ):
-                    return key
+        if (
+            isinstance(key, BetweenKey)
+            and isinstance(key.column, ColumnKey)
+            and key.column.leaf == leaf
+        ):
+            return key
     raise AssertionError(
-        f"no AND-of-comparisons filter found over column {leaf!r}; "
+        f"no BetweenKey filter found over column {leaf!r}; "
         f"filters present: "
         f"{[type(f.expression.value_key).__name__ if f.expression else None for f in planned.filters_by_phase]}"
     )
@@ -472,23 +475,17 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_local())
-        and_key = _find_date_range_filter_on(planned=planned, leaf="created_at")
-        ge, le = and_key.operands
-        assert isinstance(ge, ArithmeticKey)
-        assert isinstance(le, ArithmeticKey)
-        assert ge.op == ">="
-        assert le.op == "<="
-        # Both comparisons target the BARE underlying column, not the
+        bk = _find_date_range_filter_on(planned=planned, leaf="created_at")
+        # The BetweenKey targets the BARE underlying column, not the
         # TimeTruncKey — so generator slice 7b.11 can apply the filter on
         # the outer projection while the shifted self-join CTE reads raw.
-        assert ge.operands[0] == ColumnKey(path=(), leaf="created_at")
-        assert le.operands[0] == ColumnKey(path=(), leaf="created_at")
+        assert bk.column == ColumnKey(path=(), leaf="created_at")
         # Literal bounds match the date_range strings verbatim — they
         # flow through ``normalize_scalar`` which leaves strings alone.
-        assert isinstance(ge.operands[1], LiteralKey)
-        assert ge.operands[1].value == "2024-01-01"
-        assert isinstance(le.operands[1], LiteralKey)
-        assert le.operands[1].value == "2024-03-01"
+        assert isinstance(bk.low, LiteralKey)
+        assert bk.low.value == "2024-01-01"
+        assert isinstance(bk.high, LiteralKey)
+        assert bk.high.value == "2024-03-01"
 
     def test_date_range_filter_is_row_phase(self) -> None:
         q = SlayerQuery(
@@ -531,24 +528,17 @@ class TestDateRangeFilter:
             ],
         )
         planned = plan_query(query=q, bundle=_bundle_joined())
-        and_key = _find_date_range_filter_on(
+        bk = _find_date_range_filter_on(
             planned=planned, leaf="signed_up_at",
         )
-        ge, le = and_key.operands
         # Joined TD: path carries the join hop on the underlying column.
         expected_col = ColumnKey(path=("customers",), leaf="signed_up_at")
-        assert ge.operands[0] == expected_col
-        assert le.operands[0] == expected_col
+        assert bk.column == expected_col
 
     def test_user_filter_and_date_range_coexist(self) -> None:
         # A user-supplied filter and the auto-generated date_range filter
-        # both appear, both row-phase. Ordering: user filters first, then
-        # the auto-generated date_range filter (so the auto filter is
-        # easy to identify by suffix position; matches legacy WHERE
-        # construction in slayer/sql/generator.py:2511-2524 which
-        # appends user-parsed filters before — actually after — but we
-        # pick user-first as the more readable order, with date_range
-        # appended last).
+        # both appear, both row-phase. DEV-1450 stage 7b.9 enforces
+        # legacy WHERE order: date_range first, user filter second.
         q = SlayerQuery(
             source_model="orders",
             measures=[{"formula": "amount:sum"}],
@@ -566,12 +556,15 @@ class TestDateRangeFilter:
             f for f in planned.filters_by_phase if f.phase == Phase.ROW
         ]
         assert len(row_filters) == 2
-        # Ordering: user filter first, date_range filter last.
-        # The date_range filter has an AND-of-comparisons shape.
+        # date_range filter first (BetweenKey shape).
+        first = row_filters[0]
+        assert first.expression is not None
+        assert isinstance(first.expression.value_key, BetweenKey)
+        # user filter last (ArithmeticKey > 0 shape).
         last = row_filters[-1]
         assert last.expression is not None
         assert isinstance(last.expression.value_key, ArithmeticKey)
-        assert last.expression.value_key.op == "and"
+        assert last.expression.value_key.op == ">"
 
     def test_multiple_tds_each_with_date_range(self) -> None:
         # Two TDs, each with date_range — two separate filters, one per
@@ -653,8 +646,7 @@ class TestDateRangeFilter:
         assert len(planned.filters_by_phase) == 1
         fp = planned.filters_by_phase[0]
         assert fp.expression is not None
-        assert isinstance(fp.expression.value_key, ArithmeticKey)
-        assert fp.expression.value_key.op == "and"
+        assert isinstance(fp.expression.value_key, BetweenKey)
 
 
 # ---------------------------------------------------------------------------

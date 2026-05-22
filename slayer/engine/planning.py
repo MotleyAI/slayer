@@ -38,6 +38,7 @@ from slayer.core.errors import (
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
+    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     LiteralKey,
@@ -292,12 +293,27 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
         return ArithmeticKey(op=key.op, operands=new_ops)
     if isinstance(key, ScalarCallKey):
         new_args = tuple(
-            lower_sugar_transforms(a) if isinstance(a, _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey)) else a
+            lower_sugar_transforms(a)
+            if isinstance(
+                a, _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
+            )
+            else a
             for a in key.args
         )
         if all(a is b for a, b in zip(new_args, key.args)):
             return key
         return ScalarCallKey(name=key.name, args=new_args)
+    if isinstance(key, BetweenKey):
+        new_col = lower_sugar_transforms(key.column)
+        new_low = lower_sugar_transforms(key.low)
+        new_high = lower_sugar_transforms(key.high)
+        if (
+            new_col is key.column
+            and new_low is key.low
+            and new_high is key.high
+        ):
+            return key
+        return BetweenKey(column=new_col, low=new_low, high=new_high)
     return key
 
 
@@ -411,8 +427,20 @@ def _iter_slot_deps(key: ValueKey):
         return
     if isinstance(key, ScalarCallKey):
         for arg in key.args:
-            if isinstance(arg, _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey)):
+            if isinstance(
+                arg,
+                _SLOTTABLE_KIND + (ArithmeticKey, ScalarCallKey, BetweenKey),
+            ):
                 yield from _iter_slot_deps(arg)
+        return
+    if isinstance(key, BetweenKey):
+        # BetweenKey is not itself a slot — the generator inlines it
+        # into WHERE. Recurse into the column / low / high so the
+        # underlying ColumnKey shows up as a referenced slot for the
+        # cross-model routing / hidden-slot pass (Codex F4).
+        yield from _iter_slot_deps(key.column)
+        yield from _iter_slot_deps(key.low)
+        yield from _iter_slot_deps(key.high)
         return
     # StarKey, LiteralKey — never slottable on their own.
 
@@ -525,6 +553,10 @@ def _canonical_name(key: ValueKey) -> str:
         return f"_lit_{key.value}"
     if isinstance(key, StarKey):
         return "_star"
+    if isinstance(key, BetweenKey):
+        # Defensive — BetweenKey shouldn't materialise as a public slot
+        # in 7b.9; it's always inlined into WHERE by the renderer.
+        return f"_between_{_canonical_name(key.column)}"
     return "_hidden"
 
 

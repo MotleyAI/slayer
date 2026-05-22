@@ -2627,10 +2627,12 @@ class SQLGenerator:
         ``generate()`` path — the parity oracle in
         ``tests/parity_oracle.py`` pins this contract.
         """
+        from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
             AggregateKey,
             ColumnKey,
             Phase,
+            TimeTruncKey,
         )
 
         source_model = bundle.source_model
@@ -2640,21 +2642,12 @@ class SQLGenerator:
             )
         source_relation = planned_query.source_relation
 
-        # Codex HIGH fold-in: SlayerModel.filters (always-applied WHERE,
-        # Mode A SQL) is included by legacy enrichment but not yet wired
-        # through the typed pipeline. Defer explicitly so the parity
-        # contract isn't silently violated when a model carries always-on
-        # filters (e.g. ``filters=["deleted_at IS NULL"]``).
-        if source_model.filters:
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.9+: SlayerModel.filters "
-                f"(always-applied WHERE) not yet emitted by the new "
-                f"pipeline. Model {source_model.name!r} carries "
-                f"filters={source_model.filters!r}; the planner must "
-                f"bind them via parse_sql_predicate and the generator "
-                f"must emit them ahead of query filters (mirroring "
-                f"slayer/engine/enrichment.py:1144-1154)."
-            )
+        # DEV-1450 stage 7b.9 — SlayerModel.filters (always-applied WHERE,
+        # Mode A SQL) are now wired through the typed pipeline. The
+        # planner emits text-only FilterPhase entries for them (validated
+        # via parse_sql_predicate; measure / windowed / derived-column
+        # references rejected); _build_where_having_from_planned
+        # qualifies bare names and emits before user filters.
 
         # Codex MEDIUM fold-in: cross-model aggregate plans are produced
         # by the planner whenever ANY aggregate slot has a non-empty
@@ -2717,10 +2710,29 @@ class SQLGenerator:
                     )
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
+                elif isinstance(key, TimeTruncKey):
+                    if key.column.path != ():
+                        raise NotImplementedError(
+                            f"DEV-1450 stage 7b.12: joined TD refs "
+                            f"(path={key.column.path!r}) deferred to the "
+                            f"cross-model slice."
+                        )
+                    col_expr = self._dim_column_expr_from_planned(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        leaf=key.column.leaf,
+                    )
+                    trunc_expr = self._build_date_trunc(
+                        col_expr=col_expr,
+                        granularity=TimeGranularity(key.granularity),
+                    )
+                    select_columns.append(trunc_expr.copy().as_(full_alias))
+                    group_by_keys.setdefault(sid, trunc_expr)
                 else:
                     raise NotImplementedError(
-                        f"DEV-1450 stage 7b.9+: row-phase key type "
-                        f"{type(key).__name__} not supported in 7b.8."
+                        f"DEV-1450 stage 7b.10+: row-phase key type "
+                        f"{type(key).__name__} not supported in the "
+                        f"local-only / time-dim slice."
                     )
 
             elif slot.phase == Phase.AGGREGATE:
@@ -2975,30 +2987,85 @@ class SQLGenerator:
                     f"DEV-1450 stage 7b.10+: POST-phase filters deferred "
                     f"to transform-rendering slices. filter id={fp.id!r}."
                 )
-            if fp.expression is None:
-                raise ValueError(
-                    f"Filter id={fp.id!r} has no bound expression "
-                    f"(planner gap).",
+            if fp.expression is not None:
+                # Typed predicate (Mode-B DSL or planner-emitted
+                # BetweenKey) — render through the value-key walker.
+                rendered = self._render_value_key_for_filter(
+                    key=fp.expression.value_key,
+                    source_relation=source_relation,
+                    source_model=source_model,
                 )
-            rendered = self._render_value_key_for_filter(
-                key=fp.expression.value_key,
-                source_relation=source_relation,
-                source_model=source_model,
-            )
-            # Match the legacy DSL parser, which wraps top-level boolean
-            # expressions in parens — legacy WHERE for a compound filter
-            # emits ``WHERE (a AND b)`` rather than ``WHERE a AND b``.
-            # Wrapping at the top level only (not recursively) reproduces
-            # legacy output without affecting single-comparison filters.
-            if isinstance(rendered, (exp.And, exp.Or)):
-                rendered = exp.Paren(this=rendered)
-            where_parts.append(rendered.sql(dialect=self.dialect))
+                # Match the legacy DSL parser, which wraps top-level
+                # boolean expressions in parens — legacy WHERE for a
+                # compound filter emits ``WHERE (a AND b)`` rather than
+                # ``WHERE a AND b``. Wrapping at the top level only (not
+                # recursively) reproduces legacy output without affecting
+                # single-comparison or single-BETWEEN filters.
+                if isinstance(rendered, (exp.And, exp.Or)):
+                    rendered = exp.Paren(this=rendered)
+                where_parts.append(rendered.sql(dialect=self.dialect))
+            elif fp.text is not None:
+                # Mode-A SQL filter (SlayerModel.filters) — qualify bare
+                # column refs with the source relation, mirroring
+                # legacy `_build_where_and_having` at generator.py:2566.
+                where_parts.append(self._qualify_mode_a_sql_filter(
+                    sql=fp.text,
+                    columns=fp.text_columns,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                ))
+            else:
+                raise ValueError(
+                    f"FilterPhase id={fp.id!r} has neither expression "
+                    f"nor text (planner gap).",
+                )
 
         where_clause = None
         if where_parts:
             where_sql = _SQL_AND_JOINER.join(where_parts)
             where_clause = self._parse_predicate(where_sql)
         return where_clause, None  # No HAVING in 7b.8.
+
+    @staticmethod
+    def _qualify_mode_a_sql_filter(
+        *,
+        sql: str,
+        columns,
+        source_model,
+        source_relation: str,
+    ) -> str:
+        """Qualify bare-identifier column references in a Mode-A SQL
+        filter — mirrors legacy ``_build_where_and_having`` at
+        ``slayer/sql/generator.py:2566-2580``.
+
+        For each name in ``columns``:
+        * Already-dotted refs are left alone (``orders.id`` stays).
+        * Non-identifier tokens (SQL keywords picked up by the regex
+          extractor) are left alone.
+        * Bare identifiers matching a model column name are rewritten
+          to ``<source_relation>.<col>``. The negative lookbehind
+          ``(?<!\\.)(?<!\\w)`` prevents touching already-qualified or
+          substring-of-another-identifier matches.
+
+        Note: ``columns`` is the column list ``parse_sql_predicate``
+        returned at planner time. The bare-identifier filter is
+        permissive (matches more than just column names) — only those
+        also present in the regex's ``\\b...\\b`` match get rewritten,
+        which mirrors legacy behavior exactly.
+        """
+        import re
+        out = sql
+        for col_name in dict.fromkeys(columns):
+            if "." in col_name:
+                continue
+            if not col_name.isidentifier():
+                continue
+            out = re.sub(
+                rf"(?<!\.)(?<!\w)\b{re.escape(col_name)}\b",
+                f"{source_relation}.{col_name}",
+                out,
+            )
+        return out
 
     def _render_value_key_for_filter(
         self,
@@ -3020,6 +3087,7 @@ class SQLGenerator:
         from slayer.core.keys import (
             AggregateKey,
             ArithmeticKey,
+            BetweenKey,
             ColumnKey,
             ColumnSqlKey,
             LiteralKey,
@@ -3077,6 +3145,23 @@ class SQLGenerator:
                         source_model=source_model,
                     ))
             return exp.Anonymous(this=key.name.upper(), expressions=args)
+        if isinstance(key, BetweenKey):
+            col_expr = self._render_value_key_for_filter(
+                key=key.column,
+                source_relation=source_relation,
+                source_model=source_model,
+            )
+            low_expr = self._render_value_key_for_filter(
+                key=key.low,
+                source_relation=source_relation,
+                source_model=source_model,
+            )
+            high_expr = self._render_value_key_for_filter(
+                key=key.high,
+                source_relation=source_relation,
+                source_model=source_model,
+            )
+            return exp.Between(this=col_expr, low=low_expr, high=high_expr)
         if isinstance(key, (
             AggregateKey, TransformKey, TimeTruncKey,
             StarKey, ColumnSqlKey,

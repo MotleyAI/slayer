@@ -229,15 +229,23 @@ class FilterPhase(BaseModel):
     references: ROW → WHERE, AGGREGATE → HAVING, POST → post-filter
     on the outer SELECT.
 
-    ``text`` is the original input text preserved for debugging /
-    error messages. The compiled expression (a ``BoundExpr``) lives on
-    the slot graph; here we only need identity + phase to drive
-    rendering.
+    Two carrier modes, mutually exclusive in practice:
+
+    * ``expression`` is a typed ``BoundExpr`` — used for the Mode-B
+      DSL filters bound by ``bind_filter`` and the planner-emitted
+      ``BetweenKey`` for ``TimeDimension.date_range``. The renderer
+      walks the typed value-key tree.
+    * ``text`` is a Mode-A SQL fragment — used for
+      ``SlayerModel.filters`` (always-applied WHERE). The renderer
+      qualifies bare-identifier column refs in ``text_columns`` with
+      the source-relation alias and emits the result verbatim
+      (matching legacy ``_build_where_and_having`` qualification).
     """
 
     id: BoundFilterId
     phase: Phase
     text: Optional[str] = None
+    text_columns: Tuple[str, ...] = ()
     expression: Optional[BoundExpr] = None
 
 

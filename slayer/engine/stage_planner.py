@@ -30,7 +30,7 @@ from typing import Dict, FrozenSet, List, Optional, Union
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.keys import (
     AggregateKey,
-    ArithmeticKey,
+    BetweenKey,
     ColumnKey,
     LiteralKey,
     Phase,
@@ -73,6 +73,9 @@ from slayer.engine.planning import (
 )
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.syntax import parse_expr
+from slayer.engine.column_expansion import _is_trivial_base
+from slayer.sql.sql_expr import has_window_function
+from slayer.sql.sql_predicate import parse_sql_predicate
 
 
 __all__ = ["plan_query", "plan_stages"]
@@ -123,25 +126,44 @@ def plan_query(
             if alias is not None:
                 declared_alias_to_bound.setdefault(alias, dm.bound)
 
+    # DEV-1450 stage 7b.9 — filter list construction in legacy WHERE
+    # order: date_range filters first, then SlayerModel.filters
+    # (Mode-A SQL), then user query filters (Mode-B DSL). The legacy
+    # generator emits date_range BEFORE iterating ``enriched.filters``
+    # (slayer/sql/generator.py:2527 vs :2540), and ``enriched.filters``
+    # itself is model filters then query filters (enrichment.py:1192).
+    #
+    # ``bound_filters`` carries the typed-BoundFilter entries (date_range
+    # + query filters) for the cross-model routing and projection
+    # planner passes. Model filters bypass ``bound_filters`` since
+    # they're Mode-A SQL text without a typed value-key — they're
+    # appended directly to ``filters_by_phase`` between the two
+    # bound-filter buckets.
     bound_filters: List[BoundFilter] = []
-    for f in (query.filters or []):
-        if not isinstance(f, str):
-            continue
-        bf = bind_filter(parse_expr(f), scope=scope, bundle=bundle)
-        bound_filters.append(bf)
-    # Auto-generated date_range filters follow the user filters. Each TD
-    # with date_range=[start, end] becomes an AND-of-comparisons row-
-    # phase filter on the BARE underlying column (matching legacy
-    # ``column BETWEEN start AND end`` — inclusive on both sides). The
-    # filter binds against the raw ColumnKey, not the TimeTruncKey, so
-    # generator slice 7b.11 can apply it to the outer projection while
-    # the shifted self-join CTE reads unfiltered raw data.
+    text_filter_entries: List[FilterPhase] = []
+
+    # 1. date_range filters (one per TD with a 2-element date_range)
     for td in (query.time_dimensions or []):
         if not td.date_range or len(td.date_range) != 2:
             continue
         if not isinstance(scope, ModelScope):
             continue
         bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
+        bound_filters.append(bf)
+    n_date_range = len(bound_filters)
+
+    # 2. SlayerModel.filters — Mode-A SQL, always-applied WHERE.
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        for j, mf in enumerate(scope.source_model.filters or []):
+            text_filter_entries.append(_validate_model_filter(
+                mf=mf, idx=j, model=scope.source_model,
+            ))
+
+    # 3. user query filters (Mode-B DSL).
+    for f in (query.filters or []):
+        if not isinstance(f, str):
+            continue
+        bf = bind_filter(parse_expr(f), scope=scope, bundle=bundle)
         bound_filters.append(bf)
 
     order_specs = []
@@ -173,19 +195,34 @@ def plan_query(
         projection.registry.slots,
     )
 
+    # Build filters_by_phase in legacy WHERE order:
+    #   1. date_range bound filters (bound_filters[:n_date_range])
+    #   2. model.filters (text_filter_entries)
+    #   3. user query bound filters (bound_filters[n_date_range:])
+    # bound_filter_ids preserves the mapping back to bound_filters for
+    # the cross-model routing pass that follows (text_filter_entries
+    # are excluded — model filters never feed cross-model routing).
     filters_by_phase: List[FilterPhase] = []
-    for i, bf in enumerate(bound_filters):
-        # Stage 7b.6: every FilterPhase carries an expression payload —
-        # auto-generated date_range filters AND user filters alike — so
-        # the SQL generator can render without re-parsing or consulting
-        # a side map. PlannedBoundExpr is now a re-export of the
-        # binder's BoundExpr (single canonical class).
+    bound_filter_ids: List[str] = []
+    for i, bf in enumerate(bound_filters[:n_date_range]):
+        fid = f"f{i}"
         filters_by_phase.append(
             FilterPhase(
-                id=f"f{i}", phase=bf.phase, text=None,
+                id=fid, phase=bf.phase, text=None,
                 expression=PlannedBoundExpr(value_key=bf.value_key),
             ),
         )
+        bound_filter_ids.append(fid)
+    filters_by_phase.extend(text_filter_entries)
+    for i, bf in enumerate(bound_filters[n_date_range:], start=n_date_range):
+        fid = f"f{i}"
+        filters_by_phase.append(
+            FilterPhase(
+                id=fid, phase=bf.phase, text=None,
+                expression=PlannedBoundExpr(value_key=bf.value_key),
+            ),
+        )
+        bound_filter_ids.append(fid)
     # Stage 7b.5 — cross-model planner wiring. For every aggregate slot
     # whose source carries a non-empty join path (cross-model agg-ref
     # like ``customers.revenue:sum``), invoke the cross_model_planner
@@ -193,17 +230,19 @@ def plan_query(
     # target_model_filters routes. HostFilterRouting records carry the
     # post-projection slot ids each filter references (via
     # filter_referenced_slot_ids — Codex HIGH #3/#4 fold-in).
+    # host_filter_routings only carries entries that have a typed
+    # BoundFilter (date_range + user filters). Model.filters (text-only)
+    # are always row-phase host-local WHERE and never need to be routed
+    # to a cross-model CTE — they're skipped here.
     host_filter_routings: List[HostFilterRouting] = []
-    for fp, bf in zip(filters_by_phase, bound_filters):
-        # Sorted for deterministic plan snapshots and reproducible
-        # debug / warning output across runs (Codex LOW #3 fold-in).
+    for fid, bf in zip(bound_filter_ids, bound_filters):
         host_filter_routings.append(HostFilterRouting(
-            filter_id=fp.id,
+            filter_id=fid,
             phase=bf.phase,
             referenced_slot_ids=sorted(filter_referenced_slot_ids(
                 bf, projection.registry,
             )),
-            text=fp.text,
+            text=None,
         ))
 
     cross_model_plans = []
@@ -564,6 +603,80 @@ def _emit_transform_layers(*, slots: List[ValueSlot]) -> List[TransformLayer]:
 # ---------------------------------------------------------------------------
 
 
+def _validate_model_filter(
+    *,
+    mf: str,
+    idx: int,
+    model: SlayerModel,
+) -> FilterPhase:
+    """Validate a ``SlayerModel.filters`` entry and emit a text-only
+    ``FilterPhase`` for it.
+
+    Replicates legacy validation (``slayer/engine/enrichment.py:1138-1219``):
+
+    * ``parse_sql_predicate`` rejects DSL constructs (colon aggregation,
+      transform calls) and raw ``OVER(...)`` window functions.
+    * Reject references to a ``ModelMeasure`` declared on the same
+      model — model filters are WHERE-clause SQL, can't reference
+      aggregates (legacy ``enrichment.py:1147-1153``).
+    * Reject references to a column whose ``Column.sql`` contains a
+      window function (legacy ``enrichment.py:1205-1219``).
+    * DEV-1450 stage 7b.9 deliberately defers references to derived
+      ``Column.sql`` (non-windowed) columns to a follow-up — legacy
+      inlines the column's SQL via ``resolve_filter_columns``; the
+      new path only knows bare-name qualification at render time, so
+      a derived-column reference would produce wrong SQL. Raises
+      ``NotImplementedError`` explicitly so the failure mode is clear.
+    """
+    parsed = parse_sql_predicate(mf)
+    measure_names = {m.name for m in (model.measures or [])}
+    windowed_columns = {
+        c.name for c in model.columns
+        if c.sql and has_window_function(c.sql)
+    }
+    # Non-trivial derived columns (Column.sql is set AND not a bare
+    # identifier remap like ``sql="amount"``). Trivial base columns
+    # qualify the same as bare-table columns — legacy semantics
+    # (`_is_trivial_base` in slayer/engine/column_expansion.py).
+    derived_columns = {
+        c.name for c in model.columns
+        if c.sql
+        and not has_window_function(c.sql)
+        and not _is_trivial_base(column=c)
+    }
+    for col in parsed.columns:
+        if col in measure_names:
+            raise ValueError(
+                f"Model filter {mf!r} references measure {col!r}. "
+                f"Model filters can only reference table columns (WHERE). "
+                f"Use query-level filters for measure conditions."
+            )
+        if col in windowed_columns:
+            raise ValueError(
+                f"Model filter {mf!r} references column {col!r} whose "
+                f"SQL contains a window function. Factor it into a "
+                f"multi-stage source_queries model or use a rank-family "
+                f"transform at query time."
+            )
+        if col in derived_columns:
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.9: model filter {mf!r} references "
+                f"derived column {col!r} (Column.sql is set with a "
+                f"non-trivial expression). The typed pipeline does not "
+                f"yet inline derived-column SQL inside model.filters; a "
+                f"follow-up will bridge this. For now, factor the "
+                f"predicate into a query-level filter or reference the "
+                f"underlying table column directly."
+            )
+    return FilterPhase(
+        id=f"mf{idx}",
+        phase=Phase.ROW,
+        text=mf,
+        text_columns=tuple(parsed.columns),
+        expression=None,
+    )
+
+
 def _build_date_range_filter(
     *,
     td: TimeDimension,
@@ -578,14 +691,17 @@ def _build_date_range_filter(
     filter to the outer projection while the shifted self-join CTE
     reads raw data. Shape:
 
-        column >= start AND column <= end
+        BetweenKey(column=col, low=start, high=end)
 
-    matches legacy ``column BETWEEN start AND end`` (inclusive both
-    sides). Bound literals are normalised via ``normalize_scalar``;
-    strings pass through unchanged.
+    Inclusive on both sides — matches legacy ``column BETWEEN start
+    AND end``. The typed BetweenKey lets the SQL generator emit
+    ``exp.Between`` rather than ``col >= start AND col <= end``,
+    closing the syntactic parity gap with the legacy generator
+    (DEV-1450 stage 7b.9).
+
+    Bound literals are normalised via ``normalize_scalar``; strings
+    pass through unchanged.
     """
-    # Resolve the underlying column the same way bind_expr would —
-    # local ref or dotted-join walk.
     full = td.dimension.full_name
     parsed = parse_expr(full)
     bound_col_expr = bind_expr(parsed, scope=scope, bundle=bundle)
@@ -597,15 +713,11 @@ def _build_date_range_filter(
         )
 
     start, end = td.date_range[0], td.date_range[1]
-    ge = ArithmeticKey(
-        op=">=",
-        operands=(col_key, LiteralKey(value=normalize_scalar(start))),
+    predicate = BetweenKey(
+        column=col_key,
+        low=LiteralKey(value=normalize_scalar(start)),
+        high=LiteralKey(value=normalize_scalar(end)),
     )
-    le = ArithmeticKey(
-        op="<=",
-        operands=(col_key, LiteralKey(value=normalize_scalar(end))),
-    )
-    predicate = ArithmeticKey(op="and", operands=(ge, le))
     refs = tuple(walk_value_keys(predicate))
     phase = max((k.phase for k in refs), default=predicate.phase)
     return BoundFilter(

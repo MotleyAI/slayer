@@ -48,6 +48,7 @@ from slayer.core.keys import (
     SCALAR_FUNCTIONS,
     AggregateKey,
     ArithmeticKey,
+    BetweenKey,
     ColumnKey,
     ColumnSqlKey,
     LiteralKey,
@@ -312,6 +313,7 @@ def bind_filter(
 _VALUE_KEY_TYPES = (
     ColumnKey, ColumnSqlKey, StarKey, LiteralKey,
     AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey,
+    BetweenKey, TimeTruncKey,
 )
 
 
@@ -347,6 +349,10 @@ def walk_value_keys(key: ValueKey):
         for arg in key.args:
             if isinstance(arg, _VALUE_KEY_TYPES):
                 yield from walk_value_keys(arg)
+    elif isinstance(key, BetweenKey):
+        yield from walk_value_keys(key.column)
+        yield from walk_value_keys(key.low)
+        yield from walk_value_keys(key.high)
 
 
 # ---------------------------------------------------------------------------

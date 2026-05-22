@@ -475,6 +475,38 @@ class ScalarCallKey(_FrozenKey):
 
 
 # ---------------------------------------------------------------------------
+# BetweenKey — DEV-1450 stage 7b.9
+# ---------------------------------------------------------------------------
+
+
+class BetweenKey(_FrozenKey):
+    """Typed identity for a ``col BETWEEN low AND high`` predicate.
+
+    Closed-form Mode-A SQL constructs (``BETWEEN``) and equivalent
+    Mode-B compound forms (``col >= low and col <= high``) render to
+    different SQL text. The planner uses ``BetweenKey`` to mark the
+    spots where ``BETWEEN`` is the right legacy-parity rendering — today
+    only ``TimeDimension.date_range`` produces them. User-written DSL
+    filters never produce ``BetweenKey``: the syntax parser doesn't
+    have a ``between`` construct, and a user-written ``col >= a and
+    col <= b`` stays as ``ArithmeticKey(and, [GE, LE])`` so its parity
+    with the legacy generator (which keeps the AND form verbatim) is
+    preserved.
+
+    Phase is always ROW — ``BetweenKey`` predicates filter row-level
+    columns. The renderer emits ``exp.Between``.
+    """
+
+    column: "ValueKey"
+    low: "ValueKey"
+    high: "ValueKey"
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+
+# ---------------------------------------------------------------------------
 # Union alias + rebuild for forward refs
 # ---------------------------------------------------------------------------
 
@@ -489,6 +521,7 @@ ValueKey = Union[
     TransformKey,
     ArithmeticKey,
     ScalarCallKey,
+    BetweenKey,
 ]
 
 
@@ -496,3 +529,4 @@ ValueKey = Union[
 TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
 ScalarCallKey.model_rebuild()
+BetweenKey.model_rebuild()
