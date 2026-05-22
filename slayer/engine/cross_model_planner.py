@@ -54,6 +54,7 @@ from slayer.core.keys import (
     ColumnKey,
     ColumnSqlKey,
     Phase,
+    TimeTruncKey,
 )
 from slayer.core.models import SlayerModel
 from slayer.core.refs import canonical_agg_name
@@ -442,12 +443,24 @@ class IsolatedCteCrossModelPlanner:
 
         # Shared grain: local ROW slots on host (dimensions) flow through.
         # Cross-branch ROW slots and aggregate / transform slots do not.
+        # DEV-1450 stage 7b.12: ``TimeTruncKey`` slots count as grain
+        # candidates too — a joined TD (``customers.created_at`` MONTH)
+        # whose column path lies on the target's join chain is shared
+        # between the host base and the cross-model CTE, so legacy
+        # ``LEFT JOIN`` on the truncated alias replaces the global
+        # ``CROSS JOIN``.
         shared_grain: List[SlotId] = []
         for s in host_slots:
             if isinstance(s.key, ColumnKey):
                 if not s.key.path:
                     shared_grain.append(s.id)
                 elif s.key.path == target_path[: len(s.key.path)]:
+                    shared_grain.append(s.id)
+            elif isinstance(s.key, TimeTruncKey):
+                td_path = s.key.column.path
+                if not td_path:
+                    shared_grain.append(s.id)
+                elif td_path == target_path[: len(td_path)]:
                     shared_grain.append(s.id)
 
         first_hop = join_chain[0]

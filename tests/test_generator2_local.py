@@ -24,16 +24,9 @@ from slayer.core.errors import MeasureNameCollidesWithColumnError
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
-    Phase,
-    SqlExprKey,
 )
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import OrderItem, SlayerQuery
-from slayer.engine.planned import (
-    BoundExpr,
-    PlannedQuery,
-    ValueSlot,
-)
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.source_bundle import ResolvedSourceBundle
 from slayer.engine.stage_planner import plan_query
@@ -330,64 +323,19 @@ def test_planner_model_measure_expansion_wired():
     )
 
 
-def test_generator_rejects_column_filter_key_with_dev1450_marker():
-    """``column_filter_key`` on ``AggregateKey`` is deferred to 7b.12
-    (cross-model slice). To prevent silent SQL parity drift the local-
-    only generator must raise ``NotImplementedError`` mentioning the
-    stage marker if it sees a non-None ``column_filter_key``.
-
-    This is the hand-built guard test — it pins the explicit
-    deferral message. The companion xfail below covers the actual
-    planner gap (``_bind_agg`` currently returns ``column_filter_key=
-    None`` unconditionally).
-    """
-    sql_expr = SqlExprKey(canonical_sql="status = 'paid'")
-    agg_key = AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"),
-        agg="sum",
-        column_filter_key=sql_expr,
-    )
-    slot = ValueSlot(
-        id="s1",
-        key=agg_key,
-        declared_name="amount_sum",
-        public_name="amount_sum",
-        public_aliases=["amount_sum"],
-        phase=Phase.AGGREGATE,
-        type=DataType.DOUBLE,
-        expression=BoundExpr(value_key=agg_key),
-    )
-    planned = PlannedQuery(
-        source_relation="orders",
-        aggregate_slots=[slot],
-        projection=["s1"],
-    )
-    with pytest.raises(NotImplementedError) as exc:
-        generate_from_planned(planned, bundle=_bundle(), dialect="postgres")
-    msg = str(exc.value)
-    assert "DEV-1450" in msg
-    assert "7b.12" in msg or "column_filter_key" in msg.lower()
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1450 stage 7b.12 will wire Column.filter into "
-        "AggregateKey.column_filter_key in slayer/engine/binding.py::_bind_agg. "
-        "Today _bind_agg returns column_filter_key=None unconditionally, so "
-        "the planner-path test fails. The hand-built guard test above pins "
-        "the generator rejection; this xfail pins the planner gap. When 7b.12 "
-        "lands the strict=True converts this to a real assertion."
-    ),
-)
 def test_planner_populates_column_filter_key_for_filtered_column():
     """Real planner path: a ``Column.filter`` on the aggregated column
     must surface as ``AggregateKey.column_filter_key`` so the
-    generator (7b.12) can render the CASE-WHEN wrapper.
+    generator renders the CASE-WHEN wrapper.
 
-    Codex MEDIUM fold-in: the hand-built guard alone doesn't catch the
-    silent planner drop. This xfail exercises the real path so the
-    gap is visible (and auto-converts when fixed).
+    Pre-7b.12 this test was an ``@pytest.mark.xfail(strict=True)`` —
+    the hand-built guard companion pinned that the local-only
+    generator raised on a non-None ``column_filter_key`` while
+    ``_bind_agg`` returned it as ``None`` unconditionally. 7b.12
+    wires both ends: the binder propagates ``Column.filter`` into the
+    key, and the generator renders ``SUM(CASE WHEN <filter> THEN col
+    END)``. The xfail flips to a real assertion (and the obsolete
+    guard test is deleted alongside).
     """
     orders_with_filtered_col = SlayerModel(
         name="orders",

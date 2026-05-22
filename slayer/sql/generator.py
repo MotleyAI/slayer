@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -2646,10 +2646,8 @@ class SQLGenerator:
         source_relation = planned_query.source_relation
 
         if planned_query.cross_model_aggregate_plans:
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.12: cross_model_aggregate_plans "
-                f"({len(planned_query.cross_model_aggregate_plans)} plan(s)) "
-                f"deferred to the cross-model slice."
+            return self._render_with_cross_model_plans(
+                planned_query=planned_query, bundle=bundle,
             )
 
         # 7b.10 — fail fast on transform ops this slice does not render
@@ -3307,6 +3305,7 @@ class SQLGenerator:
         source_relation: str,
         base_render_order: List[str],
         slots_by_id: Dict[str, Any],
+        skip_cross_model_aggs: bool = False,
     ):
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``.
 
@@ -3317,6 +3316,13 @@ class SQLGenerator:
         Returns ``(base_select, aliases_by_slot_id, has_aggregation,
         group_by_keys)``. ``aliases_by_slot_id`` is a list per slot to
         preserve duplicate public aliases (DEV-1450 C13).
+
+        DEV-1450 stage 7b.12: joined ROW slots (ColumnKey.path != ()
+        and TimeTruncKey.column.path != ()) are rendered by walking
+        the bundle's join graph and emitting ``LEFT JOIN`` clauses in
+        the FROM. ``skip_cross_model_aggs=True`` is passed by the
+        cross-model orchestrator so the ``_base`` CTE omits AGGREGATE
+        slots that live in a per-plan ``_cm_*`` CTE.
         """
         from slayer.core.enums import TimeGranularity
         from slayer.core.keys import (
@@ -3326,8 +3332,17 @@ class SQLGenerator:
             TimeTruncKey,
         )
 
-        from_clause = self._build_from_clause_from_planned(
-            source_model=source_model, source_relation=source_relation,
+        # Walk row slots to collect every joined path so the FROM
+        # clause carries the needed LEFT JOINs in one pass.
+        needed_join_paths = self._collect_joined_paths_for_base(
+            base_render_order=base_render_order,
+            slots_by_id=slots_by_id,
+        )
+        from_clause, base_joins = self._build_from_and_joins(
+            source_model=source_model,
+            source_relation=source_relation,
+            joined_paths=needed_join_paths,
+            bundle=bundle,
         )
 
         select_columns: list[exp.Expression] = []
@@ -3341,42 +3356,40 @@ class SQLGenerator:
 
         for sid in base_render_order:
             slot = slots_by_id[sid]
-            if slot.public_aliases:
-                alias = self._pick_alias_for_planned_slot(
-                    slot=slot, alias_index=alias_index,
-                )
-            else:
-                alias = slot.declared_name
-            full_alias = f"{source_relation}.{alias}"
+            # DEV-1450 stage 7b.12: joined ROW slots emit the FULL
+            # dotted result-key form (``orders.customers.region_id``).
+            # The planner emits a flat ``customers__region_id``
+            # declared_name for downstream stage binding (DEV-1449 / C4
+            # contract), but the public projection alias must preserve
+            # the dotted path for the result-key contract (P10). Local
+            # slots keep the existing ``<source_relation>.<alias>``
+            # form.
+            full_alias = self._full_alias_for_slot(
+                slot=slot,
+                source_relation=source_relation,
+                alias_index=alias_index,
+            )
 
             if slot.phase == Phase.ROW:
                 key = slot.key
                 if isinstance(key, ColumnKey):
-                    if key.path != ():
-                        raise NotImplementedError(
-                            f"DEV-1450 stage 7b.12: cross-model dimension "
-                            f"refs (path={key.path!r}) deferred to the "
-                            f"cross-model slice."
-                        )
-                    col_expr = self._dim_column_expr_from_planned(
+                    col_expr = self._joined_or_local_dim_expr(
+                        path=key.path,
+                        leaf=key.leaf,
                         source_model=source_model,
                         source_relation=source_relation,
-                        leaf=key.leaf,
+                        bundle=bundle,
                     )
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
-                    if key.column.path != ():
-                        raise NotImplementedError(
-                            f"DEV-1450 stage 7b.12: joined TD refs "
-                            f"(path={key.column.path!r}) deferred to the "
-                            f"cross-model slice."
-                        )
-                    col_expr = self._dim_column_expr_from_planned(
+                    col_expr = self._joined_or_local_dim_expr(
+                        path=key.column.path,
+                        leaf=key.column.leaf,
                         source_model=source_model,
                         source_relation=source_relation,
-                        leaf=key.column.leaf,
+                        bundle=bundle,
                     )
                     trunc_expr = self._build_date_trunc(
                         col_expr=col_expr,
@@ -3401,18 +3414,21 @@ class SQLGenerator:
                     )
                 agg_path = getattr(key.source, "path", ())
                 if agg_path:
+                    if skip_cross_model_aggs:
+                        # Cross-model aggregate; rendered by the per-plan
+                        # ``_cm_*`` CTE. Skip in the host base.
+                        continue
                     raise NotImplementedError(
                         f"DEV-1450 stage 7b.12: cross-model aggregate "
-                        f"(source.path={agg_path!r}) deferred to the "
-                        f"cross-model slice."
+                        f"(source.path={agg_path!r}) reached the local "
+                        f"base SELECT path. The cross-model orchestrator "
+                        f"should have routed this through `_render_with_"
+                        f"cross_model_plans`."
                     )
-                if key.column_filter_key is not None:
-                    raise NotImplementedError(
-                        f"DEV-1450 stage 7b.12: column_filter_key "
-                        f"(Column.filter on aggregated column) deferred "
-                        f"to the cross-model slice. Got "
-                        f"column_filter_key={key.column_filter_key!r}."
-                    )
+                # DEV-1450 stage 7b.12: ``column_filter_key`` is now
+                # propagated into the synthetic EnrichedMeasure's
+                # ``filter_sql`` field so ``_build_agg`` wraps the
+                # aggregate as ``SUM(CASE WHEN <filter> THEN col END)``.
                 synth = self._synthesize_enriched_measure_from_planned(
                     slot=slot,
                     key=key,
@@ -3435,7 +3451,979 @@ class SQLGenerator:
         for col in select_columns:
             base_select = base_select.select(col)
         base_select = base_select.from_(from_clause)
+        for join_expr, on_expr, join_type in base_joins:
+            base_select = base_select.join(
+                join_expr, on=on_expr, join_type=join_type,
+            )
         return base_select, aliases_by_slot_id, has_aggregation, group_by_keys
+
+    def _render_with_cross_model_plans(
+        self,
+        *,
+        planned_query,
+        bundle,
+    ) -> str:
+        """Render a ``PlannedQuery`` that carries one or more
+        ``CrossModelAggregatePlan`` entries.
+
+        Mirrors the legacy ``_build_combined`` + ``_assemble_combined_sql``
+        shape:
+
+        * ``_base`` CTE: host's local row/aggregate slots (joined ROW
+          slots LEFT JOINed; cross-model AGGREGATE slots skipped).
+        * One ``_cm_<sanitized_alias>`` CTE per plan, rooted at the
+          terminal target model (``FROM <target> AS <target>``), with
+          target-model filters as WHERE, host-routed filters as WHERE /
+          HAVING per ``where_filter_ids`` / ``having_filter_ids``, and
+          GROUP BY over the shared-grain slots whose key path matches
+          the agg's target path.
+        * A ``_combined`` SELECT joining ``_base`` to every ``_cm_*``
+          via ``LEFT JOIN`` on the shared-grain aliases (or ``CROSS
+          JOIN`` when no shared grain is in play).
+        * Outer wrap: ORDER BY / LIMIT / OFFSET applied at the combined
+          SELECT, then ``_apply_outer_projection_trim`` reshapes the
+          public alias projection to exactly ``planned_query.projection``
+          order.
+
+        Transform layers + cross-model plans together are out of this
+        slice — the renderer rejects with a stage marker so the failure
+        mode is loud. Most acceptance / parity tests don't exercise that
+        combination.
+        """
+        from slayer.core.keys import AggregateKey
+
+        if planned_query.transform_layers:
+            raise NotImplementedError(
+                "DEV-1450 stage 7b.12: cross-model aggregates combined "
+                "with transform layers (cumsum / time_shift / change / "
+                "consecutive_periods on the host) are not yet rendered. "
+                "Out of slice scope; revisit if needed.",
+            )
+
+        source_model = bundle.source_model
+        source_relation = planned_query.source_relation
+
+        slots_by_id = {
+            s.id: s
+            for s in (
+                list(planned_query.row_slots)
+                + list(planned_query.aggregate_slots)
+                + list(planned_query.combined_expression_slots)
+            )
+        }
+
+        # The ``_base`` CTE projects host-local ROW slots, joined ROW
+        # slots (LEFT JOIN walk), and any LOCAL aggregate slots. Cross-
+        # model AGGREGATE slots are skipped — the per-plan ``_cm_*`` CTE
+        # owns them. POST-phase slots aren't in scope (no transforms).
+        cma_slot_ids = {
+            p.aggregate_slot_id for p in planned_query.cross_model_aggregate_plans
+        }
+        base_projection = [
+            sid for sid in planned_query.projection if sid not in cma_slot_ids
+        ]
+
+        # Hidden grain materialisation: when the user query has neither
+        # host row slots NOR local aggs, ``base_projection`` is empty
+        # and the ``_base`` CTE would be a bare ``FROM orders`` — legacy
+        # emits ``SELECT 1 AS _placeholder FROM orders`` so the combined
+        # CROSS JOIN has a left side to join against. Mirror that shape.
+        empty_base = not base_projection
+        if empty_base:
+            base_select = exp.Select().select(
+                exp.Alias(this=exp.Literal.number("1"), alias=exp.to_identifier("_placeholder")),
+            ).from_(
+                self._build_from_clause_from_planned(
+                    source_model=source_model, source_relation=source_relation,
+                ),
+            )
+            aliases_by_slot_id: Dict[str, List[str]] = {}
+            base_has_agg = False
+            base_group_by: Dict[str, exp.Expression] = {}
+        else:
+            (
+                base_select,
+                aliases_by_slot_id,
+                base_has_agg,
+                base_group_by,
+            ) = self._build_base_select_for_planned(
+                planned_query=planned_query,
+                bundle=bundle,
+                source_model=source_model,
+                source_relation=source_relation,
+                base_render_order=base_projection,
+                slots_by_id=slots_by_id,
+                skip_cross_model_aggs=True,
+            )
+
+            # Filters routed to any CTE (WHERE or HAVING) must NOT
+            # double-apply at the host base. ``applied_filter_ids`` is
+            # the audit union of where + having on each plan.
+            routed_ids: Set[str] = set()
+            for plan in planned_query.cross_model_aggregate_plans:
+                routed_ids.update(plan.where_filter_ids)
+                routed_ids.update(plan.having_filter_ids)
+            base_where, base_having = self._build_where_having_from_planned(
+                planned_query=planned_query,
+                source_relation=source_relation,
+                source_model=source_model,
+                skip_filter_ids=routed_ids,
+            )
+            if base_where is not None:
+                base_select = base_select.where(base_where)
+            base_dim_only_dedup = bool(base_group_by) and not base_has_agg
+            if (base_has_agg or base_dim_only_dedup) and base_group_by:
+                for gb in base_group_by.values():
+                    base_select = base_select.group_by(gb)
+            if base_having is not None:
+                base_select = base_select.having(base_having)
+
+        base_cte_sql = base_select.sql(dialect=self.dialect, pretty=True)
+
+        # Per-plan ``_cm_*`` CTEs. The CTE name and projection use the
+        # CANONICAL aggregate alias (path + canonical_agg_name); user-
+        # declared ``name``s surface at the combined SELECT level via
+        # ``... AS "<public_alias>"`` so:
+        #   * legacy parity holds for non-renamed cases (canonical
+        #     stays as the only emitted alias);
+        #   * C13 multi-alias same-key slots collapse to ONE CTE +
+        #     N combined-level projections;
+        #   * renamed measures (DEV-1445 C1) produce one CTE under the
+        #     canonical alias plus an ``AS`` remap at the combined
+        #     SELECT — matches the result-key contract while keeping
+        #     legacy parity for the unaliased shape.
+        cm_ctes: List[Tuple[str, str]] = []
+        seen_cm: set = set()
+        canonical_alias_for_plan: Dict[str, str] = {}
+        shared_grain_aliases_for_plan: Dict[str, List[str]] = {}
+        for plan in planned_query.cross_model_aggregate_plans:
+            agg_slot = slots_by_id.get(plan.aggregate_slot_id)
+            if agg_slot is None or not isinstance(agg_slot.key, AggregateKey):
+                raise RuntimeError(
+                    f"CrossModelAggregatePlan {plan.aggregate_slot_id!r} "
+                    f"references a missing or non-aggregate slot.",
+                )
+            canonical_alias = self._canonical_cross_model_alias(
+                source_relation=source_relation,
+                key=agg_slot.key,
+            )
+            canonical_alias_for_plan[plan.aggregate_slot_id] = canonical_alias
+            cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+            if cte_name in seen_cm:
+                continue
+            seen_cm.add(cte_name)
+
+            cte_sql, shared_grain_aliases = self._render_cross_model_cte(
+                plan=plan,
+                agg_slot=agg_slot,
+                full_agg_alias=canonical_alias,
+                bundle=bundle,
+                planned_query=planned_query,
+                slots_by_id=slots_by_id,
+                base_projection_ids=set(base_projection),
+            )
+            cm_ctes.append((cte_name, cte_sql))
+            shared_grain_aliases_for_plan[plan.aggregate_slot_id] = shared_grain_aliases
+
+        # Codex MED fold-in: surface dropped-filter warnings from each
+        # plan via Python ``warnings`` so callers using
+        # ``warnings.catch_warnings()`` see what was dropped. The
+        # generator is the boundary that "renders" the plan; warnings
+        # are inert until something is actually compiled.
+        import warnings as _warnings_mod
+        for plan in planned_query.cross_model_aggregate_plans:
+            for w in plan.dropped_filter_warnings:
+                _warnings_mod.warn(
+                    str(w),
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        # Build the combined SELECT: SELECT _base.<all_local>,
+        # _cm_*.<canonical> [AS "<user_alias>"] FROM _base [LEFT JOIN |
+        # CROSS JOIN] _cm_* [ON ...].
+        combined_parts: List[str] = []
+        # Host-side projection: every slot in base_projection surfaces
+        # its picked alias(es). Multi-alias slots emit one entry per
+        # alias (C13).
+        for sid in base_projection:
+            aliases = aliases_by_slot_id.get(sid, [])
+            for full_alias in aliases:
+                combined_parts.append(f'_base."{full_alias}"')
+        # Cross-model side: one entry per declared user alias, all
+        # referencing the canonical CTE column. When the slot has no
+        # declared name (matches canonical), no ``AS`` remap fires.
+        for plan in planned_query.cross_model_aggregate_plans:
+            agg_slot = slots_by_id[plan.aggregate_slot_id]
+            canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
+            cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+            public_aliases = self._public_aliases_for_cross_model_agg(
+                slot=agg_slot,
+                source_relation=source_relation,
+                canonical_alias=canonical_alias,
+            )
+            for pub in public_aliases:
+                if pub == canonical_alias:
+                    combined_parts.append(f'{cte_name}."{canonical_alias}"')
+                else:
+                    combined_parts.append(
+                        f'{cte_name}."{canonical_alias}" AS "{pub}"',
+                    )
+
+        from_clause_str = "FROM _base"
+        joined_cte_names: set = set()
+        for plan in planned_query.cross_model_aggregate_plans:
+            canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
+            cte_name = _cte_name_from_alias("_cm_", canonical_alias)
+            if cte_name in joined_cte_names:
+                continue
+            joined_cte_names.add(cte_name)
+            grain_aliases = shared_grain_aliases_for_plan.get(
+                plan.aggregate_slot_id, [],
+            )
+            if grain_aliases:
+                join_parts = [
+                    f'_base."{a}" = {cte_name}."{a}"' for a in grain_aliases
+                ]
+                from_clause_str += (
+                    f"\nLEFT JOIN {cte_name} ON " + " AND ".join(join_parts)
+                )
+            else:
+                from_clause_str += f"\nCROSS JOIN {cte_name}"
+
+        combined_select_sql = (
+            f"SELECT {', '.join(combined_parts)}\n{from_clause_str}"
+        )
+        all_ctes = [("_base", base_cte_sql)] + cm_ctes + [("_combined", combined_select_sql)]
+
+        # Stitch the WITH chain together. Inner CTEs first; the final
+        # ``_combined`` is the outermost FROM target.
+        cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in all_ctes[:-1]]
+        sql = f"WITH {', '.join(cte_strs)}\n{combined_select_sql}"
+
+        # ORDER BY / LIMIT / OFFSET: emitted at the combined SELECT
+        # level. ORDER BY columns must be qualified — ``_base`` columns
+        # use ``_base."..."``, cross-model columns use the bare alias
+        # (only present on one side).
+        order_sql = self._build_combined_order_by_sql(
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            cma_slot_ids=cma_slot_ids,
+            cm_alias_for_plan=canonical_alias_for_plan,
+        )
+        if order_sql:
+            sql += "\n" + order_sql
+        if planned_query.limit is not None:
+            sql += f"\nLIMIT {planned_query.limit}"
+        if planned_query.offset is not None:
+            sql += f"\nOFFSET {planned_query.offset}"
+
+        # Outer projection trim — the inner already projects the public
+        # list in declared order, so the trim is normally a no-op. Skip
+        # the trim machinery here because the legacy path goes through
+        # an EnrichedQuery-driven ``_apply_outer_projection_trim`` that
+        # we don't have on the new side. Future slices may re-enable.
+        return sql
+
+    def _canonical_cross_model_alias(
+        self,
+        *,
+        source_relation: str,
+        key,
+    ) -> str:
+        """Build the canonical result-key alias for a cross-model
+        aggregate, IGNORING any user-declared ``name``.
+
+        Used for CTE name + CTE projection alias so per-plan CTEs are
+        stable under renames and so multi-alias same-key slots (C13)
+        produce ONE shared CTE. The user-facing alias remapping
+        happens at the combined SELECT level via ``... AS
+        "<public_alias>"``.
+
+        Format: ``<source_relation>.<path>.<canonical_agg_name>``.
+        ``canonical_agg_name`` collapses ``*`` to a leading ``_``
+        (``*:count`` → ``_count``) per the result-key contract.
+        """
+        from slayer.core.refs import canonical_agg_name
+
+        path = getattr(key.source, "path", ())
+        measure_name = (
+            key.source.leaf if hasattr(key.source, "leaf") else "*"
+        )
+        canonical = canonical_agg_name(
+            measure_name=measure_name,
+            aggregation_name=key.agg,
+            agg_args=[str(a) for a in key.args] or None,
+            agg_kwargs={k: str(v) for k, v in key.kwargs} or None,
+        )
+        if path:
+            return f"{source_relation}." + ".".join(path) + f".{canonical}"
+        return f"{source_relation}.{canonical}"
+
+    def _public_aliases_for_cross_model_agg(
+        self,
+        *,
+        slot,
+        source_relation: str,
+        canonical_alias: str,
+    ) -> List[str]:
+        """User-facing combined-SELECT aliases for this cross-model slot.
+
+        Each declared ``name`` on the slot (P4 / C13) surfaces as one
+        entry. When no user names are declared we return a single
+        entry equal to ``canonical_alias`` so the combined SELECT
+        projects exactly once. The result is always ``<source_relation>.
+        <user_or_canonical>``.
+        """
+        if not slot.public_aliases:
+            return [canonical_alias]
+        return [f"{source_relation}.{a}" for a in slot.public_aliases]
+
+    def _render_cross_model_cte(
+        self,
+        *,
+        plan,
+        agg_slot,
+        full_agg_alias: str,
+        bundle,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        base_projection_ids: Set[str],
+    ) -> Tuple[str, List[str]]:
+        """Render one ``_cm_<...>`` CTE body and return its SQL +
+        shared-grain alias list (for the outer ``LEFT JOIN ON`` clause).
+
+        The CTE is rooted at the terminal target model (legacy
+        rerooted shape). Shared-grain slots whose key path is a prefix
+        of the target_path participate as both projection and GROUP BY
+        keys; slots with empty path (host-local dims) are excluded
+        since the legacy CROSS JOINs in that case.
+
+        Filter routing reads ``plan.where_filter_ids`` /
+        ``plan.having_filter_ids`` / ``plan.target_model_filters`` so
+        the CTE renders each route without re-classifying.
+        """
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.keys import (
+            AggregateKey,
+            ColumnKey,
+            Phase,
+            TimeTruncKey,
+        )
+
+        target_model_name = plan.target_model
+        target_model = bundle.get_referenced_model(target_model_name)
+        if target_model is None:
+            raise ValueError(
+                f"CrossModelAggregatePlan target {target_model_name!r} "
+                f"not in resolved source bundle.",
+            )
+        target_relation = target_model_name
+
+        target_path = tuple(getattr(agg_slot.key.source, "path", ()))
+
+        # Shared grain: project + GROUP BY any host slot whose key path
+        # matches a prefix of target_path. Local-only slots (path=())
+        # don't participate at the CTE level; the legacy CROSS JOINs in
+        # that case so the host's GROUP BY broadcasts the global agg.
+        #
+        # Codex HIGH fold-in: the planner's ``shared_grain_slots``
+        # currently includes ANY host ROW slot on the target path,
+        # including FILTER-ONLY slots that exist in the registry but
+        # are not in the host's public projection. A filter-only slot
+        # would over-GROUP the CTE and produce a join-back key that
+        # ``_base`` never projects (so the outer ``LEFT JOIN _cm_* ON
+        # _base."<alias>" = _cm_*."<alias>"`` references a missing
+        # column on the left side). Intersect with the host's actual
+        # projection ids so only projected slots flow into the CTE.
+        cte_select_columns: List[exp.Expression] = []
+        cte_group_by: List[exp.Expression] = []
+        shared_grain_aliases: List[str] = []
+        for sid in plan.shared_grain_slots:
+            if sid not in base_projection_ids:
+                continue
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.ROW:
+                continue
+            key = slot.key
+            path: Tuple[str, ...] = ()
+            if isinstance(key, ColumnKey):
+                path = key.path
+            elif isinstance(key, TimeTruncKey):
+                path = key.column.path
+            if not path:
+                # Local-only host dim — broadcast via CROSS JOIN.
+                continue
+            if path != target_path[: len(path)]:
+                # Off the join path; cross-branch dim doesn't share grain.
+                continue
+            # Build the column expression rooted at the target model.
+            # Single-hop case (path == target_path): bare leaf on target.
+            # Multi-hop intermediate case (path < target_path): would
+            # need an inner JOIN on the CTE's body. For 7b.12 we accept
+            # the single-hop common case and leave intermediate-hop
+            # shared grain as a follow-up.
+            if path != target_path:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.12: shared-grain dimension on an "
+                    f"intermediate hop ({path!r}) of cross-model agg "
+                    f"target_path={target_path!r} not yet rendered in "
+                    f"the typed pipeline. Use the terminal-target path "
+                    f"or pull the dimension to the host base.",
+                )
+            leaf = key.leaf if isinstance(key, ColumnKey) else key.column.leaf
+            col_expr = exp.Column(
+                this=exp.to_identifier(leaf),
+                table=exp.to_identifier(target_relation),
+            )
+            if isinstance(key, TimeTruncKey):
+                col_expr = self._build_date_trunc(
+                    col_expr=col_expr,
+                    granularity=TimeGranularity(key.granularity),
+                )
+            # Host-side join-back uses the SAME alias as the host's
+            # base projection. For path-bearing slots that's the dotted
+            # form (e.g. ``orders.customers.created_at``); the host's
+            # ``_build_base_select_for_planned`` already aliases that
+            # way for joined ROW slots.
+            host_alias = planned_query.source_relation + "." + ".".join(path) + f".{leaf}"
+            cte_select_columns.append(col_expr.copy().as_(host_alias))
+            cte_group_by.append(col_expr)
+            shared_grain_aliases.append(host_alias)
+
+        # Aggregate column: synthesise an EnrichedMeasure ROOTED at the
+        # target so ``_build_agg`` resolves the source column on the
+        # right model (including ``column_filter_key`` CASE-WHEN).
+        # Mutate a copy of the key with ``source.path=()`` so the
+        # synthesise helper's local branch fires without re-checking
+        # path-based deferrals.
+        local_source_key = ColumnKey(path=(), leaf=agg_slot.key.source.leaf) \
+            if isinstance(agg_slot.key.source, ColumnKey) else agg_slot.key.source
+        local_agg_key = AggregateKey(
+            source=local_source_key,
+            agg=agg_slot.key.agg,
+            args=agg_slot.key.args,
+            kwargs=agg_slot.key.kwargs,
+            column_filter_key=agg_slot.key.column_filter_key,
+        )
+        # The local_agg_key was built from the target's own column.
+        # column_filter_key (if set) carries the canonical filter SQL
+        # from the target's Column.filter — the synth helper qualifies
+        # bare refs against target_model.
+        local_slot = agg_slot.model_copy(update={"key": local_agg_key})
+        synth = self._synthesize_enriched_measure_from_planned(
+            slot=local_slot,
+            key=local_agg_key,
+            source_model=target_model,
+            source_relation=target_relation,
+            full_alias=full_agg_alias,
+        )
+        agg_expr, is_agg = self._build_agg(measure=synth)
+        if is_agg:
+            agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
+        cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
+
+        # Build the CTE Select. FROM is the target table directly.
+        cte_select = exp.Select()
+        for col in cte_select_columns:
+            cte_select = cte_select.select(col)
+        cte_select = cte_select.from_(
+            self._build_from_clause_from_planned(
+                source_model=target_model, source_relation=target_relation,
+            ),
+        )
+
+        # WHERE: target-model-filters (qualified bare-identifier refs
+        # so ``deleted_at IS NULL`` becomes ``customers.deleted_at IS
+        # NULL`` to match the legacy enrichment's filter-column
+        # resolution) + host filters routed to WHERE.
+        where_parts: List[exp.Expression] = []
+        for filter_text in plan.target_model_filters:
+            qualified = self._qualify_column_filter_sql(
+                canonical_sql=filter_text,
+                source_relation=target_relation,
+                source_model=target_model,
+            )
+            if not qualified:
+                continue
+            try:
+                where_parts.append(self._parse_predicate(qualified))
+            except Exception:
+                raise ValueError(
+                    f"Target model filter on {target_model_name!r} could "
+                    f"not be parsed: {filter_text!r}",
+                )
+        cte_where = self._collect_routed_filters(
+            planned_query=planned_query,
+            filter_ids=plan.where_filter_ids,
+            target_relation=target_relation,
+            target_model=target_model,
+        )
+        if cte_where is not None:
+            where_parts.append(cte_where)
+        if where_parts:
+            cte_select = cte_select.where(
+                exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
+            )
+
+        if cte_group_by:
+            for gb in cte_group_by:
+                cte_select = cte_select.group_by(gb)
+
+        cte_having = self._collect_routed_filters(
+            planned_query=planned_query,
+            filter_ids=plan.having_filter_ids,
+            target_relation=target_relation,
+            target_model=target_model,
+        )
+        if cte_having is not None:
+            cte_select = cte_select.having(cte_having)
+
+        cte_sql = cte_select.sql(dialect=self.dialect, pretty=True)
+        return cte_sql, shared_grain_aliases
+
+    def _collect_routed_filters(
+        self,
+        *,
+        planned_query,
+        filter_ids: List[str],
+        target_relation: str,
+        target_model,
+    ) -> Optional[exp.Expression]:
+        """Build a conjunction of bound filter predicates by ID.
+
+        Filters routed into a cross-model CTE bind in the CTE's local
+        scope (``customers.status`` resolves to the target's table).
+        For row-phase filters whose typed ``value_key`` already encodes
+        the join-target columns, ``_render_filter_value_key`` resolves
+        each leaf against the target model.
+
+        Returns ``None`` when the requested filter set is empty so the
+        caller can skip emitting WHERE / HAVING.
+        """
+        if not filter_ids:
+            return None
+        wanted = set(filter_ids)
+        parts: List[exp.Expression] = []
+        for fp in planned_query.filters_by_phase:
+            if fp.id not in wanted:
+                continue
+            if fp.expression is None:
+                continue
+            ast = self._render_filter_value_key_in_target_scope(
+                value_key=fp.expression.value_key,
+                target_relation=target_relation,
+                target_model=target_model,
+                planned_query=planned_query,
+            )
+            if ast is not None:
+                parts.append(ast)
+        if not parts:
+            return None
+        return exp.and_(*parts) if len(parts) > 1 else parts[0]
+
+    def _render_filter_value_key_in_target_scope(
+        self,
+        *,
+        value_key,
+        target_relation: str,
+        target_model,
+        planned_query,
+    ) -> Optional[exp.Expression]:
+        """Render a bound filter's value key as SQL with bare column
+        refs qualified against the cross-model CTE's local scope.
+
+        The typed pipeline carries filter ASTs as ``ValueKey``-rooted
+        trees (``ArithmeticKey`` / ``AggregateKey`` / ``ColumnKey`` /
+        scalars). The CTE renderer reuses the legacy ``_build_agg`` /
+        column-resolution helpers via a small local recursion that
+        binds each leaf to the target model's relation alias.
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnKey,
+            LiteralKey,
+        )
+
+        if isinstance(value_key, ColumnKey):
+            # Cross-model filter on the joined-target path: the column
+            # lives on the target (single-hop) or on an intermediate
+            # hop. For 7b.12 we expect target-rooted refs only.
+            path = value_key.path
+            # ``value_key.path`` is a tuple of hop names ending at the
+            # target. The cross-model planner routes filters to the
+            # CTE only when the path == target_path (single-hop) or is
+            # a prefix (multi-hop). Both forms render against the
+            # target's local relation alias by leaf name.
+            if path and path[-1] != target_relation:
+                # Intermediate hop ref — not yet rendered.
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.12: cross-model filter on an "
+                    f"intermediate hop ({path!r}) not yet rendered in "
+                    f"the typed pipeline.",
+                )
+            return exp.Column(
+                this=exp.to_identifier(value_key.leaf),
+                table=exp.to_identifier(target_relation),
+            )
+        if isinstance(value_key, LiteralKey):
+            return self._literal_key_to_exp(value_key)
+        if isinstance(value_key, AggregateKey):
+            # HAVING-route: render the aggregate against the target.
+            # Reuse the synthesise helper with target_model as scope.
+            from slayer.core.keys import AggregateKey as _AggKey
+            local_source = ColumnKey(path=(), leaf=value_key.source.leaf) \
+                if isinstance(value_key.source, ColumnKey) else value_key.source
+            local_agg = _AggKey(
+                source=local_source,
+                agg=value_key.agg,
+                args=value_key.args,
+                kwargs=value_key.kwargs,
+                column_filter_key=value_key.column_filter_key,
+            )
+            from slayer.engine.planned import ValueSlot as _Slot
+            tmp_slot = _Slot(
+                id="_cte_having_tmp",
+                key=local_agg,
+                declared_name="_having_agg",
+                phase=value_key.phase,
+                type=None,
+            )
+            synth = self._synthesize_enriched_measure_from_planned(
+                slot=tmp_slot,
+                key=local_agg,
+                source_model=target_model,
+                source_relation=target_relation,
+                full_alias=f"{target_relation}._having_agg",
+            )
+            expr, _ = self._build_agg(measure=synth)
+            return expr
+        if isinstance(value_key, ArithmeticKey):
+            op = value_key.op
+            rendered_operands = [
+                self._render_filter_value_key_in_target_scope(
+                    value_key=op_key,
+                    target_relation=target_relation,
+                    target_model=target_model,
+                    planned_query=planned_query,
+                )
+                for op_key in value_key.operands
+            ]
+            return self._build_arith_or_cmp_ast(op=op, operands=rendered_operands)
+        # Scalars stored inline (Decimal / str / bool / None).
+        return self._literal_key_to_exp(value_key)
+
+    def _literal_key_to_exp(self, value) -> exp.Expression:
+        """Convert a scalar / LiteralKey value to a sqlglot literal."""
+        from slayer.core.keys import LiteralKey
+        from decimal import Decimal
+
+        if isinstance(value, LiteralKey):
+            inner = value.value
+        else:
+            inner = value
+        if isinstance(inner, bool):
+            return exp.Boolean(this=inner)
+        if isinstance(inner, (int, float, Decimal)):
+            return exp.Literal.number(str(inner))
+        if inner is None:
+            return exp.Null()
+        return exp.Literal.string(str(inner))
+
+    def _build_arith_or_cmp_ast(
+        self,
+        *,
+        op: str,
+        operands: List[exp.Expression],
+    ) -> exp.Expression:
+        """Build a sqlglot expression for a binary or unary op.
+
+        Mirrors the small subset of operators the bound-filter renderer
+        emits: comparisons (``==``, ``!=``, ``<``, ``<=``, ``>``,
+        ``>=``), boolean (``and``, ``or``, ``not``), arithmetic
+        (``+``, ``-``, ``*``, ``/``).
+        """
+        if op == "not":
+            return exp.Not(this=operands[0])
+        left, right = operands[0], operands[1]
+        op_map = {
+            "==": exp.EQ,
+            "!=": exp.NEQ,
+            "<": exp.LT,
+            "<=": exp.LTE,
+            ">": exp.GT,
+            ">=": exp.GTE,
+            "and": lambda this, expression: exp.And(this=this, expression=expression),
+            "or": lambda this, expression: exp.Or(this=this, expression=expression),
+            "+": exp.Add,
+            "-": exp.Sub,
+            "*": exp.Mul,
+            "/": exp.Div,
+        }
+        cls = op_map.get(op)
+        if cls is None:
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.12: arithmetic operator {op!r} not "
+                f"supported in cross-model filter rendering.",
+            )
+        if op in ("and", "or"):
+            return cls(this=left, expression=right)
+        return cls(this=left, expression=right)
+
+    def _build_combined_order_by_sql(
+        self,
+        *,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        cma_slot_ids: Set[str],
+        cm_alias_for_plan: Dict[str, str],
+    ) -> Optional[str]:
+        """Build the ORDER BY clause for the combined SELECT.
+
+        Local slots are referenced as ``_base."<full_alias>"``; cross-
+        model slots are referenced as bare ``"<full_alias>"`` (they
+        live in a single column projected from the cross-model CTE).
+        """
+        if not planned_query.order:
+            return None
+        parts: List[str] = []
+        for entry in planned_query.order:
+            direction = "ASC" if entry.direction == "asc" else "DESC"
+            slot = slots_by_id.get(entry.slot_id)
+            if slot is None:
+                continue
+            if entry.slot_id in cma_slot_ids:
+                alias = cm_alias_for_plan.get(entry.slot_id)
+                if alias is None:
+                    continue
+                parts.append(f'"{alias}" {direction}')
+            else:
+                full_alias = self._full_alias_for_slot(
+                    slot=slot,
+                    source_relation=planned_query.source_relation,
+                    alias_index={},
+                )
+                parts.append(f'_base."{full_alias}" {direction}')
+        if not parts:
+            return None
+        return "ORDER BY " + ", ".join(parts)
+
+    def _full_alias_for_slot(
+        self,
+        *,
+        slot,
+        source_relation: str,
+        alias_index: Dict[str, int],
+    ) -> str:
+        """Build the SQL public alias for one ``ValueSlot``.
+
+        Local slots use the legacy ``<source_relation>.<alias>`` form
+        where ``alias`` is the user-declared name (cycled via
+        ``_pick_alias_for_planned_slot`` for C13 multi-alias slots) or
+        the planner's canonical ``declared_name``.
+
+        DEV-1450 stage 7b.12: joined ROW slots (``ColumnKey.path != ()``
+        / ``TimeTruncKey.column.path != ()``) emit the FULL dotted
+        result-key form (``orders.customers.region_id``), preserving
+        the result-key contract (P10). The planner's flat
+        ``declared_name`` is the DEV-1449 / C4 downstream-stage binding
+        name and remains untouched on the slot for stage-2 references;
+        only the public SQL alias differs.
+        """
+        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
+
+        if slot.phase == Phase.ROW:
+            key = slot.key
+            path: Tuple[str, ...] = ()
+            leaf: Optional[str] = None
+            if isinstance(key, ColumnKey):
+                path, leaf = key.path, key.leaf
+            elif isinstance(key, TimeTruncKey):
+                path, leaf = key.column.path, key.column.leaf
+            if path and leaf is not None:
+                return f"{source_relation}." + ".".join(path) + f".{leaf}"
+        # Local + AGGREGATE / POST slots: existing alias selection.
+        if slot.public_aliases:
+            alias = self._pick_alias_for_planned_slot(
+                slot=slot, alias_index=alias_index,
+            )
+        else:
+            alias = slot.declared_name
+        return f"{source_relation}.{alias}"
+
+    def _collect_joined_paths_for_base(
+        self,
+        *,
+        base_render_order: List[str],
+        slots_by_id: Dict[str, Any],
+    ) -> List[Tuple[str, ...]]:
+        """Walk ROW slots in render order to collect unique joined paths.
+
+        Only paths needed for projection / GROUP BY surface here. Cross-
+        model aggregate slots are NEVER walked — their joins live in
+        ``CrossModelAggregatePlan.join_chain`` and are rendered inside
+        the per-plan ``_cm_*`` CTE.
+        """
+        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
+
+        seen: set = set()
+        ordered: List[Tuple[str, ...]] = []
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.ROW:
+                continue
+            key = slot.key
+            path: Tuple[str, ...] = ()
+            if isinstance(key, ColumnKey):
+                path = key.path
+            elif isinstance(key, TimeTruncKey):
+                path = key.column.path
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            ordered.append(path)
+        return ordered
+
+    def _build_from_and_joins(
+        self,
+        *,
+        source_model,
+        source_relation: str,
+        joined_paths: List[Tuple[str, ...]],
+        bundle,
+    ):
+        """Build ``(from_expr, joins)`` for a base SELECT.
+
+        ``from_expr`` is the single-source Table/Subquery (same shape
+        ``_build_from_clause_from_planned`` would return). ``joins`` is
+        a list of ``(join_expr, on_expr, join_type)`` tuples the caller
+        attaches via ``Select.join`` after constructing the SELECT.
+
+        Single-hop paths use the target's bare name as the table alias
+        (matching legacy: ``LEFT JOIN customers AS customers ON ...``);
+        multi-hop paths use the ``__``-delimited path alias for non-
+        leading hops (``LEFT JOIN regions AS customers__regions ON
+        ...``). The cross-model rerooted CTE re-uses this helper rooted
+        at the terminal target model with an empty join list, so the
+        same FROM shape applies.
+        """
+        base_from = self._build_from_clause_from_planned(
+            source_model=source_model, source_relation=source_relation,
+        )
+        joins: List = []
+        if not joined_paths:
+            return base_from, joins
+        emitted_aliases: set = {source_relation}
+        for path in joined_paths:
+            current_model = source_model
+            current_alias = source_relation
+            for hop_idx, hop in enumerate(path):
+                join_def = next(
+                    (j for j in current_model.joins if j.target_model == hop),
+                    None,
+                )
+                if join_def is None:
+                    raise ValueError(
+                        f"Model {current_model.name!r} has no join to "
+                        f"{hop!r}; needed for joined path {path!r}.",
+                    )
+                next_model = bundle.get_referenced_model(hop)
+                if next_model is None:
+                    raise ValueError(
+                        f"Join target {hop!r} not in resolved source bundle.",
+                    )
+                next_alias = (
+                    hop if hop_idx == 0
+                    else f"{current_alias}__{hop}"
+                )
+                if next_alias not in emitted_aliases:
+                    join_on_parts = []
+                    for src_col, tgt_col in join_def.join_pairs:
+                        join_on_parts.append(exp.EQ(
+                            this=exp.Column(
+                                this=exp.to_identifier(src_col),
+                                table=exp.to_identifier(current_alias),
+                            ),
+                            expression=exp.Column(
+                                this=exp.to_identifier(tgt_col),
+                                table=exp.to_identifier(next_alias),
+                            ),
+                        ))
+                    target_table = (
+                        next_model.sql_table or next_model.name
+                    )
+                    if next_model.sql and not next_model.sql_table:
+                        join_expr = exp.Subquery(
+                            this=self._parse(next_model.sql),
+                            alias=exp.to_identifier(next_alias),
+                        )
+                    else:
+                        join_expr = exp.to_table(target_table, alias=next_alias)
+                    on_expr = (
+                        exp.and_(*join_on_parts)
+                        if len(join_on_parts) > 1
+                        else join_on_parts[0]
+                    )
+                    joins.append((join_expr, on_expr, "LEFT"))
+                    emitted_aliases.add(next_alias)
+                current_model = next_model
+                current_alias = next_alias
+        return base_from, joins
+
+    def _joined_or_local_dim_expr(
+        self,
+        *,
+        path: Tuple[str, ...],
+        leaf: str,
+        source_model,
+        source_relation: str,
+        bundle,
+    ) -> exp.Expression:
+        """Resolve a dimension column expression on either the host
+        model (empty path) or a joined target (non-empty path).
+
+        For empty paths this delegates to ``_dim_column_expr_from_planned``
+        which respects ``Column.sql`` for derived columns. For joined
+        paths the legacy emits a bare ``<target_alias>.<leaf>`` column
+        ref — matching that shape so parity comparisons hold.
+        """
+        if not path:
+            return self._dim_column_expr_from_planned(
+                source_model=source_model,
+                source_relation=source_relation,
+                leaf=leaf,
+            )
+        current_alias = source_relation
+        current_model = source_model
+        for hop_idx, hop in enumerate(path):
+            target_alias = (
+                hop if hop_idx == 0
+                else f"{current_alias}__{hop}"
+            )
+            current_alias = target_alias
+            target_model = bundle.get_referenced_model(hop)
+            if target_model is None:
+                raise ValueError(
+                    f"Joined dim path {path!r}: target {hop!r} missing "
+                    f"from the resolved source bundle.",
+                )
+            current_model = target_model
+        col_def = next(
+            (c for c in current_model.columns if c.name == leaf), None,
+        )
+        if col_def is None:
+            raise ValueError(
+                f"Column {leaf!r} not found on joined model "
+                f"{current_model.name!r}.",
+            )
+        # Legacy emits the bare-table.column form for joined dims even
+        # when the column has a ``Column.sql`` override on the target;
+        # mirror that for parity.
+        return exp.Column(
+            this=exp.to_identifier(leaf),
+            table=exp.to_identifier(current_alias),
+        )
 
     def _render_window_transform_sql(
         self,
@@ -4441,6 +5429,51 @@ class SQLGenerator:
         alias_index[slot.id] = idx + 1
         return alias
 
+    def _qualify_column_filter_sql(
+        self,
+        *,
+        canonical_sql: Optional[str],
+        source_relation: str,
+        source_model,
+    ) -> Optional[str]:
+        """Qualify bare-identifier column refs in a Mode-A filter fragment.
+
+        ``Column.filter`` is Mode-A SQL like ``"status = 'paid'"``;
+        ``_build_agg`` wraps the aggregate argument as ``SUM(CASE WHEN
+        <filter> THEN col END)`` and inserts the filter text verbatim.
+        Without qualification, ``status`` resolves against the implicit
+        outermost scope at the agg-rendering site, which differs between
+        the host base CTE and a re-rooted cross-model CTE. Legacy
+        ``resolve_filter_columns`` qualifies bare refs to
+        ``<model_name>.<col>``; mirror that on the parsed AST so a
+        rerooted CTE renders the same ``customers.status = 'active'``
+        the host base would render.
+
+        Only bare ``exp.Column`` nodes (no table qualifier) whose name
+        matches a column on ``source_model`` get qualified. Already-
+        qualified refs (``other.col``) and function-call AST nodes pass
+        through unchanged.
+        """
+        if not canonical_sql:
+            return None
+        try:
+            ast = self._parse_predicate(canonical_sql)
+        except Exception:
+            # Unparseable filter SQL — fall back to the raw text. The
+            # legacy path bubbled up the same shape (the enrichment
+            # parse failure surfaces at query time).
+            return canonical_sql
+        known_names = {c.name for c in source_model.columns}
+        for col in ast.find_all(exp.Column):
+            if col.args.get("table") is not None:
+                continue
+            ident = col.this
+            if not isinstance(ident, exp.Identifier):
+                continue
+            if ident.name in known_names:
+                col.set("table", exp.to_identifier(source_relation))
+        return ast.sql(dialect=self.dialect)
+
     def _build_from_clause_from_planned(
         self,
         *,
@@ -4557,6 +5590,23 @@ class SQLGenerator:
                     f"on model {source_model.name!r}",
                 )
             sql_text = col.sql if col.sql else col.name
+            # DEV-1450 stage 7b.12: propagate ``AggregateKey.column_filter_key``
+            # into ``EnrichedMeasure.filter_sql`` so ``_build_agg`` wraps the
+            # aggregate argument as ``SUM(CASE WHEN <filter> THEN col END)``.
+            # Legacy ``resolve_filter_columns`` qualifies bare-identifier refs
+            # in the filter with the host model name (so ``status = 'paid'``
+            # becomes ``orders.status = 'paid'``); mirror that here on the
+            # parsed AST so dialect-independent wiring works in the new
+            # pipeline.
+            filter_sql = self._qualify_column_filter_sql(
+                canonical_sql=(
+                    key.column_filter_key.canonical_sql
+                    if key.column_filter_key is not None
+                    else None
+                ),
+                source_relation=source_relation,
+                source_model=source_model,
+            )
             return EnrichedMeasure(
                 name=col.name,
                 sql=sql_text,
@@ -4565,6 +5615,7 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot.type,
                 column_type=col.type,
+                filter_sql=filter_sql,
             )
         if isinstance(source, ColumnSqlKey):
             raise NotImplementedError(
@@ -4583,11 +5634,19 @@ class SQLGenerator:
         planned_query,
         source_relation: str,
         source_model,
+        skip_filter_ids: Optional[Set[str]] = None,
     ):
         from slayer.core.keys import Phase
 
+        skip = skip_filter_ids or set()
         where_parts: list[str] = []
         for fp in planned_query.filters_by_phase:
+            if fp.id in skip:
+                # DEV-1450 stage 7b.12: filters routed into a per-plan
+                # cross-model CTE (where_filter_ids / having_filter_ids)
+                # are rendered there; the host base must not double-
+                # apply them.
+                continue
             if fp.phase != Phase.ROW:
                 # 7b.10: POST-phase filters are handled in the outer
                 # wrapper by ``_render_post_phase_filter_conditions``
@@ -4597,12 +5656,17 @@ class SQLGenerator:
                     continue
                 # AGGREGATE/HAVING-phase filters remain unsupported in
                 # the local-only slice; 7b.12 wires HAVING for cross-
-                # model aggregates.
+                # model aggregates via the per-plan CTE routing. A
+                # filter that reaches here means the planner left a
+                # HAVING-phase filter at the host without routing — a
+                # planner-side gap.
                 if fp.phase == Phase.AGGREGATE:
                     raise NotImplementedError(
-                        f"DEV-1450 stage 7b.12: HAVING-phase filters "
-                        f"(filter on aggregate slot) deferred to the "
-                        f"cross-model slice. filter id={fp.id!r}."
+                        f"DEV-1450 stage 7b.12: HAVING-phase filter "
+                        f"id={fp.id!r} was not routed to a cross-model "
+                        f"CTE. The planner should route filters that "
+                        f"reference a cross-model aggregate slot via "
+                        f"``CrossModelAggregatePlan.having_filter_ids``."
                     )
                 raise NotImplementedError(
                     f"DEV-1450 stage 7b.10+: unsupported filter phase "

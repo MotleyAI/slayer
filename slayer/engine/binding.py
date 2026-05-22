@@ -54,6 +54,7 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
     ScalarCallKey,
+    SqlExprKey,
     StarKey,
     TimeTruncKey,
     TransformKey,
@@ -625,9 +626,60 @@ def _bind_agg(
         (k, _bind_agg_arg(v, scope=scope, bundle=bundle))
         for k, v in parsed.kwargs
     )
-    return AggregateKey(
-        source=source, agg=parsed.agg, args=args, kwargs=kwargs,
+    # DEV-1450 stage 7b.12: propagate ``Column.filter`` into the
+    # AggregateKey's structural identity. The resolved source's column
+    # may carry a Mode-A SQL fragment (``filter="status = 'paid'"``)
+    # that wraps the aggregate argument as ``SUM(CASE WHEN ... THEN col
+    # END)``. Two aggregates over the same column with different
+    # ``Column.filter`` therefore differ at the key level; same-filter
+    # ones intern (legacy CASE-WHEN-at-agg-time semantics, preserved by
+    # the spec's C5 + ``column_filter_key`` invariants).
+    column_filter_key = _resolve_column_filter_key(
+        source=source, bundle=bundle,
     )
+    return AggregateKey(
+        source=source,
+        agg=parsed.agg,
+        args=args,
+        kwargs=kwargs,
+        column_filter_key=column_filter_key,
+    )
+
+
+def _resolve_column_filter_key(
+    *, source, bundle: ResolvedSourceBundle,
+) -> Optional[SqlExprKey]:
+    """Look up the resolved source's ``Column.filter`` and convert it
+    to a ``SqlExprKey``.
+
+    Returns ``None`` for ``StarKey`` sources (``*:count`` has no column
+    to attach a filter to) and for any column whose ``filter`` is
+    unset. For ``ColumnKey`` / ``ColumnSqlKey`` sources the resolver
+    walks ``source.path`` through the bundle and reads the target
+    model's column entry. Models the planner doesn't have access to
+    (e.g. an unresolved join target) are tolerated — no exception is
+    raised; the key just stays ``None`` (the compile-time validator
+    in path resolution would have caught a genuinely missing model).
+    """
+    if isinstance(source, StarKey):
+        return None
+    path = getattr(source, "path", ())
+    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
+    if leaf is None:
+        return None
+    host = bundle.source_model
+    if host is None:
+        return None
+    current: SlayerModel = host
+    for hop in path:
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            return None
+        current = nxt
+    col = next((c for c in current.columns if c.name == leaf), None)
+    if col is None or not col.filter:
+        return None
+    return SqlExprKey(canonical_sql=col.filter)
 
 
 def _bind_agg_arg(
