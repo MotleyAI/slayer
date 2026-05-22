@@ -2762,70 +2762,177 @@ class SQLGenerator:
 
         pending_layers = list(planned_query.transform_layers)
         step_num = 0
+        # 7b.11 — gather a global view of WHERE-able row-phase filters
+        # for the shifted CTE (which re-aggregates the source and needs
+        # the same WHERE minus BetweenKey date_range filters). Built
+        # once outside the loop since the source filters don't change
+        # across layers.
+        shifted_where_parts = self._build_shifted_cte_where_parts(
+            planned_query=planned_query,
+            source_relation=source_relation,
+            source_model=source_model,
+        )
         while pending_layers:
-            ready: list = []
+            ready_window: list = []
+            ready_time_shift: list = []
+            ready_cp: list = []
             not_ready: list = []
             for layer in pending_layers:
-                if self._transform_layer_deps_ready(
+                if not self._transform_layer_deps_ready(
                     layer=layer,
                     slots_by_id=slots_by_id,
                     slot_id_by_key=slot_id_by_key,
                     available_alias_by_slot_id=available_alias_by_slot_id,
                 ):
-                    ready.append(layer)
-                else:
                     not_ready.append(layer)
-            if not ready:
+                elif layer.op == "time_shift":
+                    ready_time_shift.append(layer)
+                elif layer.op == "consecutive_periods":
+                    ready_cp.append(layer)
+                else:
+                    ready_window.append(layer)
+            if not (ready_window or ready_time_shift or ready_cp):
                 pending_ops = [layer.op for layer in pending_layers]
                 raise RuntimeError(
-                    f"DEV-1450 stage 7b.10: transform layer dependencies "
+                    f"DEV-1450 stage 7b.11: transform layer dependencies "
                     f"could not be resolved; pending ops: {pending_ops!r}.",
                 )
+            # --- Window batch (one step CTE per Kahn batch) ----------
+            if ready_window:
+                step_num += 1
+                step_name = f"step{step_num}"
+                prev_cte = ctes[-1][0]
+                carry_aliases_sorted = sorted(
+                    a for aliases in aliases_by_slot_id.values() for a in aliases
+                )
+                step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+                for layer in ready_window:
+                    for slot_id in layer.slot_ids:
+                        slot = slots_by_id[slot_id]
+                        alias = (
+                            slot.public_aliases[0]
+                            if slot.public_aliases
+                            else slot.declared_name
+                        )
+                        full_alias = f"{source_relation}.{alias}"
+                        window_sql = self._render_window_transform_sql(
+                            slot=slot,
+                            slots_by_id=slots_by_id,
+                            slot_id_by_key=slot_id_by_key,
+                            available_alias_by_slot_id=available_alias_by_slot_id,
+                            planned_query=planned_query,
+                        )
+                        if slot.type is not None:
+                            wrapped = _wrap_cast_for_type(
+                                self._parse(window_sql), slot.type,
+                            )
+                            window_sql = wrapped.sql(dialect=self.dialect)
+                        step_parts.append(f'{window_sql} AS "{full_alias}"')
+                        aliases_by_slot_id.setdefault(slot_id, []).append(
+                            full_alias,
+                        )
+                        available_alias_by_slot_id.setdefault(
+                            slot_id, full_alias,
+                        )
+                step_sql = (
+                    "SELECT\n    "
+                    + _SQL_COL_SEP.join(step_parts)
+                    + f"\nFROM {prev_cte}"
+                )
+                ctes.append((step_name, step_sql))
+            # --- time_shift layers (each gets shifted_ + sjoin_ pair) -
+            for layer in ready_time_shift:
+                for slot_id in layer.slot_ids:
+                    slot = slots_by_id[slot_id]
+                    self._emit_time_shift_ctes_for_planned(
+                        slot=slot,
+                        ctes=ctes,
+                        slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                        aliases_by_slot_id=aliases_by_slot_id,
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        shifted_where_parts=shifted_where_parts,
+                        planned_query=planned_query,
+                    )
+            # --- consecutive_periods layers (cp_reset_ + cp_value_ pair)
+            for layer in ready_cp:
+                for slot_id in layer.slot_ids:
+                    slot = slots_by_id[slot_id]
+                    self._emit_consecutive_periods_ctes_for_planned(
+                        slot=slot,
+                        ctes=ctes,
+                        slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                        aliases_by_slot_id=aliases_by_slot_id,
+                        planned_query=planned_query,
+                        source_relation=source_relation,
+                    )
+            pending_layers = not_ready
+
+        # 7b.11 — materialise POST-phase ArithmeticKey / ScalarCallKey
+        # slots that the user projected but no transform layer rendered.
+        # ``change(amount:sum)`` lowers to ``amount:sum - time_shift(...)``;
+        # the time_shift slot is rendered as a self-join CTE pair, but
+        # the outer ArithmeticKey slot that subtracts them needs its
+        # own step CTE. Same shape covers ``change_pct`` (division of
+        # arithmetic operands) and any future POST-phase non-transform
+        # slot the planner emits.
+        from slayer.core.keys import (
+            ArithmeticKey as _ArithKey,
+            ScalarCallKey as _ScalarKey,
+            TransformKey as _TKey,
+        )
+        unmaterialised: list = []
+        for cslot in planned_query.combined_expression_slots:
+            if isinstance(cslot.key, _TKey):
+                # Transform-key slots are materialised by transform_layers.
+                continue
+            if cslot.id in aliases_by_slot_id:
+                continue
+            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
+                unmaterialised.append(cslot)
+        if unmaterialised:
             step_num += 1
             step_name = f"step{step_num}"
             prev_cte = ctes[-1][0]
-            # Carry every alias forward (flatten the per-slot lists)
-            # so duplicate public aliases on one slot reach the final
-            # SELECT.
             carry_aliases_sorted = sorted(
                 a for aliases in aliases_by_slot_id.values() for a in aliases
             )
             step_parts = [f'"{a}"' for a in carry_aliases_sorted]
-            for layer in ready:
-                for slot_id in layer.slot_ids:
-                    slot = slots_by_id[slot_id]
-                    alias = (
-                        slot.public_aliases[0]
-                        if slot.public_aliases
-                        else slot.declared_name
+            for cslot in unmaterialised:
+                alias = (
+                    cslot.public_aliases[0]
+                    if cslot.public_aliases
+                    else cslot.declared_name
+                )
+                full_alias = f"{source_relation}.{alias}"
+                rendered = self._render_value_key_against_aliases(
+                    key=cslot.key,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                )
+                expr_sql = rendered.sql(dialect=self.dialect)
+                if cslot.type is not None:
+                    wrapped = _wrap_cast_for_type(
+                        self._parse(expr_sql), cslot.type,
                     )
-                    full_alias = f"{source_relation}.{alias}"
-                    window_sql = self._render_window_transform_sql(
-                        slot=slot,
-                        slots_by_id=slots_by_id,
-                        slot_id_by_key=slot_id_by_key,
-                        available_alias_by_slot_id=available_alias_by_slot_id,
-                        planned_query=planned_query,
-                    )
-                    if slot.type is not None:
-                        wrapped = _wrap_cast_for_type(
-                            self._parse(window_sql), slot.type,
-                        )
-                        window_sql = wrapped.sql(dialect=self.dialect)
-                    step_parts.append(f'{window_sql} AS "{full_alias}"')
-                    aliases_by_slot_id.setdefault(slot_id, []).append(
-                        full_alias,
-                    )
-                    available_alias_by_slot_id.setdefault(
-                        slot_id, full_alias,
-                    )
+                    expr_sql = wrapped.sql(dialect=self.dialect)
+                step_parts.append(f'{expr_sql} AS "{full_alias}"')
+                aliases_by_slot_id.setdefault(cslot.id, []).append(
+                    full_alias,
+                )
+                available_alias_by_slot_id.setdefault(
+                    cslot.id, full_alias,
+                )
             step_sql = (
                 "SELECT\n    "
                 + _SQL_COL_SEP.join(step_parts)
                 + f"\nFROM {prev_cte}"
             )
             ctes.append((step_name, step_sql))
-            pending_layers = not_ready
 
         # Inner SELECT inside _outer wrap: ALL carried aliases sorted
         # (matches legacy _generate_with_computed:1607).
@@ -2897,25 +3004,46 @@ class SQLGenerator:
 
     @staticmethod
     def _validate_window_transform_ops_for_7b10(*, planned_query) -> None:
-        """Raise ``NotImplementedError("DEV-1450 stage 7b.11: ...")`` for
-        any transform op outside the 7b.10 window-transform scope.
+        """Validate transform-layer op scope.
 
-        Pins time_shift / consecutive_periods (self-join CTEs) for 7b.11.
-        Walks both explicit ``transform_layers`` (where the planner
-        materialised them as their own slot) AND the reachable
-        ``TransformKey.input`` trees of public POST-phase slots so a
-        ``change`` desugared into ``time_shift`` raises with the same
-        marker even when the layer is materialised as an arithmetic
-        operand rather than a top-level layer.
+        7b.11 lifted ``time_shift`` and ``consecutive_periods`` from
+        the deferred set — both render through dedicated self-join /
+        staged-window CTE pairs. The deferred set is now empty; the
+        function stays in place as a safety net for follow-up ops
+        added by later slices.
+
+        It also enforces the **composite-input** rule that survives
+        from 7b.10:
+
+        * ``time_shift`` requires a slottable leaf input (the legacy
+          self-join CTE re-aggregates the source — composite expressions
+          would need an inner expression layer).
+        * ``consecutive_periods`` accepts a slottable leaf OR a top-level
+          comparison ``ArithmeticKey`` (the boolean predicate shape
+          ``amount:sum > 0`` is the canonical user form). Other
+          composite shapes (numeric subtraction, scalar calls) are
+          rejected with a ``composite-input transforms`` marker so the
+          test suite's per-op composite assertions pin a unified message.
         """
         from slayer.core.keys import (
+            AggregateKey,
             ArithmeticKey,
             BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
             ScalarCallKey,
+            TimeTruncKey,
             TransformKey,
         )
 
-        deferred = {"time_shift", "consecutive_periods"}
+        # 7b.11 lifted these — placeholder set for future slices.
+        deferred: set = set()
+
+        leaf_kinds = (ColumnKey, ColumnSqlKey, AggregateKey, TimeTruncKey)
+        # Keep aligned with _emit_consecutive_periods_ctes_for_planned —
+        # the renderer dispatches arithmetic ops via _compose_arithmetic_op
+        # which supports these binary comparisons only.
+        _COMPARISON_OPS = {"==", "!=", "<", "<=", ">", ">="}
 
         def _walk(key) -> Optional[str]:
             if isinstance(key, TransformKey):
@@ -2946,13 +3074,44 @@ class SQLGenerator:
                 return None
             return None
 
-        # Explicit layer ops.
+        # Explicit layer ops + composite-input enforcement.
         for layer in planned_query.transform_layers:
             if layer.op in deferred:
                 raise NotImplementedError(
                     f"DEV-1450 stage 7b.11: transform op {layer.op!r} "
-                    f"(self-join CTE) deferred to the 7b.11 slice.",
+                    f"(self-join CTE) deferred to a follow-up slice.",
                 )
+            if layer.op in ("time_shift", "consecutive_periods"):
+                # Walk the layer's slot ids and assert their TransformKey
+                # inputs satisfy the per-op composite-input rule.
+                slots_map = {
+                    s.id: s
+                    for s in (
+                        list(planned_query.row_slots)
+                        + list(planned_query.aggregate_slots)
+                        + list(planned_query.combined_expression_slots)
+                    )
+                }
+                for sid in layer.slot_ids:
+                    slot = slots_map.get(sid)
+                    if slot is None or not isinstance(slot.key, TransformKey):
+                        continue
+                    inner = slot.key.input
+                    if isinstance(inner, leaf_kinds):
+                        continue
+                    if (
+                        layer.op == "consecutive_periods"
+                        and isinstance(inner, ArithmeticKey)
+                        and inner.op in _COMPARISON_OPS
+                    ):
+                        # Boolean predicate shape — accepted.
+                        continue
+                    raise NotImplementedError(
+                        f"DEV-1450 stage 7b.11: composite-input transforms "
+                        f"(layer op={layer.op!r} input="
+                        f"{type(inner).__name__}) are deferred to a "
+                        f"follow-up slice. slot id={sid!r}."
+                    )
 
         # Reachable trees of every slot we'll need to render.
         slots = (
@@ -2966,7 +3125,8 @@ class SQLGenerator:
                 raise NotImplementedError(
                     f"DEV-1450 stage 7b.11: transform op {found_op!r} "
                     f"(reached via slot id={slot.id!r}, key="
-                    f"{type(slot.key).__name__}) deferred to the 7b.11 slice.",
+                    f"{type(slot.key).__name__}) deferred to a follow-up "
+                    f"slice.",
                 )
 
     @staticmethod
@@ -3704,6 +3864,564 @@ class SQLGenerator:
         if planned_query.offset is not None:
             sql += f"\nOFFSET {planned_query.offset}"
         return sql
+
+    # -----------------------------------------------------------------
+    # Stage 7b.11 helpers — self-join CTE transforms (time_shift,
+    # consecutive_periods). change / change_pct desugar at plan time to
+    # time_shift + arithmetic, so the renderer only needs the two
+    # primitive shapes below.
+    # -----------------------------------------------------------------
+
+    def _build_shifted_cte_where_parts(
+        self,
+        *,
+        planned_query,
+        source_relation: str,
+        source_model,
+    ) -> List[str]:
+        """Build the WHERE clauses for the shifted CTE that re-aggregates
+        the source relation.
+
+        7b.3c invariant: ``BetweenKey`` filters (those derived from
+        ``TimeDimension.date_range``) MUST be omitted from the shifted
+        inner CTE so the earliest visible bucket can still carry a
+        non-null shifted value. Other ROW-phase filters
+        (e.g. ``status = 'active'``) are propagated unchanged so the
+        shifted aggregation runs over the same row population.
+        AGGREGATE / POST phase filters never apply to the shifted CTE
+        (they're outer-projection concerns).
+        """
+        from slayer.core.keys import BetweenKey, Phase
+
+        out: List[str] = []
+        for fp in planned_query.filters_by_phase:
+            if fp.phase != Phase.ROW:
+                continue
+            if fp.expression is not None:
+                if isinstance(fp.expression.value_key, BetweenKey):
+                    # date_range filter — omit from inner shifted CTE.
+                    continue
+                rendered = self._render_value_key_for_filter(
+                    key=fp.expression.value_key,
+                    source_relation=source_relation,
+                    source_model=source_model,
+                )
+                if isinstance(rendered, (exp.And, exp.Or)):
+                    rendered = exp.Paren(this=rendered)
+                out.append(rendered.sql(dialect=self.dialect))
+            elif fp.text is not None:
+                out.append(self._qualify_mode_a_sql_filter(
+                    sql=fp.text,
+                    columns=fp.text_columns,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                ))
+        return out
+
+    def _emit_time_shift_ctes_for_planned(
+        self,
+        *,
+        slot,
+        ctes: list,
+        slots_by_id: Dict[str, Any],
+        slot_id_by_key: Dict[Any, str],
+        available_alias_by_slot_id: Dict[str, str],
+        aliases_by_slot_id: Dict[str, List[str]],
+        source_model,
+        source_relation: str,
+        shifted_where_parts: List[str],
+        planned_query,
+    ) -> None:
+        """Emit a ``shifted_<alias>`` + ``sjoin_<alias>`` CTE pair for
+        one time_shift transform slot.
+
+        Legacy reference: ``slayer/sql/generator.py::_generate_shifted_base``
+        and the sjoin assembly inside ``_generate_with_computed:1546``.
+        The typed implementation differs from legacy in two principled
+        ways:
+
+        * **Inner reads raw data**: ``BetweenKey`` filters from
+          ``TimeDimension.date_range`` are omitted from the shifted CTE
+          (the 7b.3c invariant). Legacy instead substituted the time
+          column inside WHERE filters with a shifted expression to read
+          adjacent periods; the typed pipeline reads raw and lets the
+          outer projection re-apply the BETWEEN.
+        * **partition_keys**: DEV-1450 C6 — explicit ``partition_by`` on
+          ``change`` / ``time_shift`` threads through as additional
+          equality keys in the LEFT JOIN (not just query dimensions).
+        """
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.keys import (
+            AggregateKey,
+            ColumnKey,
+            ColumnSqlKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        key = slot.key
+        if not isinstance(key, TransformKey) or key.op != "time_shift":
+            raise ValueError(
+                f"expected time_shift TransformKey, got "
+                f"{type(key).__name__} (op={getattr(key, 'op', None)!r})",
+            )
+        inner_key = key.input
+        time_key = key.time_key
+        if not isinstance(inner_key, (AggregateKey, ColumnKey, ColumnSqlKey)):
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.11: composite-input transforms "
+                f"(layer op='time_shift' input={type(inner_key).__name__}) "
+                f"are deferred to a follow-up slice. slot id={slot.id!r}."
+            )
+        if not isinstance(time_key, TimeTruncKey):
+            raise ValueError(
+                f"time_shift requires a TimeTruncKey time_key; got "
+                f"{type(time_key).__name__} (slot id={slot.id!r}).",
+            )
+
+        # Resolve periods kwarg (binder defaulted to None if missing —
+        # validation raised already in that case).
+        periods_raw = next(
+            (v for k, v in key.kwargs if k == "periods"), None,
+        )
+        if periods_raw is None:
+            raise ValueError(
+                f"time_shift requires 'periods' kwarg; planner gap "
+                f"(slot id={slot.id!r}).",
+            )
+        from decimal import Decimal
+        if isinstance(periods_raw, bool):
+            raise ValueError(
+                f"time_shift periods must be an integer; got bool {periods_raw!r}",
+            )
+        if isinstance(periods_raw, Decimal):
+            if periods_raw != periods_raw.to_integral_value():
+                raise ValueError(
+                    f"time_shift periods must be an integer; got {periods_raw!r}",
+                )
+            periods = int(periods_raw)
+        elif isinstance(periods_raw, int):
+            periods = int(periods_raw)
+        else:
+            raise ValueError(
+                f"time_shift periods must be an integer; got "
+                f"{type(periods_raw).__name__} {periods_raw!r}",
+            )
+
+        # The aliases the shifted CTE needs to project.
+        # 1. The time-trunc column (shifted, then DATE_TRUNC'd) AS its
+        #    own alias matching the base CTE.
+        time_sid = slot_id_by_key.get(time_key)
+        if time_sid is None or time_sid not in available_alias_by_slot_id:
+            raise RuntimeError(
+                f"time_shift time_key not materialised in base CTE: "
+                f"slot id={slot.id!r}, time_key={time_key!r}.",
+            )
+        time_alias = available_alias_by_slot_id[time_sid]
+        time_leaf = time_key.column.leaf
+
+        # 2. The aggregate / column input under its base alias.
+        input_sid = slot_id_by_key.get(inner_key)
+        if input_sid is None or input_sid not in available_alias_by_slot_id:
+            raise RuntimeError(
+                f"time_shift input not materialised in base CTE: "
+                f"slot id={slot.id!r}, input={inner_key!r}.",
+            )
+        input_alias = available_alias_by_slot_id[input_sid]
+
+        # 3. partition_keys (DEV-1450 C6) + auto-include query dimensions.
+        #
+        # Legacy auto-joins on EVERY query dimension regardless of
+        # partition_by (``_generate_with_computed:1559``). Without this,
+        # ``time_shift(amount:sum, periods=-1)`` with ``status`` in
+        # ``dimensions`` would broadcast the prior-period total across
+        # every status value. The typed pipeline mirrors this: explicit
+        # ``partition_keys`` may add MORE columns (DEV-1450 C6), but
+        # query dimensions are always included.
+        from slayer.core.keys import Phase as _Phase
+        partition_specs: list[tuple[str, str, exp.Expression]] = []
+        # entries: (slot_id, full_alias, raw_column_expr_for_group_by)
+        seen_partition_sids: set = set()
+
+        def _add_partition(pk_obj, *, where: str) -> None:
+            pk_sid = slot_id_by_key.get(pk_obj)
+            if pk_sid is None or pk_sid not in available_alias_by_slot_id:
+                raise RuntimeError(
+                    f"time_shift {where} not materialised: "
+                    f"slot id={slot.id!r}, key={pk_obj!r}.",
+                )
+            if pk_sid in seen_partition_sids:
+                return
+            pk_alias = available_alias_by_slot_id[pk_sid]
+            if isinstance(pk_obj, ColumnKey):
+                if pk_obj.path != ():
+                    raise NotImplementedError(
+                        f"DEV-1450 stage 7b.12: cross-model partition "
+                        f"(path={pk_obj.path!r}) deferred to the "
+                        f"cross-model slice (slot id={slot.id!r}).",
+                    )
+                col_expr = self._dim_column_expr_from_planned(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    leaf=pk_obj.leaf,
+                )
+            else:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.11: partition on "
+                    f"{type(pk_obj).__name__} not supported (only "
+                    f"ColumnKey leaves render in the shifted CTE).",
+                )
+            partition_specs.append((pk_sid, pk_alias, col_expr))
+            seen_partition_sids.add(pk_sid)
+
+        # Auto-include query-dimension ColumnKey row slots (NOT TimeTruncKey;
+        # the time-key is already the time-join axis).
+        for sid in planned_query.projection:
+            dim_slot = slots_by_id.get(sid)
+            if dim_slot is None or dim_slot.phase != _Phase.ROW:
+                continue
+            if not isinstance(dim_slot.key, ColumnKey):
+                continue
+            _add_partition(dim_slot.key, where="query dimension")
+
+        # Explicit partition_keys (DEV-1450 C6) may add more.
+        for pk in sorted(key.partition_keys, key=lambda k: repr(k)):
+            _add_partition(pk, where="partition_key")
+
+        # Build the shifted time-column expression. Calendar offset is
+        # ``-periods`` units in the granularity (periods=-1 -> +1 unit).
+        raw_time_col_expr = self._dim_column_expr_from_planned(
+            source_model=source_model,
+            source_relation=source_relation,
+            leaf=time_leaf,
+        )
+        shifted_raw_expr = self._build_time_offset_expr(
+            col_expr=raw_time_col_expr,
+            offset=-periods,
+            granularity=time_key.granularity,
+        )
+        shifted_trunc_expr = self._build_date_trunc(
+            col_expr=shifted_raw_expr,
+            granularity=TimeGranularity(time_key.granularity),
+        )
+
+        # Build the shifted CTE.
+        shifted_select_parts: list[str] = []
+        shifted_group_by: list[str] = []
+
+        # Projected: time-trunc shifted under the base time alias.
+        shifted_trunc_sql = shifted_trunc_expr.sql(dialect=self.dialect)
+        shifted_select_parts.append(
+            f'{shifted_trunc_sql} AS "{time_alias}"',
+        )
+        shifted_group_by.append(shifted_trunc_sql)
+
+        # partition_keys: SELECT + GROUP BY under their base aliases.
+        for _, pk_alias, pk_expr in partition_specs:
+            pk_sql = pk_expr.sql(dialect=self.dialect)
+            shifted_select_parts.append(f'{pk_sql} AS "{pk_alias}"')
+            shifted_group_by.append(pk_sql)
+
+        # Aggregate: re-emit the AggregateKey using the same synth /
+        # _build_agg dance the base CTE uses.
+        if isinstance(inner_key, AggregateKey):
+            # Build a synth EnrichedMeasure for _build_agg.
+            #
+            # The renderer needs a slot-like input with declared_name +
+            # type. Pull from the inner aggregate's slot to keep typed
+            # CAST behavior aligned with the base.
+            inner_slot = slots_by_id.get(input_sid)
+            if inner_slot is None:
+                raise RuntimeError(
+                    f"inner aggregate slot {input_sid!r} not found",
+                )
+            synth = self._synthesize_enriched_measure_from_planned(
+                slot=inner_slot,
+                key=inner_key,
+                source_model=source_model,
+                source_relation=source_relation,
+                full_alias=input_alias,
+            )
+            agg_expr, _ = self._build_agg(measure=synth)
+            agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
+            shifted_select_parts.append(
+                f'{agg_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
+            )
+        else:
+            # Row-level column input (not aggregated). Pass-through.
+            col_expr = self._dim_column_expr_from_planned(
+                source_model=source_model,
+                source_relation=source_relation,
+                leaf=inner_key.leaf,
+            )
+            shifted_select_parts.append(
+                f'{col_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
+            )
+            shifted_group_by.append(col_expr.sql(dialect=self.dialect))
+
+        from_clause = self._build_from_clause_from_planned(
+            source_model=source_model, source_relation=source_relation,
+        )
+        from_sql = from_clause.sql(dialect=self.dialect)
+
+        shifted_sql_parts = [
+            "SELECT\n  " + ",\n  ".join(shifted_select_parts),
+            f"FROM {from_sql}",
+        ]
+        if shifted_where_parts:
+            shifted_sql_parts.append(
+                "WHERE " + _SQL_AND_JOINER.join(shifted_where_parts),
+            )
+        if shifted_group_by:
+            shifted_sql_parts.append(
+                "GROUP BY\n  " + ",\n  ".join(shifted_group_by),
+            )
+        shifted_sql = "\n".join(shifted_sql_parts)
+
+        # Pick the slot's user-facing alias(es). DEV-1450 C13: two
+        # declared measures sharing a structural key intern to ONE
+        # slot with multiple ``public_aliases``; the sjoin CTE projects
+        # the shifted measure under EACH alias so the outer SELECT
+        # carries both.
+        slot_aliases: List[str] = list(slot.public_aliases) or [slot.declared_name]
+        cte_name_alias = slot_aliases[0]
+        shifted_cte_name = f"shifted_{cte_name_alias}"
+        sjoin_cte_name = f"sjoin_{cte_name_alias}"
+
+        ctes.append((shifted_cte_name, shifted_sql))
+
+        # Build the sjoin CTE: LEFT JOIN prev_cte + shifted on time +
+        # partition equalities. Carry every prev_cte alias forward,
+        # then add the shifted measure under EACH of the slot's public
+        # aliases (DEV-1450 C13).
+        prev_cte = ctes[-2][0]  # the CTE just before the shifted CTE
+        carry_aliases_sorted = sorted(
+            a for aliases in aliases_by_slot_id.values() for a in aliases
+        )
+        sjoin_select_parts = [
+            f'{prev_cte}."{a}"' for a in carry_aliases_sorted
+        ]
+        slot_full_aliases: List[str] = []
+        for slot_alias in slot_aliases:
+            full_slot_alias = f"{source_relation}.{slot_alias}"
+            slot_full_aliases.append(full_slot_alias)
+            sjoin_select_parts.append(
+                f'{shifted_cte_name}."{input_alias}" AS "{full_slot_alias}"',
+            )
+
+        # JOIN conditions: time equality + every partition equality.
+        join_conds = [
+            f'{prev_cte}."{time_alias}" = {shifted_cte_name}."{time_alias}"',
+        ]
+        for _, pk_alias, _ in partition_specs:
+            join_conds.append(
+                f'{prev_cte}."{pk_alias}" = {shifted_cte_name}."{pk_alias}"',
+            )
+
+        sjoin_sql = (
+            "SELECT " + ", ".join(sjoin_select_parts)
+            + f"\nFROM {prev_cte}"
+            + f"\nLEFT JOIN {shifted_cte_name}"
+            + "\n    ON " + " AND ".join(join_conds)
+        )
+        ctes.append((sjoin_cte_name, sjoin_sql))
+
+        # Record EACH alias in both the per-slot list (C13 carry-forward
+        # in the outer SELECT) and the "pick one" map (transform input /
+        # filter / order lookups by downstream layers).
+        for full_slot_alias in slot_full_aliases:
+            aliases_by_slot_id.setdefault(slot.id, []).append(full_slot_alias)
+        # ``available_alias_by_slot_id`` is "pick one" — first alias wins.
+        available_alias_by_slot_id.setdefault(slot.id, slot_full_aliases[0])
+
+    def _emit_consecutive_periods_ctes_for_planned(
+        self,
+        *,
+        slot,
+        ctes: list,
+        slots_by_id: Dict[str, Any],
+        slot_id_by_key: Dict[Any, str],
+        available_alias_by_slot_id: Dict[str, str],
+        aliases_by_slot_id: Dict[str, List[str]],
+        planned_query,
+        source_relation: str,
+    ) -> None:
+        """Emit ``cp_reset_<alias>`` + ``cp_value_<alias>`` CTEs for one
+        consecutive_periods transform slot.
+
+        Legacy reference: ``_build_consecutive_periods_ctes`` in this
+        file. The typed implementation differs in two principled ways:
+
+        * The predicate-shape decision (boolean vs numeric) is read
+          from the TransformKey input shape (validated by
+          ``_validate_window_transform_ops_for_7b10``) rather than the
+          legacy ``predicate_is_boolean`` field.
+        * The inner aggregate is materialised in the base CTE as a
+          hidden slot (via the planner's ``_iter_slot_deps`` walk), so
+          the predicate text references that base alias directly — no
+          legacy ``_inner_<name>`` step CTE needed.
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            ColumnKey,
+            ColumnSqlKey,
+            Phase,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        key = slot.key
+        if not isinstance(key, TransformKey) or key.op != "consecutive_periods":
+            raise ValueError(
+                f"expected consecutive_periods TransformKey, got "
+                f"{type(key).__name__} (op={getattr(key, 'op', None)!r})",
+            )
+        inner_key = key.input
+        time_key = key.time_key
+        if not isinstance(time_key, TimeTruncKey):
+            raise ValueError(
+                f"consecutive_periods requires a TimeTruncKey time_key; "
+                f"got {type(time_key).__name__} (slot id={slot.id!r}).",
+            )
+
+        # Resolve the time-key alias.
+        time_sid = slot_id_by_key.get(time_key)
+        if time_sid is None or time_sid not in available_alias_by_slot_id:
+            raise RuntimeError(
+                f"consecutive_periods time_key not materialised: "
+                f"slot id={slot.id!r}.",
+            )
+        time_alias = available_alias_by_slot_id[time_sid]
+
+        # Build the predicate SQL referencing already-materialised base
+        # CTE aliases. Two shapes accepted by the validator:
+        #   * Slottable leaf: numeric truthiness via IS NOT NULL AND <> 0.
+        #   * Comparison ArithmeticKey: rendered + wrapped in COALESCE(<expr>, FALSE).
+        leaf_kinds = (ColumnKey, ColumnSqlKey, AggregateKey, TimeTruncKey)
+        if isinstance(inner_key, leaf_kinds):
+            input_sid = slot_id_by_key.get(inner_key)
+            if input_sid is None or input_sid not in available_alias_by_slot_id:
+                raise RuntimeError(
+                    f"consecutive_periods input not materialised: "
+                    f"slot id={slot.id!r}, input={inner_key!r}.",
+                )
+            input_alias = available_alias_by_slot_id[input_sid]
+            predicate_sql = (
+                f'"{input_alias}" IS NOT NULL AND "{input_alias}" <> 0'
+            )
+            predicate_is_boolean = False
+        elif isinstance(inner_key, ArithmeticKey):
+            comparison_ops = {"==", "!=", "<", "<=", ">", ">=", "=", "<>"}
+            if inner_key.op not in comparison_ops:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.11: composite-input transforms "
+                    f"(layer op='consecutive_periods' input="
+                    f"ArithmeticKey op={inner_key.op!r}) are deferred to "
+                    f"a follow-up slice (slot id={slot.id!r}).",
+                )
+            rendered = self._render_value_key_against_aliases(
+                key=inner_key,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            )
+            predicate_sql = rendered.sql(dialect=self.dialect)
+            predicate_is_boolean = True
+        else:
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.11: consecutive_periods input "
+                f"{type(inner_key).__name__} not supported.",
+            )
+
+        # COALESCE / numeric wrap.
+        if predicate_is_boolean:
+            pred_in_case = f"COALESCE({predicate_sql}, FALSE)"
+        else:
+            pred_in_case = predicate_sql
+
+        # Auto-partition by query dimensions (ColumnKey row-phase slots
+        # only — NOT TimeTruncKey, matching legacy).
+        partition_aliases: list[str] = []
+        for sid in planned_query.projection:
+            row_slot = slots_by_id.get(sid)
+            if row_slot is None or row_slot.phase != Phase.ROW:
+                continue
+            if not isinstance(row_slot.key, ColumnKey):
+                continue
+            alias = available_alias_by_slot_id.get(sid)
+            if alias is not None:
+                partition_aliases.append(alias)
+
+        slot_alias = (
+            slot.public_aliases[0]
+            if slot.public_aliases
+            else slot.declared_name
+        )
+        full_slot_alias = f"{source_relation}.{slot_alias}"
+        cp_reset_alias = f"_cp_reset_{full_slot_alias}"
+
+        # Build the reset CTE.
+        prev_cte = ctes[-1][0]
+        carry_aliases_sorted = sorted(
+            a for aliases in aliases_by_slot_id.values() for a in aliases
+        )
+        carry_select = ",\n  ".join(f'"{a}"' for a in carry_aliases_sorted)
+        partition_clause = (
+            "PARTITION BY " + ", ".join(f'"{a}"' for a in partition_aliases)
+            if partition_aliases
+            else ""
+        )
+        over_reset = " ".join(p for p in (
+            partition_clause,
+            f'ORDER BY "{time_alias}"',
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        ) if p)
+        reset_window_sql = (
+            f'SUM(CASE WHEN {pred_in_case} THEN 0 ELSE 1 END) '
+            f'OVER ({over_reset}) AS "{cp_reset_alias}"'
+        )
+        cp_reset_cte_name = f"cp_reset_{slot_alias}"
+        cp_reset_sql = (
+            "SELECT\n  " + carry_select
+            + ",\n  " + reset_window_sql
+            + f"\nFROM {prev_cte}"
+        )
+        ctes.append((cp_reset_cte_name, cp_reset_sql))
+
+        # Build the value CTE — references the cp_reset CTE's added
+        # column in PARTITION BY so each run of true predicate is
+        # counted within its own reset group.
+        value_partition_aliases = partition_aliases + [cp_reset_alias]
+        value_partition_clause = "PARTITION BY " + ", ".join(
+            f'"{a}"' for a in value_partition_aliases
+        )
+        over_value = " ".join((
+            value_partition_clause,
+            f'ORDER BY "{time_alias}"',
+            "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        ))
+        # Outer CASE WHEN guarantees rows where the predicate is false
+        # surface as 0 (legacy parity).
+        value_inner_window_sql = (
+            f'SUM(CASE WHEN {pred_in_case} THEN 1 ELSE 0 END) '
+            f'OVER ({over_value})'
+        )
+        value_outer_case = (
+            f'CASE WHEN {pred_in_case} '
+            f'THEN {value_inner_window_sql} ELSE 0 END '
+            f'AS "{full_slot_alias}"'
+        )
+        cp_value_cte_name = f"cp_value_{slot_alias}"
+        cp_value_sql = (
+            "SELECT\n  " + carry_select
+            + ",\n  " + value_outer_case
+            + f"\nFROM {cp_reset_cte_name}"
+        )
+        ctes.append((cp_value_cte_name, cp_value_sql))
+
+        # Record the slot's alias for downstream lookups.
+        aliases_by_slot_id.setdefault(slot.id, []).append(full_slot_alias)
+        available_alias_by_slot_id.setdefault(slot.id, full_slot_alias)
 
     @staticmethod
     def _pick_alias_for_planned_slot(*, slot, alias_index: dict) -> str:

@@ -12,14 +12,12 @@ transform-input materialization, POST-phase filter routing, and the
 NotImplementedError pins for 7b.11 / 7b.12.
 
 Out of scope (later slices):
-* time_shift / consecutive_periods self-join CTEs -- 7b.11
-* change / change_pct (planner desugars to time_shift) -- 7b.11
 * cross-model transform inputs -- 7b.12
 * exhaustive dialect parity -- 7b.13
 
-The 7b.11 NotImplementedError pins cover time_shift / consecutive_periods /
-change (lowered). 7b.12 cross-model pins are exercised by other slice test
-files; this file does not duplicate them.
+(7b.11 lifted the deferral for time_shift / consecutive_periods /
+change — those are now exercised in
+``tests/test_generator2_self_join.py``.)
 
 Deleted alongside ``tests/parity_oracle.py`` at the end of 7b.15.
 """
@@ -877,66 +875,9 @@ async def test_window_dialect_cycle(dialect: str, tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7b.11 / 7b.12 NotImplementedError pins
-# ---------------------------------------------------------------------------
-
-
-def test_time_shift_still_raises_for_7b11() -> None:
-    """An explicit ``time_shift`` op in TransformLayer must still raise
-    NotImplementedError with a "7b.11" message. Pins that this slice
-    doesn't accidentally start emitting self-join CTEs.
-    """
-    query = SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_td_month()],
-        measures=[
-            {"formula": "amount:sum"},
-            {
-                "formula": "time_shift(amount:sum, periods=-1)",
-                "name": "shifted",
-            },
-        ],
-    )
-    planned = plan_query(query=query, bundle=_bundle())
-    with pytest.raises(NotImplementedError, match="7b.11"):
-        generate_from_planned(planned, bundle=_bundle(), dialect="postgres")
-
-
-def test_consecutive_periods_still_raises_for_7b11() -> None:
-    query = SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_td_month()],
-        measures=[
-            {"formula": "amount:sum"},
-            {
-                "formula": "consecutive_periods(amount:sum > 0)",
-                "name": "streak",
-            },
-        ],
-    )
-    planned = plan_query(query=query, bundle=_bundle())
-    with pytest.raises(NotImplementedError, match="7b.11"):
-        generate_from_planned(planned, bundle=_bundle(), dialect="postgres")
-
-
-def test_change_lowered_to_time_shift_raises_for_7b11() -> None:
-    """``change(amount:sum)`` is desugared by ``lower_sugar_transforms``
-    into ``amount:sum - time_shift(amount:sum, periods=-1)``. The
-    resulting time_shift slot must raise the same 7b.11 NotImplementedError.
-    """
-    query = SlayerQuery(
-        source_model="orders",
-        time_dimensions=[_td_month()],
-        measures=[
-            {"formula": "amount:sum"},
-            {"formula": "change(amount:sum)", "name": "delta"},
-        ],
-    )
-    planned = plan_query(query=query, bundle=_bundle())
-    with pytest.raises(NotImplementedError, match="7b.11"):
-        generate_from_planned(planned, bundle=_bundle(), dialect="postgres")
-
-
+# (7b.10 deferral pins for ``time_shift`` / ``consecutive_periods`` /
+# ``change`` removed in 7b.11 — that slice's tests now exercise those
+# transforms positively in ``tests/test_generator2_self_join.py``.)
 # ---------------------------------------------------------------------------
 # Identity -- transform input alias resolution via registry, not text
 # ---------------------------------------------------------------------------
