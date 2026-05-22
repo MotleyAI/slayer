@@ -11,7 +11,7 @@
 
 **SLayer** is a semantic layer that lets AI agents query your database, manage data models, and learn from the data.
 
-> If you find SLayer useful, a ⭐ helps others discover it!
+> If you find SLayer useful, a [⭐](https://github.com/MotleyAI/slayer) helps others discover it!
 > Questions, ideas, or feedback? [Join our Discord](https://discord.gg/djtaFyXW).
 
 ---
