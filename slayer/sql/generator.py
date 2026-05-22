@@ -8,7 +8,7 @@ query engine's _enrich() step.
 import copy
 import logging
 import re
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import sqlglot
 from sqlglot import exp
@@ -2620,20 +2620,23 @@ class SQLGenerator:
 
         Mirrors the local-only branch of ``_generate_base`` but reads
         from typed PlannedQuery fields (``row_slots`` / ``aggregate_slots``
-        / ``filters_by_phase`` / ``order``) instead of ``EnrichedQuery``.
-        Reuses legacy dialect helpers (``_resolve_sql`` / ``_build_agg``
-        / ``_wrap_cast_for_type`` / ``_parse_predicate``) so dialect-
-        specific behavior is rendered identically to the legacy
-        ``generate()`` path — the parity oracle in
-        ``tests/parity_oracle.py`` pins this contract.
+        / ``filters_by_phase`` / ``order`` / ``transform_layers``)
+        instead of ``EnrichedQuery``. Reuses legacy dialect helpers
+        (``_resolve_sql`` / ``_build_agg`` / ``_wrap_cast_for_type`` /
+        ``_parse_predicate`` / ``_build_date_trunc``) so dialect-specific
+        behavior is rendered identically to the legacy ``generate()``
+        path — the parity oracle in ``tests/parity_oracle.py`` pins
+        this contract.
+
+        Stage 7b.10 adds window-transform rendering: when
+        ``planned_query.transform_layers`` is non-empty, the base SELECT
+        is emitted as ``WITH base AS (...)``, Kahn-batched step CTEs
+        carry the window functions, and an outer wrap projects in
+        user-spec order. POST-phase filters that reference transform
+        slots wrap as ``SELECT * FROM (...) AS _filtered WHERE ...``.
+        ``time_shift`` / ``consecutive_periods`` layers raise
+        ``NotImplementedError`` with a ``7b.11`` marker.
         """
-        from slayer.core.enums import TimeGranularity
-        from slayer.core.keys import (
-            AggregateKey,
-            ColumnKey,
-            Phase,
-            TimeTruncKey,
-        )
 
         source_model = bundle.source_model
         if source_model is None:
@@ -2642,19 +2645,6 @@ class SQLGenerator:
             )
         source_relation = planned_query.source_relation
 
-        # DEV-1450 stage 7b.9 — SlayerModel.filters (always-applied WHERE,
-        # Mode A SQL) are now wired through the typed pipeline. The
-        # planner emits text-only FilterPhase entries for them (validated
-        # via parse_sql_predicate; measure / windowed / derived-column
-        # references rejected); _build_where_having_from_planned
-        # qualifies bare names and emits before user filters.
-
-        # Codex MEDIUM fold-in: cross-model aggregate plans are produced
-        # by the planner whenever ANY aggregate slot has a non-empty
-        # join path — including hidden order-only / filter-only refs
-        # whose slot_ids never appear in the public projection. Guard
-        # at the top so an order-only cross-model ref can't slip through
-        # `_apply_order_limit_from_planned`.
         if planned_query.cross_model_aggregate_plans:
             raise NotImplementedError(
                 f"DEV-1450 stage 7b.12: cross_model_aggregate_plans "
@@ -2662,8 +2652,14 @@ class SQLGenerator:
                 f"deferred to the cross-model slice."
             )
 
-        from_clause = self._build_from_clause_from_planned(
-            source_model=source_model, source_relation=source_relation,
+        # 7b.10 — fail fast on transform ops this slice does not render
+        # (time_shift / consecutive_periods belong to 7b.11). Walks
+        # ``transform_layers`` for an explicit op match AND walks every
+        # ``TransformKey.input`` reachable from public slots so a
+        # ``change`` desugared into ``time_shift`` raises with the same
+        # marker.
+        self._validate_window_transform_ops_for_7b10(
+            planned_query=planned_query,
         )
 
         slots_by_id = {
@@ -2675,23 +2671,522 @@ class SQLGenerator:
             )
         }
 
-        select_columns: list[exp.Expression] = []
-        # group_by keyed by slot id so multi-alias dims emit GROUP BY once.
-        group_by_keys: dict[str, exp.Expression] = {}
-        has_aggregation = False
-        # Per-slot alias counter: matches stage_planner._emit_stage_schema —
-        # multi-alias declarations appear in ``projection`` once per alias,
-        # and we pick public_aliases[idx] on each visit (falling back to
-        # declared_name on overflow for symmetry with the planner).
-        alias_index: dict[str, int] = {}
+        # 7b.10 — slot key -> id lookup. ``PlannedQuery`` does not carry
+        # the ``ValueRegistry``, so the generator builds its own map.
+        # Used for resolving ``TransformKey.input`` / ``partition_keys`` /
+        # ``time_key`` references to step-CTE aliases.
+        slot_id_by_key: Dict[Any, str] = {
+            s.key: s.id for s in slots_by_id.values()
+        }
 
+        public_proj_set: Set[str] = set(planned_query.projection)
+        # 7b.10 — base CTE must also project hidden slots referenced as
+        # transform inputs / partition_keys / time_key / POST-phase
+        # filter operands so step CTEs and filter wrappers can name them.
+        extra_materialize_ids = self._collect_base_aux_slot_ids(
+            planned_query=planned_query,
+            slot_id_by_key=slot_id_by_key,
+            slots_by_id=slots_by_id,
+        )
+        base_render_order = list(planned_query.projection) + [
+            sid for sid in extra_materialize_ids if sid not in public_proj_set
+        ]
+
+        # Build the base SELECT body. ``aliases_by_slot_id`` is a list
+        # of full aliases per slot, in projection visit order — needed
+        # so duplicate public_aliases on a single interned slot (DEV-1450
+        # C13: two declared measures with the same key + different names)
+        # survive the CTE chain. ``available_alias_by_slot_id`` is the
+        # canonical "pick one" map used by transform-input / time-key /
+        # partition-key / order-entry lookups (any alias of the slot
+        # refers to the same column value, so any will do).
+        (
+            base_select,
+            aliases_by_slot_id,
+            has_aggregation,
+            group_by_keys,
+        ) = self._build_base_select_for_planned(
+            planned_query=planned_query,
+            bundle=bundle,
+            source_model=source_model,
+            source_relation=source_relation,
+            base_render_order=base_render_order,
+            slots_by_id=slots_by_id,
+        )
+
+        where_clause, having_clause = self._build_where_having_from_planned(
+            planned_query=planned_query,
+            source_relation=source_relation,
+            source_model=source_model,
+        )
+
+        if where_clause is not None:
+            base_select = base_select.where(where_clause)
+
+        # Match legacy _generate_base:1375 — dim-only-dedup OR
+        # has_aggregation triggers GROUP BY (dim-only emits GROUP BY
+        # before LIMIT so unique dim tuples can't silently drop past
+        # row N).
+        dim_only_dedup = bool(group_by_keys) and not has_aggregation
+        needs_group_by = has_aggregation or dim_only_dedup
+        if needs_group_by and group_by_keys:
+            for gb in group_by_keys.values():
+                base_select = base_select.group_by(gb)
+
+        if having_clause is not None:
+            base_select = base_select.having(having_clause)
+
+        # No transforms → existing pre-7b.10 path: apply ORDER/LIMIT
+        # directly on the base select. Hidden POST-phase / transform
+        # slots are guarded by the validator above.
+        if not planned_query.transform_layers:
+            base_select = self._apply_order_limit_from_planned(
+                select=base_select,
+                planned_query=planned_query,
+                source_relation=source_relation,
+                slots_by_id=slots_by_id,
+            )
+            return base_select.sql(dialect=self.dialect, pretty=True)
+
+        # 7b.10 — transform layers present. Build the CTE chain.
+        base_cte_sql = base_select.sql(dialect=self.dialect, pretty=True)
+        ctes: list[tuple[str, str]] = [("base", base_cte_sql)]
+        # "Pick one" map for transform-input / time-key / partition-key /
+        # order-entry / POST-filter lookups. Initialised from the first
+        # alias of every materialised slot.
+        available_alias_by_slot_id: Dict[str, str] = {
+            sid: aliases[0]
+            for sid, aliases in aliases_by_slot_id.items()
+            if aliases
+        }
+
+        pending_layers = list(planned_query.transform_layers)
+        step_num = 0
+        while pending_layers:
+            ready: list = []
+            not_ready: list = []
+            for layer in pending_layers:
+                if self._transform_layer_deps_ready(
+                    layer=layer,
+                    slots_by_id=slots_by_id,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                ):
+                    ready.append(layer)
+                else:
+                    not_ready.append(layer)
+            if not ready:
+                pending_ops = [layer.op for layer in pending_layers]
+                raise RuntimeError(
+                    f"DEV-1450 stage 7b.10: transform layer dependencies "
+                    f"could not be resolved; pending ops: {pending_ops!r}.",
+                )
+            step_num += 1
+            step_name = f"step{step_num}"
+            prev_cte = ctes[-1][0]
+            # Carry every alias forward (flatten the per-slot lists)
+            # so duplicate public aliases on one slot reach the final
+            # SELECT.
+            carry_aliases_sorted = sorted(
+                a for aliases in aliases_by_slot_id.values() for a in aliases
+            )
+            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            for layer in ready:
+                for slot_id in layer.slot_ids:
+                    slot = slots_by_id[slot_id]
+                    alias = (
+                        slot.public_aliases[0]
+                        if slot.public_aliases
+                        else slot.declared_name
+                    )
+                    full_alias = f"{source_relation}.{alias}"
+                    window_sql = self._render_window_transform_sql(
+                        slot=slot,
+                        slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                        planned_query=planned_query,
+                    )
+                    if slot.type is not None:
+                        wrapped = _wrap_cast_for_type(
+                            self._parse(window_sql), slot.type,
+                        )
+                        window_sql = wrapped.sql(dialect=self.dialect)
+                    step_parts.append(f'{window_sql} AS "{full_alias}"')
+                    aliases_by_slot_id.setdefault(slot_id, []).append(
+                        full_alias,
+                    )
+                    available_alias_by_slot_id.setdefault(
+                        slot_id, full_alias,
+                    )
+            step_sql = (
+                "SELECT\n    "
+                + _SQL_COL_SEP.join(step_parts)
+                + f"\nFROM {prev_cte}"
+            )
+            ctes.append((step_name, step_sql))
+            pending_layers = not_ready
+
+        # Inner SELECT inside _outer wrap: ALL carried aliases sorted
+        # (matches legacy _generate_with_computed:1607).
+        final_cte = ctes[-1][0]
+        inner_sorted = sorted(
+            a for aliases in aliases_by_slot_id.values() for a in aliases
+        )
+        inner_sql = (
+            "SELECT\n    "
+            + _SQL_COL_SEP.join(f'"{a}"' for a in inner_sorted)
+            + f"\nFROM {final_cte}"
+        )
+
+        cte_clause = (
+            "WITH "
+            + ",\n".join(f"{name} AS (\n{sql}\n)" for name, sql in ctes)
+        )
+        chain_sql = f"{cte_clause}\n{inner_sql}"
+
+        # POST-phase filter wrap (filters referencing transform / arith
+        # slots). Mirrors legacy _generate_with_computed:1627-1648 —
+        # ``SELECT * FROM (<chain>) AS _filtered WHERE <conditions>``.
+        post_filter_conditions = self._render_post_phase_filter_conditions(
+            planned_query=planned_query,
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+        )
+        if post_filter_conditions:
+            chain_sql = (
+                f"SELECT *\nFROM (\n{chain_sql}\n) AS _filtered"
+                f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
+            )
+
+        # Outer SELECT in user-projection order (public slots only).
+        # Per-slot index walks each slot's public_aliases so duplicate
+        # interned names (DEV-1450 C13) both surface in the result.
+        public_aliases_user_order: list[str] = []
+        outer_alias_index: Dict[str, int] = {}
         for sid in planned_query.projection:
             slot = slots_by_id[sid]
             if slot.hidden:
                 continue
-            alias = self._pick_alias_for_planned_slot(
-                slot=slot, alias_index=alias_index,
+            all_aliases = aliases_by_slot_id.get(sid, [])
+            if not all_aliases:
+                continue
+            idx = outer_alias_index.setdefault(sid, 0)
+            alias = (
+                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
             )
+            outer_alias_index[sid] = idx + 1
+            public_aliases_user_order.append(alias)
+        outer_sql = (
+            "SELECT\n    "
+            + _SQL_COL_SEP.join(f'"{a}"' for a in public_aliases_user_order)
+            + f"\nFROM (\n{chain_sql}\n) AS _outer"
+        )
+
+        # ORDER BY / LIMIT / OFFSET on the outermost wrap.
+        return self._apply_order_limit_to_planned_sql_string(
+            sql=outer_sql,
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+        )
+
+    # -----------------------------------------------------------------
+    # Stage 7b.10 helpers
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _validate_window_transform_ops_for_7b10(*, planned_query) -> None:
+        """Raise ``NotImplementedError("DEV-1450 stage 7b.11: ...")`` for
+        any transform op outside the 7b.10 window-transform scope.
+
+        Pins time_shift / consecutive_periods (self-join CTEs) for 7b.11.
+        Walks both explicit ``transform_layers`` (where the planner
+        materialised them as their own slot) AND the reachable
+        ``TransformKey.input`` trees of public POST-phase slots so a
+        ``change`` desugared into ``time_shift`` raises with the same
+        marker even when the layer is materialised as an arithmetic
+        operand rather than a top-level layer.
+        """
+        from slayer.core.keys import (
+            ArithmeticKey,
+            BetweenKey,
+            ScalarCallKey,
+            TransformKey,
+        )
+
+        deferred = {"time_shift", "consecutive_periods"}
+
+        def _walk(key) -> Optional[str]:
+            if isinstance(key, TransformKey):
+                if key.op in deferred:
+                    return key.op
+                return _walk(key.input)
+            if isinstance(key, ArithmeticKey):
+                for o in key.operands:
+                    found = _walk(o)
+                    if found:
+                        return found
+                return None
+            if isinstance(key, ScalarCallKey):
+                for a in key.args:
+                    if isinstance(
+                        a,
+                        (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
+                    ):
+                        found = _walk(a)
+                        if found:
+                            return found
+                return None
+            if isinstance(key, BetweenKey):
+                for k in (key.column, key.low, key.high):
+                    found = _walk(k)
+                    if found:
+                        return found
+                return None
+            return None
+
+        # Explicit layer ops.
+        for layer in planned_query.transform_layers:
+            if layer.op in deferred:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.11: transform op {layer.op!r} "
+                    f"(self-join CTE) deferred to the 7b.11 slice.",
+                )
+
+        # Reachable trees of every slot we'll need to render.
+        slots = (
+            list(planned_query.row_slots)
+            + list(planned_query.aggregate_slots)
+            + list(planned_query.combined_expression_slots)
+        )
+        for slot in slots:
+            found_op = _walk(slot.key)
+            if found_op is not None:
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.11: transform op {found_op!r} "
+                    f"(reached via slot id={slot.id!r}, key="
+                    f"{type(slot.key).__name__}) deferred to the 7b.11 slice.",
+                )
+
+    @staticmethod
+    def _collect_base_aux_slot_ids(
+        *,
+        planned_query,
+        slot_id_by_key: Dict[Any, str],
+        slots_by_id: Dict[str, Any],
+    ) -> Set[str]:
+        """Return slot ids the base CTE must project beyond the public
+        projection.
+
+        Walks every ``TransformKey`` in ``transform_layers`` for its
+        ``input`` / ``partition_keys`` / ``time_key`` deps; walks every
+        POST-phase ``FilterPhase.expression`` for slot-worthy deps.
+        Only ``ColumnKey`` / ``TimeTruncKey`` / ``AggregateKey`` slot
+        ids are returned (those that the base CTE renders); transform
+        slot ids are excluded since they're materialised in step CTEs.
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
+            Phase,
+            ScalarCallKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        base_kinds = (ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey)
+        out: Set[str] = set()
+
+        def _collect_from(key) -> None:
+            if isinstance(key, base_kinds):
+                sid = slot_id_by_key.get(key)
+                if sid is not None:
+                    out.add(sid)
+                return
+            if isinstance(key, TransformKey):
+                _collect_from(key.input)
+                for p in key.partition_keys:
+                    _collect_from(p)
+                if key.time_key is not None:
+                    _collect_from(key.time_key)
+                return
+            if isinstance(key, ArithmeticKey):
+                for o in key.operands:
+                    _collect_from(o)
+                return
+            if isinstance(key, ScalarCallKey):
+                for a in key.args:
+                    if isinstance(
+                        a,
+                        (
+                            TransformKey, ArithmeticKey, ScalarCallKey,
+                            BetweenKey, ColumnKey, ColumnSqlKey, TimeTruncKey,
+                            AggregateKey,
+                        ),
+                    ):
+                        _collect_from(a)
+                return
+            if isinstance(key, BetweenKey):
+                _collect_from(key.column)
+                _collect_from(key.low)
+                _collect_from(key.high)
+                return
+            # LiteralKey / StarKey / unknown: nothing to materialise.
+
+        # Transform layer deps.
+        for layer in planned_query.transform_layers:
+            for slot_id in layer.slot_ids:
+                slot = slots_by_id.get(slot_id)
+                if slot is None:
+                    continue
+                key = slot.key
+                if isinstance(key, TransformKey):
+                    _collect_from(key.input)
+                    for p in key.partition_keys:
+                        _collect_from(p)
+                    if key.time_key is not None:
+                        _collect_from(key.time_key)
+
+        # POST-phase filter deps.
+        for fp in planned_query.filters_by_phase:
+            if fp.phase != Phase.POST:
+                continue
+            if fp.expression is not None:
+                _collect_from(fp.expression.value_key)
+
+        # 7b.10 — order-only hidden refs must also reach the base CTE.
+        # Walk ``OrderEntry.slot_id`` → that slot's key (so any
+        # transform / arithmetic inside also surfaces its base deps).
+        for oe in planned_query.order:
+            slot = slots_by_id.get(oe.slot_id)
+            if slot is None:
+                continue
+            _collect_from(slot.key)
+
+        return out
+
+    @staticmethod
+    def _transform_layer_deps_ready(
+        *,
+        layer,
+        slots_by_id: Dict[str, Any],
+        slot_id_by_key: Dict[Any, str],
+        available_alias_by_slot_id: Dict[str, str],
+    ) -> bool:
+        """A layer is ready when every slot-worthy dep its TransformKeys
+        reference (``input`` + ``partition_keys`` + ``time_key``) has
+        an alias materialised in a prior CTE.
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
+            ScalarCallKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        slotted_kinds = (
+            ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
+        )
+
+        def _ready(key) -> bool:
+            if isinstance(key, slotted_kinds):
+                sid = slot_id_by_key.get(key)
+                if sid is None:
+                    # Not interned as a slot — can be inlined.
+                    return True
+                return sid in available_alias_by_slot_id
+            if isinstance(key, ArithmeticKey):
+                return all(_ready(o) for o in key.operands)
+            if isinstance(key, ScalarCallKey):
+                for a in key.args:
+                    if isinstance(
+                        a,
+                        (
+                            TransformKey, ArithmeticKey, ScalarCallKey,
+                            BetweenKey, ColumnKey, ColumnSqlKey, TimeTruncKey,
+                            AggregateKey,
+                        ),
+                    ):
+                        if not _ready(a):
+                            return False
+                return True
+            if isinstance(key, BetweenKey):
+                return all(
+                    _ready(k) for k in (key.column, key.low, key.high)
+                )
+            return True
+
+        for slot_id in layer.slot_ids:
+            slot = slots_by_id.get(slot_id)
+            if slot is None or not isinstance(slot.key, TransformKey):
+                continue
+            tk = slot.key
+            if not _ready(tk.input):
+                return False
+            for p in tk.partition_keys:
+                if not _ready(p):
+                    return False
+            if tk.time_key is not None and not _ready(tk.time_key):
+                return False
+        return True
+
+    def _build_base_select_for_planned(
+        self,
+        *,
+        planned_query,
+        bundle,
+        source_model,
+        source_relation: str,
+        base_render_order: List[str],
+        slots_by_id: Dict[str, Any],
+    ):
+        """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``.
+
+        Iterates ``base_render_order`` (public projection followed by
+        aux materialisation slot ids), rendering each ROW / AGGREGATE
+        slot. POST-phase slots are skipped — step CTEs render them.
+
+        Returns ``(base_select, aliases_by_slot_id, has_aggregation,
+        group_by_keys)``. ``aliases_by_slot_id`` is a list per slot to
+        preserve duplicate public aliases (DEV-1450 C13).
+        """
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.keys import (
+            AggregateKey,
+            ColumnKey,
+            Phase,
+            TimeTruncKey,
+        )
+
+        from_clause = self._build_from_clause_from_planned(
+            source_model=source_model, source_relation=source_relation,
+        )
+
+        select_columns: list[exp.Expression] = []
+        group_by_keys: Dict[str, exp.Expression] = {}
+        has_aggregation = False
+        alias_index: Dict[str, int] = {}
+        aliases_by_slot_id: Dict[str, List[str]] = {}
+
+        def _record_alias(sid: str, full_alias: str) -> None:
+            aliases_by_slot_id.setdefault(sid, []).append(full_alias)
+
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            if slot.public_aliases:
+                alias = self._pick_alias_for_planned_slot(
+                    slot=slot, alias_index=alias_index,
+                )
+            else:
+                alias = slot.declared_name
             full_alias = f"{source_relation}.{alias}"
 
             if slot.phase == Phase.ROW:
@@ -2710,6 +3205,7 @@ class SQLGenerator:
                     )
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
+                    _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
                     if key.column.path != ():
                         raise NotImplementedError(
@@ -2728,6 +3224,7 @@ class SQLGenerator:
                     )
                     select_columns.append(trunc_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, trunc_expr)
+                    _record_alias(sid, full_alias)
                 else:
                     raise NotImplementedError(
                         f"DEV-1450 stage 7b.10+: row-phase key type "
@@ -2768,47 +3265,445 @@ class SQLGenerator:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
                     has_aggregation = True
                 select_columns.append(agg_expr.copy().as_(full_alias))
+                _record_alias(sid, full_alias)
             else:
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.10+: POST-phase slot in projection "
-                    f"deferred to transform-rendering slices. "
-                    f"slot id={slot.id!r} key={slot.key!r}."
-                )
+                # POST-phase slot in projection — handled by step CTEs.
+                # Don't add to base select; step CTE will materialise.
+                continue
 
-        where_clause, having_clause = self._build_where_having_from_planned(
-            planned_query=planned_query,
-            source_relation=source_relation,
-            source_model=source_model,
-        )
-
-        select = exp.Select()
+        base_select = exp.Select()
         for col in select_columns:
-            select = select.select(col)
-        select = select.from_(from_clause)
+            base_select = base_select.select(col)
+        base_select = base_select.from_(from_clause)
+        return base_select, aliases_by_slot_id, has_aggregation, group_by_keys
 
-        if where_clause is not None:
-            select = select.where(where_clause)
+    def _render_window_transform_sql(
+        self,
+        *,
+        slot,
+        slots_by_id: Dict[str, Any],
+        slot_id_by_key: Dict[Any, str],
+        available_alias_by_slot_id: Dict[str, str],
+        planned_query,
+    ) -> str:
+        """Render one window-transform slot as an OVER() expression.
 
-        # Match legacy _generate_base:1375 — dim-only-dedup OR has_aggregation
-        # triggers GROUP BY (dim-only emits GROUP BY before LIMIT so unique
-        # dim tuples can't silently drop past row N).
-        dim_only_dedup = bool(group_by_keys) and not has_aggregation
-        needs_group_by = has_aggregation or dim_only_dedup
-        if needs_group_by and group_by_keys:
-            for gb in group_by_keys.values():
-                select = select.group_by(gb)
-
-        if having_clause is not None:
-            select = select.having(having_clause)
-
-        select = self._apply_order_limit_from_planned(
-            select=select,
-            planned_query=planned_query,
-            source_relation=source_relation,
-            slots_by_id=slots_by_id,
+        Direct port of ``_build_transform_sql:1794`` but reads from the
+        typed ``TransformKey`` instead of legacy ``EnrichedTransform``.
+        Auto-partition matches legacy: ``partition_aliases = query
+        dimensions only`` (NOT time dimensions) for non-rank ops;
+        rank-family defaults to no PARTITION BY.
+        """
+        from slayer.core.keys import (
+            ColumnKey,
+            Phase,
+            TransformKey,
         )
 
-        return select.sql(dialect=self.dialect, pretty=True)
+        key = slot.key
+        if not isinstance(key, TransformKey):
+            raise ValueError(
+                f"_render_window_transform_sql expected TransformKey, "
+                f"got {type(key).__name__}",
+            )
+
+        # 7b.10 explicitly defers composite transform inputs (transforms
+        # whose ``input`` is an arithmetic / scalar-call expression
+        # rather than a slotted leaf). Legacy renders these via a hidden
+        # inner expression; the typed pipeline would need an inner
+        # expression layer between the base CTE and the window step.
+        # Out of scope for the window-transform slice.
+        from slayer.core.keys import (
+            ArithmeticKey as _ArithKey,
+            ScalarCallKey as _ScalarKey,
+        )
+
+        if isinstance(key.input, (_ArithKey, _ScalarKey)):
+            raise NotImplementedError(
+                f"DEV-1450 stage 7b.10: transform input is a composite "
+                f"expression ({type(key.input).__name__}) — rendering "
+                f"composite-input transforms (e.g., "
+                f"``cumsum(amount:sum / qty:sum)``) requires an inner "
+                f"expression layer between the base CTE and the window "
+                f"step. Deferred to a follow-up slice. slot id="
+                f"{slot.id!r}, op={key.op!r}.",
+            )
+
+        # Resolve input alias.
+        input_sid = slot_id_by_key.get(key.input)
+        if input_sid is None or input_sid not in available_alias_by_slot_id:
+            raise RuntimeError(
+                f"transform input not materialised: "
+                f"slot id={slot.id!r}, op={key.op!r}, input_key={key.input!r}.",
+            )
+        input_alias = available_alias_by_slot_id[input_sid]
+        measure = f'"{input_alias}"'
+
+        # Resolve time-key alias (None for rank-family without time).
+        time_alias: Optional[str] = None
+        if key.time_key is not None:
+            tk_sid = slot_id_by_key.get(key.time_key)
+            if tk_sid is None or tk_sid not in available_alias_by_slot_id:
+                raise RuntimeError(
+                    f"transform time_key not materialised: "
+                    f"slot id={slot.id!r}, op={key.op!r}, "
+                    f"time_key={key.time_key!r}.",
+                )
+            time_alias = f'"{available_alias_by_slot_id[tk_sid]}"'
+
+        # Resolve partition aliases. Explicit partition_keys take
+        # precedence; otherwise auto-partition by query dimension slots
+        # (ColumnKey row-phase, hidden==False) — NOT TimeTruncKey slots
+        # (matches legacy enrichment.py:584 ``[d.alias for d in
+        # dimensions]``).
+        rank_family = {"rank", "percent_rank", "dense_rank", "ntile"}
+        if key.partition_keys:
+            partition_aliases: list[str] = []
+            for pk in sorted(
+                key.partition_keys, key=lambda k: repr(k),
+            ):
+                pk_sid = slot_id_by_key.get(pk)
+                if pk_sid is None or pk_sid not in available_alias_by_slot_id:
+                    raise RuntimeError(
+                        f"transform partition_key not materialised: "
+                        f"slot id={slot.id!r}, op={key.op!r}, "
+                        f"partition_key={pk!r}.",
+                    )
+                partition_aliases.append(
+                    available_alias_by_slot_id[pk_sid],
+                )
+        elif key.op in rank_family:
+            partition_aliases = []
+        else:
+            partition_aliases = []
+            for sid in planned_query.projection:
+                row_slot = slots_by_id.get(sid)
+                if row_slot is None or row_slot.phase != Phase.ROW:
+                    continue
+                if not isinstance(row_slot.key, ColumnKey):
+                    # Skip TimeTruncKey row slots — matches legacy
+                    # ``[d.alias for d in dimensions]``.
+                    continue
+                alias = available_alias_by_slot_id.get(sid)
+                if alias is not None:
+                    partition_aliases.append(alias)
+
+        partition_clause = (
+            "PARTITION BY " + ", ".join(f'"{a}"' for a in partition_aliases)
+            if partition_aliases
+            else ""
+        )
+        order_clause = (
+            f"ORDER BY {time_alias}" if time_alias else ""
+        )
+        over_parts = " ".join(p for p in (partition_clause, order_clause) if p)
+        rank_order = f"ORDER BY {measure} DESC"
+        rank_over = " ".join(p for p in (partition_clause, rank_order) if p)
+
+        kwarg_map = dict(key.kwargs)
+        op = key.op
+
+        def _normalise_periods(raw: Any, *, kw: str = "periods") -> int:
+            """Reject bool / non-integral periods; accept int / integral
+            Decimal. Mirrors the strict validation the binder applies to
+            ``ntile.n`` and ``time_shift.periods``."""
+            from decimal import Decimal
+            if isinstance(raw, bool):
+                raise ValueError(
+                    f"transform {op!r} kwarg {kw!r} must be an integer; "
+                    f"got bool {raw!r}.",
+                )
+            if isinstance(raw, int):
+                return int(raw)
+            if isinstance(raw, Decimal):
+                if raw != raw.to_integral_value():
+                    raise ValueError(
+                        f"transform {op!r} kwarg {kw!r} must be an "
+                        f"integer; got {raw!r}.",
+                    )
+                return int(raw)
+            raise ValueError(
+                f"transform {op!r} kwarg {kw!r} must be an integer; "
+                f"got {type(raw).__name__} {raw!r}.",
+            )
+
+        if op == "cumsum":
+            return f"SUM({measure}) OVER ({over_parts})"
+        if op == "lag":
+            n = abs(_normalise_periods(kwarg_map.get("periods", 1)))
+            return f"LAG({measure}, {n}) OVER ({over_parts})"
+        if op == "lead":
+            n = abs(_normalise_periods(kwarg_map.get("periods", 1)))
+            return f"LEAD({measure}, {n}) OVER ({over_parts})"
+        if op == "rank":
+            return f"RANK() OVER ({rank_over})"
+        if op == "percent_rank":
+            return f"PERCENT_RANK() OVER ({rank_over})"
+        if op == "dense_rank":
+            return f"DENSE_RANK() OVER ({rank_over})"
+        if op == "ntile":
+            n = kwarg_map.get("n")
+            if not isinstance(n, int):
+                # Decimal-normalised int.
+                try:
+                    n_int = int(n)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"ntile requires a positive integer n, got {n!r}",
+                    )
+                n = n_int
+            if n <= 0:
+                raise ValueError(
+                    f"ntile requires a positive integer n, got {n!r}",
+                )
+            return f"NTILE({n}) OVER ({rank_over})"
+        if op == "first":
+            return (
+                f"FIRST_VALUE({measure}) OVER ({over_parts} "
+                f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
+            )
+        if op == "last":
+            if time_alias is None:
+                raise ValueError(
+                    f"Transform 'last' requires an unambiguous time "
+                    f"dimension (binder/planner gap; slot id={slot.id!r}).",
+                )
+            return (
+                f"FIRST_VALUE({measure}) OVER "
+                f"({partition_clause} ORDER BY {time_alias} DESC "
+                f"ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)"
+            )
+        raise NotImplementedError(
+            f"DEV-1450 stage 7b.10: transform op {op!r} not in the "
+            f"window-transform slice scope.",
+        )
+
+    def _render_post_phase_filter_conditions(
+        self,
+        *,
+        planned_query,
+        slot_id_by_key: Dict[Any, str],
+        available_alias_by_slot_id: Dict[str, str],
+    ) -> List[str]:
+        """Render each POST-phase ``FilterPhase.expression`` to a SQL
+        string suitable for the outer ``WHERE`` after the CTE chain.
+
+        Walks the typed value-key tree. Slot-worthy keys
+        (``AggregateKey`` / ``TransformKey`` / row-phase columns) are
+        replaced with quoted alias refs (``"orders.cumsum_amount_sum"``)
+        looked up through ``slot_id_by_key`` /
+        ``available_alias_by_slot_id``. Arithmetic / scalar-call
+        composition uses the same operator dispatch as the WHERE
+        renderer in ``_render_value_key_for_filter``.
+        """
+        from slayer.core.keys import Phase
+
+        out: List[str] = []
+        for fp in planned_query.filters_by_phase:
+            if fp.phase != Phase.POST:
+                continue
+            if fp.expression is None:
+                raise ValueError(
+                    f"POST-phase FilterPhase id={fp.id!r} has no typed "
+                    f"expression; text-only POST filters are not supported.",
+                )
+            rendered = self._render_value_key_against_aliases(
+                key=fp.expression.value_key,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            )
+            out.append(rendered.sql(dialect=self.dialect))
+        return out
+
+    def _render_value_key_against_aliases(
+        self,
+        *,
+        key,
+        slot_id_by_key: Dict[Any, str],
+        available_alias_by_slot_id: Dict[str, str],
+    ) -> exp.Expression:
+        """Render a typed ValueKey tree against already-materialised
+        aliases (used inside the ``_filtered`` wrapper).
+
+        Slot-worthy keys → quoted ``exp.Column`` refs to their aliases.
+        ``ArithmeticKey`` / ``ScalarCallKey`` / ``BetweenKey`` /
+        ``LiteralKey`` compose recursively.
+        """
+        from decimal import Decimal
+
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
+            LiteralKey,
+            ScalarCallKey,
+            TimeTruncKey,
+            TransformKey,
+        )
+
+        slotted_kinds = (
+            ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
+        )
+
+        if isinstance(key, slotted_kinds):
+            sid = slot_id_by_key.get(key)
+            if sid is None or sid not in available_alias_by_slot_id:
+                raise RuntimeError(
+                    f"POST-phase filter references a key not materialised "
+                    f"as a slot: {type(key).__name__} -> {key!r}.",
+                )
+            alias = available_alias_by_slot_id[sid]
+            return exp.Column(this=exp.to_identifier(alias, quoted=True))
+
+        if isinstance(key, LiteralKey):
+            v = key.value
+            if v is None:
+                return exp.Null()
+            if isinstance(v, bool):
+                return exp.true() if v else exp.false()
+            if isinstance(v, (int, float, Decimal)):
+                return exp.Literal.number(str(v))
+            return exp.Literal.string(str(v))
+
+        if isinstance(key, ArithmeticKey):
+            operands = [
+                self._render_value_key_against_aliases(
+                    key=o,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                )
+                for o in key.operands
+            ]
+            return self._compose_arithmetic_op(op=key.op, operands=operands)
+
+        if isinstance(key, ScalarCallKey):
+            args = []
+            for a in key.args:
+                if isinstance(
+                    a,
+                    (
+                        TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey,
+                        ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey,
+                        LiteralKey,
+                    ),
+                ):
+                    args.append(self._render_value_key_against_aliases(
+                        key=a,
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                    ))
+                elif a is None:
+                    args.append(exp.Null())
+                elif isinstance(a, bool):
+                    args.append(exp.true() if a else exp.false())
+                elif isinstance(a, (int, float, Decimal)):
+                    args.append(exp.Literal.number(str(a)))
+                else:
+                    args.append(exp.Literal.string(str(a)))
+            return exp.func(key.name.upper(), *args)
+
+        if isinstance(key, BetweenKey):
+            col = self._render_value_key_against_aliases(
+                key=key.column,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            )
+            low = self._render_value_key_against_aliases(
+                key=key.low,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            )
+            high = self._render_value_key_against_aliases(
+                key=key.high,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            )
+            return exp.Between(this=col, low=low, high=high)
+
+        raise NotImplementedError(
+            f"DEV-1450 stage 7b.10: POST-phase filter key type "
+            f"{type(key).__name__} not yet supported.",
+        )
+
+    @staticmethod
+    def _compose_arithmetic_op(
+        *, op: str, operands: List[exp.Expression],
+    ) -> exp.Expression:
+        """Compose an arithmetic / comparison / boolean operator over
+        already-rendered operands.
+
+        Accepts the operator aliases ``=``/``==``, ``<>``/``!=`` so the
+        rendered SQL surfaces the canonical SQL spellings for POST
+        filters. Unary ``-`` and N-ary ``and``/``or`` left-fold to the
+        sqlglot binary nodes.
+        """
+        if len(operands) == 1:
+            if op == "not":
+                return exp.Not(this=operands[0])
+            if op == "-":
+                return exp.Neg(this=operands[0])
+        if len(operands) == 2:
+            lhs, rhs = operands
+            binary = {
+                "+": exp.Add, "-": exp.Sub, "*": exp.Mul, "/": exp.Div,
+                "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,
+                "==": exp.EQ, "=": exp.EQ,
+                "!=": exp.NEQ, "<>": exp.NEQ,
+            }
+            if op in binary:
+                return binary[op](this=lhs, expression=rhs)
+            if op == "and":
+                return exp.And(this=lhs, expression=rhs)
+            if op == "or":
+                return exp.Or(this=lhs, expression=rhs)
+        if len(operands) >= 2 and op in ("and", "or"):
+            node_cls = exp.And if op == "and" else exp.Or
+            acc = operands[0]
+            for rhs in operands[1:]:
+                acc = node_cls(this=acc, expression=rhs)
+            return acc
+        raise NotImplementedError(
+            f"DEV-1450 stage 7b.10: arithmetic op {op!r} arity "
+            f"{len(operands)} not supported in POST-filter rendering.",
+        )
+
+    def _apply_order_limit_to_planned_sql_string(
+        self,
+        *,
+        sql: str,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        available_alias_by_slot_id: Dict[str, str],
+    ) -> str:
+        """Apply ORDER BY / LIMIT / OFFSET to a raw SQL string.
+
+        Mirrors legacy ``_apply_pagination_to_sql`` but resolves order
+        targets through the typed plan: each ``OrderEntry`` slot id is
+        looked up in ``available_alias_by_slot_id`` (which includes
+        every public + materialised alias).
+        """
+        order_parts: list[str] = []
+        for order_entry in planned_query.order:
+            slot = slots_by_id.get(order_entry.slot_id)
+            alias = available_alias_by_slot_id.get(order_entry.slot_id)
+            if slot is None or alias is None:
+                raise RuntimeError(
+                    f"ORDER BY references slot id={order_entry.slot_id!r} "
+                    f"not materialised in the CTE chain.",
+                )
+            direction = (
+                "ASC" if order_entry.direction == "asc" else "DESC"
+            )
+            order_parts.append(f'"{alias}" {direction}')
+        if order_parts:
+            sql += "\nORDER BY " + ", ".join(order_parts)
+        if planned_query.limit is not None:
+            sql += f"\nLIMIT {planned_query.limit}"
+        if planned_query.offset is not None:
+            sql += f"\nOFFSET {planned_query.offset}"
+        return sql
 
     @staticmethod
     def _pick_alias_for_planned_slot(*, slot, alias_index: dict) -> str:
@@ -2976,16 +3871,24 @@ class SQLGenerator:
         where_parts: list[str] = []
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW:
-                # 7b.8 only handles row filters. HAVING / post deferred.
+                # 7b.10: POST-phase filters are handled in the outer
+                # wrapper by ``_render_post_phase_filter_conditions``
+                # (after the CTE chain, before pagination). Skip them
+                # here so the base WHERE doesn't try to render them.
+                if fp.phase == Phase.POST:
+                    continue
+                # AGGREGATE/HAVING-phase filters remain unsupported in
+                # the local-only slice; 7b.12 wires HAVING for cross-
+                # model aggregates.
                 if fp.phase == Phase.AGGREGATE:
                     raise NotImplementedError(
-                        f"DEV-1450 stage 7b.10+: HAVING-phase filters "
-                        f"(filter on aggregate slot) deferred to later "
-                        f"slice. filter id={fp.id!r}."
+                        f"DEV-1450 stage 7b.12: HAVING-phase filters "
+                        f"(filter on aggregate slot) deferred to the "
+                        f"cross-model slice. filter id={fp.id!r}."
                     )
                 raise NotImplementedError(
-                    f"DEV-1450 stage 7b.10+: POST-phase filters deferred "
-                    f"to transform-rendering slices. filter id={fp.id!r}."
+                    f"DEV-1450 stage 7b.10+: unsupported filter phase "
+                    f"{fp.phase!r}. filter id={fp.id!r}."
                 )
             if fp.expression is not None:
                 # Typed predicate (Mode-B DSL or planner-emitted

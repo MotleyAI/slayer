@@ -302,3 +302,10 @@ class PlannedQuery(BaseModel):
     limit: Optional[int] = None
     offset: Optional[int] = None
     stage_schema: Optional[StageSchema] = None
+    # Stage 7b.10 — the slot id of the active TD (resolved via
+    # ``_resolve_main_time_dimension``). ``None`` when the stage has no
+    # time dimension. Time-needing transforms (cumsum / lag / lead /
+    # first / last / time_shift / consecutive_periods) carry this slot's
+    # key in ``TransformKey.time_key``; the generator uses it for the
+    # ``ORDER BY`` clause of the OVER expression.
+    active_time_dimension_slot_id: Optional[SlotId] = None

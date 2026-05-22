@@ -30,11 +30,15 @@ from typing import Dict, FrozenSet, List, Optional, Union
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.keys import (
     AggregateKey,
+    ArithmeticKey,
     BetweenKey,
     ColumnKey,
     LiteralKey,
     Phase,
+    ScalarCallKey,
+    TimeTruncKey,
     TransformKey,
+    ValueKey,
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
@@ -79,6 +83,103 @@ from slayer.sql.sql_predicate import parse_sql_predicate
 
 
 __all__ = ["plan_query", "plan_stages"]
+
+
+# Stage 7b.10 — TIME_NEEDING transform ops that require a resolvable
+# time dimension to render their OVER ``ORDER BY``. Mirrors the legacy
+# ``TIME_TRANSFORMS`` set at ``slayer/core/formula.py:33``.
+_TIME_NEEDING_TRANSFORM_OPS = frozenset({
+    "cumsum",
+    "change",
+    "change_pct",
+    "time_shift",
+    "first",
+    "last",
+    "lag",
+    "lead",
+    "consecutive_periods",
+})
+
+
+def _attach_time_keys(
+    key: ValueKey, *, td_key: TimeTruncKey,
+) -> ValueKey:
+    """Walk ``key``; for every ``TransformKey`` whose op needs a time
+    dimension and whose ``time_key`` is ``None``, return a copy with
+    ``time_key=td_key``. Identity-preserving when nothing changes.
+
+    Mirrors ``lower_sugar_transforms``' walker shape so identity
+    semantics line up: nested TransformKey/ArithmeticKey/ScalarCallKey/
+    BetweenKey trees are rebuilt only on the path containing a patch.
+    """
+    if isinstance(key, TransformKey):
+        new_input = _attach_time_keys(key.input, td_key=td_key)
+        out = key
+        if new_input is not key.input:
+            out = out.model_copy(update={"input": new_input})
+        if out.op in _TIME_NEEDING_TRANSFORM_OPS and out.time_key is None:
+            out = out.model_copy(update={"time_key": td_key})
+        return out
+    if isinstance(key, ArithmeticKey):
+        new_ops = tuple(
+            _attach_time_keys(o, td_key=td_key) for o in key.operands
+        )
+        if all(a is b for a, b in zip(new_ops, key.operands)):
+            return key
+        return ArithmeticKey(op=key.op, operands=new_ops)
+    if isinstance(key, ScalarCallKey):
+        new_args = tuple(
+            _attach_time_keys(a, td_key=td_key)
+            if isinstance(
+                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
+            )
+            else a
+            for a in key.args
+        )
+        if all(a is b for a, b in zip(new_args, key.args)):
+            return key
+        return ScalarCallKey(name=key.name, args=new_args)
+    if isinstance(key, BetweenKey):
+        nc = _attach_time_keys(key.column, td_key=td_key)
+        nl = _attach_time_keys(key.low, td_key=td_key)
+        nh = _attach_time_keys(key.high, td_key=td_key)
+        if nc is key.column and nl is key.low and nh is key.high:
+            return key
+        return BetweenKey(column=nc, low=nl, high=nh)
+    return key
+
+
+def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
+    """Return the op name of the first time-needing TransformKey reached
+    that has ``time_key is None``, or ``None`` if every time-needing
+    transform in the tree is resolved.
+    """
+    if isinstance(key, TransformKey):
+        if key.op in _TIME_NEEDING_TRANSFORM_OPS and key.time_key is None:
+            return key.op
+        return _find_unresolved_time_needing_op(key.input)
+    if isinstance(key, ArithmeticKey):
+        for o in key.operands:
+            found = _find_unresolved_time_needing_op(o)
+            if found:
+                return found
+        return None
+    if isinstance(key, ScalarCallKey):
+        for a in key.args:
+            if isinstance(
+                a, (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
+            ):
+                found = _find_unresolved_time_needing_op(a)
+                if found:
+                    return found
+        return None
+    if isinstance(key, BetweenKey):
+        for k in (key.column, key.low, key.high):
+            found = _find_unresolved_time_needing_op(k)
+            if found:
+                return found
+        return None
+    return None
 
 
 def plan_query(
@@ -179,6 +280,124 @@ def plan_query(
         else:
             bo = bind_expr(parse_expr(col_name), scope=scope, bundle=bundle)
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
+
+    # Stage 7b.10 — attach the active TD as ``time_key`` on every
+    # time-needing TransformKey (cumsum / lag / lead / first / last /
+    # time_shift / consecutive_periods / change / change_pct) whose
+    # binder-output left ``time_key`` as ``None``. Closes the 7b.4
+    # carry-over gap: ``_bind_transform`` does not have query / scope
+    # context to resolve the TD, so the planner does it here after all
+    # binding completes. Validation mirrors legacy
+    # ``enrichment.py:564-569`` -- any time-needing transform with no
+    # resolvable TD raises with the legacy phrase.
+    active_td_key: Optional[TimeTruncKey] = None
+    if isinstance(scope, ModelScope) and scope.source_model is not None:
+        active_td = _resolve_main_time_dimension(
+            query=query, model=scope.source_model,
+        )
+        if active_td is not None:
+            active_td_bound = bind_time_dimension(
+                active_td, scope=scope, bundle=bundle,
+            )
+            atd_key = active_td_bound.value_key
+            assert isinstance(atd_key, TimeTruncKey)
+            active_td_key = atd_key
+
+    if active_td_key is not None:
+        declared_measures = [
+            DeclaredMeasure(
+                bound=BinderBoundExpr(
+                    value_key=_attach_time_keys(
+                        dm.bound.value_key, td_key=active_td_key,
+                    ),
+                ),
+                declared_name=dm.declared_name,
+                public_name=dm.public_name,
+                label=dm.label,
+                canonical_alias=dm.canonical_alias,
+            )
+            for dm in declared_measures
+        ]
+        bound_filters = [
+            BoundFilter(
+                value_key=_attach_time_keys(
+                    bf.value_key, td_key=active_td_key,
+                ),
+                phase=bf.phase,
+                referenced_keys=tuple(
+                    walk_value_keys(
+                        _attach_time_keys(
+                            bf.value_key, td_key=active_td_key,
+                        ),
+                    ),
+                ),
+            )
+            for bf in bound_filters
+        ]
+        order_specs = [
+            OrderSpec(
+                bound=BinderBoundExpr(
+                    value_key=_attach_time_keys(
+                        spec.bound.value_key, td_key=active_td_key,
+                    ),
+                ),
+                direction=spec.direction,
+            )
+            for spec in order_specs
+        ]
+
+    # Validation: any time-needing transform that still has
+    # ``time_key=None`` after patching means there was no resolvable TD.
+    for bucket in (
+        [dm.bound.value_key for dm in declared_measures],
+        [bf.value_key for bf in bound_filters],
+        [spec.bound.value_key for spec in order_specs],
+    ):
+        for vk in bucket:
+            op = _find_unresolved_time_needing_op(vk)
+            if op is not None:
+                raise ValueError(
+                    f"Transform '{op}' requires an unambiguous time "
+                    f"dimension. Add a single time_dimensions entry, or "
+                    f"set main_time_dimension to select among multiple "
+                    f"time dimensions."
+                )
+
+    # Sugar lowering for ``change`` / ``change_pct`` runs AFTER the
+    # patching pass so the desugared ``time_shift`` inherits the patched
+    # ``time_key`` (DEV-1446 identity preservation still holds — the
+    # inner AggregateKey instance is not rebuilt by lowering).
+    declared_measures = [
+        DeclaredMeasure(
+            bound=BinderBoundExpr(
+                value_key=lower_sugar_transforms(dm.bound.value_key),
+            ),
+            declared_name=dm.declared_name,
+            public_name=dm.public_name,
+            label=dm.label,
+            canonical_alias=dm.canonical_alias,
+        )
+        for dm in declared_measures
+    ]
+    bound_filters = [
+        BoundFilter(
+            value_key=lower_sugar_transforms(bf.value_key),
+            phase=bf.phase,
+            referenced_keys=tuple(
+                walk_value_keys(lower_sugar_transforms(bf.value_key)),
+            ),
+        )
+        for bf in bound_filters
+    ]
+    order_specs = [
+        OrderSpec(
+            bound=BinderBoundExpr(
+                value_key=lower_sugar_transforms(spec.bound.value_key),
+            ),
+            direction=spec.direction,
+        )
+        for spec in order_specs
+    ]
 
     source_col_names = _source_column_names(scope)
     host_model_name = _host_model_name(scope)
@@ -283,6 +502,16 @@ def plan_query(
         else host_model_name
     )
 
+    # Stage 7b.10 — surface the active TD's slot id so the generator can
+    # render ``ORDER BY <td-alias>`` in OVER clauses without re-walking
+    # the model graph. ``None`` when there is no TD (validation already
+    # ran above; we only reach here if no time-needing transform exists).
+    active_td_slot_id = (
+        projection.registry.find_by_key(active_td_key)
+        if active_td_key is not None
+        else None
+    )
+
     return PlannedQuery(
         source_relation=source_relation,
         row_slots=row_slots,
@@ -296,6 +525,7 @@ def plan_query(
         limit=query.limit,
         offset=query.offset,
         stage_schema=stage_schema,
+        active_time_dimension_slot_id=active_td_slot_id,
     )
 
 
@@ -379,13 +609,12 @@ def _declared_measures_from_query(
                 model=scope.source_model,
             )
         bound = bind_expr(parsed, scope=scope, bundle=bundle)
-        # Sugar lowering for ``change`` / ``change_pct`` preserves the
-        # inner aggregate's structural identity (DEV-1446) so a query
-        # mixing ``change(amount:sum)`` with a bare ``amount:sum``
-        # measure interns the same AggregateKey slot once.
-        lowered_key = lower_sugar_transforms(bound.value_key)
-        if lowered_key is not bound.value_key:
-            bound = BinderBoundExpr(value_key=lowered_key)
+        # Stage 7b.10: sugar-lowering of ``change`` / ``change_pct`` now
+        # runs in ``plan_query`` AFTER time-key patching, so the inner
+        # ``time_shift`` inherits a patched ``time_key`` instead of
+        # ``None``. Identity-preservation for the inner aggregate slot
+        # (DEV-1446) still holds — ``lower_sugar_transforms`` keeps the
+        # inner ``AggregateKey`` instance unchanged.
         canonical = _canonical_alias_for_formula(formula)
         declared_name = explicit_name or canonical
         public_name = explicit_name or canonical
