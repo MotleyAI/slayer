@@ -121,11 +121,19 @@ class ValueRegistry:
         # exemption for a local ``TimeTruncKey`` over that same column
         # since a time dimension on ``created_at`` projects the
         # (truncated) ``created_at`` column rather than introducing a
-        # new alias.
+        # new alias. DEV-1450 stage 7b.13: also exempt
+        # ``ColumnSqlKey(model=..., column_name=X)`` declared as ``X``
+        # -- a derived column (``Column.sql`` set) selected as a
+        # dimension projects the column unchanged, identical to the
+        # plain-column case.
         is_self_named_dimension = (
             isinstance(key, ColumnKey)
             and key.path == ()
             and public_name == key.leaf
+        ) or (
+            isinstance(key, ColumnSqlKey)
+            and key.path == ()
+            and public_name == key.column_name
         ) or (
             isinstance(key, TimeTruncKey)
             and key.column.path == ()

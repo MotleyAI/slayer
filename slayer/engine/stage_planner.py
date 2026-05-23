@@ -25,7 +25,7 @@ Dormant in 7a — no engine wiring. Stage 7b's engine cutover flips
 
 from __future__ import annotations
 
-from typing import Dict, FrozenSet, List, Optional, Union
+from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.keys import (
@@ -36,6 +36,7 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
     ScalarCallKey,
+    StarKey,
     TimeTruncKey,
     TransformKey,
     ValueKey,
@@ -43,7 +44,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.core.refs import canonical_agg_name
+from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import (
     BoundExpr as BinderBoundExpr,
@@ -615,7 +616,7 @@ def _declared_measures_from_query(
         # ``None``. Identity-preservation for the inner aggregate slot
         # (DEV-1446) still holds — ``lower_sugar_transforms`` keeps the
         # inner ``AggregateKey`` instance unchanged.
-        canonical = _canonical_alias_for_formula(formula)
+        canonical = _canonical_alias_for_formula(formula, bound=bound)
         declared_name = explicit_name or canonical
         public_name = explicit_name or canonical
         declared.append(DeclaredMeasure(
@@ -680,13 +681,67 @@ def _flatten_dotted(name: str) -> str:
     return name.replace(".", "__")
 
 
-def _canonical_alias_for_formula(formula: str) -> str:
+def _canonical_alias_for_formula(
+    formula: str,
+    *,
+    bound: Optional[BinderBoundExpr] = None,
+) -> str:
     """Compute the canonical public alias for a measure formula.
 
-    Mirrors ``canonical_agg_name`` for the simple ``<source>:<agg>``
-    shape. For arbitrary formulas (transforms, arithmetic), sanitise
-    the formula text so the alias remains a valid identifier.
+    Mirrors ``canonical_agg_name`` for any formula whose bound root is
+    an ``AggregateKey`` (covers bare ``revenue:sum`` AND parametric
+    forms like ``revenue:percentile(p=0.5)`` / ``corr(other=quantity)``).
+    Pre-binding text-shape recognition is used only as a fallback when
+    no bound expression is supplied. For arbitrary formulas
+    (transforms, arithmetic), sanitise the formula text so the alias
+    remains a valid identifier.
+
+    DEV-1450 stage 7b.13: parametric aggregations route through
+    ``canonical_agg_name`` so kwargs are sanitised consistently with the
+    legacy enrichment path (``p=0.5`` -> ``_p_0_5``). Without this, the
+    naive text-replace fallback below leaks the ``=`` literally into the
+    alias (``amount_percentile_p=0_5_``), breaking parity.
     """
+    if bound is not None and isinstance(bound.value_key, AggregateKey):
+        key = bound.value_key
+        if isinstance(key.source, StarKey):
+            measure_name: Optional[str] = "*"
+            path: Tuple[str, ...] = ()
+        else:
+            # ColumnKey exposes ``.leaf``; ColumnSqlKey exposes
+            # ``.column_name``. Both shapes can appear as aggregate
+            # sources (the synth adapter rejects ``ColumnSqlKey`` with
+            # a typed deferral; the planner still needs to derive an
+            # alias before the generator runs). Mirror ``_canonical_name``
+            # at ``planning.py:540-545``.
+            measure_name = (
+                getattr(key.source, "leaf", None)
+                or getattr(key.source, "column_name", None)
+            )
+            path = getattr(key.source, "path", ())
+        if measure_name is not None:
+            prefix = ".".join(path) + "." if path else ""
+            # Local aggregates retain the kwarg suffix to match legacy
+            # ``enrichment.py:349`` (``percentile(p=0.5)`` ->
+            # ``_p_0_5``). Cross-model aggregates ALSO retain it -- the
+            # legacy ``query_engine.py:2160`` drops it, causing CTE alias
+            # collision on two parametric variants, which the 7b.5 fix
+            # corrected at the planner layer. Result-key shape for
+            # cross-model parametric aggs therefore diverges from
+            # legacy in this slice (no parity tests for that combination;
+            # structural correctness over bit-identical legacy output).
+            return prefix + canonical_agg_name(
+                measure_name=measure_name,
+                aggregation_name=key.agg,
+                agg_args=[agg_kwarg_canonical_str(a) for a in key.args] or None,
+                agg_kwargs={
+                    k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
+                } or None,
+            )
+        # Fall through to text-based path -- AggregateKey source is
+        # neither StarKey, ColumnKey, nor ColumnSqlKey (shouldn't be
+        # reachable in practice; the binder restricts sources to
+        # those three shapes).
     text = formula.strip()
     if ":" in text and "(" not in text:
         base, agg = text.rsplit(":", 1)

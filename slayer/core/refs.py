@@ -6,14 +6,20 @@ parsing that previously lived in four different files (``formula.py``,
 Keeping a single source of truth prevents the four copies from drifting
 out of sync.
 
-This module is intentionally side-effect-free and depends on nothing from
-``slayer.core.models`` / ``slayer.core.query`` so it can be imported from
-those modules' validators without circular import risk.
+This module is intentionally side-effect-free and depends only on
+``slayer.core.keys`` (for the ``ColumnKey`` shape ``agg_kwarg_canonical_str``
+canonicalises). It does NOT import ``slayer.core.models`` /
+``slayer.core.query`` so it can be imported from those modules'
+validators without circular import risk. ``slayer.core.keys`` is itself
+free of ``slayer`` imports.
 """
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
+from decimal import Decimal
+from typing import Any, List, Optional, Tuple
+
+from slayer.core.keys import ColumnKey
 
 # ---------------------------------------------------------------------------
 # Identifier shapes
@@ -83,6 +89,96 @@ def agg_signature_suffix(
         if sv:
             parts.append(sv)
     return "_" + "_".join(parts) if parts else ""
+
+
+def _decimal_to_plain_str(value: Decimal) -> str:
+    """Return ``value`` as a plain-decimal string with no scientific notation.
+
+    ``str(Decimal("1E-7"))`` yields ``"1E-7"``, which the generator's
+    ``_SAFE_AGG_PARAM_RE`` SQL-injection allowlist rejects. ``f"{x:f}"``
+    forces plain notation but pads short fractional values with extra
+    zeros (``f"{Decimal('0.5'):f}"`` -> ``"0.5"`` is fine, but
+    ``f"{0.5:f}"`` on a float yields ``"0.500000"``). To preserve
+    short forms while expanding exponents, normalize via the Decimal
+    layer's own ``normalize()`` + a fix-up for the
+    ``Decimal('-0E+1')`` "-0" exponent quirk.
+    """
+    # Trip the exponent down so ``Decimal("1E-7")`` becomes
+    # ``Decimal("0.0000001")`` (and ``Decimal("1.0E+3")`` becomes
+    # ``Decimal("1000")``). For sign normalization use the standard
+    # ``f"{value:f}"`` then trim trailing zeros after a decimal point.
+    s = f"{value:f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def agg_kwarg_canonical_str(value: Any) -> str:
+    """Canonicalize an AggregateKey kwarg / arg value to SQL-string form.
+
+    DEV-1450 stage 7b.13: ``EnrichedMeasure.agg_kwargs`` is typed as
+    ``Dict[str, str]`` and every value flows through
+    ``_validate_agg_param_value`` (``slayer/sql/generator.py:172``) which
+    accepts only identifiers, qualified names, or numeric literals.
+    Sites that build the synth ``EnrichedMeasure`` from a typed
+    ``AggregateKey`` -- AND the two canonical-alias renderers that
+    previously called ``str(v)`` directly (``slayer/sql/generator.py:3753``
+    and ``slayer/engine/cross_model_planner.py:286``) -- route every
+    kwarg value through this helper instead, so a ``ColumnKey`` never
+    surfaces as Pydantic-repr noise.
+
+    Conversion rules:
+
+    * ``bool`` / ``None`` -> ``TypeError`` (legacy never accepted these;
+      ``AggregateKey``'s structural-key normalisation at
+      ``slayer/core/keys.py:139-142`` keeps them distinct from numerics
+      precisely so they fail loudly here).
+    * ``Decimal`` -> ``str(value)`` (Decimal's ``__str__`` matches
+      ``_SAFE_AGG_PARAM_RE`` for the planner's normalised forms; ``0.5``
+      / ``0.95`` / ``100``).
+    * ``int`` / ``float`` -> ``str(value)`` (planner-side normalisation
+      already routes literals through ``Decimal``, but the helper stays
+      total for direct callers).
+    * ``str`` -> returned unchanged. Callers writing strings into the
+      key are responsible for safety; downstream validation catches
+      malformed input at the generator boundary.
+    * ``ColumnKey(path=(), leaf=L)`` -> ``L``.
+    * ``ColumnKey(path=P, leaf=L)`` -> ``".".join(P) + "." + L``.
+
+    Anything else raises ``TypeError`` -- the AggregateKey key shape is
+    closed over these branches.
+    """
+    if isinstance(value, bool):
+        # bool is-a int, must check first.
+        raise TypeError(
+            f"AggregateKey kwarg cannot be bool: {value!r}",
+        )
+    if value is None:
+        raise TypeError("AggregateKey kwarg cannot be None")
+    if isinstance(value, Decimal):
+        # Route through ``_decimal_to_plain_str`` to force plain
+        # decimal notation: ``str(Decimal("1E-7"))`` yields ``"1E-7"``,
+        # which the generator's ``_SAFE_AGG_PARAM_RE`` rejects (no
+        # scientific notation in the SQL-injection allowlist).
+        return _decimal_to_plain_str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        # Route floats through Decimal(str(float)) so the
+        # human-readable decimal text is preserved (matches the
+        # planner's ``normalize_scalar`` recipe at
+        # ``slayer/core/keys.py:102``).
+        return _decimal_to_plain_str(Decimal(str(value)))
+    if isinstance(value, str):
+        return value
+    if isinstance(value, ColumnKey):
+        if value.path:
+            return ".".join(value.path) + "." + value.leaf
+        return value.leaf
+    raise TypeError(
+        f"AggregateKey kwarg value of type {type(value).__name__!r} "
+        f"is not supported: {value!r}",
+    )
 
 
 def canonical_agg_name(

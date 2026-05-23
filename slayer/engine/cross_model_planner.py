@@ -57,7 +57,7 @@ from slayer.core.keys import (
     TimeTruncKey,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.refs import canonical_agg_name
+from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.core.scope import StageColumn, StageSchema
 from slayer.engine.planned import (
     BoundFilterId,
@@ -282,9 +282,20 @@ def _aggregate_alias(*, key: AggregateKey) -> str:
         measure_name = "*"
     # AggregateKey.args / kwargs are normalised tuples of scalars /
     # ColumnKey-shaped values; convert to the (List[str],
-    # Dict[str, Any]) shape ``canonical_agg_name`` expects.
-    args_list = [str(a) for a in key.args]
-    kwargs_dict = {k: str(v) for k, v in key.kwargs}
+    # Dict[str, Any]) shape ``canonical_agg_name`` expects. DEV-1450
+    # stage 7b.13: route through ``agg_kwarg_canonical_str`` so a
+    # ColumnKey kwarg renders as ``leaf`` (or ``path.leaf`` for joined
+    # paths) instead of Pydantic-repr noise from naive ``str(v)``.
+    # The kwarg suffix is preserved here -- the legacy enrichment at
+    # ``query_engine.py:2160`` drops it, causing two parametric aggs
+    # with different kwargs to collide on CTE alias (legacy bug).
+    # The 7b.5 fix added kwarg-aware aliases here as a correctness
+    # improvement -- ``test_cross_model_planner_wiring.py::
+    # test_parameterized_aggregates_get_distinct_cte_aliases`` pins
+    # this. Parity with legacy for cross-model parametric aggs is
+    # not achievable on this axis.
+    args_list = [agg_kwarg_canonical_str(a) for a in key.args]
+    kwargs_dict = {k: agg_kwarg_canonical_str(v) for k, v in key.kwargs}
     return canonical_agg_name(
         measure_name=measure_name,
         aggregation_name=key.agg,

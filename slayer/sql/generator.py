@@ -19,6 +19,8 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
+from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
 
@@ -83,15 +85,20 @@ _STAT_AGG_NAMES: frozenset[str] = frozenset({
 # Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
-# DEV-1450 stage 7b.8: aggregations the local-slice generator handles
-# without needing ``aggregation_def`` or kwarg-column resolution. Custom
-# aggs, percentile, weighted_avg, and the stat-agg family route through
-# ``_build_formula_agg`` / ``_build_percentile`` / ``_build_stat_agg``
-# which reach for ``aggregation_def`` and resolve kwarg columns the
-# synthetic-EnrichedMeasure adapter doesn't yet support — those defer
-# to a later slice (Codex LOW fold-in).
+# DEV-1450 stage 7b.13: aggregations the synth-EnrichedMeasure adapter
+# handles via the built-in path (``_build_agg`` -> ``_build_*`` family).
+# Custom user-defined aggregations with ``aggregation_def`` (declared on
+# ``SlayerModel.aggregations``) still defer -- the synth adapter does
+# not yet propagate the model's ``Aggregation`` definition into the
+# ``EnrichedMeasure.aggregation_def`` field. DEV-1452 follow-up.
+#
+# Name kept as ``_LOCAL_SLICE`` for grep continuity with 7b.8-7b.12
+# call sites and tests; the set is no longer local-only.
 _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = frozenset({
     "sum", "avg", "min", "max", "count", "count_distinct", "median",
+    "percentile", "weighted_avg",
+    "corr", "covar_samp", "covar_pop",
+    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
 })
 
 # DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
@@ -3750,11 +3757,23 @@ class SQLGenerator:
         measure_name = (
             key.source.leaf if hasattr(key.source, "leaf") else "*"
         )
+        # DEV-1450 stage 7b.13: include kwarg suffix in cross-model
+        # alias so two distinct parametric aggs (``percentile(p=0.5)``
+        # vs ``p=0.95``) produce distinct CTE names and column aliases.
+        # Legacy enrichment at ``query_engine.py:2160`` drops the
+        # signature suffix entirely -- a known legacy bug that
+        # produces ALIAS COLLISION when the same query has multiple
+        # parametric aggs against the same target.column. The new
+        # pipeline preserves slot identity here for correctness;
+        # parity tests for parametric cross-model aggs assert
+        # structural shape rather than bit-identical SQL.
         canonical = canonical_agg_name(
             measure_name=measure_name,
             aggregation_name=key.agg,
-            agg_args=[str(a) for a in key.args] or None,
-            agg_kwargs={k: str(v) for k, v in key.kwargs} or None,
+            agg_args=[agg_kwarg_canonical_str(a) for a in key.args] or None,
+            agg_kwargs={
+                k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
+            } or None,
         )
         if path:
             return f"{source_relation}." + ".".join(path) + f".{canonical}"
@@ -3896,14 +3915,33 @@ class SQLGenerator:
         # right model (including ``column_filter_key`` CASE-WHEN).
         # Mutate a copy of the key with ``source.path=()`` so the
         # synthesise helper's local branch fires without re-checking
-        # path-based deferrals.
+        # path-based deferrals. DEV-1450 stage 7b.13: also reroot
+        # ``ColumnKey`` kwargs whose path matches the source's join path
+        # -- a user-qualified kwarg like
+        # ``customers.revenue:corr(other=customers.region_id)`` arrives
+        # here with both source and ``other`` rooted at ``("customers",)``.
+        # Stripping the prefix in lockstep means the synth helper's
+        # path-validation invariant (``kwarg.path == source.path``) holds.
+        cross_model_path = (
+            agg_slot.key.source.path
+            if isinstance(agg_slot.key.source, ColumnKey) else ()
+        )
         local_source_key = ColumnKey(path=(), leaf=agg_slot.key.source.leaf) \
             if isinstance(agg_slot.key.source, ColumnKey) else agg_slot.key.source
+
+        def _reroot_kwarg(kval):
+            if isinstance(kval, ColumnKey) and kval.path == cross_model_path:
+                return ColumnKey(path=(), leaf=kval.leaf)
+            return kval
+
+        local_kwargs = tuple(
+            (k, _reroot_kwarg(v)) for k, v in agg_slot.key.kwargs
+        )
         local_agg_key = AggregateKey(
             source=local_source_key,
             agg=agg_slot.key.agg,
             args=agg_slot.key.args,
-            kwargs=agg_slot.key.kwargs,
+            kwargs=local_kwargs,
             column_filter_key=agg_slot.key.column_filter_key,
         )
         # The local_agg_key was built from the target's own column.
@@ -5557,29 +5595,48 @@ class SQLGenerator:
                 type=slot.type,
             )
         if isinstance(source, ColumnKey):
-            # Codex LOW fold-in: custom / parameterised aggregations
-            # (percentile, weighted_avg, corr, covar_samp/pop, stddev_*,
-            # var_*, plus any model-level custom agg) depend on
-            # ``aggregation_def`` and kwarg-column resolution that the
-            # synthetic adapter doesn't yet provide. Defer explicitly so
-            # the failure mode is a clear stage marker rather than a
-            # downstream KeyError or wrong-SQL emission.
+            # ``first`` / ``last`` need ``rn_suffix_map`` / ``filtered_rn_map``
+            # plumbing that the synth adapter doesn't carry; explicit deferral
+            # keeps the failure mode a clear stage marker rather than a wrong-
+            # SQL emission. DEV-1452 follow-up.
+            if key.agg in ("first", "last"):
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.10+: aggregation {key.agg!r} on "
+                    f"{source_relation}.{source.leaf} not yet wired "
+                    f"(needs rn_suffix_map plumbing). Deferred.",
+                )
+            # Aggregations outside the built-in set (custom user-defined
+            # ``Aggregation`` with formula+params) need
+            # ``aggregation_def`` threading the model's definition into
+            # the synth measure. Out of 7b.13 scope -- deferred to
+            # DEV-1452.
             if key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
                 raise NotImplementedError(
-                    f"DEV-1450 stage 7b.10+/7b.13: aggregation "
-                    f"{key.agg!r} on {source_relation}.{source.leaf} not "
-                    f"yet wired through the new pipeline's synthetic "
-                    f"EnrichedMeasure adapter (needs aggregation_def + "
-                    f"kwarg-column resolution). Deferred to later slice."
+                    f"DEV-1450 stage 7b.13: custom aggregation {key.agg!r} "
+                    f"on {source_relation}.{source.leaf} not yet wired "
+                    f"through the synthetic EnrichedMeasure adapter "
+                    f"(needs aggregation_def). Deferred.",
                 )
-            if key.kwargs:
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.10+/7b.13: aggregation kwargs "
-                    f"({list(dict(key.kwargs))!r}) on "
-                    f"{source_relation}.{source.leaf}:{key.agg} not yet "
-                    f"wired through the synthetic EnrichedMeasure "
-                    f"adapter. Deferred to later slice."
-                )
+            # DEV-1450 stage 7b.13: validate kwarg ColumnKey paths against
+            # source.path. A kwarg path that doesn't match the aggregate
+            # source path would silently bind the kwarg to a different
+            # model (host vs joined target) than the aggregate value
+            # column -- meaningless SQL semantically. Caller-side
+            # cross-model rerooting strips the matching prefix from
+            # source AND kwargs before reaching this point; any residual
+            # mismatch surfaces here.
+            for kname, kval in key.kwargs:
+                if isinstance(kval, ColumnKey) and kval.path != source.path:
+                    raise AggregationNotAllowedError(
+                        column=source.leaf,
+                        agg=key.agg,
+                        reason=(
+                            f"kwarg {kname!r} references ColumnKey with "
+                            f"path {kval.path!r}; aggregate source path is "
+                            f"{source.path!r}. Cross-model kwargs must "
+                            f"share the source's join path."
+                        ),
+                    )
             col = next(
                 (c for c in source_model.columns if c.name == source.leaf),
                 None,
@@ -5590,6 +5647,16 @@ class SQLGenerator:
                     f"on model {source_model.name!r}",
                 )
             sql_text = col.sql if col.sql else col.name
+            # DEV-1450 stage 7b.13: stringify kwargs through the shared
+            # helper. ``EnrichedMeasure.agg_kwargs`` is ``Dict[str, str]``
+            # and downstream ``_validate_agg_param_value`` rejects
+            # anything not matching ``_SAFE_AGG_PARAM_RE``; the helper
+            # emits identifiers / dotted identifiers / numeric literals
+            # that satisfy the regex, and rejects bool / None / unknown
+            # types at the boundary.
+            agg_kwargs_str = {
+                k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
+            }
             # DEV-1450 stage 7b.12: propagate ``AggregateKey.column_filter_key``
             # into ``EnrichedMeasure.filter_sql`` so ``_build_agg`` wraps the
             # aggregate argument as ``SUM(CASE WHEN <filter> THEN col END)``.
@@ -5616,6 +5683,7 @@ class SQLGenerator:
                 type=slot.type,
                 column_type=col.type,
                 filter_sql=filter_sql,
+                agg_kwargs=agg_kwargs_str,
             )
         if isinstance(source, ColumnSqlKey):
             raise NotImplementedError(
