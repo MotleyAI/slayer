@@ -234,9 +234,15 @@ class TimeTruncKey(_FrozenKey):
 class StarKey(_FrozenKey):
     """Sentinel source for ``*:count`` aggregations.
 
-    All instances compare equal — there is no source column to
-    distinguish. Used as ``AggregateKey.source`` for the star form.
+    ``path`` is empty for the local star (``*:count`` over the host) and
+    non-empty for a cross-model star (``customers.*:count`` →
+    ``path=("customers",)``), mirroring ``ColumnKey.path`` so the
+    cross-model planner can route a star aggregate through the join graph
+    (P3). Two stars with the same path intern; the default empty path
+    keeps the local-star identity bit-identical to before.
     """
+
+    path: Tuple[str, ...] = ()
 
     @property
     def phase(self) -> Phase:

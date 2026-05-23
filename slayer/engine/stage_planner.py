@@ -228,6 +228,28 @@ def plan_query(
             if alias is not None:
                 declared_alias_to_bound.setdefault(alias, dm.bound)
 
+    # DEV-1450 stage 7b.15 (DEV-1445, C5): declared-MEASURE aliases a
+    # filter may reference by name. A filter ``rev >= 100`` for a measure
+    # declared ``{"formula": "customers.revenue:sum", "name": "rev"}``
+    # interns ``rev`` onto the cross-model aggregate slot rather than
+    # failing to resolve against the model columns; the dotted/colon form
+    # already interns structurally, so both forms share one slot (P2/P4).
+    #
+    # Only MEASURE aliases enter this map — never dimension / time-
+    # dimension names. A time dimension's declared name IS its raw column
+    # (e.g. ``created_at``), so a WHERE filter ``created_at <= '...'``
+    # (such as the one ``snap_to_whole_periods`` injects) must resolve to
+    # the raw column, not to the truncated dimension slot. ``declared_
+    # measures`` is built in dim → time-dim → measure order, so the
+    # measure entries are the tail past the dim/time-dim prefix.
+    n_dims = len(query.dimensions or [])
+    n_tds = len(query.time_dimensions or [])
+    filter_alias_map: Dict[str, ValueKey] = {}
+    for dm in declared_measures[n_dims + n_tds:]:
+        for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
+            if alias is not None:
+                filter_alias_map.setdefault(alias, dm.bound.value_key)
+
     # DEV-1450 stage 7b.9 — filter list construction in legacy WHERE
     # order: date_range filters first, then SlayerModel.filters
     # (Mode-A SQL), then user query filters (Mode-B DSL). The legacy
@@ -262,22 +284,48 @@ def plan_query(
             ))
 
     # 3. user query filters (Mode-B DSL).
+    #
+    # DEV-1450 stage 7b.15 (DEV-1445): two filter strings that bind to the
+    # same structural ``ValueKey`` are one predicate (P2). The alias and
+    # dotted/colon forms of a renamed cross-model aggregate ref
+    # (``rev >= 100`` and ``customers.revenue:sum >= 100``) intern onto the
+    # same slot, so emitting both would duplicate the HAVING clause —
+    # dedupe by bound key, keeping first occurrence.
     for f in (query.filters or []):
         if not isinstance(f, str):
             continue
-        bf = bind_filter(parse_expr(f), scope=scope, bundle=bundle)
+        bf = bind_filter(
+            parse_expr(f), scope=scope, bundle=bundle,
+            alias_map=filter_alias_map,
+        )
+        if any(existing.value_key == bf.value_key for existing in bound_filters):
+            continue
         bound_filters.append(bf)
 
     order_specs = []
     for o in (query.order or []):
         col_name = o.column.name
+        full_name = o.column.full_name
         # Prefer declared-measure alias resolution over model-scope
         # binding (DEV-1450 stage 7b.8 — gap fix): aggregate canonical
         # aliases like ``amount_sum`` are not columns on the model, so
         # ``bind_expr`` would raise. The alias map covers user-supplied
         # ``name``, canonical alias, and the declared name itself.
+        #
+        # DEV-1450 stage 7b.15 (DEV-1443/1445): a cross-model order key
+        # written ``customers.revenue:sum`` is coerced by ``OrderItem``
+        # to ColumnRef(model="customers", name="revenue_sum"), so the
+        # leaf alone (``col_name``) never matches the declared canonical
+        # ``customers.revenue_sum``. Try the full dotted form too, then
+        # fall back to binding the preserved colon/path ``raw_formula``
+        # so the order key interns onto the same cross-model aggregate
+        # slot (P2/P4) rather than raising.
         if col_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[col_name]
+        elif full_name in declared_alias_to_bound:
+            bo = declared_alias_to_bound[full_name]
+        elif o.raw_formula:
+            bo = bind_expr(parse_expr(o.raw_formula), scope=scope, bundle=bundle)
         else:
             bo = bind_expr(parse_expr(col_name), scope=scope, bundle=bundle)
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
@@ -706,7 +754,10 @@ def _canonical_alias_for_formula(
         key = bound.value_key
         if isinstance(key.source, StarKey):
             measure_name: Optional[str] = "*"
-            path: Tuple[str, ...] = ()
+            # Cross-model star (``customers.*:count``) carries its join
+            # path so the canonical alias keeps the ``customers.`` prefix
+            # (result key ``orders.customers._count``).
+            path: Tuple[str, ...] = key.source.path
         else:
             # ColumnKey exposes ``.leaf``; ColumnSqlKey exposes
             # ``.column_name``. Both shapes can appear as aggregate

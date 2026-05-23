@@ -291,24 +291,12 @@ _PARITY_CASES: list[tuple[str, Dict[str, Any]]] = [
 ]
 
 
-# The binder doesn't yet support the dotted-star form ``customers.*``
-# (``_resolve_dotted`` rejects the trailing ``*`` segment). Legacy
-# enrichment accepts it via a different path. Tracked for a binder
-# slice (DEV-1450 7b.15 / DEV-1438 cross-cutting); pinned as xfail.
+# DEV-1450 stage 7b.15: the dotted-star form ``customers.*`` binds to a
+# ``StarKey`` carrying the join path (``_resolve_dotted_star``), so a
+# cross-model ``*:count`` routes through the join graph just like a
+# column aggregate. Parity with legacy enrichment.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1450 binder gap: ``customers.*:count`` fails in "
-        "``_resolve_dotted`` with ``UnknownReferenceError`` because "
-        "the dotted-star form is not yet a recognised StarSource on "
-        "joined paths. Legacy supports it via a separate path; the "
-        "new binder needs an explicit ``DottedStarRef`` shape. "
-        "Tracked as a binder follow-up to land in 7b.15 alongside the "
-        "rest of the DEV-1445 acceptance work."
-    ),
-)
 async def test_cross_model_star_count(tmp_path):
     """``customers.*:count`` exercises the StarKey aggregation source
     path inside a cross-model CTE. Result key is
@@ -631,19 +619,6 @@ async def test_joined_dimension_in_projection_no_aggregate(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1450 stage 7b.15 (DEV-1445 acceptance): the binder does "
-        "not yet resolve user-declared measure aliases (e.g. ``rev``) "
-        "in filter scope — ``bind_filter`` only walks ModelScope's "
-        "model columns, so a filter ``rev >= 100`` fails with "
-        "``UnknownReferenceError`` before reaching the cross-model "
-        "planner's HAVING route. Plan: 7b.15 lands the alias-in-filter "
-        "binding under ``tests/test_dev1445_*.py`` alongside the full "
-        "acceptance suite. Pinned here so the gap stays visible."
-    ),
-)
 def test_dev1445_alias_filter_and_dotted_filter_share_one_cte(tmp_path):
     """DEV-1445 acceptance (planner shape — no parity, legacy diverges).
 
@@ -682,15 +657,6 @@ def test_dev1445_alias_filter_and_dotted_filter_share_one_cte(tmp_path):
     assert '"orders.rev"' in n
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1450 stage 7b.15 (DEV-1445 acceptance): same gap as the "
-        "alias-only-filter case above — when both forms appear "
-        "together, the alias form still fails to bind under the "
-        "current binder. Resolution lands in 7b.15."
-    ),
-)
 def test_dev1445_alias_and_dotted_filter_together_share_one_cte(tmp_path):
     """Same DEV-1445 acceptance, both filter forms together. The
     structural-key contract (P2) means both filters reference the same
@@ -799,18 +765,6 @@ def test_multi_alias_same_key_cross_model_shares_one_cte(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1450 stage 7b.15: ``OrderItem(column='customers.revenue:sum')`` "
-        "currently mangles in ``ColumnRef``'s string before-validator "
-        "(strips the path + colon → ``'revenue_sum'``), so the planner "
-        "fails to bind a cross-model aggregate ORDER BY. The canonical "
-        "alias path ``customers.revenue_sum`` works, but the colon form "
-        "in the OrderItem string constructor is broken. Resolution "
-        "lands with the DEV-1438 / DEV-1443 cross-cutting fix in 7b.15."
-    ),
-)
 def test_order_by_cross_model_aggregate(tmp_path):
     """``ORDER BY customers.revenue:sum DESC LIMIT 5`` — the order key
     is a cross-model aggregate slot. The typed pipeline emits ``ORDER

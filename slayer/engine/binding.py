@@ -33,7 +33,7 @@ consumer.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -286,6 +286,7 @@ def bind_filter(
     *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> BoundFilter:
     """Bind a parsed filter predicate + classify its phase.
 
@@ -293,8 +294,18 @@ def bind_filter(
     raises ``IllegalWindowInFilterError`` if any referenced
     ``Column.sql`` contains a window function (DEV-1369: no
     auto-promotion).
+
+    ``alias_map`` maps a stage's declared-measure names (user ``name``,
+    canonical alias, declared name) to their bound ``ValueKey`` so a
+    filter may reference a declared measure by alias (P4 / DEV-1445:
+    ``filters=["rev >= 100"]`` for a measure declared ``name="rev"``).
+    A bare ref that matches an alias interns onto that exact slot rather
+    than resolving against the model columns — so the colon form and the
+    alias form share one slot.
     """
-    value_key = _bind(parsed, scope=scope, bundle=bundle, in_filter=True)
+    value_key = _bind(
+        parsed, scope=scope, bundle=bundle, in_filter=True, alias_map=alias_map,
+    )
     refs = tuple(walk_value_keys(value_key))
     phase = max(
         (k.phase for k in refs),
@@ -367,12 +378,15 @@ def _bind(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     in_filter: bool,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> ValueKey:
     if isinstance(parsed, Literal):
         return LiteralKey(value=normalize_scalar(parsed.value))
 
     if isinstance(parsed, Ref):
-        return _resolve_ref(parsed.name, scope=scope, bundle=bundle)
+        return _resolve_ref(
+            parsed.name, scope=scope, bundle=bundle, alias_map=alias_map,
+        )
 
     if isinstance(parsed, DottedRef):
         return _resolve_dotted(parsed.parts, scope=scope, bundle=bundle)
@@ -384,38 +398,43 @@ def _bind(
         return _bind_agg(parsed, scope=scope, bundle=bundle)
 
     if isinstance(parsed, TransformCall):
-        return _bind_transform(parsed, scope=scope, bundle=bundle)
+        return _bind_transform(
+            parsed, scope=scope, bundle=bundle, alias_map=alias_map,
+        )
 
     if isinstance(parsed, ScalarCall):
-        return _bind_scalar(parsed, scope=scope, bundle=bundle, in_filter=in_filter)
+        return _bind_scalar(
+            parsed, scope=scope, bundle=bundle, in_filter=in_filter,
+            alias_map=alias_map,
+        )
 
     if isinstance(parsed, Arith):
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
             ),
         )
 
     if isinstance(parsed, UnaryOp):
         return ArithmeticKey(
             op=parsed.op,
-            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter),),
+            operands=(_bind(parsed.operand, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),),
         )
 
     if isinstance(parsed, Cmp):
         return ArithmeticKey(
             op=parsed.op,
             operands=(
-                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter),
-                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter),
+                _bind(parsed.left, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
+                _bind(parsed.right, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map),
             ),
         )
 
     if isinstance(parsed, BoolOp):
         operands = tuple(
-            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter)
+            _bind(v, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)
             for v in parsed.operands
         )
         return ArithmeticKey(op=parsed.op, operands=operands)
@@ -430,8 +449,18 @@ def _resolve_ref(
     *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> ValueKey:
-    """Resolve a bare identifier against the scope."""
+    """Resolve a bare identifier against the scope.
+
+    A name present in ``alias_map`` (a stage's declared-measure aliases,
+    supplied only on the filter/order path) interns onto that declared
+    slot's ``ValueKey`` before any column lookup — so a filter referencing
+    a measure by its user ``name`` shares the measure's slot (P4).
+    """
+    if alias_map and name in alias_map:
+        return alias_map[name]
+
     if isinstance(scope, StageSchema):
         col = scope.get(name)
         if col is None:
@@ -599,6 +628,67 @@ def _resolve_dotted(
     return ColumnKey(path=tuple(hop_path), leaf=leaf)
 
 
+def _resolve_dotted_star(
+    parts: Tuple[str, ...],
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+) -> StarKey:
+    """Resolve a dotted star (``customers.*``, trailing ``*``) to a StarKey.
+
+    Mirrors ``_resolve_dotted``'s self-prefix strip (C14) and join-chain
+    validation, but the leaf is ``*`` (no terminal column) so the result
+    is a ``StarKey`` whose ``path`` is the validated hop chain. An empty
+    path after stripping is the local star (``orders.*`` on ``orders``).
+    """
+    assert parts and parts[-1] == "*"
+    if isinstance(scope, StageSchema):
+        raise IllegalScopeReferenceError(
+            name=".".join(parts),
+            scope_kind="StageSchema",
+            reason=(
+                "downstream stages see a flat schema — dotted refs are "
+                "not legal. Use the flat column name."
+            ),
+        )
+    assert isinstance(scope, ModelScope)
+    host = scope.source_model
+    if host is None:
+        raise UnknownReferenceError(
+            name=".".join(parts),
+            scope_kind="ModelScope",
+            scope_summary="(no source_model anchor; anchor-less mode not implemented)",
+            suggestion=None,
+        )
+    hop_path = parts[:-1]
+    # C14: strip same-model self-prefix (``orders.*`` on ``orders``).
+    if hop_path and hop_path[0] == host.name:
+        hop_path = hop_path[1:]
+    current = host
+    for hop in hop_path:
+        join = next((j for j in current.joins if j.target_model == hop), None)
+        if join is None:
+            raise UnknownReferenceError(
+                name=".".join(parts),
+                scope_kind="ModelScope",
+                scope_summary=(
+                    f"model {current.name!r} joins: "
+                    f"{[j.target_model for j in current.joins]}"
+                ),
+                suggestion=f"no join from {current.name!r} to {hop!r}.",
+            )
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            raise UnknownReferenceError(
+                name=".".join(parts),
+                scope_kind="ModelScope",
+                scope_summary=f"target {hop!r} not in source bundle",
+                suggestion=None,
+            )
+        current = nxt
+    return StarKey(path=tuple(hop_path))
+
+
 def _bind_agg(
     parsed: AggCall, *,
     scope: Union[ModelScope, StageSchema],
@@ -606,6 +696,18 @@ def _bind_agg(
 ) -> AggregateKey:
     if isinstance(parsed.source, StarSource):
         source = StarKey()
+    elif (
+        isinstance(parsed.source, DottedRef)
+        and parsed.source.parts
+        and parsed.source.parts[-1] == "*"
+    ):
+        # Cross-model star: ``customers.*:count`` → a StarKey carrying the
+        # join path so the cross-model planner routes COUNT(*) through the
+        # join graph, exactly like ``customers.revenue:sum`` (P3). Parity
+        # with the legacy dotted-star path.
+        source = _resolve_dotted_star(
+            parsed.source.parts, scope=scope, bundle=bundle,
+        )
     else:
         bound_source = _bind(
             parsed.source, scope=scope, bundle=bundle, in_filter=False,
@@ -762,8 +864,15 @@ def _bind_transform(
     parsed: TransformCall, *,
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> TransformKey:
-    inp = _bind(parsed.input, scope=scope, bundle=bundle, in_filter=False)
+    # ``alias_map`` lets a transform input reference a declared-measure
+    # alias inside a filter (``change(rev) > 0``); partition_by must still
+    # be a real column, so it is bound without the alias map.
+    inp = _bind(
+        parsed.input, scope=scope, bundle=bundle, in_filter=False,
+        alias_map=alias_map,
+    )
     # Typed pipeline: transforms take one positional (the value to
     # transform) and the rest as kwargs. Reject any extra positional
     # args to force the kwarg form (avoids ambiguity like
@@ -892,6 +1001,7 @@ def _bind_scalar(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
     in_filter: bool,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
 ) -> ScalarCallKey:
     if parsed.name not in SCALAR_FUNCTIONS:
         # Defence in depth: the parser already enforces the allowlist,
@@ -906,7 +1016,7 @@ def _bind_scalar(
             ),
         )
     args = tuple(
-        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter)
+        _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)
         for a in parsed.args
     )
     return ScalarCallKey(name=parsed.name, args=args)
