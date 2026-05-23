@@ -20,6 +20,7 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
@@ -6081,4 +6082,177 @@ def generate_from_planned(
     """
     return SQLGenerator(dialect=dialect).generate_from_planned(
         planned_query, bundle=bundle,
+    )
+
+
+def _synthetic_stage_model(
+    *, relation_name: str, upstream_schema, data_source: str
+) -> SlayerModel:
+    """A stand-in ``SlayerModel`` whose ``sql_table`` is an upstream stage's
+    CTE name and whose columns are that stage's flat output columns.
+
+    A downstream stage was bound against the upstream ``StageSchema`` (P6),
+    so its slots are ``ColumnKey(leaf=<flat>)`` referencing the CTE. This
+    synthetic model lets ``generate_from_planned`` resolve those refs to
+    ``<cte>.<flat>`` and emit ``FROM <cte> AS <cte>`` — no model-graph
+    re-walk, just a rendering vehicle for the CTE relation.
+    """
+    return SlayerModel(
+        name=relation_name,
+        data_source=data_source or "_stage",
+        sql_table=relation_name,
+        columns=[
+            Column(name=c.sql_alias, type=c.type or DataType.DOUBLE)
+            for c in upstream_schema.columns
+        ],
+    )
+
+
+def _bundle_for_stage(planned_query, bundle, schema_by_name):
+    """Pick the bundle a single stage renders against.
+
+    Model-scoped stages render against the original bundle; a stage whose
+    ``source_relation`` names an upstream sibling renders against a one-off
+    bundle holding the synthetic CTE model.
+    """
+    upstream = schema_by_name.get(planned_query.source_relation)
+    if upstream is None:
+        return bundle
+    ds = (bundle.source_model.data_source if bundle.source_model else "") or "_stage"
+    synth = _synthetic_stage_model(
+        relation_name=planned_query.source_relation,
+        upstream_schema=upstream,
+        data_source=ds,
+    )
+    return bundle.model_copy(
+        update={"source_model": synth, "referenced_models": [synth]},
+    )
+
+
+def generate_planned_stages(
+    planned_queries,
+    *,
+    bundle,
+    dialect: str = "postgres",
+) -> str:
+    """Render a multi-stage DAG (``plan_stages`` output) to one SQL string.
+
+    Each non-root stage becomes a CTE ``<name>(<flat cols>) AS (<stage sql>)``;
+    the column-alias list flattens the stage's result-key projection
+    (``orders.amount_sum``) to the flat names downstream stages bound against
+    (``amount_sum``), so no per-stage rename wrapper is needed. The root
+    stage is the outer SELECT and carries the public result keys. Stage CTEs
+    are prepended to any CTEs the root already emits (cross-model / transform
+    stages), since the root reads ``FROM <stage>``.
+
+    ``planned_queries`` is the topo-ordered list from ``plan_stages`` (root
+    last). A single-stage list delegates straight to ``generate_from_planned``.
+    """
+    if not planned_queries:
+        raise ValueError("generate_planned_stages requires at least one stage")
+    if len(planned_queries) == 1:
+        return generate_from_planned(
+            planned_queries[0], bundle=bundle, dialect=dialect,
+        )
+
+    schema_by_name = {
+        p.stage_schema.relation_name: p.stage_schema
+        for p in planned_queries
+        if p.stage_schema is not None
+    }
+
+    # (cte_name, rename-wrapped stage AST) in dependency order.
+    stage_ctes: List[Tuple[str, exp.Expression]] = []
+    root_sql: Optional[str] = None
+    for planned in planned_queries:
+        stage_bundle = _bundle_for_stage(planned, bundle, schema_by_name)
+        stage_sql = generate_from_planned(
+            planned, bundle=stage_bundle, dialect=dialect,
+        )
+        if planned is planned_queries[-1]:
+            root_sql = stage_sql
+            continue
+        if planned.stage_schema is None:
+            raise ValueError(
+                "non-root stage must carry a stage_schema for CTE chaining; "
+                f"source_relation={planned.source_relation!r}",
+            )
+        stage_ctes.append((
+            planned.stage_schema.relation_name,
+            _stage_rename_wrapper(
+                planned=planned, stage_sql=stage_sql, dialect=dialect,
+            ),
+        ))
+
+    assert root_sql is not None
+    root_ast = sqlglot.parse_one(root_sql, dialect=dialect)
+
+    # The root may already carry CTEs (cross-model / transform stages emit
+    # ``WITH base AS ...``). Those read FROM the stage relations, so the
+    # stage CTEs must come FIRST. ``Select.with_`` appends; build the order
+    # explicitly: clear the root's own CTEs, add the stage CTEs (dependency
+    # order), then re-append the root's original CTEs.
+    existing_with = root_ast.args.get("with_")
+    existing_ctes = (
+        list(existing_with.expressions) if existing_with is not None else []
+    )
+    if existing_with is not None:
+        root_ast.set("with_", None)
+
+    for name, wrapped in stage_ctes:
+        root_ast = root_ast.with_(name, as_=wrapped, dialect=dialect)
+    for cte in existing_ctes:
+        root_ast = root_ast.with_(cte.args["alias"], as_=cte.this, dialect=dialect)
+
+    return root_ast.sql(dialect=dialect, pretty=True)
+
+
+def _stage_rename_wrapper(*, planned, stage_sql, dialect):
+    """Wrap a rendered intermediate-stage SQL so its output columns are the
+    flat names downstream stages bound against.
+
+    Derived from the ACTUAL rendered output aliases (``named_selects``), not
+    from a positional column list: ``generate_from_planned`` aliases each
+    public column as ``<source_relation>.<dotted_path_or_canonical>`` (e.g.
+    ``orders.status``, ``orders.customers.region``,
+    ``orders.customers.revenue_sum``). The wrapper strips the
+    ``<source_relation>.`` prefix and ``__``-flattens the remainder to the
+    downstream bind name (``customers__region``, ``customers__revenue_sum``),
+    matching ``StageColumn.name`` exactly. By-name, so robust to the cross-
+    model renderer emitting base columns before cross-model ones (which
+    diverges from ``public_projection`` order); and correct for joined
+    dimensions, whose rendered alias is the dotted path, not ``public_alias``.
+    """
+    inner_alias = "_stage_inner"
+    body = sqlglot.parse_one(stage_sql, dialect=dialect)
+    prefix = f"{planned.source_relation}."
+    select = exp.Select()
+    produced: List[str] = []
+    for out_name in body.named_selects:
+        remainder = out_name[len(prefix):] if out_name.startswith(prefix) else out_name
+        flat = remainder.replace(".", "__")
+        produced.append(flat)
+        src = exp.Column(
+            this=exp.to_identifier(out_name, quoted=True),
+            table=exp.to_identifier(inner_alias),
+        )
+        select = select.select(
+            exp.alias_(src, exp.to_identifier(flat, quoted=True)),
+        )
+    # Fail fast if the rendered stage's output columns don't line up with the
+    # StageSchema the downstream stage bound against — a planner / generator
+    # divergence (e.g. a hidden aux column leaking, or a C13 multi-alias
+    # over-projection) would otherwise surface as a confusing downstream
+    # bind miss rather than here.
+    expected = [c.name for c in planned.stage_schema.columns]
+    if sorted(produced) != sorted(expected):
+        raise ValueError(
+            f"stage {planned.source_relation!r}: rendered output columns "
+            f"{produced!r} do not match the StageSchema {expected!r}.",
+        )
+    return select.from_(
+        exp.Subquery(
+            this=body,
+            alias=exp.TableAlias(this=exp.to_identifier(inner_alias)),
+        ),
     )

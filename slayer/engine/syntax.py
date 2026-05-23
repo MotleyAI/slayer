@@ -163,12 +163,21 @@ _CMP_OP_MAP: Dict[type, str] = {
 # ---------------------------------------------------------------------------
 
 
-def parse_expr(text: str) -> ParsedExpr:
+def parse_expr(text: str, *, allow_dunder: bool = False) -> ParsedExpr:
     """Parse a Mode-B expression string into a ``ParsedExpr``.
+
+    ``allow_dunder`` permits ``__`` in identifiers. It defaults to
+    ``False`` (P1: Mode-B user input rejects ``__``; use single-dot DSL
+    paths). The stage planner sets it ``True`` only when binding a
+    downstream stage against a flat ``StageSchema`` (P5/DEV-1449), whose
+    columns ARE the ``__``-flattened multi-hop aliases of the upstream
+    stage (``customers__region``). Legality there is the binder's
+    concern (the column must exist in the upstream schema).
 
     Raises:
         ValueError: empty input, syntax error, unsupported AST node,
-            chained comparison, or ``__`` in a user identifier.
+            chained comparison, or ``__`` in a user identifier (unless
+            ``allow_dunder``).
         UnknownFunctionError: function call not in
             ``SCALAR_FUNCTIONS`` / ``ALL_TRANSFORMS``.
         IllegalWindowInFilterError: raw ``OVER(...)`` clause anywhere
@@ -196,7 +205,8 @@ def parse_expr(text: str) -> ParsedExpr:
             f"Invalid Mode-B expression {text!r}: {e}"
         )
 
-    _reject_dunder_in_ast(py_ast, original=text)
+    if not allow_dunder:
+        _reject_dunder_in_ast(py_ast, original=text)
 
     return _convert(py_ast, agg_map=agg_map, original=text)
 

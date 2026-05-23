@@ -210,6 +210,11 @@ def plan_query(
         else:
             scope = ModelScope(source_model=bundle.source_model)
 
+    # Downstream stages bind against a flat StageSchema — ``__`` is legal
+    # in their refs (the upstream's flattened multi-hop aliases); model-
+    # scoped stages keep the P1 rejection.
+    flat_scope = isinstance(scope, StageSchema)
+
     declared_measures = _declared_measures_from_query(
         query=query, scope=scope, bundle=bundle,
     )
@@ -295,7 +300,7 @@ def plan_query(
         if not isinstance(f, str):
             continue
         bf = bind_filter(
-            parse_expr(f), scope=scope, bundle=bundle,
+            parse_expr(f, allow_dunder=flat_scope), scope=scope, bundle=bundle,
             alias_map=filter_alias_map,
         )
         if any(existing.value_key == bf.value_key for existing in bound_filters):
@@ -325,9 +330,15 @@ def plan_query(
         elif full_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[full_name]
         elif o.raw_formula:
-            bo = bind_expr(parse_expr(o.raw_formula), scope=scope, bundle=bundle)
+            bo = bind_expr(
+                parse_expr(o.raw_formula, allow_dunder=flat_scope),
+                scope=scope, bundle=bundle,
+            )
         else:
-            bo = bind_expr(parse_expr(col_name), scope=scope, bundle=bundle)
+            bo = bind_expr(
+                parse_expr(col_name, allow_dunder=flat_scope),
+                scope=scope, bundle=bundle,
+            )
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
     # Stage 7b.10 — attach the active TD as ``time_key`` on every
@@ -618,10 +629,17 @@ def _declared_measures_from_query(
     scope: Union[ModelScope, StageSchema],
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMeasure]:
+    # Downstream stages bind against a flat StageSchema whose columns ARE
+    # the ``__``-flattened multi-hop aliases of the upstream stage, so
+    # ``__`` is legal in their refs (P5 / DEV-1449). Model-scoped stages
+    # keep the P1 rejection.
+    flat_scope = isinstance(scope, StageSchema)
     declared: List[DeclaredMeasure] = []
     for d in (query.dimensions or []):
         full = d.full_name
-        bound = bind_expr(parse_expr(full), scope=scope, bundle=bundle)
+        bound = bind_expr(
+            parse_expr(full, allow_dunder=flat_scope), scope=scope, bundle=bundle,
+        )
         flat_name = _flatten_dotted(full)
         declared.append(DeclaredMeasure(
             bound=bound,
@@ -645,7 +663,7 @@ def _declared_measures_from_query(
     for m in (query.measures or []):
         formula = m.formula
         explicit_name = m.name
-        parsed = parse_expr(formula)
+        parsed = parse_expr(formula, allow_dunder=flat_scope)
         # DEV-1450 stage 7b.8 — pre-bind ModelMeasure expansion. A bare
         # ``Ref`` whose name matches a saved ``ModelMeasure`` on the
         # host model is rewritten to the measure's formula AST so the
@@ -863,9 +881,28 @@ def _emit_stage_schema(
         else:
             alias = slot.declared_name
         alias_idx[sid] = idx + 1
+        # The downstream bind name + CTE column name are the ``__``-flattened
+        # form so a later stage can reference a cross-model aggregate
+        # (``customers.revenue_sum`` → ``customers__revenue_sum``), matching
+        # how dimensions already flatten and how the legacy virtual-model
+        # rename exposed these columns (P5/DEV-1449). ``public_alias`` keeps
+        # the dotted result-key form. Dimensions / local / user-named
+        # measures have no dot, so flattening is a no-op for them.
+        flat = _flatten_dotted(alias)
+        # Two distinct public columns that flatten to the same downstream
+        # name (e.g. a joined ``customers.region`` and a literal model column
+        # ``customers__region`` via the C11 carve-out) would make the stage's
+        # CTE column ambiguous. Surface it instead of silently binding the
+        # first match downstream.
+        if any(c.name == flat for c in columns):
+            raise ValueError(
+                f"Stage column name collision on {flat!r}: two projected "
+                f"columns flatten to the same downstream name. Give one an "
+                f"explicit measure `name` to disambiguate."
+            )
         columns.append(StageColumn(
-            name=alias,
-            sql_alias=alias,
+            name=flat,
+            sql_alias=flat,
             public_alias=alias,
             type=slot.type,
             label=slot.label,
