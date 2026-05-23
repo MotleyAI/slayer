@@ -240,6 +240,29 @@ def _apply_func_style_agg(
     return formula, emitted
 
 
+def func_style_agg_to_colon(
+    formula: str, *, custom_agg_names: Optional[frozenset[str]] = None,
+) -> str:
+    """Rewrite function-style aggregations (``sum(x)`` → ``x:sum``,
+    ``count(*)`` → ``*:count``) to colon syntax, returning only the rewritten
+    string.
+
+    Quiet variant of the ``FUNC_STYLE_AGG`` slack rule for read-only,
+    best-effort consumers (schema-drift cascade attribution, memory entity
+    tagging) that inspect formulas with the typed Mode-B parser but must NOT
+    re-surface slack advice to the user — the pipeline path
+    (``normalize_query`` / ``normalize_model``) is the one that emits
+    ``SlayerNormalizationWarning``. Returns the formula unchanged when nothing
+    matches.
+    """
+    with _warnings_module.catch_warnings():
+        _warnings_module.simplefilter("ignore", SlayerNormalizationWarning)
+        rewritten, _ = _apply_func_style_agg(
+            formula, location="(inspect)", custom_agg_names=custom_agg_names,
+        )
+    return rewritten
+
+
 # ---------------------------------------------------------------------------
 # Rule: MISPLACED_MEASURE
 # ---------------------------------------------------------------------------

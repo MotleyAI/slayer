@@ -49,7 +49,7 @@ from __future__ import annotations
 import ast
 import re
 from decimal import Decimal
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, Iterator, List, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -199,6 +199,64 @@ def parse_expr(text: str) -> ParsedExpr:
     _reject_dunder_in_ast(py_ast, original=text)
 
     return _convert(py_ast, agg_map=agg_map, original=text)
+
+
+# ---------------------------------------------------------------------------
+# Reference walk (best-effort textual extraction)
+# ---------------------------------------------------------------------------
+
+
+def walk_parsed_refs(
+    parsed: ParsedExpr,
+) -> Iterator[Union[Ref, DottedRef, AggCall]]:
+    """Yield every reference-bearing leaf node in a ``ParsedExpr`` tree.
+
+    Yields ``Ref`` (bare identifier), ``DottedRef`` (dotted join path), and
+    ``AggCall`` (colon-syntax aggregation) nodes — the leaves a formula
+    actually references. This is the scope-free counterpart to the binder's
+    ``walk_value_keys``: callers that only need the *names* a formula touches
+    (schema-drift cascade attribution, memory entity tagging) walk the parse
+    tree directly instead of binding it against a scope.
+
+    Descent rules (chosen to match the legacy ``parse_formula`` /
+    ``FieldSpec`` walk exactly):
+
+    * ``AggCall`` is yielded as a unit — the aggregation's source / args /
+      kwargs are NOT descended (``weighted_avg(weight=quantity)`` surfaces
+      ``price``, never ``quantity``).
+    * ``TransformCall`` descends ``input`` only; positional args, kwargs, and
+      ``partition_by`` columns are opaque.
+    * ``ScalarCall`` descends every positional arg (``coalesce`` / ``nullif``
+      wrapping aggregated or bare refs).
+    * ``Arith`` / ``UnaryOp`` / ``Cmp`` / ``BoolOp`` descend their operands.
+    * ``Literal`` and ``StarSource`` yield nothing.
+    """
+    if isinstance(parsed, (Ref, DottedRef, AggCall)):
+        yield parsed
+        return
+    if isinstance(parsed, TransformCall):
+        yield from walk_parsed_refs(parsed.input)
+        return
+    if isinstance(parsed, ScalarCall):
+        for a in parsed.args:
+            yield from walk_parsed_refs(a)
+        return
+    if isinstance(parsed, Arith):
+        yield from walk_parsed_refs(parsed.left)
+        yield from walk_parsed_refs(parsed.right)
+        return
+    if isinstance(parsed, Cmp):
+        yield from walk_parsed_refs(parsed.left)
+        yield from walk_parsed_refs(parsed.right)
+        return
+    if isinstance(parsed, UnaryOp):
+        yield from walk_parsed_refs(parsed.operand)
+        return
+    if isinstance(parsed, BoolOp):
+        for op in parsed.operands:
+            yield from walk_parsed_refs(op)
+        return
+    # Literal / StarSource → no references.
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +451,21 @@ def _flatten_attribute(
     return list(reversed(parts))
 
 
+def _convert_kwarg_value(node: ast.AST, *, agg_map: Dict, original: str):
+    """Convert a call keyword-argument value.
+
+    List / tuple values (e.g. ``partition_by=[region, channel]`` for the
+    rank family) convert to a tuple of converted elements so the parser
+    accepts the documented multi-column transform-kwarg grammar instead of
+    raising on the bare ``ast.List`` node; scalar values convert normally.
+    """
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return tuple(
+            _convert(e, agg_map=agg_map, original=original) for e in node.elts
+        )
+    return _convert(node, agg_map=agg_map, original=original)
+
+
 def _convert_call(
     node: ast.Call, *, agg_map: Dict, original: str,
 ) -> ParsedExpr:
@@ -407,7 +480,7 @@ def _convert_call(
         _convert(a, agg_map=agg_map, original=original) for a in node.args
     )
     kwargs = tuple(
-        (kw.arg, _convert(kw.value, agg_map=agg_map, original=original))
+        (kw.arg, _convert_kwarg_value(kw.value, agg_map=agg_map, original=original))
         for kw in node.keywords if kw.arg is not None
     )
 
