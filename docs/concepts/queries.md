@@ -392,6 +392,21 @@ When models have [joins](models.md#joins), you can reference measures from joine
 
 This generates a sub-query for the joined measure, scoped to shared dimensions, and LEFT JOINs it to the main query — avoiding aggregation errors from row multiplication.
 
+A cross-model **parametric** aggregate keeps its kwarg signature in the result key, so two variants on the same target column do not collide:
+
+```json
+{
+  "source_model": "orders",
+  "dimensions": ["customers.region"],
+  "measures": [
+    "customers.revenue:percentile(p=0.5)",
+    "customers.revenue:percentile(p=0.95)"
+  ]
+}
+```
+
+surfaces two distinct result keys — `orders.customers.revenue_percentile_p_0_5` and `orders.customers.revenue_percentile_p_0_95`. (A non-parametric `customers.revenue:sum` surfaces as `orders.customers.revenue_sum`.)
+
 ### Query lists
 
 Pass a list of queries to `execute()`. Earlier queries are named sub-queries, the last is the main query. Named queries can be referenced by `source_model` name or joined via `joins`:

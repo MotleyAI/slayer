@@ -43,30 +43,47 @@ Dormant in 7a — no engine code calls these yet. ProjectionPlanner
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional, Protocol, Tuple
+from typing import Callable, List, Optional, Protocol, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
-from slayer.core.errors import UnreachableFilterDroppedWarning
+from slayer.core.errors import (
+    AmbiguousReferenceError,
+    IllegalScopeReferenceError,
+    UnknownReferenceError,
+    UnreachableFilterDroppedWarning,
+)
 from slayer.core.keys import (
     AggregateKey,
     ColumnKey,
     ColumnSqlKey,
     Phase,
+    StarKey,
     TimeTruncKey,
+    ValueKey,
+    column_path,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
-from slayer.core.scope import StageColumn, StageSchema
+from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.engine.binding import (
+    bind_expr,
+    bind_filter,
+    bind_time_dimension,
+    walk_value_keys,
+)
 from slayer.engine.planned import (
     BoundFilterId,
     CrossModelAggregatePlan,
     JoinRequirement,
+    PlannedQuery,
     SlotId,
     ValueSlot,
 )
 from slayer.engine.source_bundle import ResolvedSourceBundle
+from slayer.engine.syntax import parse_expr, parse_filter_expr
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +218,17 @@ def classify_host_filter(
 
 
 class CrossModelPlanner(Protocol):
-    """Strategy for compiling one cross-model aggregate slot."""
+    """Strategy for compiling one cross-model aggregate slot.
+
+    DEV-1450 follow-up #2: re-rooting is owned by the strategy, not a
+    post-hoc mutation in ``plan_query``. When the host carries dimensions /
+    filters reachable from the target only by walking the TARGET's own join
+    graph (off the host→target forward path), the strategy may build a nested
+    re-rooted ``PlannedQuery`` and attach it to the returned plan. To do so it
+    needs the host query, its public projection, and a callback that compiles
+    a sub-query — all keyword-only and defaulting to ``None`` so direct
+    callers (and test doubles) that don't re-root keep working unchanged.
+    """
 
     def plan(
         self,
@@ -213,6 +240,11 @@ class CrossModelPlanner(Protocol):
         host_filters: List[HostFilterRouting],
         public_alias: Optional[str] = None,
         hidden: bool = False,
+        host_query: Optional[SlayerQuery] = None,
+        public_projection: Optional[List[SlotId]] = None,
+        subplan_builder: Optional[
+            Callable[[SlayerQuery, ResolvedSourceBundle], PlannedQuery]
+        ] = None,
     ) -> CrossModelAggregatePlan:
         ...
 
@@ -385,6 +417,11 @@ class IsolatedCteCrossModelPlanner:
         host_filters: List[HostFilterRouting],
         public_alias: Optional[str] = None,
         hidden: bool = False,
+        host_query: Optional[SlayerQuery] = None,
+        public_projection: Optional[List[SlotId]] = None,
+        subplan_builder: Optional[
+            Callable[[SlayerQuery, ResolvedSourceBundle], PlannedQuery]
+        ] = None,
     ) -> CrossModelAggregatePlan:
         host_model = bundle.source_model
         if host_model is None:
@@ -468,7 +505,7 @@ class IsolatedCteCrossModelPlanner:
                 elif s.key.path == target_path[: len(s.key.path)]:
                     shared_grain.append(s.id)
             elif isinstance(s.key, TimeTruncKey):
-                td_path = s.key.column.path
+                td_path = column_path(s.key.column)
                 if not td_path:
                     shared_grain.append(s.id)
                 elif td_path == target_path[: len(td_path)]:
@@ -486,7 +523,7 @@ class IsolatedCteCrossModelPlanner:
             join_back_pairs=join_back_pairs,
         )
 
-        return CrossModelAggregatePlan(
+        forward_plan = CrossModelAggregatePlan(
             aggregate_slot_id=aggregate_slot_id,
             target_model=terminal_model.name,
             datasource=host_model.data_source,
@@ -502,3 +539,302 @@ class IsolatedCteCrossModelPlanner:
             hidden=hidden,
             public_alias=public_alias,
         )
+
+        # DEV-1450 #2: re-rooting is the strategy's call. When the caller
+        # supplies the host query + a sub-plan builder, decide forward-plan
+        # vs re-rooted-plan here; without them (direct ``plan(...)`` callers /
+        # test doubles) return the forward plan unchanged.
+        if subplan_builder is not None and host_query is not None:
+            return _maybe_reroot_cross_model_plan(
+                plan=forward_plan,
+                query=host_query,
+                agg_key=aggregate_key,
+                bundle=bundle,
+                host_model=host_model,
+                public_projection=public_projection or [],
+                subplan_builder=subplan_builder,
+            )
+        return forward_plan
+
+
+# ---------------------------------------------------------------------------
+# Cross-model re-rooting (DEV-1450 stage 7b.15e, C1; relocated here in #2)
+# ---------------------------------------------------------------------------
+#
+# When a cross-model aggregate (``policy_amount.total:sum``) is queried with
+# host dimensions that are reachable from the TARGET by walking the target's
+# own join graph (``policy_amount -> policy -> policy_number``), the
+# forward-path CTE ("FROM bare target, GROUP BY forward-path dims only")
+# collapses the host dimension to a scalar CROSS JOIN -- every host row gets
+# the global aggregate.
+#
+# The fix mirrors legacy ``_build_rerooted_enriched``: build a full nested
+# ``SlayerQuery`` rooted at the target (so all of the target's joins are in
+# scope for dimensions AND filters), compile it via ``subplan_builder``, and
+# attach the sub-plan to the ``CrossModelAggregatePlan``. The generator
+# renders the sub-plan as the ``_cm_*`` CTE and joins it back to the host base
+# on the (re-rooted) dimension. Dimensions / filters that don't resolve from
+# the target are dropped -- matching legacy's drop-unreachable behaviour.
+#
+# DEV-1450 #2: this used to be a post-hoc pass in ``stage_planner.plan_query``;
+# it now lives behind ``IsolatedCteCrossModelPlanner.plan`` so the
+# render-strategy decision (forward vs re-rooted) is owned by the strategy.
+# The recursive ``plan_query`` call is injected as ``subplan_builder`` so this
+# module does not import ``stage_planner`` (no cycle).
+
+
+def _reroot_ref(
+    *, model_prefix: Optional[str], name: str, host_model_name: str,
+    target_model_name: str,
+) -> str:
+    """Re-root one Mode-B ref from the host's perspective to the target's.
+
+    Mirrors legacy ``_build_rerooted_enriched``:
+
+    * host-local (``model_prefix is None``) -> ``<host>.<name>`` (now a
+      cross-model dim from the target's view),
+    * on the target itself -> bare ``<name>`` (local on target),
+    * a path through the target -> strip the target prefix,
+    * any other dotted ref -> kept as-is (resolved via the target's joins).
+    """
+    if model_prefix is None:
+        return f"{host_model_name}.{name}"
+    if model_prefix == target_model_name:
+        return name
+    if model_prefix.startswith(target_model_name + "."):
+        return f"{model_prefix[len(target_model_name) + 1:]}.{name}"
+    return f"{model_prefix}.{name}"
+
+
+def _host_ref_path(model_prefix: Optional[str]) -> Tuple[str, ...]:
+    """The join path a host ColumnRef / TimeDimension prefix denotes."""
+    if not model_prefix:
+        return ()
+    return tuple(model_prefix.split("."))
+
+
+def _scalar_formula_literal(value) -> str:
+    """Render a normalized scalar back into formula text."""
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if value is None:
+        return "None"
+    if isinstance(value, str):
+        return repr(value)
+    return str(value)
+
+
+def _filter_ref_paths(value_key: ValueKey) -> List[Tuple[str, ...]]:
+    """Join paths of every column-like leaf a (bound) filter references."""
+    paths: List[Tuple[str, ...]] = []
+    for k in walk_value_keys(value_key):
+        if isinstance(k, (ColumnKey, ColumnSqlKey, StarKey)):
+            paths.append(tuple(k.path))
+        elif isinstance(k, TimeTruncKey):
+            paths.append(tuple(column_path(k.column)))
+    return paths
+
+
+def _local_agg_formula(key: AggregateKey) -> str:
+    """Reconstruct the LOCAL colon-formula for a cross-model aggregate
+    (``customers.revenue:sum`` -> ``revenue:sum``) so it can be re-planned
+    against the target model as a plain local measure."""
+    src = key.source
+    if isinstance(src, StarKey):
+        base = "*"
+    elif isinstance(src, ColumnSqlKey):
+        base = src.column_name
+    else:  # ColumnKey
+        base = src.leaf
+    formula = f"{base}:{key.agg}"
+    parts: List[str] = []
+    for a in key.args:
+        parts.append(_scalar_formula_literal(a))
+    for k, v in key.kwargs:
+        if isinstance(v, ColumnKey):
+            parts.append(f"{k}={v.leaf}")
+        elif isinstance(v, ColumnSqlKey):
+            parts.append(f"{k}={v.column_name}")
+        else:
+            parts.append(f"{k}={_scalar_formula_literal(v)}")
+    if parts:
+        formula += "(" + ", ".join(parts) + ")"
+    return formula
+
+
+_REROOT_BIND_ERRORS = (
+    UnknownReferenceError,
+    AmbiguousReferenceError,
+    IllegalScopeReferenceError,
+    ValueError,
+    NotImplementedError,
+)
+
+
+def _maybe_reroot_cross_model_plan(
+    *,
+    plan,
+    query: SlayerQuery,
+    agg_key: AggregateKey,
+    bundle: ResolvedSourceBundle,
+    host_model: SlayerModel,
+    public_projection: List[str],
+    subplan_builder: Callable[[SlayerQuery, ResolvedSourceBundle], PlannedQuery],
+):
+    """Attach a re-rooted sub-``PlannedQuery`` to ``plan`` when the host
+    query carries dimensions reachable from the target by re-rooting through
+    the target's join graph. Returns ``plan`` unchanged when re-rooting is
+    unnecessary (only forward-path or genuinely unreachable dims)."""
+    target_model_name = plan.target_model
+    target_model = bundle.get_referenced_model(target_model_name)
+    if target_model is None:
+        return plan
+    target_path = tuple(getattr(agg_key.source, "path", ()))
+    rerooted_bundle = bundle.model_copy(update={"source_model": target_model})
+    target_scope = ModelScope(source_model=target_model)
+
+    def _resolvable_ref(ref_str: str) -> Optional[ValueKey]:
+        try:
+            return bind_expr(
+                parse_expr(ref_str),
+                scope=target_scope,
+                bundle=rerooted_bundle,
+            ).value_key
+        except _REROOT_BIND_ERRORS:
+            return None
+
+    def _is_forward(path: Tuple[str, ...]) -> bool:
+        # On the host->target path (handled by the forward-path CTE already).
+        return bool(path) and path == target_path[: len(path)]
+
+    n_dims = len(query.dimensions or [])
+    rerooted_dims: List[ColumnRef] = []
+    rerooted_tds: List[TimeDimension] = []
+    grain_host_sids: List[str] = []
+    grain_rerooted_keys: List[ValueKey] = []
+    needs_reroot = False
+
+    for i, dim in enumerate(query.dimensions or []):
+        host_sid = public_projection[i] if i < len(public_projection) else None
+        host_path = _host_ref_path(dim.model)
+        rr = _reroot_ref(
+            model_prefix=dim.model, name=dim.name,
+            host_model_name=host_model.name, target_model_name=target_model_name,
+        )
+        rr_key = _resolvable_ref(rr)
+        if rr_key is None:
+            continue  # unreachable from target -> drop
+        if not _is_forward(host_path):
+            needs_reroot = True
+        if host_sid is None:
+            continue
+        rerooted_dims.append(ColumnRef(name=rr, label=dim.label))
+        grain_host_sids.append(host_sid)
+        grain_rerooted_keys.append(rr_key)
+
+    for j, td in enumerate(query.time_dimensions or []):
+        idx = n_dims + j
+        host_sid = public_projection[idx] if idx < len(public_projection) else None
+        host_path = _host_ref_path(td.dimension.model)
+        rr = _reroot_ref(
+            model_prefix=td.dimension.model, name=td.dimension.name,
+            host_model_name=host_model.name, target_model_name=target_model_name,
+        )
+        rr_td = TimeDimension(
+            dimension=ColumnRef(name=rr),
+            granularity=td.granularity,
+            date_range=td.date_range,
+            label=td.label,
+        )
+        try:
+            rr_key = bind_time_dimension(
+                rr_td, scope=target_scope, bundle=rerooted_bundle,
+            ).value_key
+        except _REROOT_BIND_ERRORS:
+            continue
+        if not _is_forward(host_path):
+            needs_reroot = True
+        if host_sid is None:
+            continue
+        rerooted_tds.append(rr_td)
+        grain_host_sids.append(host_sid)
+        grain_rerooted_keys.append(rr_key)
+
+    # Filters. A purely host-local filter (every ref on the host's own
+    # columns) filters host rows -- it stays at the host base; the join-back
+    # propagates the cardinality reduction, so adding it to the CTE would risk
+    # binding a bare name to a same-named TARGET column. A join-traversing
+    # filter affects the aggregate value and rides into the re-rooted CTE; one
+    # that reaches OFF the host->target forward path is exactly what the
+    # forward-path classifier drops, so it also triggers re-rooting (covers a
+    # cross-model agg filtered through the target's graph with no dimensions).
+    host_scope = ModelScope(source_model=host_model)
+    rerooted_filters: List[str] = []
+    for f in (query.filters or []):
+        try:
+            host_bound = bind_filter(
+                parse_filter_expr(f), scope=host_scope, bundle=bundle,
+            )
+        except _REROOT_BIND_ERRORS:
+            continue
+        host_paths = _filter_ref_paths(host_bound.value_key)
+        if all(p == () for p in host_paths):
+            continue  # host-local -> applied at the host base only
+        # The binder strips a same-model self-prefix (C14), so a
+        # ``<target>.col`` ref binds locally against the target scope without
+        # any string surgery -- pass the filter through verbatim.
+        try:
+            bind_filter(
+                parse_filter_expr(f), scope=target_scope, bundle=rerooted_bundle,
+            )
+        except _REROOT_BIND_ERRORS:
+            continue
+        rerooted_filters.append(f)
+        if any(p != target_path[: len(p)] for p in host_paths if p):
+            needs_reroot = True
+
+    if not needs_reroot or not (
+        rerooted_dims or rerooted_tds or rerooted_filters
+    ):
+        return plan
+
+    rerooted_query = SlayerQuery(
+        source_model=target_model_name,
+        measures=[ModelMeasure(formula=_local_agg_formula(agg_key))],
+        dimensions=rerooted_dims or None,
+        time_dimensions=rerooted_tds or None,
+        filters=rerooted_filters or None,
+    )
+    sub_plan = subplan_builder(rerooted_query, rerooted_bundle)
+
+    sub_row_by_key = {s.key: s.id for s in sub_plan.row_slots}
+    grain_pairs: List[Tuple[str, str]] = []
+    for host_sid, rr_key in zip(grain_host_sids, grain_rerooted_keys):
+        sub_sid = sub_row_by_key.get(rr_key)
+        if sub_sid is not None:
+            grain_pairs.append((host_sid, sub_sid))
+
+    sub_agg_sid = None
+    for s in sub_plan.aggregate_slots:
+        if isinstance(s.key, AggregateKey) and not getattr(
+            s.key.source, "path", (),
+        ):
+            sub_agg_sid = s.id
+            break
+    if sub_agg_sid is None:
+        return plan
+
+    return plan.model_copy(update={
+        "rerooted_plan": sub_plan,
+        "rerooted_grain_pairs": grain_pairs,
+        "rerooted_agg_slot_id": sub_agg_sid,
+        # The forward-path classifier marked these host filters
+        # DROP_UNREACHABLE, but the re-rooted CTE re-applies every
+        # target-reachable filter (and the host base keeps the rest for
+        # cardinality), so nothing is silently dropped -- clear the now-stale
+        # warnings and forward-only routing ids.
+        "dropped_filter_warnings": [],
+        "where_filter_ids": [],
+        "having_filter_ids": [],
+        "applied_filter_ids": [],
+    })

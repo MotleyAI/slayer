@@ -302,22 +302,28 @@ class TestBindTimeDimension:
         )
         assert bound.value_key.granularity == "month"
 
-    def test_derived_column_sql_td_rejected(self) -> None:
-        # 7b.3b limitation: TimeTruncKey.column is typed as ColumnKey, so
-        # a derived (Column.sql) temporal column would produce an ill-
-        # typed key. Reject explicitly with a clear message; a future
-        # follow-up can widen TimeTruncKey if needed.
+    def test_derived_column_sql_td_binds(self) -> None:
+        # DEV-1450 follow-up #4a: a derived (Column.sql) temporal column now
+        # binds to ``TimeTruncKey(column=ColumnSqlKey(...))`` — full support,
+        # no NotImplementedError. The grain still rides on the TimeTruncKey.
+        from slayer.core.keys import ColumnSqlKey
+
         host = _orders_with_derived_temporal()
         td = TimeDimension(
             dimension=ColumnRef(name="created_day"),
             granularity=TimeGranularity.DAY,
         )
-        with pytest.raises(NotImplementedError, match="Column.sql"):
-            bind_time_dimension(
-                td,
-                scope=ModelScope(source_model=host),
-                bundle=_bundle_derived(),
-            )
+        bound = bind_time_dimension(
+            td,
+            scope=ModelScope(source_model=host),
+            bundle=_bundle_derived(),
+        )
+        assert isinstance(bound.value_key, TimeTruncKey)
+        assert bound.value_key.column == ColumnSqlKey(
+            path=(), model="orders", column_name="created_day",
+        )
+        assert bound.value_key.granularity == "day"
+        assert bound.phase == Phase.ROW
 
 
 # ---------------------------------------------------------------------------

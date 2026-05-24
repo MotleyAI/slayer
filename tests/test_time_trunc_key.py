@@ -25,7 +25,13 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.keys import ColumnKey, Phase, TimeTruncKey, ValueKey
+from slayer.core.keys import (
+    ColumnKey,
+    ColumnSqlKey,
+    Phase,
+    TimeTruncKey,
+    ValueKey,
+)
 
 
 class TestTimeTruncKeyConstruction:
@@ -110,6 +116,68 @@ class TestTimeTruncKeyImmutability:
         k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
         with pytest.raises(Exception):
             k.granularity = "day"  # type: ignore[misc]
+
+
+class TestTimeTruncKeyWithColumnSqlKey:
+    """DEV-1450 follow-up #4a: ``TimeTruncKey.column`` is widened to accept
+    ``ColumnSqlKey`` so a derived (``Column.sql`` set) temporal column can be
+    a time dimension. Identity is structural over the (derived-column, grain)
+    pair, exactly like the base-column case."""
+
+    def test_constructs_from_columnsqlkey(self) -> None:
+        col = ColumnSqlKey(model="orders", column_name="effective_at")
+        k = TimeTruncKey(column=col, granularity="month")
+        assert k.column == col
+        assert k.granularity == "month"
+        assert k.phase == Phase.ROW
+
+    def test_preserves_columnsqlkey_path_for_cross_model(self) -> None:
+        col = ColumnSqlKey(
+            path=("customers",), model="customers", column_name="effective_at",
+        )
+        k = TimeTruncKey(column=col, granularity="day")
+        assert k.column.path == ("customers",)
+        assert k.column.column_name == "effective_at"
+
+    def test_same_derived_column_and_grain_intern_equal(self) -> None:
+        a = TimeTruncKey(
+            column=ColumnSqlKey(model="orders", column_name="effective_at"),
+            granularity="month",
+        )
+        b = TimeTruncKey(
+            column=ColumnSqlKey(model="orders", column_name="effective_at"),
+            granularity="month",
+        )
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_different_grain_on_derived_column_distinct(self) -> None:
+        col = ColumnSqlKey(model="orders", column_name="effective_at")
+        a = TimeTruncKey(column=col, granularity="day")
+        b = TimeTruncKey(column=col, granularity="month")
+        assert a != b
+
+    def test_base_and_derived_columns_distinct(self) -> None:
+        a = TimeTruncKey(
+            column=ColumnKey(leaf="effective_at"), granularity="month",
+        )
+        b = TimeTruncKey(
+            column=ColumnSqlKey(model="orders", column_name="effective_at"),
+            granularity="month",
+        )
+        assert a != b
+
+    def test_usable_as_dict_key(self) -> None:
+        k = TimeTruncKey(
+            column=ColumnSqlKey(model="orders", column_name="effective_at"),
+            granularity="month",
+        )
+        d = {k: "slot_1"}
+        same = TimeTruncKey(
+            column=ColumnSqlKey(model="orders", column_name="effective_at"),
+            granularity="month",
+        )
+        assert d[same] == "slot_1"
 
 
 class TestValueKeyUnionMembership:

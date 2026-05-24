@@ -22,6 +22,7 @@ from slayer.core.enums import (
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.column_expansion import (
+    _is_trivial_base,
     _root_scope_column_ids,
     expand_derived_refs_sync,
 )
@@ -58,6 +59,24 @@ def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Exp
         if isinstance(existing, exp.DataType) and existing.this == target:
             return expr
     return exp.Cast(this=expr, to=exp.DataType(this=target))
+
+
+def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
+    """The CAST target to use when rendering a derived column inside a
+    WHERE / HAVING predicate (DEV-1450 #4a).
+
+    Temporal types (``DATE`` / ``TIMESTAMP``) are suppressed: in a filter
+    the derived expression is COMPARED, not type-enforced, and
+    ``CAST(text AS TIMESTAMP)`` on SQLite gives the expression NUMERIC
+    affinity — truncating a string timestamp to its leading year and
+    breaking ``BETWEEN`` / comparison. A base temporal column in the same
+    position is never cast (it renders as a bare ``exp.Column``), so this
+    keeps the derived form on par. Non-temporal types pass through so a
+    derived numeric / boolean column still gets its enforcing CAST.
+    """
+    if dt in (DataType.DATE, DataType.TIMESTAMP):
+        return None
+    return dt
 
 logger = logging.getLogger(__name__)
 
@@ -2884,6 +2903,7 @@ class SQLGenerator:
                         source_relation=source_relation,
                         shifted_where_parts=shifted_where_parts,
                         planned_query=planned_query,
+                        bundle=bundle,
                     )
             # --- consecutive_periods layers (cp_reset_ + cp_value_ pair)
             for layer in ready_cp:
@@ -3383,6 +3403,26 @@ class SQLGenerator:
             if slot is None or slot.phase != Phase.ROW:
                 continue
             key = slot.key
+            # DEV-1450 #4a: a derived (ColumnSqlKey) TIME dimension expands the
+            # same way; pull any joins its SQL crosses into the FROM so the
+            # DATE_TRUNC over the expanded expression resolves. The render
+            # branch re-derives the (un-cached) raw expr and wraps DATE_TRUNC.
+            if isinstance(key, TimeTruncKey) and isinstance(
+                key.column, ColumnSqlKey,
+            ):
+                raw = self._raw_time_col_expr_for_planned(
+                    time_column=key.column,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    bundle=bundle,
+                )
+                for p in self._joined_paths_in_sql(
+                    sql_expr=raw, source_relation=source_relation,
+                    source_model=source_model, bundle=bundle,
+                ):
+                    if p not in needed_join_paths:
+                        needed_join_paths.append(p)
+                continue
             if not (isinstance(key, ColumnSqlKey) and not key.path):
                 continue
             expanded_sql = self._expand_derived_column_sql(
@@ -3495,9 +3535,8 @@ class SQLGenerator:
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
-                    col_expr = self._joined_or_local_dim_expr(
-                        path=key.column.path,
-                        leaf=key.column.leaf,
+                    col_expr = self._raw_time_col_expr_for_planned(
+                        time_column=key.column,
                         source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,
@@ -3671,9 +3710,8 @@ class SQLGenerator:
         for sid in base_render_order:
             slot = slots_by_id[sid]
             if slot.phase == Phase.ROW and isinstance(slot.key, TimeTruncKey):
-                col = slot.key.column
-                return self._joined_or_local_dim_expr(
-                    path=col.path, leaf=col.leaf, source_model=source_model,
+                return self._raw_time_col_expr_for_planned(
+                    time_column=slot.key.column, source_model=source_model,
                     source_relation=source_relation, bundle=bundle,
                 ).sql(dialect=self.dialect)
         if source_model.default_time_dimension:
@@ -3865,8 +3903,8 @@ class SQLGenerator:
             if slot.phase == Phase.ROW:
                 key = slot.key
                 if isinstance(key, TimeTruncKey):
-                    raw = self._joined_or_local_dim_expr(
-                        path=key.column.path, leaf=key.column.leaf,
+                    raw = self._raw_time_col_expr_for_planned(
+                        time_column=key.column,
                         source_model=source_model,
                         source_relation=source_relation, bundle=bundle,
                     )
@@ -4905,11 +4943,27 @@ class SQLGenerator:
                     f"the typed pipeline. Use the terminal-target path "
                     f"or pull the dimension to the host base.",
                 )
-            leaf = key.leaf if isinstance(key, ColumnKey) else key.column.leaf
-            col_expr = exp.Column(
-                this=exp.to_identifier(leaf),
-                table=exp.to_identifier(target_relation),
-            )
+            # Build the (untruncated) shared-grain column expression rooted at
+            # the target relation. A derived (ColumnSqlKey) column — base dim
+            # or time dimension — expands its Column.sql rooted at the target;
+            # a base column emits the bare ``target.leaf``.
+            from slayer.core.keys import ColumnSqlKey as _ColumnSqlKey
+
+            grain_column = key.column if isinstance(key, TimeTruncKey) else key
+            if isinstance(grain_column, _ColumnSqlKey):
+                col_expr = self._parse(self._expand_derived_column_sql(
+                    source_model=target_model,
+                    source_relation=target_relation,
+                    column_name=grain_column.column_name,
+                    bundle=bundle,
+                ))
+                leaf = grain_column.column_name
+            else:
+                leaf = grain_column.leaf
+                col_expr = exp.Column(
+                    this=exp.to_identifier(leaf),
+                    table=exp.to_identifier(target_relation),
+                )
             if isinstance(key, TimeTruncKey):
                 col_expr = self._build_date_trunc(
                     col_expr=col_expr,
@@ -5297,7 +5351,13 @@ class SQLGenerator:
         name and remains untouched on the slot for stage-2 references;
         only the public SQL alias differs.
         """
-        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
+        from slayer.core.keys import (
+            ColumnKey,
+            Phase,
+            TimeTruncKey,
+            column_leaf,
+            column_path,
+        )
 
         if slot.phase == Phase.ROW:
             key = slot.key
@@ -5306,7 +5366,9 @@ class SQLGenerator:
             if isinstance(key, ColumnKey):
                 path, leaf = key.path, key.leaf
             elif isinstance(key, TimeTruncKey):
-                path, leaf = key.column.path, key.column.leaf
+                # DEV-1450 #4a: a derived TD's leaf is its column_name, so the
+                # public result-key shape matches the base-column TD.
+                path, leaf = column_path(key.column), column_leaf(key.column)
             if path and leaf is not None:
                 return f"{source_relation}." + ".".join(path) + f".{leaf}"
         # Local + AGGREGATE / POST slots: existing alias selection.
@@ -6041,11 +6103,12 @@ class SQLGenerator:
                 _guard_no_joined_refs(rendered, fid=fp.id)
                 out.append(rendered.sql(dialect=self.dialect))
             elif fp.text is not None:
-                qualified = self._qualify_mode_a_sql_filter(
+                qualified = self._render_model_filter_sql(
                     sql=fp.text,
                     columns=fp.text_columns,
                     source_model=source_model,
                     source_relation=source_relation,
+                    bundle=bundle,
                 )
                 _guard_no_joined_refs(self._parse(qualified), fid=fp.id)
                 out.append(qualified)
@@ -6064,6 +6127,7 @@ class SQLGenerator:
         source_relation: str,
         shifted_where_parts: List[str],
         planned_query,
+        bundle,
     ) -> None:
         """Emit a ``shifted_<alias>`` + ``sjoin_<alias>`` CTE pair for
         one time_shift transform slot.
@@ -6151,7 +6215,6 @@ class SQLGenerator:
                 f"slot id={slot.id!r}, time_key={time_key!r}.",
             )
         time_alias = available_alias_by_slot_id[time_sid]
-        time_leaf = time_key.column.leaf
 
         # 2. The aggregate / column input under its base alias.
         input_sid = slot_id_by_key.get(inner_key)
@@ -6235,10 +6298,14 @@ class SQLGenerator:
             str(shift_gran_raw) if shift_gran_raw is not None
             else time_key.granularity
         )
-        raw_time_col_expr = self._dim_column_expr_from_planned(
+        # DEV-1450 #4a: a derived (ColumnSqlKey) time column yields its
+        # EXPANDED expression here; the calendar offset and DATE_TRUNC apply
+        # over that expression exactly as over a bare column.
+        raw_time_col_expr = self._raw_time_col_expr_for_planned(
+            time_column=time_key.column,
             source_model=source_model,
             source_relation=source_relation,
-            leaf=time_leaf,
+            bundle=bundle,
         )
         shifted_raw_expr = self._build_time_offset_expr(
             col_expr=raw_time_col_expr,
@@ -6666,6 +6733,55 @@ class SQLGenerator:
             type=col.type,
         )
 
+    def _raw_time_col_expr_for_planned(
+        self, *, time_column, source_model, source_relation: str, bundle,
+    ) -> exp.Expression:
+        """Untruncated time expression for a ``TimeTruncKey.column``
+        (DEV-1450 #4a), agnostic to base vs derived.
+
+        * ``ColumnKey`` → the (possibly joined) bare column expression.
+        * ``ColumnSqlKey`` → the EXPANDED ``Column.sql``, rooted at the host
+          relation for a local derived column, or at the ``__``-path alias
+          for a joined one. The DATE_TRUNC is applied by the caller.
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        if isinstance(time_column, ColumnKey):
+            return self._joined_or_local_dim_expr(
+                path=time_column.path,
+                leaf=time_column.leaf,
+                source_model=source_model,
+                source_relation=source_relation,
+                bundle=bundle,
+            )
+        if isinstance(time_column, ColumnSqlKey):
+            if time_column.path:
+                joined_model = bundle.get_referenced_model(time_column.path[-1])
+                if joined_model is None:
+                    raise ValueError(
+                        f"Time dimension references derived column "
+                        f"{time_column.column_name!r} on joined model "
+                        f"{time_column.path[-1]!r} which is not in the resolved "
+                        f"source bundle.",
+                    )
+                expanded_sql = self._expand_derived_column_sql(
+                    source_model=joined_model,
+                    source_relation="__".join(time_column.path),
+                    column_name=time_column.column_name,
+                    bundle=bundle,
+                )
+            else:
+                expanded_sql = self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=time_column.column_name,
+                    bundle=bundle,
+                )
+            return self._parse(expanded_sql)
+        raise NotImplementedError(
+            f"Unsupported TimeTruncKey column type: {type(time_column).__name__}",
+        )
+
     def _expand_derived_column_sql(
         self, *, source_model, source_relation: str, column_name: str, bundle,
     ) -> str:
@@ -6840,7 +6956,18 @@ class SQLGenerator:
             if fp.expression is not None:
                 _walk(fp.expression.value_key)
             elif fp.text is not None:
-                _add_from_sql(self._parse(fp.text))
+                # DEV-1450 #4b: expand the model-filter text first so a bare
+                # derived-column reference (e.g. ``is_eu`` whose sql crosses a
+                # join to ``customers``) surfaces the join its expansion
+                # introduces, pulling the LEFT JOIN into the FROM.
+                expanded_text = self._render_model_filter_sql(
+                    sql=fp.text,
+                    columns=fp.text_columns,
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    bundle=bundle,
+                )
+                _add_from_sql(self._parse(expanded_text))
         return ordered
 
     def _synthesize_enriched_measure_from_planned(
@@ -7107,11 +7234,15 @@ class SQLGenerator:
                 # Mode-A SQL filter (SlayerModel.filters) — qualify bare
                 # column refs with the source relation, mirroring
                 # legacy `_build_where_and_having` at generator.py:2566.
-                target_parts.append(self._qualify_mode_a_sql_filter(
+                # DEV-1450 #4b: a reference to a non-trivial derived column
+                # is inline-expanded (and pulls its crossed joins into the
+                # FROM via _collect_filter_join_paths).
+                target_parts.append(self._render_model_filter_sql(
                     sql=fp.text,
                     columns=fp.text_columns,
                     source_model=source_model,
                     source_relation=source_relation,
+                    bundle=bundle,
                 ))
             else:
                 raise ValueError(
@@ -7167,6 +7298,67 @@ class SQLGenerator:
                 out,
             )
         return out
+
+    @staticmethod
+    def _is_nontrivial_derived(model, name: str) -> bool:
+        """True iff ``name`` is a column on ``model`` whose ``Column.sql`` is a
+        non-trivial expression (set, and not just a bare-identifier remap)."""
+        col = next((c for c in model.columns if c.name == name), None)
+        return col is not None and col.sql is not None and not _is_trivial_base(
+            column=col,
+        )
+
+    def _render_model_filter_sql(
+        self,
+        *,
+        sql: str,
+        columns,
+        source_model,
+        source_relation: str,
+        bundle,
+    ) -> str:
+        """Render a ``SlayerModel.filters`` Mode-A SQL predicate (DEV-1450 #4b).
+
+        If any name in ``columns`` is a non-trivial DERIVED column on
+        ``source_model``, the whole predicate is inline-expanded via
+        ``expand_derived_refs_sync`` (AST-based — it also qualifies bare base
+        refs and resolves sibling / joined derived refs). Otherwise the
+        base-only path (``_qualify_mode_a_sql_filter``) is used unchanged.
+        """
+        if any(
+            self._is_nontrivial_derived(source_model, c) for c in columns
+        ):
+            # Degenerate case: the whole predicate IS a single bare derived
+            # column (``filters=["is_eu"]``). It parses to a root ``exp.Column``,
+            # and ``expand_derived_refs_sync`` rewrites refs in place via
+            # ``col.replace`` — which is a no-op on the AST root. Expand the
+            # column directly so the bare boolean derived filter still inlines.
+            parsed_ast = self._parse(sql)
+            if (
+                isinstance(parsed_ast, exp.Column)
+                and parsed_ast.args.get("table") is None
+                and self._is_nontrivial_derived(source_model, parsed_ast.name)
+            ):
+                return self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=parsed_ast.name,
+                    bundle=bundle,
+                )
+            expanded = expand_derived_refs_sync(
+                sql=sql,
+                model=source_model,
+                alias_path=source_relation,
+                resolve_model=bundle.get_referenced_model,
+                dialect=self.dialect,
+            )
+            return expanded if expanded is not None else sql
+        return self._qualify_mode_a_sql_filter(
+            sql=sql,
+            columns=columns,
+            source_model=source_model,
+            source_relation=source_relation,
+        )
 
     def _render_value_key_for_filter(
         self,
@@ -7278,7 +7470,7 @@ class SQLGenerator:
                 )
                 return _wrap_cast_for_type(
                     self._parse(expanded_sql),
-                    col.type if col is not None else None,
+                    _filter_cast_type(col.type if col is not None else None),
                 )
             # Derived column (``Column.sql`` set) — expand inline, resolving
             # sibling / joined derived refs and pulling crossed joins into the
@@ -7295,7 +7487,7 @@ class SQLGenerator:
             )
             return _wrap_cast_for_type(
                 self._parse(expanded_sql),
-                col.type if col is not None else None,
+                _filter_cast_type(col.type if col is not None else None),
             )
         if isinstance(key, LiteralKey):
             return self._scalar_to_sqlglot(key.value)

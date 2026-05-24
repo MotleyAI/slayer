@@ -48,6 +48,8 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    column_leaf,
+    column_path,
     normalize_scalar,
 )
 from slayer.engine.binding import BoundExpr, BoundFilter
@@ -136,8 +138,8 @@ class ValueRegistry:
             and public_name == key.column_name
         ) or (
             isinstance(key, TimeTruncKey)
-            and key.column.path == ()
-            and public_name == key.column.leaf
+            and column_path(key.column) == ()
+            and public_name == column_leaf(key.column)
         )
         # An UNNAMED ``*:<agg>`` (StarKey source) re-aggregation is exempt: its
         # canonical alias (``_count``) is a structural marker, not a column

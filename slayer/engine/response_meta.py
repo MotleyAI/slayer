@@ -36,6 +36,8 @@ from slayer.core.keys import (
     Phase,
     StarKey,
     TimeTruncKey,
+    column_leaf,
+    column_path,
 )
 from slayer.core.models import Column, SlayerModel
 from slayer.engine.planned import PlannedQuery, ValueSlot
@@ -136,11 +138,11 @@ def _slot_result_keys(*, slot: ValueSlot, source_relation: str) -> List[str]:
     if slot.phase == Phase.ROW:
         if isinstance(key, ColumnKey) and key.path:
             return [f"{source_relation}." + ".".join(key.path) + f".{key.leaf}"]
-        if isinstance(key, TimeTruncKey) and key.column.path:
+        if isinstance(key, TimeTruncKey) and column_path(key.column):
             return [
                 f"{source_relation}."
-                + ".".join(key.column.path)
-                + f".{key.column.leaf}"
+                + ".".join(column_path(key.column))
+                + f".{column_leaf(key.column)}"
             ]
     aliases = slot.public_aliases or [slot.declared_name]
     return [f"{source_relation}.{a}" for a in aliases]

@@ -176,6 +176,9 @@ class _NullCrossModelPlanner:
         host_filters: List[HostFilterRouting],
         public_alias: Optional[str] = None,
         hidden: bool = False,
+        # DEV-1450 follow-up #2: the reroot-strategy kwargs are optional;
+        # a Protocol-complete double absorbs them without re-rooting.
+        **_: object,
     ) -> CrossModelAggregatePlan:
         return CrossModelAggregatePlan(
             aggregate_slot_id=aggregate_slot_id,

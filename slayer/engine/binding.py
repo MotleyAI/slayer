@@ -59,6 +59,8 @@ from slayer.core.keys import (
     TimeTruncKey,
     TransformKey,
     ValueKey,
+    column_leaf,
+    column_path,
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
@@ -212,16 +214,7 @@ def bind_time_dimension(
     else:
         bound_col = _resolve_ref(full, scope=scope, bundle=bundle)
 
-    if isinstance(bound_col, ColumnSqlKey):
-        raise NotImplementedError(
-            f"TimeDimension {full!r} resolves to a derived column "
-            f"(Column.sql set); derived TD columns are not yet supported "
-            f"by the typed pipeline. Use the base temporal column "
-            f"directly, or apply the granularity in an upstream stage. "
-            f"(TimeTruncKey.column is typed as ColumnKey; widening it to "
-            f"accept ColumnSqlKey is tracked as a follow-up.)"
-        )
-    if not isinstance(bound_col, ColumnKey):
+    if not isinstance(bound_col, (ColumnKey, ColumnSqlKey)):
         # Defensive — the binder should never produce a non-column key
         # for an identifier ref against a ModelScope.
         raise ValueError(
@@ -229,8 +222,11 @@ def bind_time_dimension(
             f"reference (got {type(bound_col).__name__})."
         )
 
+    # DEV-1450 follow-up #4a: a derived (Column.sql) temporal column routes
+    # through ColumnSqlKey; TimeTruncKey.column accepts both kinds, so the
+    # leaf / path are read via the kind-agnostic helpers.
     terminal_model = _terminal_model_for_path(
-        path=bound_col.path,
+        path=column_path(bound_col),
         scope=scope,
         bundle=bundle,
     )
@@ -244,7 +240,7 @@ def bind_time_dimension(
             suggestion=None,
         )
     col = next(
-        (c for c in terminal_model.columns if c.name == bound_col.leaf),
+        (c for c in terminal_model.columns if c.name == column_leaf(bound_col)),
         None,
     )
     if col is None or col.type not in _TEMPORAL_TYPES:

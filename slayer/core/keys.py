@@ -213,22 +213,46 @@ class TimeTruncKey(_FrozenKey):
     can bind against the raw column independently of the truncation.
 
     Identity is structural: two ``TimeTruncKey``s with the same
-    ``ColumnKey`` and the same ``granularity`` intern to the same slot;
+    ``column`` and the same ``granularity`` intern to the same slot;
     different granularities on the same column are distinct slots. This
     lets the ``ValueRegistry`` keep month / day / raw uses of the same
     column as separate materialised values without special-casing.
+
+    ``column`` is a ``ColumnKey`` (base temporal column) or a
+    ``ColumnSqlKey`` (DEV-1450 follow-up #4a — a DERIVED temporal column
+    whose ``Column.sql`` is set). The SQL generator applies the
+    ``DATE_TRUNC`` over the bare identifier (``ColumnKey``) or over the
+    expanded derived expression (``ColumnSqlKey``).
 
     ``granularity`` is the string value of a ``TimeGranularity`` member
     (``"day"`` / ``"month"`` / ...). Stored as ``str`` so the key stays
     a pure-data frozen Pydantic model without an enum import here.
     """
 
-    column: ColumnKey
+    column: Union["ColumnKey", "ColumnSqlKey"]
     granularity: str
 
     @property
     def phase(self) -> Phase:
         return Phase.ROW
+
+
+def column_leaf(col: Union["ColumnKey", "ColumnSqlKey"]) -> str:
+    """The leaf column name of a ``TimeTruncKey.column`` regardless of kind.
+
+    ``ColumnKey`` carries ``leaf``; ``ColumnSqlKey`` carries
+    ``column_name``. Using this helper everywhere a ``TimeTruncKey``'s
+    column is unwrapped avoids ``leaf`` / ``column_name`` drift.
+    """
+    return getattr(col, "leaf", None) or getattr(col, "column_name")
+
+
+def column_path(col: Union["ColumnKey", "ColumnSqlKey"]) -> Tuple[str, ...]:
+    """The join path of a ``TimeTruncKey.column`` regardless of kind.
+
+    Both ``ColumnKey`` and ``ColumnSqlKey`` carry ``.path``.
+    """
+    return col.path
 
 
 class StarKey(_FrozenKey):
@@ -536,3 +560,5 @@ TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
 ScalarCallKey.model_rebuild()
 BetweenKey.model_rebuild()
+# TimeTruncKey.column is a Union[ColumnKey, ColumnSqlKey] (DEV-1450 #4a).
+TimeTruncKey.model_rebuild()

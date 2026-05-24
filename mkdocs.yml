@@ -63,6 +63,19 @@ nav:
   - Configuration:
       - Datasources: configuration/datasources.md
       - Storage Backends: configuration/storage.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - Typed keys: architecture/typed-keys.md
+      - Scopes & source bundle: architecture/scopes-and-bundle.md
+      - Slack normalization: architecture/slack-normalization.md
+      - Parsing: architecture/parsing.md
+      - Binding: architecture/binding.md
+      - Planning: architecture/planning.md
+      - Cross-model aggregates: architecture/cross-model-aggregates.md
+      - Stage planning: architecture/stage-planning.md
+      - SQL generation: architecture/sql-generation.md
+      - Errors & warnings: architecture/errors-and-warnings.md
+      - Engine orchestration: architecture/engine-orchestration.md
   - Development: development.md
 
 plugins:
