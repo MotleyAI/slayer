@@ -4976,6 +4976,26 @@ class SQLGenerator:
         )
 
     @staticmethod
+    def _paren_if_lower_prec(
+        child: exp.Expression, *, parent_prec: int, is_right: bool, op: str,
+    ) -> exp.Expression:
+        """Wrap ``child`` in parens when its arithmetic precedence is lower
+        than the parent op's (or equal, for the RIGHT operand of the
+        non-associative ``-`` / ``/``). Leaves / functions / casts / already-
+        parenthesised nodes are returned untouched.
+        """
+        child_prec = {
+            exp.Add: 1, exp.Sub: 1, exp.Mul: 2, exp.Div: 2,
+        }.get(type(child))
+        if child_prec is None:
+            return child
+        if child_prec < parent_prec:
+            return exp.Paren(this=child)
+        if child_prec == parent_prec and is_right and op in ("-", "/"):
+            return exp.Paren(this=child)
+        return child
+
+    @staticmethod
     def _compose_arithmetic_op(
         *, op: str, operands: List[exp.Expression],
     ) -> exp.Expression:
@@ -5001,6 +5021,21 @@ class SQLGenerator:
                 "!=": exp.NEQ, "<>": exp.NEQ,
             }
             if op in binary:
+                # sqlglot does NOT add precedence parens for a nested AST, so
+                # ``Div(Sub(a, b), c)`` would render as ``a - b / c`` (wrong:
+                # ``b / c`` binds first). Parenthesise a lower-precedence
+                # operand — and an equal-precedence RIGHT operand under the
+                # non-associative ``-`` / ``/`` — so ``change_pct`` and friends
+                # emit ``(a - b) / c``.
+                arith_prec = {"+": 1, "-": 1, "*": 2, "/": 2}
+                parent_prec = arith_prec.get(op)
+                if parent_prec is not None:
+                    lhs = SQLGenerator._paren_if_lower_prec(
+                        lhs, parent_prec=parent_prec, is_right=False, op=op,
+                    )
+                    rhs = SQLGenerator._paren_if_lower_prec(
+                        rhs, parent_prec=parent_prec, is_right=True, op=op,
+                    )
                 return binary[op](this=lhs, expression=rhs)
             if op == "and":
                 return exp.And(this=lhs, expression=rhs)
