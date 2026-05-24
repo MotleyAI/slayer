@@ -176,22 +176,6 @@ class TestSlayerModel:
         )
         assert model.filters == ["customers__regions.name == 'US'"]
 
-    def test_filter_multidot_auto_converted(self) -> None:
-        """Multi-dot references in model filters are auto-converted to __ syntax."""
-        model = SlayerModel(
-            name="test", sql_table="t", data_source="test",
-            filters=["customers.regions.name == 'US'"],
-        )
-        assert model.filters == ["customers__regions.name == 'US'"]
-
-    def test_filter_multidot_complex_auto_converted(self) -> None:
-        """Multi-dot references are converted even in complex filter expressions."""
-        model = SlayerModel(
-            name="test", sql_table="t", data_source="test",
-            filters=["orders.customers.region == warehouses.stores.region"],
-        )
-        assert model.filters == ["orders__customers.region == warehouses__stores.region"]
-
     def test_filter_string_literal_dots_not_converted(self) -> None:
         """Dots inside string literals are not converted."""
         model = SlayerModel(
@@ -200,33 +184,15 @@ class TestSlayerModel:
         )
         assert model.filters == ["name == 'foo.bar.baz'"]
 
-    def test_dimension_sql_multidot_auto_converted(self) -> None:
-        """Multi-dot references in dimension sql are auto-converted."""
-        dim = Column(name="region_name", sql="customers.regions.name", type=DataType.DOUBLE)
-        assert dim.sql == "customers__regions.name"
-
     def test_dimension_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in dimension sql are left as-is."""
         dim = Column(name="cust_name", sql="customers.name", type=DataType.DOUBLE)
         assert dim.sql == "customers.name"
 
-    def test_measure_sql_multidot_auto_converted(self) -> None:
-        """Multi-dot references in measure sql are auto-converted."""
-        meas = Column(name="region_count", sql="customers.regions.id", type=DataType.DOUBLE)
-        assert meas.sql == "customers__regions.id"
-
     def test_measure_sql_single_dot_unchanged(self) -> None:
         """Single-dot references in measure sql are left as-is."""
         meas = Column(name="total", sql="orders.amount", type=DataType.DOUBLE)
         assert meas.sql == "orders.amount"
-
-    def test_filter_multidot_three_levels_auto_converted(self) -> None:
-        """Three-level multi-dot references are converted correctly."""
-        model = SlayerModel(
-            name="test", sql_table="t", data_source="test",
-            filters=["a.b.c.d == 1"],
-        )
-        assert model.filters == ["a__b__c.d == 1"]
 
     def test_model_name_rejects_double_underscore(self) -> None:
         with pytest.raises(ValueError, match="must not contain '__'"):
@@ -1050,10 +1016,6 @@ class TestMeasureFilter:
     def test_filter_set(self) -> None:
         m = Column(name="active_revenue", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)
         assert m.filter == "status = 'active'"
-
-    def test_filter_multidot_autoconvert(self) -> None:
-        m = Column(name="x", sql="amount", filter="a.b.c = 1", type=DataType.DOUBLE)
-        assert "a__b.c" in m.filter
 
     def test_filter_in_model_dump(self) -> None:
         m = Column(name="x", sql="amount", filter="status = 'active'", type=DataType.DOUBLE)

@@ -2,12 +2,15 @@
 
 AST-based, scope-aware rewrite of root-scope dotted refs in Mode-A surfaces.
 
-The legacy ``slayer.core.models._fix_multidot_sql`` regex validator runs at
-pydantic construction time and rewrites the same shapes silently. To exercise
-the AST-based rule's behaviour directly we call ``_apply_dot_path_in_sql``
-with raw text — bypassing the legacy validator. The Stage 7b cutover deletes
-the legacy regex; until then the AST rule is wired but mostly inert on
-already-constructed models.
+This is the sole multi-dot normalization mechanism: the legacy
+``slayer.core.models._fix_multidot_sql`` pydantic construction-time regex
+validator was removed in the 7b.15 cutover. Mode-A multi-dot refs
+(``customers.regions.name``) are now rewritten to the ``__`` alias form
+(``customers__regions.name``) only when a model/query flows through
+``normalize_model`` / ``normalize_query`` at the engine boundary — never at
+plain pydantic construction. The helper-level tests call
+``_apply_dot_path_in_sql`` directly; the wiring tests go through
+``normalize_model``.
 """
 
 from __future__ import annotations
@@ -365,12 +368,13 @@ class TestDotPathInSqlHelper:
 
 
 def _set_raw_column_sql(column: Column, *, raw: str) -> Column:
-    """Bypass the pydantic field validator and set Column.sql to a raw
-    slack-form string the validator would otherwise rewrite.
+    """Set ``Column.sql`` to a raw slack-form string for the normalize pass.
 
-    Pydantic v2 default ``validate_assignment=False`` means direct attribute
-    assignment skips the field validator — exactly what's needed to exercise
-    the AST rule's wiring before the legacy regex pre-empts it.
+    Construction no longer rewrites multi-dot refs (the legacy validator is
+    gone), so the raw form survives until ``normalize_model`` runs. Assigning
+    after construction keeps these helpers symmetric with the ``.filter`` /
+    ``.filters`` setters below, which set fields directly to feed the same
+    normalize pass.
     """
     column.sql = raw
     return column
