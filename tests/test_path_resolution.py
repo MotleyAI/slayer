@@ -47,7 +47,7 @@ def chain():
     regions = _make_model("regions")
     registry = {"orders": orders, "customers": customers, "regions": regions}
 
-    async def resolve_model(*, model_name, named_queries, prefer_data_source):
+    async def resolve_model(*, model_name, named_queries, prefer_data_source):  # NOSONAR(S7503) — async required: walk_join_chain awaits this callback
         return registry[model_name]
 
     return orders, customers, regions, resolve_model
@@ -137,7 +137,7 @@ class TestWalkJoinChain:
         )
         registry = {"a": a, "b": b}
 
-        async def resolve(*, model_name, named_queries, prefer_data_source):
+        async def resolve(*, model_name, named_queries, prefer_data_source):  # NOSONAR(S7503) — async required: walk_join_chain awaits this callback
             return registry[model_name]
 
         with pytest.raises(ValueError, match="Circular join detected"):
@@ -154,7 +154,7 @@ class TestWalkJoinChain:
         # accidentally cross to a same-named model in another datasource.
         calls = []
 
-        async def resolve(*, model_name, named_queries, prefer_data_source):
+        async def resolve(*, model_name, named_queries, prefer_data_source):  # NOSONAR(S7503) — async required: walk_join_chain awaits this callback
             calls.append({"model_name": model_name, "prefer_data_source": prefer_data_source})
             # Return a minimal terminal model.
             return _make_model(model_name)
@@ -170,7 +170,7 @@ class TestWalkJoinChain:
         orders, _, _, _ = chain
         seen = {}
 
-        async def resolve(*, model_name, named_queries, prefer_data_source):
+        async def resolve(*, model_name, named_queries, prefer_data_source):  # NOSONAR(S7503) — async required: walk_join_chain awaits this callback
             seen["named_queries"] = named_queries
             return _make_model(model_name)
 
@@ -186,7 +186,7 @@ class TestWalkJoinChain:
         orders, _, _, _ = chain
         seen = {}
 
-        async def resolve(*, model_name, named_queries, prefer_data_source):
+        async def resolve(*, model_name, named_queries, prefer_data_source):  # NOSONAR(S7503) — async required: walk_join_chain awaits this callback
             seen["named_queries"] = named_queries
             return _make_model(model_name)
 

@@ -353,7 +353,7 @@ async def test_derived_td_date_range(engine):
     # created 02-15) -> one month bucket, amount 12, count 2. With the bare
     # created_at it would be row3 only -> amount 7, count 1.
     assert resp.row_count == 1
-    assert resp.data[0]["orders.amount_sum"] == 12.0
+    assert resp.data[0]["orders.amount_sum"] == pytest.approx(12.0)
     assert resp.data[0]["orders._count"] == 2
 
 

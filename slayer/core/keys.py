@@ -133,18 +133,20 @@ def _typed_leaf(v):
     representation users see via ``key.args[0]``.
 
     ``ValueKey`` leaves (ColumnKey, AggregateKey, ...) are themselves
-    frozen Pydantic models with value-based equality — they're left
-    unwrapped.
+    frozen Pydantic models with value-based equality — they ride in the
+    generic ``("__key__", v)`` slot. Every branch returns a uniform
+    ``(tag, value)`` pair so callers never have to special-case the
+    container shape.
     """
     if isinstance(v, bool):
         return ("__bool__", v)
     if v is None:
-        return ("__none__",)
+        return ("__none__", None)
     if isinstance(v, Decimal):
         return ("__num__", v)
     if isinstance(v, str):
         return ("__str__", v)
-    return v
+    return ("__key__", v)
 
 
 def _typed_args(args):

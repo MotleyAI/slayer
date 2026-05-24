@@ -56,7 +56,7 @@ class TestCollectReachableAggNames:
     async def test_empty_when_no_aggs_anywhere(self):
         m = _make_model("orders")
 
-        async def resolve_join_target(*, target_model_name, named_queries):
+        async def resolve_join_target(*, target_model_name, named_queries):  # NOSONAR(S7503) — async required: collect_reachable_agg_names awaits this callback
             return None
 
         result = await collect_reachable_agg_names(
@@ -73,7 +73,7 @@ class TestCollectReachableAggNames:
             ],
         )
 
-        async def resolve_join_target(*, target_model_name, named_queries):
+        async def resolve_join_target(*, target_model_name, named_queries):  # NOSONAR(S7503) — async required: collect_reachable_agg_names awaits this callback
             return None
 
         result = await collect_reachable_agg_names(
@@ -93,7 +93,7 @@ class TestCollectReachableAggNames:
             joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
         )
 
-        async def resolve_join_target(*, target_model_name, named_queries):
+        async def resolve_join_target(*, target_model_name, named_queries):  # NOSONAR(S7503) — async required: collect_reachable_agg_names awaits this callback
             return (None, customers) if target_model_name == "customers" else None
 
         result = await collect_reachable_agg_names(
@@ -111,7 +111,7 @@ class TestCollectReachableAggNames:
             joins=[ModelJoin(target_model="b", join_pairs=[["x", "id"]])],
         )
 
-        async def resolve(*, target_model_name, named_queries):
+        async def resolve(*, target_model_name, named_queries):  # NOSONAR(S7503) — async required: collect_reachable_agg_names awaits this callback
             return (None, b) if target_model_name == "b" else None
 
         result = await collect_reachable_agg_names(a, resolve, named_queries={})
@@ -130,7 +130,7 @@ class TestCollectReachableAggNames:
         b.joins = [ModelJoin(target_model="a", join_pairs=[["x", "id"]])]
         registry = {"a": a, "b": b}
 
-        async def resolve(*, target_model_name, named_queries):
+        async def resolve(*, target_model_name, named_queries):  # NOSONAR(S7503) — async required: collect_reachable_agg_names awaits this callback
             m = registry.get(target_model_name)
             return (None, m) if m else None
 
