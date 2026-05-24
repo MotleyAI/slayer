@@ -343,6 +343,12 @@ def plan_query(
             bo = declared_alias_to_bound[col_name]
         elif full_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[full_name]
+        elif f"_{col_name}" in declared_alias_to_bound:
+            # ``*:count`` surfaces as the alias ``_count`` (the ``*`` is
+            # dropped, the leading ``_`` kept as a marker); users naturally
+            # order by the bare ``count``. Mirror the legacy
+            # ``_resolve_order_column`` ``_name`` fallback.
+            bo = declared_alias_to_bound[f"_{col_name}"]
         elif o.raw_formula:
             bo = bind_expr(
                 parse_expr(o.raw_formula, allow_dunder=flat_scope),

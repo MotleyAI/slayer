@@ -226,11 +226,15 @@ class IllegalScopeReferenceError(SlayerError, ValueError):
         ))
 
 
-class IllegalWindowInFilterError(SlayerError):
+class IllegalWindowInFilterError(SlayerError, ValueError):
     """A filter contains a raw ``OVER(...)`` window expression, or refers
     to a ``Column.sql`` whose body contains a window function (DEV-1369 /
     DEV-1336 — predicate promotion was removed). Use a rank-family
     transform instead.
+
+    Multi-inherits ``ValueError`` (like :class:`UnknownReferenceError`) so
+    the pre-existing call sites and tests that catch ``ValueError`` for the
+    legacy windowed-filter rejection keep working after the cutover.
     """
 
     def __init__(
