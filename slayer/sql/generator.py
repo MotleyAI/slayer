@@ -5742,6 +5742,10 @@ class SQLGenerator:
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
+        # ``slot`` may be ``None`` when this synth is built for a HAVING term
+        # whose aggregate isn't a declared projection slot; the result type is
+        # then unknown (no outer CAST needed for a comparison operand).
+        slot_type = slot.type if slot is not None else None
         source = key.source
         if isinstance(source, StarKey):
             # Legacy enrichment (enrichment.py:~388) rejects any
@@ -5766,7 +5770,7 @@ class SQLGenerator:
                 aggregation=key.agg,
                 alias=full_alias,
                 model_name=source_relation,
-                type=slot.type,
+                type=slot_type,
             )
         if isinstance(source, (ColumnKey, ColumnSqlKey)):
             # ColumnKey is a bare / trivial column (``sql`` None or a bare
@@ -5873,7 +5877,7 @@ class SQLGenerator:
                 aggregation=key.agg,
                 alias=full_alias,
                 model_name=source_relation,
-                type=slot.type,
+                type=slot_type,
                 column_type=col.type,
                 filter_sql=filter_sql,
                 agg_kwargs=agg_kwargs_str,
@@ -5895,7 +5899,18 @@ class SQLGenerator:
         from slayer.core.keys import Phase
 
         skip = skip_filter_ids or set()
+        # key -> slot map so a HAVING term's local AggregateKey renders as the
+        # same aggregate expression the base SELECT emits.
+        slot_by_key: Dict[Any, Any] = {
+            s.key: s
+            for s in (
+                list(planned_query.row_slots)
+                + list(planned_query.aggregate_slots)
+                + list(planned_query.combined_expression_slots)
+            )
+        }
         where_parts: list[str] = []
+        having_parts: list[str] = []
         for fp in planned_query.filters_by_phase:
             if fp.id in skip:
                 # DEV-1450 stage 7b.12: filters routed into a per-plan
@@ -5903,31 +5918,40 @@ class SQLGenerator:
                 # are rendered there; the host base must not double-
                 # apply them.
                 continue
-            if fp.phase != Phase.ROW:
+            if fp.phase == Phase.POST:
                 # 7b.10: POST-phase filters are handled in the outer
                 # wrapper by ``_render_post_phase_filter_conditions``
                 # (after the CTE chain, before pagination). Skip them
                 # here so the base WHERE doesn't try to render them.
-                if fp.phase == Phase.POST:
-                    continue
-                # AGGREGATE/HAVING-phase filters remain unsupported in
-                # the local-only slice; 7b.12 wires HAVING for cross-
-                # model aggregates via the per-plan CTE routing. A
-                # filter that reaches here means the planner left a
-                # HAVING-phase filter at the host without routing — a
-                # planner-side gap.
-                if fp.phase == Phase.AGGREGATE:
-                    raise NotImplementedError(
-                        f"DEV-1450 stage 7b.12: HAVING-phase filter "
-                        f"id={fp.id!r} was not routed to a cross-model "
-                        f"CTE. The planner should route filters that "
-                        f"reference a cross-model aggregate slot via "
-                        f"``CrossModelAggregatePlan.having_filter_ids``."
-                    )
+                continue
+            if fp.phase not in (Phase.ROW, Phase.AGGREGATE):
                 raise NotImplementedError(
                     f"DEV-1450 stage 7b.10+: unsupported filter phase "
                     f"{fp.phase!r}. filter id={fp.id!r}."
                 )
+            # AGGREGATE-phase filters referencing a LOCAL aggregate render as a
+            # HAVING clause; a cross-model aggregate ref raises inside the
+            # value-key walker (it routes via the per-plan CTE instead).
+            target_parts = (
+                having_parts if fp.phase == Phase.AGGREGATE else where_parts
+            )
+            if fp.phase == Phase.AGGREGATE and fp.expression is not None:
+                # A HAVING that references a bare (non-aggregated) row column
+                # which is NOT in the query's GROUP BY would emit invalid SQL
+                # (``HAVING orders.status = 'x'`` with status ungrouped). Reject
+                # early with the legacy phrasing.
+                grouped = {
+                    s.key
+                    for s in planned_query.row_slots
+                    if s.id in set(planned_query.projection)
+                }
+                for ck in self._direct_local_column_keys(fp.expression.value_key):
+                    if ck not in grouped:
+                        raise ValueError(
+                            f"Filter references column {ck.leaf!r} in a HAVING "
+                            f"(aggregate) predicate, but it is not in the "
+                            f"query's dimensions / GROUP BY."
+                        )
             if fp.expression is not None:
                 # Typed predicate (Mode-B DSL or planner-emitted
                 # BetweenKey) — render through the value-key walker.
@@ -5935,6 +5959,7 @@ class SQLGenerator:
                     key=fp.expression.value_key,
                     source_relation=source_relation,
                     source_model=source_model,
+                    slot_by_key=slot_by_key,
                 )
                 # Match the legacy DSL parser, which wraps top-level
                 # boolean expressions in parens — legacy WHERE for a
@@ -5944,12 +5969,12 @@ class SQLGenerator:
                 # single-comparison or single-BETWEEN filters.
                 if isinstance(rendered, (exp.And, exp.Or)):
                     rendered = exp.Paren(this=rendered)
-                where_parts.append(rendered.sql(dialect=self.dialect))
+                target_parts.append(rendered.sql(dialect=self.dialect))
             elif fp.text is not None:
                 # Mode-A SQL filter (SlayerModel.filters) — qualify bare
                 # column refs with the source relation, mirroring
                 # legacy `_build_where_and_having` at generator.py:2566.
-                where_parts.append(self._qualify_mode_a_sql_filter(
+                target_parts.append(self._qualify_mode_a_sql_filter(
                     sql=fp.text,
                     columns=fp.text_columns,
                     source_model=source_model,
@@ -5963,9 +5988,11 @@ class SQLGenerator:
 
         where_clause = None
         if where_parts:
-            where_sql = _SQL_AND_JOINER.join(where_parts)
-            where_clause = self._parse_predicate(where_sql)
-        return where_clause, None  # No HAVING in 7b.8.
+            where_clause = self._parse_predicate(_SQL_AND_JOINER.join(where_parts))
+        having_clause = None
+        if having_parts:
+            having_clause = self._parse_predicate(_SQL_AND_JOINER.join(having_parts))
+        return where_clause, having_clause
 
     @staticmethod
     def _qualify_mode_a_sql_filter(
@@ -6014,14 +6041,16 @@ class SQLGenerator:
         key,
         source_relation: str,
         source_model,
+        slot_by_key: Optional[Dict[Any, Any]] = None,
     ) -> exp.Expression:
-        """Render a ValueKey tree to sqlglot for WHERE rendering.
+        """Render a ValueKey tree to sqlglot for WHERE / HAVING rendering.
 
-        7b.8 supports ``ColumnKey`` (local only), ``LiteralKey``,
-        ``ArithmeticKey`` (comparison / boolean / arithmetic),
-        ``ScalarCallKey`` (closed allowlist). Cross-model column refs
-        (``path != ()``) and ``AggregateKey`` / ``TransformKey`` /
-        ``TimeTruncKey`` are deferred to later slices.
+        Supports ``ColumnKey`` (local), ``LiteralKey``, ``ArithmeticKey``,
+        ``ScalarCallKey``, ``BetweenKey``, and a LOCAL ``AggregateKey`` (for
+        HAVING — rendered as the bare aggregate expression so it works on
+        dialects that reject SELECT aliases in HAVING). Cross-model column /
+        aggregate refs (``path != ()``) and ``TransformKey`` / ``TimeTruncKey``
+        / ``ColumnSqlKey`` are deferred to later slices.
         """
         from decimal import Decimal
 
@@ -6037,6 +6066,28 @@ class SQLGenerator:
             TimeTruncKey,
             TransformKey,
         )
+
+        if isinstance(key, AggregateKey):
+            # HAVING term: render the aggregate as its expression (``COUNT(*)``,
+            # ``SUM(amount)``), not the SELECT alias — Postgres rejects output
+            # aliases in HAVING. Cross-model aggregates (non-empty source path)
+            # are routed into a per-plan CTE instead (handled by the caller).
+            if getattr(key.source, "path", ()):
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.12: cross-model aggregate ref in "
+                    f"filter (path={key.source.path!r}) routes via the "
+                    f"per-plan CTE, not inline HAVING."
+                )
+            slot = (slot_by_key or {}).get(key)
+            synth = self._synthesize_enriched_measure_from_planned(
+                slot=slot,
+                key=key,
+                source_model=source_model,
+                source_relation=source_relation,
+                full_alias="__having_ref__",
+            )
+            agg_expr, _is_agg = self._build_agg(measure=synth)
+            return agg_expr
 
         if isinstance(key, ColumnKey):
             if key.path != ():
@@ -6114,6 +6165,45 @@ class SQLGenerator:
         raise NotImplementedError(
             f"Unsupported ValueKey type in filter: {type(key).__name__}",
         )
+
+    @staticmethod
+    def _direct_local_column_keys(key) -> "List[Any]":
+        """Local ``ColumnKey``s that appear as DIRECT (non-aggregated) operands
+        of a predicate tree — used to reject a HAVING that compares an
+        ungrouped row column. The walk stops at ``AggregateKey`` /
+        ``TransformKey`` (their inner columns are aggregated, not grouped).
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ScalarCallKey,
+            TransformKey,
+        )
+
+        out: List[Any] = []
+
+        def _walk(k) -> None:
+            if isinstance(k, ColumnKey):
+                if k.path == ():
+                    out.append(k)
+                return
+            if isinstance(k, (AggregateKey, TransformKey)):
+                return  # inner refs are aggregated / windowed, not grouped
+            if isinstance(k, ArithmeticKey):
+                for o in k.operands:
+                    _walk(o)
+            elif isinstance(k, ScalarCallKey):
+                for a in k.args:
+                    _walk(a)
+            elif isinstance(k, BetweenKey):
+                _walk(k.column)
+                _walk(k.low)
+                _walk(k.high)
+
+        _walk(key)
+        return out
 
     @staticmethod
     def _scalar_to_sqlglot(v) -> exp.Expression:
