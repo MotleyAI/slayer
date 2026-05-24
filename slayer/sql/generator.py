@@ -103,6 +103,7 @@ _BUILTIN_BAREARG_AGGS_LOCAL_SLICE: frozenset[str] = frozenset({
     "percentile", "weighted_avg",
     "corr", "covar_samp", "covar_pop",
     "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    "first", "last",
 })
 
 # DEV-1337: dialects with native single-arg `log10(x)` / `log2(x)`. sqlglot
@@ -2720,6 +2721,7 @@ class SQLGenerator:
             aliases_by_slot_id,
             has_aggregation,
             group_by_keys,
+            where_consumed,
         ) = self._build_base_select_for_planned(
             planned_query=planned_query,
             bundle=bundle,
@@ -2735,7 +2737,12 @@ class SQLGenerator:
             source_model=source_model,
         )
 
-        if where_clause is not None:
+        # ``where_consumed`` is True for the first/last ranked-subquery path:
+        # the WHERE is applied INSIDE the ranked subquery (it must filter raw
+        # rows before ranking), so re-applying it on the outer SELECT would be
+        # both redundant and — for filters that should narrow the ranked set —
+        # semantically wrong.
+        if where_clause is not None and not where_consumed:
             base_select = base_select.where(where_clause)
 
         # Match legacy _generate_base:1375 — dim-only-dedup OR
@@ -3367,6 +3374,36 @@ class SQLGenerator:
             bundle=bundle,
         )
 
+        # DEV-1450: first/last AGGREGATIONS rank rows via a ROW_NUMBER
+        # subquery (mirrors legacy ``_generate_base`` + ``_build_last_
+        # ranked_from``).
+        if self._has_first_last_aggregate(
+            base_render_order=base_render_order, slots_by_id=slots_by_id,
+        ):
+            if skip_cross_model_aggs:
+                # The cross-model orchestrator builds ``_base`` with
+                # ``skip_cross_model_aggs=True``; a local first/last there
+                # would need the ranked subquery wrapped around ``_base``
+                # while still deferring cross-model aggregates to their
+                # ``_cm_*`` CTEs. Raise loudly rather than emit a SELECT
+                # that references ROW_NUMBER columns it never projected.
+                raise NotImplementedError(
+                    "DEV-1450: local first/last aggregation combined with "
+                    "cross-model aggregates is not yet supported; factor the "
+                    "first/last measure into a multi-stage source_queries "
+                    "model."
+                )
+            return self._build_first_last_base_select(
+                planned_query=planned_query,
+                bundle=bundle,
+                source_model=source_model,
+                source_relation=source_relation,
+                base_render_order=base_render_order,
+                slots_by_id=slots_by_id,
+                from_clause=from_clause,
+                base_joins=base_joins,
+            )
+
         select_columns: list[exp.Expression] = []
         group_by_keys: Dict[str, exp.Expression] = {}
         has_aggregation = False
@@ -3501,7 +3538,415 @@ class SQLGenerator:
             base_select = base_select.join(
                 join_expr, on=on_expr, join_type=join_type,
             )
-        return base_select, aliases_by_slot_id, has_aggregation, group_by_keys
+        return base_select, aliases_by_slot_id, has_aggregation, group_by_keys, False
+
+    def _has_first_last_aggregate(
+        self, *, base_render_order: List[str], slots_by_id: Dict[str, Any],
+    ) -> bool:
+        """True if any LOCAL ``first`` / ``last`` AGGREGATE slot appears in
+        the base render order.
+
+        Cross-model first/last (non-empty ``source.path``) is excluded — it
+        is not rendered by the ranked-subquery path (each cross-model
+        aggregate has its own CTE).
+        """
+        from slayer.core.keys import AggregateKey, Phase
+
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.AGGREGATE:
+                continue
+            key = slot.key
+            if (
+                isinstance(key, AggregateKey)
+                and key.agg in ("first", "last")
+                and not getattr(key.source, "path", ())
+            ):
+                return True
+        return False
+
+    def _resolve_ranking_time_column_from_planned(
+        self,
+        *,
+        base_render_order: List[str],
+        slots_by_id: Dict[str, Any],
+        source_model,
+        source_relation: str,
+        bundle,
+    ) -> Optional[str]:
+        """Resolve the default ORDER-BY time column for first/last
+        ROW_NUMBER ranking (mirrors legacy ``_resolve_last_agg_time``).
+
+        Precedence (matching legacy): the first ``DATE`` / ``TIMESTAMP``
+        regular dimension, then the first time-dimension slot's raw column,
+        then the model's ``default_time_dimension``. Returns the qualified
+        SQL string (e.g. ``"orders.created_at"`` / ``"stores.opened_at"``),
+        or ``None`` when nothing temporal is in scope.
+
+        (The legacy ``main_time_dimension`` short-circuit and the
+        filter-referenced-date fallback are corner cases the spec permits
+        diverging on; they are not reproduced here.)
+        """
+        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
+
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            if slot.phase == Phase.ROW and isinstance(slot.key, ColumnKey):
+                model = source_model
+                for hop in slot.key.path:
+                    nxt = bundle.get_referenced_model(hop)
+                    if nxt is None:
+                        model = None
+                        break
+                    model = nxt
+                if model is None:
+                    continue
+                col_def = next(
+                    (c for c in model.columns if c.name == slot.key.leaf), None,
+                )
+                if col_def is not None and col_def.type in (
+                    DataType.DATE, DataType.TIMESTAMP,
+                ):
+                    return self._joined_or_local_dim_expr(
+                        path=slot.key.path, leaf=slot.key.leaf,
+                        source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    ).sql(dialect=self.dialect)
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            if slot.phase == Phase.ROW and isinstance(slot.key, TimeTruncKey):
+                col = slot.key.column
+                return self._joined_or_local_dim_expr(
+                    path=col.path, leaf=col.leaf, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                ).sql(dialect=self.dialect)
+        if source_model.default_time_dimension:
+            return f"{source_relation}.{source_model.default_time_dimension}"
+        return None
+
+    def _build_ranked_subquery_from_planned(
+        self,
+        *,
+        source_relation: str,
+        default_time_col_sql: str,
+        partition_exprs: List[exp.Expression],
+        extra_projections: List[Tuple[str, exp.Expression]],
+        synth_measures: List["EnrichedMeasure"],
+        from_clause: exp.Expression,
+        base_joins: List,
+        where_clause: Optional[exp.Expression],
+    ) -> Tuple[exp.Expression, dict, dict, dict]:
+        """Build the ROW_NUMBER-ranked subquery that wraps the source for
+        first/last aggregation (planned-native port of
+        ``_build_last_ranked_from``).
+
+        Projects ``source_relation.*`` plus the supplied ``extra_projections``
+        (truncated time dimensions / joined dimensions referenced by the
+        outer SELECT) plus one ``ROW_NUMBER`` column per distinct
+        (effective-time-column, agg) pair. Filtered first/last measures get
+        a dedicated ranking column (non-matching rows pushed to the bottom)
+        and a boolean match flag. WHERE is applied INSIDE so it filters raw
+        rows before ranking. Returns ``(subquery, rn_suffix_map,
+        filtered_rn_map, filtered_match_map)``.
+        """
+        partition_clause = ""
+        if partition_exprs:
+            partition_clause = "PARTITION BY " + ", ".join(
+                p.sql(dialect=self.dialect) for p in partition_exprs
+            )
+
+        select_exprs: List[exp.Expression] = [
+            exp.Column(this=exp.Star(), table=exp.to_identifier(source_relation)),
+        ]
+        for alias, e in extra_projections:
+            select_exprs.append(e.copy().as_(alias))
+
+        # Unfiltered first/last → one ROW_NUMBER per distinct effective time
+        # column (stable suffixes: first sorted gets "", then "_2", …).
+        time_col_agg_types: Dict[str, set] = {}
+        for m in synth_measures:
+            if m.aggregation in ("first", "last") and not m.filter_sql:
+                eff = m.time_column or default_time_col_sql
+                time_col_agg_types.setdefault(eff, set()).add(m.aggregation)
+        sorted_tcs = sorted(time_col_agg_types)
+        rn_suffix_map: Dict[str, str] = {
+            tc: ("" if i == 0 else f"_{i + 1}")
+            for i, tc in enumerate(sorted_tcs)
+        }
+        for tc in sorted_tcs:
+            suffix = rn_suffix_map[tc]
+            if "last" in time_col_agg_types[tc]:
+                select_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} "
+                        f"ORDER BY {tc} DESC)"
+                    ).as_(f"_last_rn{suffix}")
+                )
+            if "first" in time_col_agg_types[tc]:
+                select_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} "
+                        f"ORDER BY {tc} ASC)"
+                    ).as_(f"_first_rn{suffix}")
+                )
+
+        # Filtered first/last → dedicated ROW_NUMBER + match-flag columns,
+        # deduped by (filter, time col, agg).
+        filtered_rn_map: Dict[str, str] = {}
+        filtered_match_map: Dict[str, str] = {}
+        seen_filters: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
+        filter_idx = 0
+        for m in synth_measures:
+            if m.aggregation in ("first", "last") and m.filter_sql:
+                eff = m.time_column or default_time_col_sql
+                cache_key = (m.filter_sql, eff, m.aggregation)
+                if cache_key in seen_filters:
+                    rn_alias, match_alias = seen_filters[cache_key]
+                else:
+                    kind = "first" if m.aggregation == "first" else "last"
+                    rn_alias = f"_{kind}_rn_f{filter_idx}"
+                    match_alias = f"_match_f{filter_idx}"
+                    order_dir = "ASC" if m.aggregation == "first" else "DESC"
+                    select_exprs.append(
+                        self._parse(
+                            f"ROW_NUMBER() OVER ({partition_clause} ORDER BY "
+                            f"CASE WHEN {m.filter_sql} THEN 0 ELSE 1 END, "
+                            f"{eff} {order_dir})"
+                        ).as_(rn_alias)
+                    )
+                    select_exprs.append(
+                        self._parse(
+                            f"CASE WHEN {m.filter_sql} THEN 1 ELSE 0 END"
+                        ).as_(match_alias)
+                    )
+                    seen_filters[cache_key] = (rn_alias, match_alias)
+                    filter_idx += 1
+                filtered_rn_map[m.alias] = rn_alias
+                filtered_match_map[m.alias] = match_alias
+
+        inner = exp.Select()
+        for e in select_exprs:
+            inner = inner.select(e)
+        inner = inner.from_(from_clause)
+        for join_expr, on_expr, join_type in base_joins:
+            inner = inner.join(join_expr, on=on_expr, join_type=join_type)
+        if where_clause is not None:
+            inner = inner.where(where_clause)
+        subquery = exp.Subquery(
+            this=inner, alias=exp.to_identifier(source_relation),
+        )
+        return subquery, rn_suffix_map, filtered_rn_map, filtered_match_map
+
+    def _build_first_last_base_select(
+        self,
+        *,
+        planned_query,
+        bundle,
+        source_model,
+        source_relation: str,
+        base_render_order: List[str],
+        slots_by_id: Dict[str, Any],
+        from_clause: exp.Expression,
+        base_joins: List,
+    ):
+        """Render the base SELECT for a query containing LOCAL first/last
+        AGGREGATES (planned-native port of legacy ``_generate_base``'s
+        ``has_first_or_last`` branch).
+
+        The FROM (+ joins + WHERE) is wrapped in a ROW_NUMBER-ranked
+        subquery; dimensions / time-dimensions are materialised inside it
+        (``source_relation.*`` plus ``_td_*`` / ``_dim_*`` projections) and
+        referenced bare by the outer SELECT, which GROUPs BY them and emits
+        each first/last aggregate as ``MAX(CASE WHEN _rn = 1 THEN col END)``.
+        WHERE goes inside the subquery (raw-row filtering before ranking), so
+        ``where_consumed=True`` is returned to suppress the outer WHERE.
+
+        Returns ``(base_select, aliases_by_slot_id, has_aggregation,
+        group_by_keys, where_consumed)``.
+        """
+        from slayer.core.enums import TimeGranularity
+        from slayer.core.keys import (
+            AggregateKey,
+            ColumnKey,
+            ColumnSqlKey,
+            Phase,
+            TimeTruncKey,
+        )
+
+        default_time_col_sql = self._resolve_ranking_time_column_from_planned(
+            base_render_order=base_render_order,
+            slots_by_id=slots_by_id,
+            source_model=source_model,
+            source_relation=source_relation,
+            bundle=bundle,
+        )
+        if default_time_col_sql is None:
+            raise ValueError(
+                "first/last aggregation requires a ranking time column "
+                "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
+                "model's default_time_dimension); none is resolvable for "
+                f"model {source_model.name!r}."
+            )
+
+        # Pass 1: full aliases (in render order, for C13 cycling), ROW-slot
+        # classification (partition / subquery projection / outer ref), and
+        # synth measures for aggregate slots.
+        alias_index: Dict[str, int] = {}
+        full_alias_by_sid: Dict[str, str] = {}
+        partition_exprs: List[exp.Expression] = []
+        extra_projections: List[Tuple[str, exp.Expression]] = []
+        outer_ref_by_sid: Dict[str, exp.Expression] = {}
+        synth_by_sid: Dict[str, "EnrichedMeasure"] = {}
+        td_counter = 0
+        dim_counter = 0
+
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            full_alias_by_sid[sid] = self._full_alias_for_slot(
+                slot=slot, source_relation=source_relation,
+                alias_index=alias_index,
+            )
+            if slot.phase == Phase.ROW:
+                key = slot.key
+                if isinstance(key, TimeTruncKey):
+                    raw = self._joined_or_local_dim_expr(
+                        path=key.column.path, leaf=key.column.leaf,
+                        source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    trunc = self._build_date_trunc(
+                        col_expr=raw,
+                        granularity=TimeGranularity(key.granularity),
+                    )
+                    alias = f"_td_{td_counter}"
+                    td_counter += 1
+                    extra_projections.append((alias, trunc))
+                    partition_exprs.append(trunc.copy())
+                    outer_ref_by_sid[sid] = exp.Column(
+                        this=exp.to_identifier(alias),
+                    )
+                elif isinstance(key, ColumnKey) and key.path:
+                    joined = self._joined_or_local_dim_expr(
+                        path=key.path, leaf=key.leaf,
+                        source_model=source_model,
+                        source_relation=source_relation, bundle=bundle,
+                    )
+                    alias = f"_dim_{dim_counter}"
+                    dim_counter += 1
+                    extra_projections.append((alias, joined))
+                    partition_exprs.append(joined.copy())
+                    outer_ref_by_sid[sid] = exp.Column(
+                        this=exp.to_identifier(alias),
+                    )
+                elif isinstance(key, ColumnKey):
+                    # Local dimension — available via ``source_relation.*``.
+                    local = exp.Column(
+                        this=exp.to_identifier(key.leaf),
+                        table=exp.to_identifier(source_relation),
+                    )
+                    partition_exprs.append(local.copy())
+                    outer_ref_by_sid[sid] = local
+                elif isinstance(key, ColumnSqlKey):
+                    derived = self._dim_column_expr_from_planned(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        leaf=key.column_name,
+                    )
+                    alias = f"_dim_{dim_counter}"
+                    dim_counter += 1
+                    extra_projections.append((alias, derived))
+                    partition_exprs.append(derived.copy())
+                    outer_ref_by_sid[sid] = exp.Column(
+                        this=exp.to_identifier(alias),
+                    )
+                else:
+                    raise NotImplementedError(
+                        f"DEV-1450: first/last with row key "
+                        f"{type(key).__name__} not supported."
+                    )
+            elif slot.phase == Phase.AGGREGATE and isinstance(
+                slot.key, AggregateKey,
+            ):
+                # Single aggregate (incl. first/last) — synth + ``_build_agg``.
+                # Composite aggregates (ArithmeticKey / ScalarCallKey of
+                # aggregates) have no ``key.source``; they render in pass 2
+                # via ``_render_aggregate_composite_expr`` (reading the
+                # subquery's ``source_relation.*``), matching the normal path.
+                synth_by_sid[sid] = (
+                    self._synthesize_enriched_measure_from_planned(
+                        slot=slot, key=slot.key, source_model=source_model,
+                        source_relation=source_relation,
+                        full_alias=full_alias_by_sid[sid],
+                    )
+                )
+
+        # WHERE goes inside the ranked subquery (raw-row filtering before
+        # ranking). HAVING is recomputed and applied by the caller.
+        where_clause, _having = self._build_where_having_from_planned(
+            planned_query=planned_query,
+            source_relation=source_relation,
+            source_model=source_model,
+        )
+
+        (
+            ranked_from,
+            rn_suffix_map,
+            filtered_rn_map,
+            filtered_match_map,
+        ) = self._build_ranked_subquery_from_planned(
+            source_relation=source_relation,
+            default_time_col_sql=default_time_col_sql,
+            partition_exprs=partition_exprs,
+            extra_projections=extra_projections,
+            synth_measures=list(synth_by_sid.values()),
+            from_clause=from_clause,
+            base_joins=base_joins,
+            where_clause=where_clause,
+        )
+
+        # Pass 2: outer SELECT columns + GROUP BY, in render order.
+        select_columns: List[exp.Expression] = []
+        group_by_keys: Dict[str, exp.Expression] = {}
+        aliases_by_slot_id: Dict[str, List[str]] = {}
+        has_aggregation = False
+
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            full_alias = full_alias_by_sid[sid]
+            if slot.phase == Phase.ROW:
+                ref = outer_ref_by_sid[sid]
+                select_columns.append(ref.copy().as_(full_alias))
+                group_by_keys[sid] = ref.copy()
+                aliases_by_slot_id.setdefault(sid, []).append(full_alias)
+            elif slot.phase == Phase.AGGREGATE:
+                if sid in synth_by_sid:
+                    agg_expr, is_agg = self._build_agg(
+                        measure=synth_by_sid[sid],
+                        rn_suffix_map=rn_suffix_map,
+                        default_time_col=default_time_col_sql,
+                        filtered_rn_map=filtered_rn_map,
+                        filtered_match_map=filtered_match_map,
+                    )
+                else:
+                    # Composite aggregate (no single ``AggregateKey``).
+                    agg_expr, is_agg = self._render_aggregate_composite_expr(
+                        key=slot.key, slot=slot, source_model=source_model,
+                        source_relation=source_relation,
+                    )
+                if is_agg:
+                    agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
+                    has_aggregation = True
+                select_columns.append(agg_expr.copy().as_(full_alias))
+                aliases_by_slot_id.setdefault(sid, []).append(full_alias)
+
+        base_select = exp.Select()
+        for col in select_columns:
+            base_select = base_select.select(col)
+        base_select = base_select.from_(ranked_from)
+        return (
+            base_select, aliases_by_slot_id, has_aggregation,
+            group_by_keys, True,
+        )
 
     def _render_aggregate_composite_expr(
         self,
@@ -3701,6 +4146,7 @@ class SQLGenerator:
                 aliases_by_slot_id,
                 base_has_agg,
                 base_group_by,
+                _base_where_consumed,
             ) = self._build_base_select_for_planned(
                 planned_query=planned_query,
                 bundle=bundle,
@@ -4464,25 +4910,42 @@ class SQLGenerator:
         model aggregate slots are NEVER walked — their joins live in
         ``CrossModelAggregatePlan.join_chain`` and are rendered inside
         the per-plan ``_cm_*`` CTE.
+
+        Local ``first`` / ``last`` AGGREGATE slots additionally contribute
+        any joined path named by an explicit ranking-time arg
+        (``amount:last(stores.opened_at)``) — the ranked subquery's
+        ``ORDER BY`` references that column, so the join must be in scope.
         """
-        from slayer.core.keys import ColumnKey, Phase, TimeTruncKey
+        from slayer.core.keys import AggregateKey, ColumnKey, Phase, TimeTruncKey
 
         seen: set = set()
         ordered: List[Tuple[str, ...]] = []
-        for sid in base_render_order:
-            slot = slots_by_id.get(sid)
-            if slot is None or slot.phase != Phase.ROW:
-                continue
-            key = slot.key
-            path: Tuple[str, ...] = ()
-            if isinstance(key, ColumnKey):
-                path = key.path
-            elif isinstance(key, TimeTruncKey):
-                path = key.column.path
+
+        def _add(path: Tuple[str, ...]) -> None:
             if not path or path in seen:
-                continue
+                return
             seen.add(path)
             ordered.append(path)
+
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is None:
+                continue
+            key = slot.key
+            if slot.phase == Phase.ROW:
+                if isinstance(key, ColumnKey):
+                    _add(key.path)
+                elif isinstance(key, TimeTruncKey):
+                    _add(key.column.path)
+            elif (
+                slot.phase == Phase.AGGREGATE
+                and isinstance(key, AggregateKey)
+                and key.agg in ("first", "last")
+                and not getattr(key.source, "path", ())
+            ):
+                for a in key.args:
+                    if isinstance(a, ColumnKey):
+                        _add(a.path)
         return ordered
 
     def _build_from_and_joins(
@@ -5818,16 +6281,24 @@ class SQLGenerator:
                 if isinstance(source, ColumnKey)
                 else source.column_name
             )
-            # ``first`` / ``last`` need ``rn_suffix_map`` / ``filtered_rn_map``
-            # plumbing that the synth adapter doesn't carry; explicit deferral
-            # keeps the failure mode a clear stage marker rather than a wrong-
-            # SQL emission. DEV-1452 follow-up.
+            # ``first`` / ``last`` aggregations rank rows via a ROW_NUMBER
+            # subquery (built in ``_build_ranked_subquery_from_planned``) and
+            # pick ``rn = 1`` through ``MAX(CASE WHEN _rn = 1 THEN col END)``.
+            # An explicit positional arg (``latest_amount:last(created_at)``)
+            # overrides the query's default ranking time column; bind it to a
+            # qualified SQL string here so ``_build_last_ranked_from`` / the
+            # planned ranked-subquery builder can ORDER BY it.
+            explicit_time_col: Optional[str] = None
             if key.agg in ("first", "last"):
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.10+: aggregation {key.agg!r} on "
-                    f"{source_relation}.{src_leaf} not yet wired "
-                    f"(needs rn_suffix_map plumbing). Deferred.",
-                )
+                for a in key.args:
+                    if isinstance(a, ColumnKey):
+                        if a.path:
+                            explicit_time_col = (
+                                "__".join(a.path) + f".{a.leaf}"
+                            )
+                        else:
+                            explicit_time_col = f"{source_relation}.{a.leaf}"
+                        break
             # Aggregations outside the built-in set are custom user-defined
             # ``Aggregation``s declared on ``SlayerModel.aggregations``; thread
             # the model's definition into ``EnrichedMeasure.aggregation_def`` so
@@ -5917,6 +6388,7 @@ class SQLGenerator:
                 filter_sql=filter_sql,
                 agg_kwargs=agg_kwargs_str,
                 aggregation_def=agg_def,
+                time_column=explicit_time_col,
             )
         raise NotImplementedError(
             f"AggregateKey source {type(source).__name__} not supported "

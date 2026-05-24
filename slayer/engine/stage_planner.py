@@ -343,6 +343,13 @@ def plan_query(
             bo = declared_alias_to_bound[col_name]
         elif full_name in declared_alias_to_bound:
             bo = declared_alias_to_bound[full_name]
+        elif _flatten_dotted(full_name) in declared_alias_to_bound:
+            # A joined dimension / time dimension is declared under its
+            # flattened ``__`` form (``stores.opened_at`` →
+            # ``stores__opened_at``; DEV-1449 / C4). An ORDER BY entry
+            # written in dotted form must intern onto that same declared
+            # slot rather than binding the raw column as a fresh slot.
+            bo = declared_alias_to_bound[_flatten_dotted(full_name)]
         elif f"_{col_name}" in declared_alias_to_bound:
             # ``*:count`` surfaces as the alias ``_count`` (the ``*`` is
             # dropped, the leading ``_`` kept as a marker); users naturally
