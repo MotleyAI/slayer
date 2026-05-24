@@ -139,10 +139,23 @@ class ValueRegistry:
             and key.column.path == ()
             and public_name == key.column.leaf
         )
+        # An UNNAMED ``*:<agg>`` (StarKey source) re-aggregation is exempt: its
+        # canonical alias (``_count``) is a structural marker, not a column
+        # reference — ``COUNT(*)`` reads no column, so it can't be ambiguous
+        # with a same-named source column. This is the chain re-count case
+        # (``*:count`` over a stage that already projects ``_count``). An
+        # EXPLICIT user name that collides still raises (canonical_alias is set
+        # only on a rename, so it stays None here for the unnamed form).
+        is_unnamed_star_agg = (
+            isinstance(key, AggregateKey)
+            and isinstance(getattr(key, "source", None), StarKey)
+            and canonical_alias is None
+        )
         if (
             public_name is not None
             and public_name in self._source_columns
             and not is_self_named_dimension
+            and not is_unnamed_star_agg
         ):
             raise MeasureNameCollidesWithColumnError(
                 name=public_name, model=self._host_model_name,

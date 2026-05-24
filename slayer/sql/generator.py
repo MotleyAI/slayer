@@ -5277,7 +5277,19 @@ class SQLGenerator:
             _add_partition(pk, where="partition_key")
 
         # Build the shifted time-column expression. Calendar offset is
-        # ``-periods`` units in the granularity (periods=-1 -> +1 unit).
+        # ``-periods`` units in the SHIFT granularity (periods=-1 -> +1 unit).
+        # The shift granularity is the explicit 3rd arg
+        # (``time_shift(x, -1, 'year')``) when given, else the query time
+        # dimension's granularity — so a year-shift over a month bucket
+        # yields "same month, previous year" (YoY). The DATE_TRUNC below
+        # always uses the TD granularity (the join/bucket axis).
+        shift_gran_raw = next(
+            (v for k, v in key.kwargs if k == "granularity"), None,
+        )
+        shift_granularity = (
+            str(shift_gran_raw) if shift_gran_raw is not None
+            else time_key.granularity
+        )
         raw_time_col_expr = self._dim_column_expr_from_planned(
             source_model=source_model,
             source_relation=source_relation,
@@ -5286,7 +5298,7 @@ class SQLGenerator:
         shifted_raw_expr = self._build_time_offset_expr(
             col_expr=raw_time_col_expr,
             offset=-periods,
-            granularity=time_key.granularity,
+            granularity=shift_granularity,
         )
         shifted_trunc_expr = self._build_date_trunc(
             col_expr=shifted_raw_expr,

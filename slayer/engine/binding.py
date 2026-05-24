@@ -849,7 +849,7 @@ _TRANSFORM_KWARG_RULES: dict = {
     "change_pct": frozenset(),
     "first": frozenset(),
     "last": frozenset(),
-    "time_shift": frozenset({"periods"}),
+    "time_shift": frozenset({"periods", "granularity"}),
     "lag": frozenset({"periods"}),
     "lead": frozenset({"periods"}),
     "rank": frozenset(),
@@ -857,6 +857,17 @@ _TRANSFORM_KWARG_RULES: dict = {
     "dense_rank": frozenset(),
     "ntile": frozenset({"n"}),
     "consecutive_periods": frozenset({"period"}),
+}
+
+# Positional-parameter signature (after the value) for the transforms whose
+# documented DSL form accepts positional args: ``time_shift(x, periods,
+# granularity)``, ``lag(x, periods)``, ``lead(x, periods)``. Each name maps the
+# i-th positional onto the matching kwarg. Transforms absent here are
+# keyword-only after the value.
+_TRANSFORM_POSITIONAL_KWARGS: dict = {
+    "time_shift": ("periods", "granularity"),
+    "lag": ("periods",),
+    "lead": ("periods",),
 }
 
 
@@ -873,23 +884,44 @@ def _bind_transform(
         parsed.input, scope=scope, bundle=bundle, in_filter=False,
         alias_map=alias_map,
     )
-    # Typed pipeline: transforms take one positional (the value to
-    # transform) and the rest as kwargs. Reject any extra positional
-    # args to force the kwarg form (avoids ambiguity like
-    # ``lag(amount:sum, 2)`` where ``2`` might be ``periods``).
+    # The value to transform is the first positional (``parsed.input``).
+    # A few transforms accept further POSITIONAL params per the documented
+    # DSL surface (``time_shift(x, periods, granularity)``,
+    # ``lag(x, periods)``, ``lead(x, periods)``); map those onto their kwarg
+    # names. Every other transform (rank family, cumsum, change,
+    # consecutive_periods, ...) stays keyword-only after the value.
+    positional_pairs: List = []
+    pos_names = _TRANSFORM_POSITIONAL_KWARGS.get(parsed.op)
     if parsed.args:
-        raise ValueError(
-            f"Transform {parsed.op!r} accepts exactly one positional "
-            f"argument (the value to transform); pass any offset, "
-            f"partition, or other settings as keyword arguments "
-            f"(e.g. ``{parsed.op}(value, periods=-1)``)."
-        )
+        if pos_names is None:
+            raise ValueError(
+                f"Transform {parsed.op!r} accepts exactly one positional "
+                f"argument (the value to transform); pass any offset, "
+                f"partition, or other settings as keyword arguments "
+                f"(e.g. ``{parsed.op}(value, partition_by=...)``)."
+            )
+        if len(parsed.args) > len(pos_names):
+            raise ValueError(
+                f"Transform {parsed.op!r} accepts at most {len(pos_names)} "
+                f"positional argument(s) after the value "
+                f"({', '.join(pos_names)}); got {len(parsed.args)}."
+            )
+        positional_pairs = list(zip(pos_names, parsed.args))
     args: List = []
     kwargs: List = []
     partition_keys: List = []
     allowed_kwargs = _TRANSFORM_KWARG_RULES.get(parsed.op, frozenset())
     seen_kwargs: set = set()
-    for k, v in parsed.kwargs:
+    # Positional params first, then explicit kwargs; a name supplied BOTH
+    # ways is an error (ambiguous, e.g. ``time_shift(x, -1, periods=-2)``).
+    _explicit_kw_names = {k for k, _ in parsed.kwargs}
+    for k, _ in positional_pairs:
+        if k in _explicit_kw_names:
+            raise ValueError(
+                f"Transform {parsed.op!r} got {k!r} both positionally and "
+                f"as a keyword argument."
+            )
+    for k, v in [*positional_pairs, *parsed.kwargs]:
         if k == "partition_by":
             bound_v = _bind(v, scope=scope, bundle=bundle, in_filter=False)
             if isinstance(bound_v, (ColumnKey, ColumnSqlKey)):
