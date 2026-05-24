@@ -21,6 +21,10 @@ from slayer.core.enums import (
 )
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.refs import agg_kwarg_canonical_str
+from slayer.engine.column_expansion import (
+    _root_scope_column_ids,
+    expand_derived_refs_sync,
+)
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
 from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
@@ -2735,6 +2739,7 @@ class SQLGenerator:
             planned_query=planned_query,
             source_relation=source_relation,
             source_model=source_model,
+            bundle=bundle,
         )
 
         # ``where_consumed`` is True for the first/last ranked-subquery path:
@@ -2794,6 +2799,7 @@ class SQLGenerator:
             planned_query=planned_query,
             source_relation=source_relation,
             source_model=source_model,
+            bundle=bundle,
         )
         while pending_layers:
             ready_window: list = []
@@ -3334,6 +3340,7 @@ class SQLGenerator:
         base_render_order: List[str],
         slots_by_id: Dict[str, Any],
         skip_cross_model_aggs: bool = False,
+        skip_filter_ids: Optional[Set[str]] = None,
     ):
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``.
 
@@ -3367,6 +3374,51 @@ class SQLGenerator:
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
         )
+        # Pre-expand local derived (ColumnSqlKey) ROW dimensions: inline
+        # sibling/joined derived refs (DEV-1333 / DEV-1410) and pull any
+        # joins their SQL crosses into the FROM.
+        derived_expr_by_sid: Dict[str, exp.Expression] = {}
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.ROW:
+                continue
+            key = slot.key
+            if not (isinstance(key, ColumnSqlKey) and not key.path):
+                continue
+            expanded_sql = self._expand_derived_column_sql(
+                source_model=source_model,
+                source_relation=source_relation,
+                column_name=key.column_name,
+                bundle=bundle,
+            )
+            col = next(
+                (c for c in source_model.columns if c.name == key.column_name),
+                None,
+            )
+            expr = _wrap_cast_for_type(
+                self._parse(expanded_sql),
+                col.type if col is not None else None,
+            )
+            derived_expr_by_sid[sid] = expr
+            for p in self._joined_paths_in_sql(
+                sql_expr=expr, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            ):
+                if p not in needed_join_paths:
+                    needed_join_paths.append(p)
+        # WHERE-phase filters referencing joined columns (direct, derived, or
+        # Mode-A ``__`` paths) pull their joins into the FROM too. Filters
+        # routed to a cross-model ``_cm_*`` CTE (``skip_filter_ids``) are
+        # applied there, not on ``_base`` — pulling their join into ``_base``
+        # would add an unused (and, for one-to-many joins, cardinality-
+        # changing) LEFT JOIN.
+        for p in self._collect_filter_join_paths(
+            planned_query=planned_query, source_model=source_model,
+            source_relation=source_relation, bundle=bundle,
+            skip_filter_ids=skip_filter_ids,
+        ):
+            if p not in needed_join_paths:
+                needed_join_paths.append(p)
         from_clause, base_joins = self._build_from_and_joins(
             source_model=source_model,
             source_relation=source_relation,
@@ -3459,14 +3511,18 @@ class SQLGenerator:
                     _record_alias(sid, full_alias)
                 elif isinstance(key, ColumnSqlKey):
                     # A derived column (``Column.sql`` set) used as a dimension,
-                    # e.g. a ModelExtension's ``is_high_rev = CASE WHEN ...`` over
-                    # a query-backed / sibling-stage base. Resolve the column's
-                    # SQL expression and group by it like any other dimension.
-                    col_expr = self._dim_column_expr_from_planned(
-                        source_model=source_model,
-                        source_relation=source_relation,
-                        leaf=key.column_name,
-                    )
+                    # e.g. ``ratio = A.bar / B.foo_normalized`` (cross-table) or
+                    # ``c2 = c1 * 2`` (sibling-derived chain). Local
+                    # (``path == ()``) derived columns are pre-expanded above
+                    # (sibling/joined refs inlined, joins pulled in); fall back
+                    # to the non-expanded resolution for any other shape.
+                    col_expr = derived_expr_by_sid.get(sid)
+                    if col_expr is None:
+                        col_expr = self._dim_column_expr_from_planned(
+                            source_model=source_model,
+                            source_relation=source_relation,
+                            leaf=key.column_name,
+                        )
                     select_columns.append(col_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
@@ -3886,6 +3942,7 @@ class SQLGenerator:
             planned_query=planned_query,
             source_relation=source_relation,
             source_model=source_model,
+            bundle=bundle,
         )
 
         (
@@ -4141,6 +4198,15 @@ class SQLGenerator:
             base_has_agg = False
             base_group_by: Dict[str, exp.Expression] = {}
         else:
+            # Filters routed to any CTE (WHERE or HAVING) must NOT
+            # double-apply at the host base — nor pull their joins into
+            # ``_base`` (the predicate runs in the ``_cm_*`` CTE).
+            # ``applied_filter_ids`` is the audit union of where + having
+            # on each plan.
+            routed_ids: Set[str] = set()
+            for plan in planned_query.cross_model_aggregate_plans:
+                routed_ids.update(plan.where_filter_ids)
+                routed_ids.update(plan.having_filter_ids)
             (
                 base_select,
                 aliases_by_slot_id,
@@ -4155,19 +4221,14 @@ class SQLGenerator:
                 base_render_order=base_render_order,
                 slots_by_id=slots_by_id,
                 skip_cross_model_aggs=True,
+                skip_filter_ids=routed_ids,
             )
 
-            # Filters routed to any CTE (WHERE or HAVING) must NOT
-            # double-apply at the host base. ``applied_filter_ids`` is
-            # the audit union of where + having on each plan.
-            routed_ids: Set[str] = set()
-            for plan in planned_query.cross_model_aggregate_plans:
-                routed_ids.update(plan.where_filter_ids)
-                routed_ids.update(plan.having_filter_ids)
             base_where, base_having = self._build_where_having_from_planned(
                 planned_query=planned_query,
                 source_relation=source_relation,
                 source_model=source_model,
+                bundle=bundle,
                 skip_filter_ids=routed_ids,
             )
             if base_where is not None:
@@ -5562,6 +5623,7 @@ class SQLGenerator:
         planned_query,
         source_relation: str,
         source_model,
+        bundle,
     ) -> List[str]:
         """Build the WHERE clauses for the shifted CTE that re-aggregates
         the source relation.
@@ -5577,6 +5639,24 @@ class SQLGenerator:
         """
         from slayer.core.keys import BetweenKey, Phase
 
+        def _guard_no_joined_refs(rendered_part: exp.Expression, *, fid) -> None:
+            # The shifted CTE re-aggregates the bare source (no joins), so a
+            # ROW filter referencing a joined column cannot be applied here.
+            # This combination (time_shift + joined-column filter) is deferred
+            # — raise loudly rather than emit SQL that references an unjoined
+            # alias.
+            for c in rendered_part.find_all(exp.Column):
+                tbl = c.args.get("table")
+                if tbl is not None and tbl.name not in (
+                    source_relation, source_model.name,
+                ):
+                    raise NotImplementedError(
+                        f"DEV-1450: time_shift combined with a ROW filter on "
+                        f"a joined column ({tbl.name}.{c.name}) is not yet "
+                        f"supported (the shifted CTE carries no joins). "
+                        f"filter id={fid!r}."
+                    )
+
         out: List[str] = []
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW:
@@ -5589,17 +5669,21 @@ class SQLGenerator:
                     key=fp.expression.value_key,
                     source_relation=source_relation,
                     source_model=source_model,
+                    bundle=bundle,
                 )
                 if isinstance(rendered, (exp.And, exp.Or)):
                     rendered = exp.Paren(this=rendered)
+                _guard_no_joined_refs(rendered, fid=fp.id)
                 out.append(rendered.sql(dialect=self.dialect))
             elif fp.text is not None:
-                out.append(self._qualify_mode_a_sql_filter(
+                qualified = self._qualify_mode_a_sql_filter(
                     sql=fp.text,
                     columns=fp.text_columns,
                     source_model=source_model,
                     source_relation=source_relation,
-                ))
+                )
+                _guard_no_joined_refs(self._parse(qualified), fid=fp.id)
+                out.append(qualified)
         return out
 
     def _emit_time_shift_ctes_for_planned(
@@ -6217,6 +6301,168 @@ class SQLGenerator:
             type=col.type,
         )
 
+    def _expand_derived_column_sql(
+        self, *, source_model, source_relation: str, column_name: str, bundle,
+    ) -> str:
+        """Expand a derived ``Column.sql`` (a ``ColumnSqlKey`` target) into a
+        fully-qualified SQL string, recursively inlining references to other
+        derived columns on the same model or on joined models (DEV-1333 /
+        DEV-1410). Bare identifiers qualify to ``source_relation``; joined
+        refs qualify to their ``__``-canonical path alias.
+
+        Synchronous: resolves join targets through ``bundle.get_referenced_
+        model`` (every model is already loaded — P11). Returns the column's
+        own ``name`` when ``sql`` is unset (bare base column).
+        """
+        col = next(
+            (c for c in source_model.columns if c.name == column_name), None,
+        )
+        if col is None:
+            raise ValueError(
+                f"Derived column {column_name!r} not found on model "
+                f"{source_model.name!r}",
+            )
+        if col.sql is None:
+            return col.name
+        expanded = expand_derived_refs_sync(
+            sql=col.sql,
+            model=source_model,
+            alias_path=source_relation,
+            resolve_model=bundle.get_referenced_model,
+            dialect=self.dialect,
+        )
+        return expanded if expanded is not None else col.sql
+
+    def _joined_paths_in_sql(
+        self, *, sql_expr: exp.Expression, source_relation: str, source_model,
+        bundle,
+    ) -> List[Tuple[str, ...]]:
+        """Collect the join paths referenced by table qualifiers inside an
+        (already-expanded) SQL expression.
+
+        Each ROOT-scope ``<alias>.<col>`` whose ``alias`` is not the source
+        relation and fully resolves as a join walk on ``source_model``
+        contributes its path prefixes (``a__b`` → ``("a",)`` and
+        ``("a", "b")``) so ``_build_from_and_joins`` pulls the LEFT JOINs into
+        the FROM. Aliases that don't resolve as a join path (CTE / subquery
+        aliases) are skipped, as are refs inside a nested scope (subquery /
+        set-op branch) — those belong to the inner rowset, not the outer FROM.
+        Prefixes are only emitted once the FULL alias path resolves, so a
+        partially-matching alias never injects a spurious outer join.
+        """
+        root_ids = _root_scope_column_ids(parsed=sql_expr)
+        seen: set = set()
+        ordered: List[Tuple[str, ...]] = []
+        for col in sql_expr.find_all(exp.Column):
+            tbl = col.args.get("table")
+            if tbl is None or col.args.get("db") or col.args.get("catalog"):
+                continue
+            if id(col) not in root_ids:
+                continue
+            alias = tbl.name
+            if alias in (source_relation, source_model.name):
+                continue
+            segments = alias.split("__")
+            current = source_model
+            resolved = True
+            for seg in segments:
+                join = next(
+                    (j for j in current.joins if j.target_model == seg), None,
+                )
+                if join is None:
+                    resolved = False
+                    break
+                nxt = bundle.get_referenced_model(seg)
+                if nxt is None:
+                    resolved = False
+                    break
+                current = nxt
+            if not resolved:
+                continue
+            for i in range(1, len(segments) + 1):
+                prefix = tuple(segments[:i])
+                if prefix not in seen:
+                    seen.add(prefix)
+                    ordered.append(prefix)
+        return ordered
+
+    def _collect_filter_join_paths(
+        self, *, planned_query, source_model, source_relation: str, bundle,
+        skip_filter_ids: Optional[Set[str]] = None,
+    ) -> List[Tuple[str, ...]]:
+        """Collect the join paths a query's WHERE-phase filters reference so
+        the FROM pulls them in.
+
+        Covers three shapes:
+        * typed joined column ref (``customers.regions.name == 'US'``) —
+          ``ColumnKey.path``;
+        * typed derived column whose ``Column.sql`` crosses a join
+          (``is_eu = 1`` where ``is_eu`` references ``customers.region``) —
+          ``ColumnSqlKey``, expanded then scanned;
+        * Mode-A ``SlayerModel.filters`` text with a ``__`` join path
+          (``customers__regions.name = 'EU'``) — parsed and scanned.
+        """
+        from slayer.core.keys import (
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
+            Phase,
+            ScalarCallKey,
+        )
+
+        seen: set = set()
+        ordered: List[Tuple[str, ...]] = []
+
+        def _add_path(path: Tuple[str, ...]) -> None:
+            for i in range(1, len(path) + 1):
+                prefix = tuple(path[:i])
+                if prefix and prefix not in seen:
+                    seen.add(prefix)
+                    ordered.append(prefix)
+
+        def _add_from_sql(parsed: exp.Expression) -> None:
+            for p in self._joined_paths_in_sql(
+                sql_expr=parsed, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            ):
+                if p not in seen:
+                    seen.add(p)
+                    ordered.append(p)
+
+        def _walk(key) -> None:
+            if isinstance(key, ColumnKey):
+                if key.path:
+                    _add_path(key.path)
+            elif isinstance(key, ColumnSqlKey) and not key.path:
+                expanded = self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=key.column_name,
+                    bundle=bundle,
+                )
+                _add_from_sql(self._parse(expanded))
+            elif isinstance(key, ArithmeticKey):
+                for o in key.operands:
+                    _walk(o)
+            elif isinstance(key, ScalarCallKey):
+                for a in key.args:
+                    _walk(a)
+            elif isinstance(key, BetweenKey):
+                _walk(key.column)
+                _walk(key.low)
+                _walk(key.high)
+
+        skip = skip_filter_ids or set()
+        for fp in planned_query.filters_by_phase:
+            if fp.phase != Phase.ROW or fp.id in skip:
+                continue
+            if fp.expression is not None:
+                _walk(fp.expression.value_key)
+            elif fp.text is not None:
+                _add_from_sql(self._parse(fp.text))
+        return ordered
+
     def _synthesize_enriched_measure_from_planned(
         self,
         *,
@@ -6399,6 +6645,7 @@ class SQLGenerator:
         planned_query,
         source_relation: str,
         source_model,
+        bundle,
         skip_filter_ids: Optional[Set[str]] = None,
     ):
         from slayer.core.keys import Phase
@@ -6464,6 +6711,7 @@ class SQLGenerator:
                     key=fp.expression.value_key,
                     source_relation=source_relation,
                     source_model=source_model,
+                    bundle=bundle,
                     slot_by_key=slot_by_key,
                 )
                 # Match the legacy DSL parser, which wraps top-level
@@ -6546,16 +6794,20 @@ class SQLGenerator:
         key,
         source_relation: str,
         source_model,
+        bundle,
         slot_by_key: Optional[Dict[Any, Any]] = None,
     ) -> exp.Expression:
         """Render a ValueKey tree to sqlglot for WHERE / HAVING rendering.
 
-        Supports ``ColumnKey`` (local), ``LiteralKey``, ``ArithmeticKey``,
-        ``ScalarCallKey``, ``BetweenKey``, and a LOCAL ``AggregateKey`` (for
-        HAVING — rendered as the bare aggregate expression so it works on
-        dialects that reject SELECT aliases in HAVING). Cross-model column /
-        aggregate refs (``path != ()``) and ``TransformKey`` / ``TimeTruncKey``
-        / ``ColumnSqlKey`` are deferred to later slices.
+        Supports ``ColumnKey`` (local AND joined ``path != ()`` — emitted as
+        ``<__path_alias>.<leaf>``; the join is pulled into the FROM by
+        ``_collect_filter_join_paths``), ``ColumnSqlKey`` (derived column —
+        expanded inline, sibling/joined refs resolved), ``LiteralKey``,
+        ``ArithmeticKey``, ``ScalarCallKey``, ``BetweenKey``, and a LOCAL
+        ``AggregateKey`` (for HAVING — rendered as the bare aggregate
+        expression so it works on dialects that reject SELECT aliases in
+        HAVING). Cross-model aggregate refs (``path != ()``) and
+        ``TransformKey`` / ``TimeTruncKey`` are deferred to later slices.
         """
         from decimal import Decimal
 
@@ -6596,10 +6848,13 @@ class SQLGenerator:
 
         if isinstance(key, ColumnKey):
             if key.path != ():
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.12: cross-model column ref in "
-                    f"filter (path={key.path!r}) deferred to cross-model "
-                    f"slice."
+                # Joined column ref (``customers.regions.name``) — emit the
+                # ``__``-canonical path alias (``customers__regions.name``).
+                # The join is pulled into the FROM by
+                # ``_collect_filter_join_paths``.
+                return exp.Column(
+                    this=exp.to_identifier(key.leaf),
+                    table=exp.to_identifier("__".join(key.path)),
                 )
             col = next(
                 (c for c in source_model.columns if c.name == key.leaf),
@@ -6616,6 +6871,29 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=col.type,
             )
+        if isinstance(key, ColumnSqlKey):
+            if key.path != ():
+                raise NotImplementedError(
+                    f"DEV-1450: joined derived-column ref in filter "
+                    f"(path={key.path!r}) deferred."
+                )
+            # Derived column (``Column.sql`` set) — expand inline, resolving
+            # sibling / joined derived refs and pulling crossed joins into the
+            # FROM (via ``_collect_filter_join_paths``).
+            expanded_sql = self._expand_derived_column_sql(
+                source_model=source_model,
+                source_relation=source_relation,
+                column_name=key.column_name,
+                bundle=bundle,
+            )
+            col = next(
+                (c for c in source_model.columns if c.name == key.column_name),
+                None,
+            )
+            return _wrap_cast_for_type(
+                self._parse(expanded_sql),
+                col.type if col is not None else None,
+            )
         if isinstance(key, LiteralKey):
             return self._scalar_to_sqlglot(key.value)
         if isinstance(key, ArithmeticKey):
@@ -6624,6 +6902,8 @@ class SQLGenerator:
                     key=o,
                     source_relation=source_relation,
                     source_model=source_model,
+                    bundle=bundle,
+                    slot_by_key=slot_by_key,
                 )
                 for o in key.operands
             ]
@@ -6640,6 +6920,8 @@ class SQLGenerator:
                         key=a,
                         source_relation=source_relation,
                         source_model=source_model,
+                        bundle=bundle,
+                        slot_by_key=slot_by_key,
                     ))
             return exp.Anonymous(this=key.name.upper(), expressions=args)
         if isinstance(key, BetweenKey):
@@ -6647,21 +6929,26 @@ class SQLGenerator:
                 key=key.column,
                 source_relation=source_relation,
                 source_model=source_model,
+                bundle=bundle,
+                slot_by_key=slot_by_key,
             )
             low_expr = self._render_value_key_for_filter(
                 key=key.low,
                 source_relation=source_relation,
                 source_model=source_model,
+                bundle=bundle,
+                slot_by_key=slot_by_key,
             )
             high_expr = self._render_value_key_for_filter(
                 key=key.high,
                 source_relation=source_relation,
                 source_model=source_model,
+                bundle=bundle,
+                slot_by_key=slot_by_key,
             )
             return exp.Between(this=col_expr, low=low_expr, high=high_expr)
         if isinstance(key, (
-            AggregateKey, TransformKey, TimeTruncKey,
-            StarKey, ColumnSqlKey,
+            AggregateKey, TransformKey, TimeTruncKey, StarKey,
         )):
             raise NotImplementedError(
                 f"DEV-1450 stage 7b.10+: filter rendering for "
