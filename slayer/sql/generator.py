@@ -5118,37 +5118,35 @@ class SQLGenerator:
                 f"got {type(key).__name__}",
             )
 
-        # 7b.10 explicitly defers composite transform inputs (transforms
-        # whose ``input`` is an arithmetic / scalar-call expression
-        # rather than a slotted leaf). Legacy renders these via a hidden
-        # inner expression; the typed pipeline would need an inner
-        # expression layer between the base CTE and the window step.
-        # Out of scope for the window-transform slice.
+        # Composite transform inputs — a transform whose ``input`` is an
+        # arithmetic / scalar-call expression rather than a slotted leaf
+        # (``cumsum(amount:sum / qty:sum)``; ``cumsum(change(x))`` which
+        # lowers to ``cumsum(x - time_shift(x))``). Render the input
+        # expression INLINE against the operands' already-materialised
+        # aliases — the Kahn readiness check (``_transform_layer_deps_ready``
+        # → ``_ready(tk.input)``) guarantees every operand slot is in a
+        # prior CTE before this layer runs, so no extra inner CTE is needed.
         from slayer.core.keys import (
             ArithmeticKey as _ArithKey,
             ScalarCallKey as _ScalarKey,
         )
 
         if isinstance(key.input, (_ArithKey, _ScalarKey)):
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.10: transform input is a composite "
-                f"expression ({type(key.input).__name__}) — rendering "
-                f"composite-input transforms (e.g., "
-                f"``cumsum(amount:sum / qty:sum)``) requires an inner "
-                f"expression layer between the base CTE and the window "
-                f"step. Deferred to a follow-up slice. slot id="
-                f"{slot.id!r}, op={key.op!r}.",
-            )
-
-        # Resolve input alias.
-        input_sid = slot_id_by_key.get(key.input)
-        if input_sid is None or input_sid not in available_alias_by_slot_id:
-            raise RuntimeError(
-                f"transform input not materialised: "
-                f"slot id={slot.id!r}, op={key.op!r}, input_key={key.input!r}.",
-            )
-        input_alias = available_alias_by_slot_id[input_sid]
-        measure = f'"{input_alias}"'
+            measure = self._render_value_key_against_aliases(
+                key=key.input,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            ).sql(dialect=self.dialect)
+        else:
+            # Resolve input alias (slotted leaf).
+            input_sid = slot_id_by_key.get(key.input)
+            if input_sid is None or input_sid not in available_alias_by_slot_id:
+                raise RuntimeError(
+                    f"transform input not materialised: slot id={slot.id!r}, "
+                    f"op={key.op!r}, input_key={key.input!r}.",
+                )
+            input_alias = available_alias_by_slot_id[input_sid]
+            measure = f'"{input_alias}"'
 
         # Resolve time-key alias (None for rank-family without time).
         time_alias: Optional[str] = None

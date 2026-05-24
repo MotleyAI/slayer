@@ -883,11 +883,12 @@ async def test_window_dialect_cycle(dialect: str, tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_composite_transform_input_raises_for_followup_slice() -> None:
+def test_composite_transform_input_renders_inline() -> None:
     """``cumsum(amount:sum / qty:sum)`` -- the transform's ``input`` is
-    an ``ArithmeticKey`` rather than a slottable leaf. Rendering this
-    requires an inner expression layer that 7b.10 does not implement;
-    raise with a clear marker so silent wrong-SQL emission is impossible.
+    an ``ArithmeticKey`` rather than a slottable leaf. The window step
+    renders the input expression INLINE against the operands' already-
+    materialised aliases (the Kahn readiness check guarantees both
+    aggregates land in a prior CTE), so no extra inner CTE is needed.
     """
     query = SlayerQuery(
         source_model="orders",
@@ -902,11 +903,13 @@ def test_composite_transform_input_raises_for_followup_slice() -> None:
         ],
     )
     planned = plan_query(query=query, bundle=_bundle())
-    with pytest.raises(
-        NotImplementedError,
-        match=r"composite-input transforms",
-    ):
-        generate_from_planned(planned, bundle=_bundle(), dialect="postgres")
+    sql = generate_from_planned(planned, bundle=_bundle(), dialect="postgres")
+    # No NotImplementedError; the cumsum window sums the inline division
+    # of the two materialised aggregate aliases.
+    assert "SUM(" in sql
+    assert "amount_sum" in sql and "qty_sum" in sql
+    assert "OVER (" in sql
+    assert "rolling_ratio" in sql
 
 
 def test_lag_rejects_non_integer_periods() -> None:
