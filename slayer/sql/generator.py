@@ -4125,14 +4125,6 @@ class SQLGenerator:
         """
         from slayer.core.keys import AggregateKey
 
-        if planned_query.transform_layers:
-            raise NotImplementedError(
-                "DEV-1450 stage 7b.12: cross-model aggregates combined "
-                "with transform layers (cumsum / time_shift / change / "
-                "consecutive_periods on the host) are not yet rendered. "
-                "Out of slice scope; revisit if needed.",
-            )
-
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
 
@@ -4178,6 +4170,31 @@ class SQLGenerator:
             order_only_local_ids.append(sid)
             seen_base_ids.add(sid)
         base_render_order = base_projection + order_only_local_ids
+
+        # When a transform layer is present, the ``_base`` CTE (and the
+        # combined SELECT that becomes the transform base) must also carry
+        # hidden LOCAL transform deps the public projection omits — a local
+        # aggregate feeding a transform (``cumsum(amount:sum)`` alongside a
+        # cross-model agg), partition-by dims, or a hidden time_key. Cross-
+        # model agg deps stay in the per-plan ``_cm_*`` CTEs. Mirrors
+        # ``_collect_base_aux_slot_ids`` used by the local transform path.
+        if planned_query.transform_layers:
+            aux_slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
+            for sid in self._collect_base_aux_slot_ids(
+                planned_query=planned_query,
+                slot_id_by_key=aux_slot_id_by_key,
+                slots_by_id=slots_by_id,
+                include_order=True,
+            ):
+                if sid in cma_slot_ids or sid in seen_base_ids:
+                    continue
+                slot = slots_by_id.get(sid)
+                if slot is None:
+                    continue
+                if getattr(getattr(slot.key, "source", None), "path", ()):
+                    continue  # cross-model leaf dep → owned by a _cm_* CTE
+                base_render_order.append(sid)
+                seen_base_ids.add(sid)
 
         # Hidden grain materialisation: when the user query has neither
         # host row slots NOR local aggs (and no hidden order targets),
@@ -4327,13 +4344,27 @@ class SQLGenerator:
         # _cm_*.<canonical> [AS "<user_alias>"] FROM _base [LEFT JOIN |
         # CROSS JOIN] _cm_* [ON ...].
         combined_parts: List[str] = []
+        # ``combined_aliases_by_slot_id`` records the output column alias each
+        # slot surfaces in the combined SELECT — the input the transform chain
+        # (when present) binds against (the combined result is its base CTE).
+        combined_aliases_by_slot_id: Dict[str, List[str]] = {}
         # Host-side projection: every slot in base_projection surfaces
         # its picked alias(es). Multi-alias slots emit one entry per
-        # alias (C13).
-        for sid in base_projection:
+        # alias (C13). With a transform chain on top, the combined SELECT is
+        # that chain's base CTE, so it must ALSO surface hidden local deps
+        # materialised in ``_base`` (transform inputs / order-only slots) —
+        # the outer wrap trims them back to the public projection.
+        host_combined_ids = (
+            base_render_order
+            if planned_query.transform_layers
+            else base_projection
+        )
+        for sid in host_combined_ids:
             aliases = aliases_by_slot_id.get(sid, [])
             for full_alias in aliases:
                 combined_parts.append(f'_base."{full_alias}"')
+            if aliases:
+                combined_aliases_by_slot_id[sid] = list(aliases)
         # Cross-model side: one entry per declared user alias, all
         # referencing the CTE's aggregate column (canonical for the forward
         # path; the sub-plan alias for the re-rooted path). When the public
@@ -4355,6 +4386,9 @@ class SQLGenerator:
                     combined_parts.append(
                         f'{cte_name}."{agg_col_alias}" AS "{pub}"',
                     )
+            combined_aliases_by_slot_id[plan.aggregate_slot_id] = list(
+                public_aliases,
+            )
 
         from_clause_str = "FROM _base"
         joined_cte_names: set = set()
@@ -4381,6 +4415,21 @@ class SQLGenerator:
         combined_select_sql = (
             f"SELECT {', '.join(combined_parts)}\n{from_clause_str}"
         )
+
+        # DEV-1450 stage 7b.15e (C2): a transform layer over a cross-model
+        # aggregate (``cumsum(customers.avg_score:avg)``) runs on TOP of the
+        # combined cross-model result — the combined SELECT becomes the base
+        # CTE and the window step CTEs / outer wrap are layered above it.
+        if planned_query.transform_layers:
+            return self._render_cross_model_transform_chain(
+                prelude_ctes=[("_base", base_cte_sql)] + cm_ctes,
+                combined_select_sql=combined_select_sql,
+                planned_query=planned_query,
+                slots_by_id=slots_by_id,
+                combined_aliases_by_slot_id=combined_aliases_by_slot_id,
+                source_relation=source_relation,
+            )
+
         all_ctes = [("_base", base_cte_sql)] + cm_ctes + [("_combined", combined_select_sql)]
 
         # Stitch the WITH chain together. Inner CTEs first; the final
@@ -4412,6 +4461,216 @@ class SQLGenerator:
         # an EnrichedQuery-driven ``_apply_outer_projection_trim`` that
         # we don't have on the new side. Future slices may re-enable.
         return sql
+
+    def _render_cross_model_transform_chain(
+        self,
+        *,
+        prelude_ctes: List[Tuple[str, str]],
+        combined_select_sql: str,
+        planned_query,
+        slots_by_id: Dict[str, Any],
+        combined_aliases_by_slot_id: Dict[str, List[str]],
+        source_relation: str,
+    ) -> str:
+        """Render window-transform layers over a cross-model combined result.
+
+        DEV-1450 stage 7b.15e (C2). The combined cross-model SELECT becomes the
+        ``base`` CTE; window step CTEs (``cumsum`` / ``lag`` / ``lead`` /
+        ``rank`` …) are layered above it exactly like the local transform path
+        in ``generate_from_planned``, then an outer wrap projects the public
+        slots in user order and applies ORDER BY / LIMIT / OFFSET.
+
+        ``time_shift`` / ``consecutive_periods`` over a cross-model aggregate
+        re-aggregate the *source* and are out of slice scope — they raise.
+        """
+        for layer in planned_query.transform_layers:
+            if layer.op in ("time_shift", "consecutive_periods"):
+                raise NotImplementedError(
+                    f"DEV-1450 stage 7b.15e: self-join transform op "
+                    f"{layer.op!r} is not yet rendered in a query that also has "
+                    f"a cross-model aggregate (window transforms such as cumsum "
+                    f"/ lag / lead / rank are). Factor the temporal transform "
+                    f"(or change / change_pct, which desugar to time_shift) "
+                    f"into an earlier stage.",
+                )
+
+        ctes: List[Tuple[str, str]] = list(prelude_ctes) + [
+            ("base", combined_select_sql),
+        ]
+        aliases_by_slot_id: Dict[str, List[str]] = {
+            sid: list(a) for sid, a in combined_aliases_by_slot_id.items()
+        }
+        slot_id_by_key: Dict[Any, str] = {
+            s.key: s.id for s in slots_by_id.values()
+        }
+        available_alias_by_slot_id: Dict[str, str] = {
+            sid: a[0] for sid, a in aliases_by_slot_id.items() if a
+        }
+
+        # Window-transform Kahn batches (one step CTE per ready batch).
+        pending_layers = list(planned_query.transform_layers)
+        step_num = 0
+        while pending_layers:
+            ready: list = []
+            not_ready: list = []
+            for layer in pending_layers:
+                if self._transform_layer_deps_ready(
+                    layer=layer,
+                    slots_by_id=slots_by_id,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                ):
+                    ready.append(layer)
+                else:
+                    not_ready.append(layer)
+            if not ready:
+                pending_ops = [layer.op for layer in pending_layers]
+                raise RuntimeError(
+                    f"DEV-1450 stage 7b.15e: cross-model transform layer "
+                    f"dependencies could not be resolved; pending ops: "
+                    f"{pending_ops!r}.",
+                )
+            step_num += 1
+            step_name = f"step{step_num}"
+            prev_cte = ctes[-1][0]
+            carry_aliases_sorted = sorted(
+                a for aliases in aliases_by_slot_id.values() for a in aliases
+            )
+            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            for layer in ready:
+                for slot_id in layer.slot_ids:
+                    slot = slots_by_id[slot_id]
+                    alias = (
+                        slot.public_aliases[0]
+                        if slot.public_aliases
+                        else slot.declared_name
+                    )
+                    full_alias = f"{source_relation}.{alias}"
+                    window_sql = self._render_window_transform_sql(
+                        slot=slot,
+                        slots_by_id=slots_by_id,
+                        slot_id_by_key=slot_id_by_key,
+                        available_alias_by_slot_id=available_alias_by_slot_id,
+                        planned_query=planned_query,
+                    )
+                    if slot.type is not None:
+                        window_sql = _wrap_cast_for_type(
+                            self._parse(window_sql), slot.type,
+                        ).sql(dialect=self.dialect)
+                    step_parts.append(f'{window_sql} AS "{full_alias}"')
+                    aliases_by_slot_id.setdefault(slot_id, []).append(full_alias)
+                    available_alias_by_slot_id.setdefault(slot_id, full_alias)
+            step_sql = (
+                "SELECT\n    "
+                + _SQL_COL_SEP.join(step_parts)
+                + f"\nFROM {prev_cte}"
+            )
+            ctes.append((step_name, step_sql))
+            pending_layers = not_ready
+
+        # Materialise any projected POST-phase ArithmeticKey / ScalarCallKey
+        # slot a window layer didn't render (``cumsum(x) + 1``-style combos).
+        from slayer.core.keys import (
+            ArithmeticKey as _ArithKey,
+            ScalarCallKey as _ScalarKey,
+            TransformKey as _TKey,
+        )
+        unmaterialised: list = []
+        for cslot in planned_query.combined_expression_slots:
+            if isinstance(cslot.key, _TKey):
+                continue
+            if cslot.id in aliases_by_slot_id:
+                continue
+            if isinstance(cslot.key, (_ArithKey, _ScalarKey)):
+                unmaterialised.append(cslot)
+        if unmaterialised:
+            step_num += 1
+            step_name = f"step{step_num}"
+            prev_cte = ctes[-1][0]
+            carry_aliases_sorted = sorted(
+                a for aliases in aliases_by_slot_id.values() for a in aliases
+            )
+            step_parts = [f'"{a}"' for a in carry_aliases_sorted]
+            for cslot in unmaterialised:
+                alias = (
+                    cslot.public_aliases[0]
+                    if cslot.public_aliases
+                    else cslot.declared_name
+                )
+                full_alias = f"{source_relation}.{alias}"
+                rendered = self._render_value_key_against_aliases(
+                    key=cslot.key,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                )
+                expr_sql = rendered.sql(dialect=self.dialect)
+                if cslot.type is not None:
+                    expr_sql = _wrap_cast_for_type(
+                        self._parse(expr_sql), cslot.type,
+                    ).sql(dialect=self.dialect)
+                step_parts.append(f'{expr_sql} AS "{full_alias}"')
+                aliases_by_slot_id.setdefault(cslot.id, []).append(full_alias)
+                available_alias_by_slot_id.setdefault(cslot.id, full_alias)
+            step_sql = (
+                "SELECT\n    "
+                + _SQL_COL_SEP.join(step_parts)
+                + f"\nFROM {prev_cte}"
+            )
+            ctes.append((step_name, step_sql))
+
+        final_cte = ctes[-1][0]
+        inner_sorted = sorted(
+            a for aliases in aliases_by_slot_id.values() for a in aliases
+        )
+        inner_sql = (
+            "SELECT\n    "
+            + _SQL_COL_SEP.join(f'"{a}"' for a in inner_sorted)
+            + f"\nFROM {final_cte}"
+        )
+        cte_clause = (
+            "WITH "
+            + ",\n".join(f"{name} AS (\n{sql}\n)" for name, sql in ctes)
+        )
+        chain_sql = f"{cte_clause}\n{inner_sql}"
+
+        post_filter_conditions = self._render_post_phase_filter_conditions(
+            planned_query=planned_query,
+            slot_id_by_key=slot_id_by_key,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+        )
+        if post_filter_conditions:
+            chain_sql = (
+                f"SELECT *\nFROM (\n{chain_sql}\n) AS _filtered"
+                f"\nWHERE {_SQL_AND_JOINER.join(post_filter_conditions)}"
+            )
+
+        public_aliases_user_order: list[str] = []
+        outer_alias_index: Dict[str, int] = {}
+        for sid in planned_query.projection:
+            slot = slots_by_id[sid]
+            if slot.hidden:
+                continue
+            all_aliases = aliases_by_slot_id.get(sid, [])
+            if not all_aliases:
+                continue
+            idx = outer_alias_index.setdefault(sid, 0)
+            alias = (
+                all_aliases[idx] if idx < len(all_aliases) else all_aliases[-1]
+            )
+            outer_alias_index[sid] = idx + 1
+            public_aliases_user_order.append(alias)
+        outer_sql = (
+            "SELECT\n    "
+            + _SQL_COL_SEP.join(f'"{a}"' for a in public_aliases_user_order)
+            + f"\nFROM (\n{chain_sql}\n) AS _outer"
+        )
+
+        return self._apply_order_limit_to_planned_sql_string(
+            sql=outer_sql,
+            planned_query=planned_query,
+            slots_by_id=slots_by_id,
+            available_alias_by_slot_id=available_alias_by_slot_id,
+        )
 
     def _canonical_cross_model_alias(
         self,
