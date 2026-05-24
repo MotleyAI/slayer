@@ -452,7 +452,7 @@ def _apply_dot_path_in_sql(
     emitted: List[NormalizationWarning] = []
     changed = False
 
-    for col in list(parsed.find_all(exp.Column)):
+    for col in parsed.find_all(exp.Column):
         if id(col) not in root_col_ids:
             continue
         parts = [p.name for p in col.parts]

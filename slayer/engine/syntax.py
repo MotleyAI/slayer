@@ -243,7 +243,7 @@ def _normalize_sql_filter_operators(text: str) -> str:
         for kw in ("IS", "NOT", "AND", "OR", "IN"):
             part = re.sub(rf"\b{kw}\b", kw.lower(), part, flags=re.IGNORECASE)
         part = re.sub(r"(?<![<>=!])=(?!=)", "==", part)
-        part = re.sub(r"<>", "!=", part)
+        part = part.replace("<>", "!=")
         result.append(part)
         if i < len(literals):
             result.append(literals[i])
@@ -392,7 +392,7 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:
         return Ref(name=node.id)
 
     if isinstance(node, ast.Attribute):
-        parts = _flatten_attribute(node, agg_map=agg_map, original=original)
+        parts = _flatten_attribute(node, original=original)
         return DottedRef(parts=tuple(parts))
 
     if isinstance(node, ast.Call):
@@ -483,7 +483,7 @@ def _convert_constant(node: ast.Constant, *, original: str) -> Literal:
 
 
 def _flatten_attribute(
-    node: ast.Attribute, *, agg_map: Dict, original: str,
+    node: ast.Attribute, *, original: str,
 ) -> List[str]:
     parts: List[str] = [node.attr]
     cur: ast.AST = node.value
@@ -539,6 +539,7 @@ def _convert_call(
     kwargs = tuple(
         (kw.arg, _convert_kwarg_value(kw.value, agg_map=agg_map, original=original))
         for kw in node.keywords
+        if kw.arg is not None  # guarded above; narrows kw.arg to str
     )
 
     # Aggregation placeholder?

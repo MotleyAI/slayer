@@ -201,22 +201,31 @@ class TestDownstreamStageFlatRefs:
 
 class TestTopoSort:
     def test_stages_in_dependency_order(self):
-        # If stage2 references stage1, plan_stages must order stage1 before stage2.
-        stage1 = SlayerQuery(
-            name="stage1",
+        # stage_b depends on stage_a; pass the two NAMED stages out of
+        # dependency order (stage_b before stage_a) so plan_stages must
+        # topo-sort them. The root (last entry) stays last by contract.
+        stage_a = SlayerQuery(
+            name="stage_a",
             source_model="orders",
             measures=[{"formula": "amount:sum"}],
             dimensions=["status"],
         )
-        stage2 = SlayerQuery(
-            source_model="stage1",
+        stage_b = SlayerQuery(
+            name="stage_b",
+            source_model="stage_a",
             measures=[{"formula": "amount_sum:max"}],
             dimensions=["status"],
         )
-        # Pass in reverse order — planner sorts.
-        planned = plan_stages(queries=[stage1, stage2], bundle=_bundle())
-        assert len(planned) == 2
-        # Result has 2 stages in topological order.
+        root = SlayerQuery(source_model="stage_b", dimensions=["status"])
+        planned = plan_stages(
+            queries=[stage_b, stage_a, root], bundle=_bundle(),
+        )
+        assert len(planned) == 3
+        # Reordered to dependency order: stage_a (FROM orders) before
+        # stage_b (FROM stage_a) before the root (FROM stage_b).
+        assert [p.source_relation for p in planned] == [
+            "orders", "stage_a", "stage_b",
+        ]
 
     def test_duplicate_stage_names_rejected(self):
         s1 = SlayerQuery(

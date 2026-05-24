@@ -11,7 +11,7 @@ and (where feasible) a did-you-mean suggestion, and renders with a **stable
 
 `_format_error_message` builds every stage-5 error's message in one shape:
 
-```
+```text
 <ErrorName>: <one-line summary>
   at <location>
   scope: <short scope summary>

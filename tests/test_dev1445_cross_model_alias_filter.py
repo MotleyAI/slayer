@@ -100,7 +100,7 @@ def _rowset(rows) -> set:
     return {tuple(sorted(r.items())) for r in rows}
 
 
-_CTE_DEF_RE = re.compile(r"(?:WITH |,\s*)([A-Za-z_][A-Za-z0-9_]*) AS \(")
+_CTE_DEF_RE = re.compile(r"(?:WITH |,\s*)([A-Za-z_]\w*) AS \(")
 
 
 def _cte_names(sql: str) -> list:

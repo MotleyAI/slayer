@@ -35,7 +35,6 @@ from pydantic import BaseModel
 
 from slayer.core.errors import (
     EntityResolutionError,
-    IllegalWindowInFilterError,
     UnknownFunctionError,
 )
 from slayer.core.models import SlayerModel
@@ -563,7 +562,8 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
                     m.formula, custom_agg_names=custom_agg_names
                 )
             )
-        except (ValueError, UnknownFunctionError, IllegalWindowInFilterError):
+        # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.
+        except (ValueError, UnknownFunctionError):
             # Not parseable as Mode-B DSL — fall back to treating the whole
             # formula text as a single entity reference.
             result = await resolve_entity(

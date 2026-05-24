@@ -500,15 +500,12 @@ class IsolatedCteCrossModelPlanner:
         shared_grain: List[SlotId] = []
         for s in host_slots:
             if isinstance(s.key, ColumnKey):
-                if not s.key.path:
-                    shared_grain.append(s.id)
-                elif s.key.path == target_path[: len(s.key.path)]:
+                p = s.key.path
+                if not p or p == target_path[: len(p)]:
                     shared_grain.append(s.id)
             elif isinstance(s.key, TimeTruncKey):
                 td_path = column_path(s.key.column)
-                if not td_path:
-                    shared_grain.append(s.id)
-                elif td_path == target_path[: len(td_path)]:
+                if not td_path or td_path == target_path[: len(td_path)]:
                     shared_grain.append(s.id)
 
         first_hop = join_chain[0]

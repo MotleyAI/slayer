@@ -254,7 +254,7 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness):
 
 
 async def test_dev1448_named_join_measure_alias(harness):
-    engine, storage, db_path = harness
+    _, storage, db_path = harness
     stage1 = SlayerQuery(
         name="stage1",
         source_model="orders",
@@ -286,7 +286,7 @@ async def test_dev1448_named_join_measure_alias(harness):
 
 
 async def test_dev1449_flat_name_resolves(harness):
-    engine, storage, db_path = harness
+    _, storage, db_path = harness
     stage1 = SlayerQuery(
         name="stage1",
         source_model="orders",
@@ -309,7 +309,7 @@ async def test_dev1449_flat_name_resolves(harness):
 
 
 async def test_dev1449_dotted_form_raises(harness):
-    engine, storage, db_path = harness
+    _, storage, _ = harness
     stage1 = SlayerQuery(
         name="stage1",
         source_model="orders",

@@ -464,7 +464,6 @@ def _iter_slot_deps(key: ValueKey):
         yield from _iter_slot_deps(key.column)
         yield from _iter_slot_deps(key.low)
         yield from _iter_slot_deps(key.high)
-        return
     # StarKey, LiteralKey — never slottable on their own.
 
 

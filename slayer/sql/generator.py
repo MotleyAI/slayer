@@ -163,6 +163,11 @@ _SQL_AND_JOINER = " AND "
 # join site that follows the same pattern.
 _SQL_COL_SEP = ",\n    "
 
+# Repeated SQL keyword fragments — extracted so the same literal isn't
+# duplicated across CTE / window emission sites (Sonar S1192).
+_SQL_WITH = "WITH "
+_SQL_PARTITION_BY = "PARTITION BY "
+
 # Matches safe aggregation parameter values: identifiers, qualified names, numeric literals.
 _SAFE_AGG_PARAM_RE = re.compile(
     r'^(?:'
@@ -1635,7 +1640,7 @@ class SQLGenerator:
 
         # Build final CTE clause
         cte_strs = [f"{name} AS (\n{sql}\n)" for name, sql in ctes]
-        cte_clause = "WITH " + ",\n".join(cte_strs)
+        cte_clause = _SQL_WITH + ",\n".join(cte_strs)
 
         final_cte = ctes[-1][0]
 
@@ -1833,7 +1838,7 @@ class SQLGenerator:
         time_col = f'"{t.time_alias}"' if t.time_alias else None
         partition_cols = getattr(t, "partition_aliases", []) or []
         partition_clause = (
-            "PARTITION BY " + ", ".join(f'"{a}"' for a in partition_cols)
+            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_cols)
             if partition_cols
             else ""
         )
@@ -2997,7 +3002,7 @@ class SQLGenerator:
         )
 
         cte_clause = (
-            "WITH "
+            _SQL_WITH
             + ",\n".join(f"{name} AS (\n{sql}\n)" for name, sql in ctes)
         )
         chain_sql = f"{cte_clause}\n{inner_sql}"
@@ -3245,7 +3250,6 @@ class SQLGenerator:
                 _collect_from(key.column)
                 _collect_from(key.low)
                 _collect_from(key.high)
-                return
             # LiteralKey / StarKey / unknown: nothing to materialise.
 
         # Transform layer deps.
@@ -3327,9 +3331,8 @@ class SQLGenerator:
                             BetweenKey, ColumnKey, ColumnSqlKey, TimeTruncKey,
                             AggregateKey,
                         ),
-                    ):
-                        if not _ready(a):
-                            return False
+                    ) and not _ready(a):
+                        return False
                 return True
             if isinstance(key, BetweenKey):
                 return all(
@@ -3746,7 +3749,7 @@ class SQLGenerator:
         """
         partition_clause = ""
         if partition_exprs:
-            partition_clause = "PARTITION BY " + ", ".join(
+            partition_clause = _SQL_PARTITION_BY + ", ".join(
                 p.sql(dialect=self.dialect) for p in partition_exprs
             )
 
@@ -4446,7 +4449,7 @@ class SQLGenerator:
                     for host, cte_col in joinback_pairs
                 ]
                 from_clause_str += (
-                    f"\nLEFT JOIN {cte_name} ON " + " AND ".join(join_parts)
+                    f"\nLEFT JOIN {cte_name} ON " + _SQL_AND_JOINER.join(join_parts)
                 )
             else:
                 from_clause_str += f"\nCROSS JOIN {cte_name}"
@@ -4667,7 +4670,7 @@ class SQLGenerator:
             + f"\nFROM {final_cte}"
         )
         cte_clause = (
-            "WITH "
+            _SQL_WITH
             + ",\n".join(f"{name} AS (\n{sql}\n)" for name, sql in ctes)
         )
         chain_sql = f"{cte_clause}\n{inner_sql}"
@@ -5729,7 +5732,7 @@ class SQLGenerator:
                     partition_aliases.append(alias)
 
         partition_clause = (
-            "PARTITION BY " + ", ".join(f'"{a}"' for a in partition_aliases)
+            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_aliases)
             if partition_aliases
             else ""
         )
@@ -6477,7 +6480,7 @@ class SQLGenerator:
             "SELECT " + ", ".join(sjoin_select_parts)
             + f"\nFROM {prev_cte}"
             + f"\nLEFT JOIN {shifted_cte_name}"
-            + "\n    ON " + " AND ".join(join_conds)
+            + "\n    ON " + _SQL_AND_JOINER.join(join_conds)
         )
         ctes.append((sjoin_cte_name, sjoin_sql))
 
@@ -6622,7 +6625,7 @@ class SQLGenerator:
         )
         carry_select = ",\n  ".join(f'"{a}"' for a in carry_aliases_sorted)
         partition_clause = (
-            "PARTITION BY " + ", ".join(f'"{a}"' for a in partition_aliases)
+            _SQL_PARTITION_BY + ", ".join(f'"{a}"' for a in partition_aliases)
             if partition_aliases
             else ""
         )
@@ -6647,7 +6650,7 @@ class SQLGenerator:
         # column in PARTITION BY so each run of true predicate is
         # counted within its own reset group.
         value_partition_aliases = partition_aliases + [cp_reset_alias]
-        value_partition_clause = "PARTITION BY " + ", ".join(
+        value_partition_clause = _SQL_PARTITION_BY + ", ".join(
             f'"{a}"' for a in value_partition_aliases
         )
         over_value = " ".join((
