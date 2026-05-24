@@ -28,11 +28,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.variables import merge_query_variables
 
 if TYPE_CHECKING:
+    from slayer.core.scope import StageSchema
     from slayer.storage.base import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,14 @@ class ResolvedSourceBundle(BaseModel):
     referenced_models: List[SlayerModel] = Field(default_factory=list)
     inline_extensions: List[ModelExtension] = Field(default_factory=list)
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
+    # DEV-1450 stage 7b.15d — per-named-stage resolved source model, keyed by
+    # stage name. Populated for siblings whose source resolves to a concrete
+    # model (a stored model, an inline ``SlayerModel``, or a ``ModelExtension``
+    # over a stored base). Siblings sourced FROM another sibling (chain or a
+    # ``ModelExtension`` over a sibling) are omitted — the planner resolves
+    # those against the upstream ``StageSchema`` at plan time. Lets each stage
+    # in a heterogeneous DAG bind against its OWN source rather than the root's.
+    stage_source_models: Dict[str, SlayerModel] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
 
@@ -94,30 +104,52 @@ def _apply_extension_overlay(
     )
 
 
+def _source_name_if_sibling(
+    spec: SourceSpec, sibling_names: "set[str] | Dict[str, Any]"
+) -> Optional[str]:
+    """Return the sibling stage name a ``source_model`` spec reads from, if any.
+
+    Covers the bare-string form (``source_model="kpis"``) AND the
+    ``ModelExtension`` / dict-with-``source_name`` form
+    (``source_model={"source_name": "kpis", ...}``) — both reference a sibling
+    when the name is in ``sibling_names``. Returns ``None`` otherwise.
+    """
+    if isinstance(spec, str):
+        return spec if spec in sibling_names else None
+    if isinstance(spec, ModelExtension):
+        return spec.source_name if spec.source_name in sibling_names else None
+    if isinstance(spec, dict) and isinstance(spec.get("source_name"), str):
+        nm = spec["source_name"]
+        return nm if nm in sibling_names else None
+    return None
+
+
 def _follow_sibling_chain(
     spec: SourceSpec, named_queries: Dict[str, SlayerQuery]
 ) -> SourceSpec:
     """Resolve a ``source_model`` that points at a named sibling stage down
     to the real base spec it ultimately reads from.
 
-    ``plan_query`` binds every non-sibling-sourced stage against
-    ``bundle.source_model`` (the StageSchema branch only fires when the
-    ``source_model`` string matches a sibling). So the bundle's
-    ``source_model`` must be the real base the chain bottoms out at — not the
-    sibling name. A cycle raises ``ValueError`` (mirrors the legacy
-    ``_resolve_model`` circular-reference guard); returns the first
-    non-sibling spec otherwise.
+    The bundle's ``source_model`` must be the real base the root chain bottoms
+    out at — not a sibling name — so a query-backed datasource lookup and the
+    single-model binding path resolve correctly. Follows both the bare-string
+    sibling form and the ``ModelExtension`` / dict-over-sibling form down to
+    the first spec that does NOT read from a sibling. A cycle raises
+    ``ValueError`` (mirrors the legacy ``_resolve_model`` circular-reference
+    guard).
     """
     seen: List[str] = []
-    while isinstance(spec, str) and spec in named_queries:
-        if spec in seen:
-            chain = " -> ".join([*seen, spec])
+    while True:
+        sib = _source_name_if_sibling(spec, named_queries)
+        if sib is None:
+            return spec
+        if sib in seen:
+            chain = " -> ".join([*seen, sib])
             raise ValueError(
                 f"Circular reference detected in source_queries DAG: {chain}"
             )
-        seen.append(spec)
-        spec = named_queries[spec].source_model
-    return spec
+        seen.append(sib)
+        spec = named_queries[sib].source_model
 
 
 async def _resolve_source_spec(
@@ -177,10 +209,20 @@ async def build_resolved_source_bundle(
     plain top-level execution.
     """
     named_queries = named_queries or {}
+    sibling_names = set(named_queries)
 
-    # The bundle's source_model is the real base the non-sibling stages bind
-    # against — follow the sibling chain past any named-stage indirection.
+    # The bundle's source_model is the real base the root chain bottoms out
+    # at — follow the sibling chain past any named-stage indirection. When the
+    # ROOT source is a ``ModelExtension`` over a NON-sibling base, the overlay
+    # is recorded in ``inline_extensions`` so the engine can re-apply it AFTER
+    # a query-backed base expands (expansion derives columns from the backing
+    # query and would otherwise drop the overlay's extra columns).
     root_spec = _follow_sibling_chain(query.source_model, named_queries)
+    inline_extensions: List[ModelExtension] = []
+    if _source_name_if_sibling(root_spec, sibling_names) is None:
+        ext = _as_extension_over_nonsibling(root_spec, sibling_names)
+        if ext is not None:
+            inline_extensions.append(ext)
     source_model = await _resolve_source_spec(
         root_spec, storage=storage, data_source=data_source
     )
@@ -197,6 +239,21 @@ async def build_resolved_source_bundle(
         data_source=walk_ds,
     )
 
+    # Per-named-stage source models — each non-sibling-sourced sibling resolves
+    # to its OWN concrete model so heterogeneous DAGs (stage A over ``orders``,
+    # stage B over ``customers``) bind each stage against the right host.
+    stage_source_models: Dict[str, SlayerModel] = {}
+    for nm, nq in named_queries.items():
+        if _source_name_if_sibling(nq.source_model, sibling_names) is not None:
+            continue  # sibling-sourced: planner resolves via upstream StageSchema
+        # A non-sibling-sourced stage's source MUST resolve to a concrete model;
+        # a failure here (typoed / missing model) is a genuine error, not a
+        # best-effort skip — swallowing it would silently fall back to the root
+        # source and emit wrong SQL when column names overlap.
+        stage_source_models[nm] = await _resolve_source_spec(
+            nq.source_model, storage=storage, data_source=walk_ds or data_source
+        )
+
     query_variables = merge_query_variables(
         runtime=runtime_variables,
         stage=query.variables,
@@ -207,7 +264,9 @@ async def build_resolved_source_bundle(
     return ResolvedSourceBundle(
         source_model=source_model,
         referenced_models=referenced_models,
+        inline_extensions=inline_extensions,
         named_queries=dict(named_queries),
+        stage_source_models=stage_source_models,
         query_variables=query_variables,
         datasource_hint=data_source,
     )
@@ -271,3 +330,79 @@ async def _collect_referenced_models(
     ordered = [source_model]
     ordered.extend(m for n, m in collected.items() if n != source_model.name)
     return ordered
+
+
+def _as_extension_over_nonsibling(
+    spec: SourceSpec, sibling_names: "set[str]"
+) -> Optional[ModelExtension]:
+    """Return the ``ModelExtension`` if ``spec`` overlays a NON-sibling base.
+
+    Used to record the root overlay so the engine can re-apply it after a
+    query-backed base expands. Returns ``None`` for plain strings, inline
+    models, and overlays over a sibling (those are handled by the planner).
+    """
+    if isinstance(spec, ModelExtension):
+        ext = spec
+    elif isinstance(spec, dict) and isinstance(spec.get("source_name"), str):
+        ext = ModelExtension.model_validate(spec)
+    else:
+        return None
+    if ext.source_name in sibling_names:
+        return None
+    return ext
+
+
+def synthetic_model_from_stage_schema(
+    *, name: str, schema: "StageSchema", data_source: str
+) -> SlayerModel:
+    """A stand-in ``SlayerModel`` whose ``sql_table`` is a stage's CTE name and
+    whose columns are that stage's flat output columns.
+
+    Lets the binder / cross-model planner resolve a join (or cross-model ref)
+    targeting a sibling stage, and the generator emit ``FROM <cte> AS <cte>`` /
+    ``LEFT JOIN <cte> ...`` — the stage is materialised as a CTE elsewhere
+    (``generate_planned_stages``); this is the rendering vehicle for that CTE
+    relation. ``StageColumn.name`` is already the ``__``-flattened downstream
+    bind name, so the synthetic column names match how downstream refs bind.
+    """
+    return SlayerModel(
+        name=name,
+        data_source=data_source or "_stage",
+        sql_table=name,
+        columns=[
+            Column(name=c.name, type=c.type or DataType.DOUBLE)
+            for c in schema.columns
+        ],
+    )
+
+
+def stage_bundle_with_siblings(
+    *,
+    bundle: ResolvedSourceBundle,
+    source_model: SlayerModel,
+    sibling_schemas: Dict[str, "StageSchema"],
+    data_source: str,
+) -> ResolvedSourceBundle:
+    """Per-stage bundle: ``source_model`` is the stage's own host; synthetic
+    sibling models (one per already-emitted ``StageSchema``) are threaded into
+    ``referenced_models`` so a join / cross-model ref to a sibling resolves.
+
+    The host comes first (``get_referenced_model`` finds it before any same-
+    named join target), then the synthetic siblings, then the original bundle's
+    referenced models (minus any shadowed by the host or a synthetic sibling).
+    """
+    synths = [
+        synthetic_model_from_stage_schema(
+            name=n, schema=s, data_source=data_source
+        )
+        for n, s in sibling_schemas.items()
+    ]
+    shadow = {source_model.name} | {s.name for s in synths}
+    referenced = (
+        [source_model]
+        + synths
+        + [m for m in bundle.referenced_models if m.name not in shadow]
+    )
+    return bundle.model_copy(
+        update={"source_model": source_model, "referenced_models": referenced}
+    )

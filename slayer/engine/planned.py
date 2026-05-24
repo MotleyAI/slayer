@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from slayer.core.enums import DataType, JoinType
 from slayer.core.errors import UnreachableFilterDroppedWarning
 from slayer.core.keys import Phase, ValueKey
+from slayer.core.models import SlayerModel
 from slayer.core.scope import StageSchema
 from slayer.engine.binding import BoundExpr  # re-exported below
 
@@ -309,3 +310,12 @@ class PlannedQuery(BaseModel):
     # key in ``TransformKey.time_key``; the generator uses it for the
     # ``ORDER BY`` clause of the OVER expression.
     active_time_dimension_slot_id: Optional[SlotId] = None
+    # DEV-1450 stage 7b.15d — the concrete ``SlayerModel`` this stage renders
+    # against, carried from the planner so the generator binds the stage's
+    # FROM / joins against the SAME model the binder used. For a multi-stage
+    # DAG this is the stage's OWN source (e.g. ``orders`` for a stage the root
+    # never reads from), a ModelExtension overlay, or a synthetic model over a
+    # sibling stage's CTE. ``None`` for a StageSchema-scoped chain stage (the
+    # generator builds a synthetic model from the upstream schema) and for a
+    # plain single-model query (the generator uses ``bundle.source_model``).
+    render_source_model: Optional[SlayerModel] = None

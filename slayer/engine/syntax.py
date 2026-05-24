@@ -211,6 +211,43 @@ def parse_expr(text: str, *, allow_dunder: bool = False) -> ParsedExpr:
     return _convert(py_ast, agg_map=agg_map, original=text)
 
 
+def parse_filter_expr(text: str, *, allow_dunder: bool = False) -> ParsedExpr:
+    """Parse a Mode-B *filter* string, accepting SQL operator spellings.
+
+    Filters historically accepted SQL-style operators (``=``, ``<>``, ``NULL``,
+    and the keyword forms ``AND`` / ``OR`` / ``NOT`` / ``IS`` / ``IN``)
+    alongside the Python spellings. This wrapper normalizes those to their
+    Python equivalents (string-literal-aware, so quoted contents are
+    untouched) and then delegates to :func:`parse_expr`. Measures / order use
+    ``parse_expr`` directly — only filters get the SQL-operator leniency,
+    matching the legacy ``parse_filter`` contract.
+    """
+    return parse_expr(_normalize_sql_filter_operators(text), allow_dunder=allow_dunder)
+
+
+def _normalize_sql_filter_operators(text: str) -> str:
+    """Rewrite SQL operator spellings to Python ones outside string literals.
+
+    ``NULL`` → ``None``; ``IS`` / ``NOT`` / ``AND`` / ``OR`` / ``IN`` →
+    lowercase; standalone ``=`` → ``==``; ``<>`` → ``!=``. Replicated from the
+    legacy ``slayer.core.formula._preprocess_sql_operators`` so the typed
+    pipeline doesn't depend on the module DEV-1452 deletes.
+    """
+    parts = _STRING_LITERAL_RE.split(text)
+    literals = _STRING_LITERAL_RE.findall(text)
+    result: List[str] = []
+    for i, part in enumerate(parts):
+        part = re.sub(r"\bNULL\b", "None", part, flags=re.IGNORECASE)
+        for kw in ("IS", "NOT", "AND", "OR", "IN"):
+            part = re.sub(rf"\b{kw}\b", kw.lower(), part, flags=re.IGNORECASE)
+        part = re.sub(r"(?<![<>=!])=(?!=)", "==", part)
+        part = re.sub(r"<>", "!=", part)
+        result.append(part)
+        if i < len(literals):
+            result.append(literals[i])
+    return "".join(result)
+
+
 # ---------------------------------------------------------------------------
 # Reference walk (best-effort textual extraction)
 # ---------------------------------------------------------------------------

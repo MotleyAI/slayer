@@ -20,9 +20,12 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.core.errors import AggregationNotAllowedError
-from slayer.core.models import Column, SlayerModel
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
+from slayer.engine.source_bundle import (
+    stage_bundle_with_siblings,
+    synthetic_model_from_stage_schema,
+)
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
 
 
@@ -2689,10 +2692,16 @@ class SQLGenerator:
         # 7b.10 — base CTE must also project hidden slots referenced as
         # transform inputs / partition_keys / time_key / POST-phase
         # filter operands so step CTEs and filter wrappers can name them.
+        # Order-only hidden refs need base materialisation ONLY in the
+        # transform/CTE path (the outer wrapper ORDER BY references a
+        # materialised alias). The no-transform path renders an ORDER-only
+        # hidden aggregate inline in the single SELECT, so materialising it
+        # would leak a hidden column into the public projection.
         extra_materialize_ids = self._collect_base_aux_slot_ids(
             planned_query=planned_query,
             slot_id_by_key=slot_id_by_key,
             slots_by_id=slots_by_id,
+            include_order=bool(planned_query.transform_layers),
         )
         base_render_order = list(planned_query.projection) + [
             sid for sid in extra_materialize_ids if sid not in public_proj_set
@@ -2751,6 +2760,7 @@ class SQLGenerator:
                 planned_query=planned_query,
                 source_relation=source_relation,
                 slots_by_id=slots_by_id,
+                source_model=source_model,
             )
             return base_select.sql(dialect=self.dialect, pretty=True)
 
@@ -3141,6 +3151,7 @@ class SQLGenerator:
         planned_query,
         slot_id_by_key: Dict[Any, str],
         slots_by_id: Dict[str, Any],
+        include_order: bool = True,
     ) -> Set[str]:
         """Return slot ids the base CTE must project beyond the public
         projection.
@@ -3227,11 +3238,13 @@ class SQLGenerator:
         # 7b.10 — order-only hidden refs must also reach the base CTE.
         # Walk ``OrderEntry.slot_id`` → that slot's key (so any
         # transform / arithmetic inside also surfaces its base deps).
-        for oe in planned_query.order:
-            slot = slots_by_id.get(oe.slot_id)
-            if slot is None:
-                continue
-            _collect_from(slot.key)
+        # Skipped in the no-transform path, where ORDER renders inline.
+        if include_order:
+            for oe in planned_query.order:
+                slot = slots_by_id.get(oe.slot_id)
+                if slot is None:
+                    continue
+                _collect_from(slot.key)
 
         return out
 
@@ -3336,6 +3349,7 @@ class SQLGenerator:
         from slayer.core.keys import (
             AggregateKey,
             ColumnKey,
+            ColumnSqlKey,
             Phase,
             TimeTruncKey,
         )
@@ -3406,6 +3420,19 @@ class SQLGenerator:
                     select_columns.append(trunc_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, trunc_expr)
                     _record_alias(sid, full_alias)
+                elif isinstance(key, ColumnSqlKey):
+                    # A derived column (``Column.sql`` set) used as a dimension,
+                    # e.g. a ModelExtension's ``is_high_rev = CASE WHEN ...`` over
+                    # a query-backed / sibling-stage base. Resolve the column's
+                    # SQL expression and group by it like any other dimension.
+                    col_expr = self._dim_column_expr_from_planned(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        leaf=key.column_name,
+                    )
+                    select_columns.append(col_expr.copy().as_(full_alias))
+                    group_by_keys.setdefault(sid, col_expr)
+                    _record_alias(sid, full_alias)
                 else:
                     raise NotImplementedError(
                         f"DEV-1450 stage 7b.10+: row-phase key type "
@@ -3416,10 +3443,21 @@ class SQLGenerator:
             elif slot.phase == Phase.AGGREGATE:
                 key = slot.key
                 if not isinstance(key, AggregateKey):
-                    raise NotImplementedError(
-                        f"DEV-1450 stage 7b.10+: AGGREGATE-phase key "
-                        f"{type(key).__name__} not supported in 7b.8."
+                    # AGGREGATE-phase composite (arithmetic / scalar-call of
+                    # aggregates, e.g. ``expensenet:avg + benchmarkexp:avg``).
+                    # Render inline; cast the whole composite once.
+                    composite, any_agg = self._render_aggregate_composite_expr(
+                        key=key,
+                        slot=slot,
+                        source_model=source_model,
+                        source_relation=source_relation,
                     )
+                    if any_agg:
+                        composite = _wrap_cast_for_type(composite, slot.type)
+                        has_aggregation = True
+                    select_columns.append(composite.copy().as_(full_alias))
+                    _record_alias(sid, full_alias)
+                    continue
                 agg_path = getattr(key.source, "path", ())
                 if agg_path:
                     if skip_cross_model_aggs:
@@ -3464,6 +3502,91 @@ class SQLGenerator:
                 join_expr, on=on_expr, join_type=join_type,
             )
         return base_select, aliases_by_slot_id, has_aggregation, group_by_keys
+
+    def _render_aggregate_composite_expr(
+        self,
+        *,
+        key,
+        slot,
+        source_model,
+        source_relation: str,
+    ) -> "tuple[exp.Expression, bool]":
+        """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
+        ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
+        benchmarkexp:avg``) to one inline sqlglot expr.
+
+        Operand ``AggregateKey``s render inline via the same synth +
+        ``_build_agg`` path the single-aggregate branch uses (no per-operand
+        cast — the caller casts the composite once). Returns ``(expr,
+        contains_aggregate)``. Cross-model operand aggregates (non-empty
+        ``source.path``) are not yet handled here — they need CTE routing.
+        """
+        from decimal import Decimal
+
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            LiteralKey,
+            ScalarCallKey,
+        )
+
+        if isinstance(key, AggregateKey):
+            if getattr(key.source, "path", ()):
+                raise NotImplementedError(
+                    "DEV-1450: cross-model aggregate operand inside an "
+                    "AGGREGATE-phase composite is not yet supported; factor it "
+                    "into a multi-stage source_queries model."
+                )
+            synth = self._synthesize_enriched_measure_from_planned(
+                slot=slot, key=key, source_model=source_model,
+                source_relation=source_relation, full_alias="__op__",
+            )
+            agg_expr, is_agg = self._build_agg(measure=synth)
+            return agg_expr, is_agg
+        if isinstance(key, ArithmeticKey):
+            operands = []
+            any_agg = False
+            for o in key.operands:
+                e, a = self._render_aggregate_composite_expr(
+                    key=o, slot=slot, source_model=source_model,
+                    source_relation=source_relation,
+                )
+                operands.append(e)
+                any_agg = any_agg or a
+            return self._compose_arithmetic_op(op=key.op, operands=operands), any_agg
+        if isinstance(key, ScalarCallKey):
+            args = []
+            any_agg = False
+            for a in key.args:
+                if isinstance(a, (AggregateKey, ArithmeticKey, ScalarCallKey, LiteralKey)):
+                    e, ag = self._render_aggregate_composite_expr(
+                        key=a, slot=slot, source_model=source_model,
+                        source_relation=source_relation,
+                    )
+                    args.append(e)
+                    any_agg = any_agg or ag
+                elif a is None:
+                    args.append(exp.Null())
+                elif isinstance(a, bool):
+                    args.append(exp.true() if a else exp.false())
+                elif isinstance(a, (int, float, Decimal)):
+                    args.append(exp.Literal.number(str(a)))
+                else:
+                    args.append(exp.Literal.string(str(a)))
+            return exp.func(key.name.upper(), *args), any_agg
+        if isinstance(key, LiteralKey):
+            v = key.value
+            if v is None:
+                return exp.Null(), False
+            if isinstance(v, bool):
+                return (exp.true() if v else exp.false()), False
+            if isinstance(v, (int, float, Decimal)):
+                return exp.Literal.number(str(v)), False
+            return exp.Literal.string(str(v)), False
+        raise NotImplementedError(
+            f"DEV-1450: AGGREGATE-phase composite operand "
+            f"{type(key).__name__} not supported."
+        )
 
     def _render_with_cross_model_plans(
         self,
@@ -3531,12 +3654,36 @@ class SQLGenerator:
             sid for sid in planned_query.projection if sid not in cma_slot_ids
         ]
 
+        # Hidden ORDER-BY-only LOCAL slots (``ORDER BY revenue:sum`` with
+        # no declared measure, or an unprojected host dimension) must be
+        # MATERIALISED in ``_base`` so the combined-level ORDER BY can
+        # reference them — but they stay OUT of the combined public
+        # projection (trimmed). Cross-model order slots are handled by
+        # the per-plan ``_cm_*`` branch, never here.
+        seen_base_ids = set(base_projection)
+        order_only_local_ids: List[str] = []
+        for order_entry in planned_query.order:
+            sid = order_entry.slot_id
+            if sid in cma_slot_ids or sid in seen_base_ids:
+                continue
+            slot = slots_by_id.get(sid)
+            if slot is None:
+                continue
+            # Local-only: a cross-model aggregate carries a non-empty
+            # ``source.path``; those never materialise in ``_base``.
+            if getattr(getattr(slot.key, "source", None), "path", ()):
+                continue
+            order_only_local_ids.append(sid)
+            seen_base_ids.add(sid)
+        base_render_order = base_projection + order_only_local_ids
+
         # Hidden grain materialisation: when the user query has neither
-        # host row slots NOR local aggs, ``base_projection`` is empty
-        # and the ``_base`` CTE would be a bare ``FROM orders`` — legacy
-        # emits ``SELECT 1 AS _placeholder FROM orders`` so the combined
-        # CROSS JOIN has a left side to join against. Mirror that shape.
-        empty_base = not base_projection
+        # host row slots NOR local aggs (and no hidden order targets),
+        # ``base_render_order`` is empty and the ``_base`` CTE would be a
+        # bare ``FROM orders`` — legacy emits ``SELECT 1 AS _placeholder
+        # FROM orders`` so the combined CROSS JOIN has a left side to
+        # join against. Mirror that shape.
+        empty_base = not base_render_order
         if empty_base:
             base_select = exp.Select().select(
                 exp.Alias(this=exp.Literal.number("1"), alias=exp.to_identifier("_placeholder")),
@@ -3559,7 +3706,7 @@ class SQLGenerator:
                 bundle=bundle,
                 source_model=source_model,
                 source_relation=source_relation,
-                base_render_order=base_projection,
+                base_render_order=base_render_order,
                 slots_by_id=slots_by_id,
                 skip_cross_model_aggs=True,
             )
@@ -3718,6 +3865,7 @@ class SQLGenerator:
             slots_by_id=slots_by_id,
             cma_slot_ids=cma_slot_ids,
             cm_alias_for_plan=canonical_alias_for_plan,
+            bare_order_slot_ids=set(order_only_local_ids),
         )
         if order_sql:
             sql += "\n" + order_sql
@@ -4217,15 +4365,25 @@ class SQLGenerator:
         slots_by_id: Dict[str, Any],
         cma_slot_ids: Set[str],
         cm_alias_for_plan: Dict[str, str],
+        bare_order_slot_ids: Optional[Set[str]] = None,
     ) -> Optional[str]:
         """Build the ORDER BY clause for the combined SELECT.
 
-        Local slots are referenced as ``_base."<full_alias>"``; cross-
-        model slots are referenced as bare ``"<full_alias>"`` (they
-        live in a single column projected from the cross-model CTE).
+        PROJECTED local slots are referenced as ``_base."<full_alias>"``
+        (legacy parity); cross-model slots are referenced as bare
+        ``"<full_alias>"`` (they live in a single column projected from
+        the cross-model CTE). HIDDEN order-only local slots
+        (``bare_order_slot_ids``) are also referenced bare: they are
+        materialised in ``_base`` but TRIMMED from the combined public
+        projection, so the outermost ORDER BY must use the unqualified
+        alias — the ``_base.`` qualifier would dangle if an outer
+        projection-trim wrapper (which exposes only the bare public
+        aliases) is ever layered on top. The bare alias still resolves
+        unambiguously against ``_base`` in the combined FROM.
         """
         if not planned_query.order:
             return None
+        bare_ids = bare_order_slot_ids or set()
         parts: List[str] = []
         for entry in planned_query.order:
             direction = "ASC" if entry.direction == "asc" else "DESC"
@@ -4243,7 +4401,10 @@ class SQLGenerator:
                     source_relation=planned_query.source_relation,
                     alias_index={},
                 )
-                parts.append(f'_base."{full_alias}" {direction}')
+                if entry.slot_id in bare_ids:
+                    parts.append(f'"{full_alias}" {direction}')
+                else:
+                    parts.append(f'_base."{full_alias}" {direction}')
         if not parts:
             return None
         return "ORDER BY " + ", ".join(parts)
@@ -5595,7 +5756,17 @@ class SQLGenerator:
                 model_name=source_relation,
                 type=slot.type,
             )
-        if isinstance(source, ColumnKey):
+        if isinstance(source, (ColumnKey, ColumnSqlKey)):
+            # ColumnKey is a bare / trivial column (``sql`` None or a bare
+            # identifier remap); ColumnSqlKey is a derived column (``Column.sql``
+            # set to a non-trivial expression — ``amount * 2``). Both resolve
+            # the same way: look up the column on the model and aggregate
+            # ``col.sql`` (the derived expression) or ``col.name`` (bare).
+            src_leaf = (
+                source.leaf
+                if isinstance(source, ColumnKey)
+                else source.column_name
+            )
             # ``first`` / ``last`` need ``rn_suffix_map`` / ``filtered_rn_map``
             # plumbing that the synth adapter doesn't carry; explicit deferral
             # keeps the failure mode a clear stage marker rather than a wrong-
@@ -5603,21 +5774,30 @@ class SQLGenerator:
             if key.agg in ("first", "last"):
                 raise NotImplementedError(
                     f"DEV-1450 stage 7b.10+: aggregation {key.agg!r} on "
-                    f"{source_relation}.{source.leaf} not yet wired "
+                    f"{source_relation}.{src_leaf} not yet wired "
                     f"(needs rn_suffix_map plumbing). Deferred.",
                 )
-            # Aggregations outside the built-in set (custom user-defined
-            # ``Aggregation`` with formula+params) need
-            # ``aggregation_def`` threading the model's definition into
-            # the synth measure. Out of 7b.13 scope -- deferred to
-            # DEV-1452.
+            # Aggregations outside the built-in set are custom user-defined
+            # ``Aggregation``s declared on ``SlayerModel.aggregations``; thread
+            # the model's definition into ``EnrichedMeasure.aggregation_def`` so
+            # ``_build_formula_agg`` renders the custom formula. An unknown
+            # name (neither built-in nor defined) is a hard error.
+            agg_def = None
             if key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
-                raise NotImplementedError(
-                    f"DEV-1450 stage 7b.13: custom aggregation {key.agg!r} "
-                    f"on {source_relation}.{source.leaf} not yet wired "
-                    f"through the synthetic EnrichedMeasure adapter "
-                    f"(needs aggregation_def). Deferred.",
+                agg_def = next(
+                    (a for a in (source_model.aggregations or []) if a.name == key.agg),
+                    None,
                 )
+                if agg_def is None:
+                    raise AggregationNotAllowedError(
+                        column=src_leaf,
+                        agg=key.agg,
+                        reason=(
+                            f"unknown aggregation {key.agg!r} — not a built-in "
+                            f"and not defined in {source_model.name!r}."
+                            f"aggregations."
+                        ),
+                    )
             # DEV-1450 stage 7b.13: validate kwarg ColumnKey paths against
             # source.path. A kwarg path that doesn't match the aggregate
             # source path would silently bind the kwarg to a different
@@ -5629,7 +5809,7 @@ class SQLGenerator:
             for kname, kval in key.kwargs:
                 if isinstance(kval, ColumnKey) and kval.path != source.path:
                     raise AggregationNotAllowedError(
-                        column=source.leaf,
+                        column=src_leaf,
                         agg=key.agg,
                         reason=(
                             f"kwarg {kname!r} references ColumnKey with "
@@ -5639,12 +5819,12 @@ class SQLGenerator:
                         ),
                     )
             col = next(
-                (c for c in source_model.columns if c.name == source.leaf),
+                (c for c in source_model.columns if c.name == src_leaf),
                 None,
             )
             if col is None:
                 raise ValueError(
-                    f"Aggregate source column {source.leaf!r} not found "
+                    f"Aggregate source column {src_leaf!r} not found "
                     f"on model {source_model.name!r}",
                 )
             sql_text = col.sql if col.sql else col.name
@@ -5685,12 +5865,7 @@ class SQLGenerator:
                 column_type=col.type,
                 filter_sql=filter_sql,
                 agg_kwargs=agg_kwargs_str,
-            )
-        if isinstance(source, ColumnSqlKey):
-            raise NotImplementedError(
-                f"DEV-1450 stage 7b.10+: ColumnSqlKey aggregation sources "
-                f"(derived columns) deferred to later slice. "
-                f"model={source.model!r} column={source.column_name!r}.",
+                aggregation_def=agg_def,
             )
         raise NotImplementedError(
             f"AggregateKey source {type(source).__name__} not supported "
@@ -6004,25 +6179,44 @@ class SQLGenerator:
         planned_query,
         source_relation: str,
         slots_by_id: dict,
+        source_model=None,
     ) -> exp.Select:
         """ORDER BY entries reference slot ids — resolve to the slot's
         public alias and emit ``ORDER BY "source_relation.alias"
         ASC|DESC`` (quoted-identifier form, matching legacy
         ``_apply_order_limit``).
         """
+        from slayer.core.keys import AggregateKey, ArithmeticKey, ScalarCallKey
+
         for order_entry in planned_query.order:
             slot = slots_by_id.get(order_entry.slot_id)
             if slot is None:
                 continue
-            # Codex MEDIUM fold-in: hidden row slots (e.g. a
-            # ``ColumnSqlKey`` derived column referenced only via order)
-            # are interned by the planner but the local-only generator
-            # doesn't materialise them in SELECT, so emitting
-            # ``ORDER BY "<source_relation>.<alias>"`` would reference
-            # an alias not in the projection. Defer with a stage marker
-            # — hidden ORDER BY targets surface when window / derived
-            # column rendering lands (7b.10+).
+            # A hidden ORDER-BY-only aggregate (``ORDER BY revenue:sum DESC``
+            # with no declared measure) is interned but never projected. In a
+            # single-level GROUP BY SELECT it can be ordered by its aggregate
+            # expression inline — no need to surface it as a public column.
             if slot.hidden:
+                key = slot.key
+                if (
+                    source_model is not None
+                    and isinstance(key, (AggregateKey, ArithmeticKey, ScalarCallKey))
+                    and not getattr(getattr(key, "source", None), "path", ())
+                ):
+                    order_expr, _agg = self._render_aggregate_composite_expr(
+                        key=key,
+                        slot=slot,
+                        source_model=source_model,
+                        source_relation=source_relation,
+                    )
+                    ascending = order_entry.direction == "asc"
+                    select = select.order_by(
+                        exp.Ordered(this=order_expr, desc=not ascending),
+                    )
+                    continue
+                # Hidden ROW / transform / cross-model ORDER targets need
+                # materialisation in an inner CTE — deferred (no failing test
+                # in the local single-SELECT path).
                 raise NotImplementedError(
                     f"DEV-1450 stage 7b.10+: ORDER BY references a "
                     f"hidden slot (id={slot.id!r}, key="
@@ -6085,47 +6279,34 @@ def generate_from_planned(
     )
 
 
-def _synthetic_stage_model(
-    *, relation_name: str, upstream_schema, data_source: str
-) -> SlayerModel:
-    """A stand-in ``SlayerModel`` whose ``sql_table`` is an upstream stage's
-    CTE name and whose columns are that stage's flat output columns.
-
-    A downstream stage was bound against the upstream ``StageSchema`` (P6),
-    so its slots are ``ColumnKey(leaf=<flat>)`` referencing the CTE. This
-    synthetic model lets ``generate_from_planned`` resolve those refs to
-    ``<cte>.<flat>`` and emit ``FROM <cte> AS <cte>`` — no model-graph
-    re-walk, just a rendering vehicle for the CTE relation.
-    """
-    return SlayerModel(
-        name=relation_name,
-        data_source=data_source or "_stage",
-        sql_table=relation_name,
-        columns=[
-            Column(name=c.sql_alias, type=c.type or DataType.DOUBLE)
-            for c in upstream_schema.columns
-        ],
-    )
-
-
 def _bundle_for_stage(planned_query, bundle, schema_by_name):
-    """Pick the bundle a single stage renders against.
+    """Pick the per-stage bundle a single DAG stage renders against.
 
-    Model-scoped stages render against the original bundle; a stage whose
-    ``source_relation`` names an upstream sibling renders against a one-off
-    bundle holding the synthetic CTE model.
+    The stage's host model comes from the planner (``render_source_model`` —
+    the stage's OWN source / overlay / synthetic-over-sibling) so the
+    generator's FROM / joins bind against exactly what the binder used. A
+    StageSchema chain stage carries no ``render_source_model``; the generator
+    builds a synthetic model over the upstream CTE. Either way, synthetic
+    models for the OTHER sibling stages are threaded into ``referenced_models``
+    so a join / cross-model ref that targets a sibling resolves to its CTE.
+
+    A plain single-model query (no upstream schema, no render model) renders
+    against the original bundle unchanged.
     """
-    upstream = schema_by_name.get(planned_query.source_relation)
-    if upstream is None:
-        return bundle
     ds = (bundle.source_model.data_source if bundle.source_model else "") or "_stage"
-    synth = _synthetic_stage_model(
-        relation_name=planned_query.source_relation,
-        upstream_schema=upstream,
-        data_source=ds,
-    )
-    return bundle.model_copy(
-        update={"source_model": synth, "referenced_models": [synth]},
+    relation = planned_query.source_relation
+    if planned_query.render_source_model is not None:
+        source = planned_query.render_source_model
+    elif relation in schema_by_name:
+        source = synthetic_model_from_stage_schema(
+            name=relation, schema=schema_by_name[relation], data_source=ds,
+        )
+    else:
+        return bundle
+    sibling_schemas = {n: s for n, s in schema_by_name.items() if n != relation}
+    return stage_bundle_with_siblings(
+        bundle=bundle, source_model=source,
+        sibling_schemas=sibling_schemas, data_source=ds,
     )
 
 

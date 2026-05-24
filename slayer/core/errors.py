@@ -158,8 +158,14 @@ def _format_error_message(
     return "\n".join(lines)
 
 
-class UnknownReferenceError(SlayerError):
-    """A bare or dotted reference cannot be resolved in the current scope."""
+class UnknownReferenceError(SlayerError, ValueError):
+    """A bare or dotted reference cannot be resolved in the current scope.
+
+    Multi-inherits ``ValueError`` (like :class:`ColumnCycleError`) so the
+    pre-existing call sites and tests that catch ``ValueError`` for a failed
+    reference / model resolution keep working after the DEV-1450 cutover
+    replaced the legacy ``ValueError`` resolution paths with this typed error.
+    """
 
     def __init__(
         self,
@@ -180,8 +186,12 @@ class UnknownReferenceError(SlayerError):
         ))
 
 
-class AmbiguousReferenceError(SlayerError):
-    """A reference matches multiple candidates in scope and can't pick one."""
+class AmbiguousReferenceError(SlayerError, ValueError):
+    """A reference matches multiple candidates in scope and can't pick one.
+
+    Multi-inherits ``ValueError`` for back-compat (see
+    :class:`UnknownReferenceError`).
+    """
 
     def __init__(self, name: str, candidates: List[str]) -> None:
         self.name = name
@@ -193,12 +203,15 @@ class AmbiguousReferenceError(SlayerError):
         ))
 
 
-class IllegalScopeReferenceError(SlayerError):
+class IllegalScopeReferenceError(SlayerError, ValueError):
     """A reference is syntactically rejected by the current scope kind.
 
     Examples: ``__`` in a Mode-B ``ModelScope`` ref (use the dotted form);
     a dotted ref against a ``StageSchema`` (downstream stages see a flat
     namespace, no join syntax).
+
+    Multi-inherits ``ValueError`` for back-compat (see
+    :class:`UnknownReferenceError`).
     """
 
     def __init__(self, name: str, scope_kind: str, reason: str) -> None:

@@ -43,7 +43,7 @@ from slayer.core.keys import (
     normalize_scalar,
 )
 from slayer.core.models import SlayerModel
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
 from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.core.scope import ModelScope, StageColumn, StageSchema
 from slayer.engine.binding import (
@@ -76,8 +76,14 @@ from slayer.engine.planning import (
     filter_referenced_slot_ids,
     lower_sugar_transforms,
 )
-from slayer.engine.source_bundle import ResolvedSourceBundle
-from slayer.engine.syntax import parse_expr
+from slayer.engine.source_bundle import (
+    ResolvedSourceBundle,
+    _apply_extension_overlay,
+    _source_name_if_sibling,
+    stage_bundle_with_siblings,
+    synthetic_model_from_stage_schema,
+)
+from slayer.engine.syntax import parse_expr, parse_filter_expr
 from slayer.engine.column_expansion import _is_trivial_base
 from slayer.sql.sql_expr import has_window_function
 from slayer.sql.sql_predicate import parse_sql_predicate
@@ -210,6 +216,14 @@ def plan_query(
         else:
             scope = ModelScope(source_model=bundle.source_model)
 
+    # The generator must render this stage's FROM / joins against the SAME
+    # model the binder used. For a ModelScope that's the (possibly overlaid /
+    # synthetic) host; for a StageSchema chain stage it's None (the generator
+    # builds a synthetic model from the upstream schema).
+    render_source_model = (
+        scope.source_model if isinstance(scope, ModelScope) else None
+    )
+
     # Downstream stages bind against a flat StageSchema — ``__`` is legal
     # in their refs (the upstream's flattened multi-hop aliases); model-
     # scoped stages keep the P1 rejection.
@@ -300,7 +314,7 @@ def plan_query(
         if not isinstance(f, str):
             continue
         bf = bind_filter(
-            parse_expr(f, allow_dunder=flat_scope), scope=scope, bundle=bundle,
+            parse_filter_expr(f, allow_dunder=flat_scope), scope=scope, bundle=bundle,
             alias_map=filter_alias_map,
         )
         if any(existing.value_key == bf.value_key for existing in bound_filters):
@@ -586,7 +600,79 @@ def plan_query(
         offset=query.offset,
         stage_schema=stage_schema,
         active_time_dimension_slot_id=active_td_slot_id,
+        render_source_model=render_source_model,
     )
+
+
+def _coerce_extension(spec) -> ModelExtension:
+    """Coerce a ``ModelExtension`` / dict-with-``source_name`` to a typed
+    ``ModelExtension`` (for overlaying onto a synthetic sibling model)."""
+    if isinstance(spec, ModelExtension):
+        return spec
+    return ModelExtension.model_validate(spec)
+
+
+def _stage_scope_and_bundle(
+    *,
+    query: SlayerQuery,
+    bundle: ResolvedSourceBundle,
+    stage_schemas: Dict[str, StageSchema],
+    data_source: str,
+    is_root: bool,
+) -> "Tuple[Union[ModelScope, StageSchema], ResolvedSourceBundle]":
+    """Resolve one DAG stage's ``(scope, per-stage bundle)``.
+
+    Each stage binds against its OWN source — not the root's — so a
+    heterogeneous DAG (stage A over ``orders``, stage B over ``customers``)
+    resolves each host correctly. Synthetic models for already-planned sibling
+    stages are threaded into the per-stage bundle so a join / cross-model ref
+    that targets a sibling resolves against the sibling's flat output columns.
+    """
+    src = query.source_model
+    sibling_names = set(stage_schemas)
+    sib = _source_name_if_sibling(src, sibling_names)
+
+    # 1. ``ModelExtension`` / dict OVER a sibling stage: overlay the extra
+    #    columns / measures / joins onto a synthetic model of the sibling CTE
+    #    and bind ModelScope-style (so derived overlay columns resolve).
+    if sib is not None and not isinstance(src, str):
+        base = synthetic_model_from_stage_schema(
+            name=sib, schema=stage_schemas[sib], data_source=data_source,
+        )
+        overlaid = _apply_extension_overlay(base, _coerce_extension(src))
+        others = {n: s for n, s in stage_schemas.items() if n != sib}
+        sb = stage_bundle_with_siblings(
+            bundle=bundle, source_model=overlaid,
+            sibling_schemas=others, data_source=data_source,
+        )
+        return ModelScope(source_model=overlaid), sb
+
+    # 2. Bare-string sibling source (chain): bind against the upstream flat
+    #    StageSchema (P6 / DEV-1449). The synthetic upstream model is the
+    #    per-stage host for any cross-model planning / generation consistency.
+    if isinstance(src, str) and src in stage_schemas:
+        synth = synthetic_model_from_stage_schema(
+            name=src, schema=stage_schemas[src], data_source=data_source,
+        )
+        others = {n: s for n, s in stage_schemas.items() if n != src}
+        sb = stage_bundle_with_siblings(
+            bundle=bundle, source_model=synth,
+            sibling_schemas=others, data_source=data_source,
+        )
+        return stage_schemas[src], sb
+
+    # 3. Model-scoped: the stage's own resolved source model. The root uses the
+    #    bundle's source_model (the chain bottoms out at the root's source);
+    #    a named sibling uses its pre-resolved per-stage model.
+    if is_root:
+        stage_model = bundle.source_model
+    else:
+        stage_model = bundle.stage_source_models.get(query.name) or bundle.source_model
+    sb = stage_bundle_with_siblings(
+        bundle=bundle, source_model=stage_model,
+        sibling_schemas=stage_schemas, data_source=data_source,
+    )
+    return ModelScope(source_model=stage_model), sb
 
 
 def plan_stages(
@@ -595,7 +681,8 @@ def plan_stages(
     bundle: ResolvedSourceBundle,
     cross_model_planner: Optional[CrossModelPlanner] = None,
 ) -> List[PlannedQuery]:
-    """Plan a multi-stage DAG. Topo sort, then plan each stage."""
+    """Plan a multi-stage DAG. Topo sort, then plan each stage against its own
+    resolved source + the synthetic models of its already-planned siblings."""
     if len(queries) == 1:
         return [plan_query(
             query=queries[0],
@@ -603,12 +690,25 @@ def plan_stages(
             cross_model_planner=cross_model_planner,
         )]
     ordered = _topo_sort(queries)
+    root = ordered[-1]
+    data_source = (
+        (bundle.source_model.data_source if bundle.source_model else None)
+        or "_stage"
+    )
     stage_schemas: Dict[str, StageSchema] = {}
     results: List[PlannedQuery] = []
     for q in ordered:
-        planned = plan_query(
+        scope, stage_bundle = _stage_scope_and_bundle(
             query=q,
             bundle=bundle,
+            stage_schemas=stage_schemas,
+            data_source=data_source,
+            is_root=q is root,
+        )
+        planned = plan_query(
+            query=q,
+            bundle=stage_bundle,
+            scope=scope,
             cross_model_planner=cross_model_planner,
             stage_schemas=stage_schemas,
         )
@@ -719,10 +819,15 @@ def _topo_sort(queries: List[SlayerQuery]) -> List[SlayerQuery]:
     in_degree = {q.name: 0 for q in named}
     edges: Dict[str, List[str]] = {q.name: [] for q in named}
     for q in named:
-        src = q.source_model
-        if isinstance(src, str) and src in by_name and src != q.name:
+        # A stage depends on a sibling when its ``source_model`` reads from it —
+        # either the bare-string form OR a ``ModelExtension`` / dict over the
+        # sibling. Capturing both keeps the topo order + cycle detection correct
+        # for extension-over-sibling stages (not just join-target deps, which
+        # the engine's runtime list sorter handles upstream).
+        dep = _source_name_if_sibling(q.source_model, by_name)
+        if dep is not None and dep != q.name:
             in_degree[q.name] += 1
-            edges[src].append(q.name)
+            edges[dep].append(q.name)
     sorted_names: List[str] = []
     queue = [n for n, d in in_degree.items() if d == 0]
     while queue:
