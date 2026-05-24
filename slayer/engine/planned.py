@@ -197,6 +197,23 @@ class CrossModelAggregatePlan(BaseModel):
     hidden: bool = False
     public_alias: Optional[str] = None
 
+    # DEV-1450 stage 7b.15e (C1) — re-rooted sub-plan. When the host query
+    # carries dimensions that are reachable from the target by re-rooting
+    # through the target's join graph (the legacy ``_build_rerooted_enriched``
+    # case), the cross-model CTE is rendered as a full nested ``PlannedQuery``
+    # rooted at the target (FROM target + joins), preserving the host
+    # dimension grain instead of collapsing to a scalar CROSS JOIN. ``None``
+    # keeps the forward-path "FROM bare target" rendering.
+    #
+    # ``rerooted_grain_pairs`` maps (host_dim_slot_id, rerooted_dim_slot_id)
+    # for the combined LEFT JOIN ON; the generator resolves each side's SQL
+    # alias independently (host alias vs sub-plan alias need not match).
+    # ``rerooted_agg_slot_id`` is the sub-plan slot id of the local aggregate;
+    # the combined SELECT projects it ``AS`` the canonical / public alias.
+    rerooted_plan: Optional["PlannedQuery"] = None
+    rerooted_grain_pairs: List[Tuple[SlotId, SlotId]] = Field(default_factory=list)
+    rerooted_agg_slot_id: Optional[SlotId] = None
+
 
 # ---------------------------------------------------------------------------
 # TransformLayer
@@ -319,3 +336,9 @@ class PlannedQuery(BaseModel):
     # generator builds a synthetic model from the upstream schema) and for a
     # plain single-model query (the generator uses ``bundle.source_model``).
     render_source_model: Optional[SlayerModel] = None
+
+
+# ``CrossModelAggregatePlan.rerooted_plan`` is a forward reference to
+# ``PlannedQuery`` (defined above only after the CMA plan). Resolve it now
+# that both classes exist (DEV-1450 stage 7b.15e, C1).
+CrossModelAggregatePlan.model_rebuild()

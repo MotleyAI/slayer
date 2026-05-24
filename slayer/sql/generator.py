@@ -4257,7 +4257,13 @@ class SQLGenerator:
         cm_ctes: List[Tuple[str, str]] = []
         seen_cm: set = set()
         canonical_alias_for_plan: Dict[str, str] = {}
-        shared_grain_aliases_for_plan: Dict[str, List[str]] = {}
+        # join-back pairs are ``(host_base_alias, cte_column_alias)`` — the two
+        # sides need not match (re-rooted CTEs alias dims under the target's
+        # relation). ``agg_col_alias_for_plan`` is the CTE's emitted column
+        # name for the aggregate (canonical for the forward path; the sub-plan
+        # alias for the re-rooted path).
+        joinback_pairs_for_plan: Dict[str, List[Tuple[str, str]]] = {}
+        agg_col_alias_for_plan: Dict[str, str] = {}
         for plan in planned_query.cross_model_aggregate_plans:
             agg_slot = slots_by_id.get(plan.aggregate_slot_id)
             if agg_slot is None or not isinstance(agg_slot.key, AggregateKey):
@@ -4275,17 +4281,33 @@ class SQLGenerator:
                 continue
             seen_cm.add(cte_name)
 
-            cte_sql, shared_grain_aliases = self._render_cross_model_cte(
-                plan=plan,
-                agg_slot=agg_slot,
-                full_agg_alias=canonical_alias,
-                bundle=bundle,
-                planned_query=planned_query,
-                slots_by_id=slots_by_id,
-                base_projection_ids=set(base_projection),
-            )
+            if plan.rerooted_plan is not None:
+                # C1: nested re-rooted PlannedQuery rooted at the target,
+                # preserving host dimension grain.
+                cte_sql, joinback_pairs, agg_col_alias = (
+                    self._render_rerooted_cross_model_cte(
+                        plan=plan,
+                        bundle=bundle,
+                        host_slots_by_id=slots_by_id,
+                        host_source_relation=source_relation,
+                    )
+                )
+            else:
+                cte_sql, shared_grain_aliases = self._render_cross_model_cte(
+                    plan=plan,
+                    agg_slot=agg_slot,
+                    full_agg_alias=canonical_alias,
+                    bundle=bundle,
+                    planned_query=planned_query,
+                    slots_by_id=slots_by_id,
+                    base_projection_ids=set(base_projection),
+                )
+                # Forward path: host alias == cte alias; agg under canonical.
+                joinback_pairs = [(a, a) for a in shared_grain_aliases]
+                agg_col_alias = canonical_alias
             cm_ctes.append((cte_name, cte_sql))
-            shared_grain_aliases_for_plan[plan.aggregate_slot_id] = shared_grain_aliases
+            joinback_pairs_for_plan[plan.aggregate_slot_id] = joinback_pairs
+            agg_col_alias_for_plan[plan.aggregate_slot_id] = agg_col_alias
 
         # Codex MED fold-in: surface dropped-filter warnings from each
         # plan via Python ``warnings`` so callers using
@@ -4313,11 +4335,13 @@ class SQLGenerator:
             for full_alias in aliases:
                 combined_parts.append(f'_base."{full_alias}"')
         # Cross-model side: one entry per declared user alias, all
-        # referencing the canonical CTE column. When the slot has no
-        # declared name (matches canonical), no ``AS`` remap fires.
+        # referencing the CTE's aggregate column (canonical for the forward
+        # path; the sub-plan alias for the re-rooted path). When the public
+        # alias matches the CTE column name, no ``AS`` remap fires.
         for plan in planned_query.cross_model_aggregate_plans:
             agg_slot = slots_by_id[plan.aggregate_slot_id]
             canonical_alias = canonical_alias_for_plan[plan.aggregate_slot_id]
+            agg_col_alias = agg_col_alias_for_plan[plan.aggregate_slot_id]
             cte_name = _cte_name_from_alias("_cm_", canonical_alias)
             public_aliases = self._public_aliases_for_cross_model_agg(
                 slot=agg_slot,
@@ -4325,11 +4349,11 @@ class SQLGenerator:
                 canonical_alias=canonical_alias,
             )
             for pub in public_aliases:
-                if pub == canonical_alias:
-                    combined_parts.append(f'{cte_name}."{canonical_alias}"')
+                if pub == agg_col_alias:
+                    combined_parts.append(f'{cte_name}."{agg_col_alias}"')
                 else:
                     combined_parts.append(
-                        f'{cte_name}."{canonical_alias}" AS "{pub}"',
+                        f'{cte_name}."{agg_col_alias}" AS "{pub}"',
                     )
 
         from_clause_str = "FROM _base"
@@ -4340,12 +4364,13 @@ class SQLGenerator:
             if cte_name in joined_cte_names:
                 continue
             joined_cte_names.add(cte_name)
-            grain_aliases = shared_grain_aliases_for_plan.get(
+            joinback_pairs = joinback_pairs_for_plan.get(
                 plan.aggregate_slot_id, [],
             )
-            if grain_aliases:
+            if joinback_pairs:
                 join_parts = [
-                    f'_base."{a}" = {cte_name}."{a}"' for a in grain_aliases
+                    f'_base."{host}" = {cte_name}."{cte_col}"'
+                    for host, cte_col in joinback_pairs
                 ]
                 from_clause_str += (
                     f"\nLEFT JOIN {cte_name} ON " + " AND ".join(join_parts)
@@ -4453,6 +4478,81 @@ class SQLGenerator:
         if not slot.public_aliases:
             return [canonical_alias]
         return [f"{source_relation}.{a}" for a in slot.public_aliases]
+
+    def _render_rerooted_cross_model_cte(
+        self,
+        *,
+        plan,
+        bundle,
+        host_slots_by_id: Dict[str, Any],
+        host_source_relation: str,
+    ) -> Tuple[str, List[Tuple[str, str]], str]:
+        """Render a cross-model CTE from a nested re-rooted ``PlannedQuery``.
+
+        DEV-1450 stage 7b.15e (C1). The sub-plan is rooted at the TARGET
+        model (``FROM target + joins``) so it preserves the host dimension
+        grain — the legacy ``_build_rerooted_enriched`` shape, now driven by
+        the typed pipeline. Reuses ``generate_from_planned`` to render the
+        sub-plan exactly like any base query.
+
+        Returns ``(cte_sql, joinback_pairs, agg_col_alias)``:
+        * ``joinback_pairs`` — ``(host_base_alias, cte_column_alias)`` for the
+          combined ``LEFT JOIN ON`` (the two sides differ — the host aliases
+          dims under its own relation; the CTE under the target relation),
+        * ``agg_col_alias`` — the sub-plan's emitted alias for the aggregate.
+        """
+        sub_plan = plan.rerooted_plan
+        target_model = bundle.get_referenced_model(plan.target_model)
+        if target_model is None:
+            raise ValueError(
+                f"Re-rooted CrossModelAggregatePlan target "
+                f"{plan.target_model!r} not in resolved source bundle.",
+            )
+        rerooted_bundle = bundle.model_copy(
+            update={"source_model": target_model},
+        )
+        cte_sql = self.generate_from_planned(sub_plan, bundle=rerooted_bundle)
+
+        sub_slots_by_id = {
+            s.id: s
+            for s in (
+                list(sub_plan.row_slots)
+                + list(sub_plan.aggregate_slots)
+                + list(sub_plan.combined_expression_slots)
+            )
+        }
+        target_relation = sub_plan.source_relation
+
+        joinback_pairs: List[Tuple[str, str]] = []
+        for host_sid, sub_sid in plan.rerooted_grain_pairs:
+            host_slot = host_slots_by_id.get(host_sid)
+            sub_slot = sub_slots_by_id.get(sub_sid)
+            if host_slot is None or sub_slot is None:
+                continue
+            host_alias = self._full_alias_for_slot(
+                slot=host_slot,
+                source_relation=host_source_relation,
+                alias_index={},
+            )
+            cte_alias = self._full_alias_for_slot(
+                slot=sub_slot,
+                source_relation=target_relation,
+                alias_index={},
+            )
+            joinback_pairs.append((host_alias, cte_alias))
+
+        agg_slot = sub_slots_by_id.get(plan.rerooted_agg_slot_id)
+        if agg_slot is None:
+            raise RuntimeError(
+                f"Re-rooted plan aggregate slot "
+                f"{plan.rerooted_agg_slot_id!r} not found in sub-plan.",
+            )
+        agg_col_alias = self._full_alias_for_slot(
+            slot=agg_slot,
+            source_relation=target_relation,
+            alias_index={},
+        )
+        return cte_sql, joinback_pairs, agg_col_alias
 
     def _render_cross_model_cte(
         self,
@@ -5089,7 +5189,13 @@ class SQLGenerator:
                         if len(join_on_parts) > 1
                         else join_on_parts[0]
                     )
-                    joins.append((join_expr, on_expr, "LEFT"))
+                    # Honor the model's declared join_type (default LEFT so a
+                    # measure never changes cardinality; explicit INNER when the
+                    # user declared it — e.g. existence-filter joins). Legacy
+                    # rendered ``jtype.upper()`` here (generator.py:835/1242).
+                    joins.append((
+                        join_expr, on_expr, join_def.join_type.value.upper(),
+                    ))
                     emitted_aliases.add(next_alias)
                 current_model = next_model
                 current_alias = next_alias
@@ -6442,6 +6548,21 @@ class SQLGenerator:
                     bundle=bundle,
                 )
                 _add_from_sql(self._parse(expanded))
+            elif isinstance(key, ColumnSqlKey) and key.path:
+                # Joined derived-column ref — pull the join walk to the column's
+                # owning model into the FROM, plus any further cross-joins the
+                # column's own ``sql`` references (expanded under the column's
+                # ``__``-path alias, then scanned from the host's perspective).
+                _add_path(key.path)
+                joined_model = bundle.get_referenced_model(key.path[-1])
+                if joined_model is not None:
+                    expanded = self._expand_derived_column_sql(
+                        source_model=joined_model,
+                        source_relation="__".join(key.path),
+                        column_name=key.column_name,
+                        bundle=bundle,
+                    )
+                    _add_from_sql(self._parse(expanded))
             elif isinstance(key, ArithmeticKey):
                 for o in key.operands:
                     _walk(o)
@@ -6873,9 +6994,32 @@ class SQLGenerator:
             )
         if isinstance(key, ColumnSqlKey):
             if key.path != ():
-                raise NotImplementedError(
-                    f"DEV-1450: joined derived-column ref in filter "
-                    f"(path={key.path!r}) deferred."
+                # Joined derived-column ref (``policy_amount.premium.has_premium``).
+                # Expand the column's ``sql`` rooted at the JOINED model,
+                # qualifying bare refs to the ``__``-canonical path alias; the
+                # join itself is pulled into the FROM by
+                # ``_collect_filter_join_paths`` (which adds ``key.path``).
+                joined_model = bundle.get_referenced_model(key.path[-1])
+                if joined_model is None:
+                    raise ValueError(
+                        f"Filter references derived column {key.column_name!r} "
+                        f"on joined model {key.path[-1]!r} which is not in the "
+                        f"resolved source bundle.",
+                    )
+                path_alias = "__".join(key.path)
+                expanded_sql = self._expand_derived_column_sql(
+                    source_model=joined_model,
+                    source_relation=path_alias,
+                    column_name=key.column_name,
+                    bundle=bundle,
+                )
+                col = next(
+                    (c for c in joined_model.columns if c.name == key.column_name),
+                    None,
+                )
+                return _wrap_cast_for_type(
+                    self._parse(expanded_sql),
+                    col.type if col is not None else None,
                 )
             # Derived column (``Column.sql`` set) — expand inline, resolving
             # sibling / joined derived refs and pulling crossed joins into the
