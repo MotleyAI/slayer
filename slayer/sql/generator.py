@@ -6287,11 +6287,32 @@ class SQLGenerator:
             # doesn't crash with IndexError.
             if len(operands) == 1:
                 return exp.Neg(this=operands[0])
-            return exp.Sub(this=operands[0], expression=operands[1])
+            return exp.Sub(
+                this=SQLGenerator._paren_if_lower_prec(
+                    operands[0], parent_prec=1, is_right=False, op="-",
+                ),
+                expression=SQLGenerator._paren_if_lower_prec(
+                    operands[1], parent_prec=1, is_right=True, op="-",
+                ),
+            )
         if op == "*":
-            return exp.Mul(this=operands[0], expression=operands[1])
+            return exp.Mul(
+                this=SQLGenerator._paren_if_lower_prec(
+                    operands[0], parent_prec=2, is_right=False, op="*",
+                ),
+                expression=SQLGenerator._paren_if_lower_prec(
+                    operands[1], parent_prec=2, is_right=True, op="*",
+                ),
+            )
         if op == "/":
-            return exp.Div(this=operands[0], expression=operands[1])
+            return exp.Div(
+                this=SQLGenerator._paren_if_lower_prec(
+                    operands[0], parent_prec=2, is_right=False, op="/",
+                ),
+                expression=SQLGenerator._paren_if_lower_prec(
+                    operands[1], parent_prec=2, is_right=True, op="/",
+                ),
+            )
         if op == "and":
             result = operands[0]
             for o in operands[1:]:
