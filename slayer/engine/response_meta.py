@@ -168,6 +168,19 @@ def _column_for_row_slot(
     return model.get_column(leaf)
 
 
+def _owning_model_for_agg_source(*, src, bundle: ResolvedSourceBundle):
+    """The model that owns an aggregate's source column.
+
+    A ``ColumnSqlKey`` (derived column) carries its owning model name in
+    ``src.model`` — resolve through that (DEV-1450 #4a/#4b), mirroring
+    ``_column_for_row_slot``. A ``ColumnKey`` / ``StarKey`` is resolved by
+    walking ``src.path`` from the host.
+    """
+    if isinstance(src, ColumnSqlKey):
+        return bundle.get_referenced_model(src.model) or bundle.source_model
+    return _model_for_path(bundle=bundle, path=getattr(src, "path", ()))
+
+
 def _measure_format(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[NumberFormat]:
@@ -183,13 +196,11 @@ def _measure_format(
         src = key.source
         if isinstance(src, StarKey):
             measure_name: Optional[str] = "*"
-            path = src.path
         else:
             measure_name = getattr(src, "leaf", None) or getattr(
                 src, "column_name", None
             )
-            path = getattr(src, "path", ())
-        model = _model_for_path(bundle=bundle, path=path)
+        model = _owning_model_for_agg_source(src=src, bundle=bundle)
         if measure_name is None or model is None:
             return NumberFormat(type=NumberFormatType.FLOAT)
         return _infer_aggregated_format(
@@ -215,9 +226,7 @@ def _measure_label(
     if isinstance(key, AggregateKey):
         src = key.source
         if isinstance(src, (ColumnKey, ColumnSqlKey)):
-            model = _model_for_path(
-                bundle=bundle, path=getattr(src, "path", ()),
-            )
+            model = _owning_model_for_agg_source(src=src, bundle=bundle)
             leaf = getattr(src, "leaf", None) or getattr(
                 src, "column_name", None,
             )

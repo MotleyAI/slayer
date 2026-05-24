@@ -19,7 +19,7 @@ import re
 from decimal import Decimal
 from typing import Any, List, Optional, Tuple
 
-from slayer.core.keys import ColumnKey
+from slayer.core.keys import ColumnKey, ColumnSqlKey
 
 # ---------------------------------------------------------------------------
 # Identifier shapes
@@ -144,6 +144,10 @@ def agg_kwarg_canonical_str(value: Any) -> str:
       malformed input at the generator boundary.
     * ``ColumnKey(path=(), leaf=L)`` -> ``L``.
     * ``ColumnKey(path=P, leaf=L)`` -> ``".".join(P) + "." + L``.
+    * ``ColumnSqlKey`` (a derived-column arg/kwarg, e.g.
+      ``corr(other=derived_col)`` — DEV-1450 #4a/#4b) -> the same
+      ``[path.]column_name`` form so a parametric agg over a derived
+      column canonicalizes instead of raising.
 
     Anything else raises ``TypeError`` -- the AggregateKey key shape is
     closed over these branches.
@@ -175,6 +179,10 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         if value.path:
             return ".".join(value.path) + "." + value.leaf
         return value.leaf
+    if isinstance(value, ColumnSqlKey):
+        if value.path:
+            return ".".join(value.path) + "." + value.column_name
+        return value.column_name
     raise TypeError(
         f"AggregateKey kwarg value of type {type(value).__name__!r} "
         f"is not supported: {value!r}",

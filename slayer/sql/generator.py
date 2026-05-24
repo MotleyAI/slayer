@@ -31,6 +31,7 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
+from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
 
 
@@ -5046,11 +5047,27 @@ class SQLGenerator:
         # resolution) + host filters routed to WHERE.
         where_parts: List[exp.Expression] = []
         for filter_text in plan.target_model_filters:
-            qualified = self._qualify_column_filter_sql(
-                canonical_sql=filter_text,
-                source_relation=target_relation,
-                source_model=target_model,
-            )
+            # DEV-1450 #4b: a target model filter that references a
+            # non-trivial derived column must be inline-expanded (it would
+            # otherwise emit ``target.derived_col`` — a non-existent column);
+            # base-only filters keep the AST bare-ref qualification.
+            cols = parse_sql_predicate(filter_text).columns
+            if any(
+                self._is_nontrivial_derived(target_model, c) for c in cols
+            ):
+                qualified = self._render_model_filter_sql(
+                    sql=filter_text,
+                    columns=cols,
+                    source_model=target_model,
+                    source_relation=target_relation,
+                    bundle=bundle,
+                )
+            else:
+                qualified = self._qualify_column_filter_sql(
+                    canonical_sql=filter_text,
+                    source_relation=target_relation,
+                    source_model=target_model,
+                )
             if not qualified:
                 continue
             try:
@@ -5065,6 +5082,7 @@ class SQLGenerator:
             filter_ids=plan.where_filter_ids,
             target_relation=target_relation,
             target_model=target_model,
+            bundle=bundle,
         )
         if cte_where is not None:
             where_parts.append(cte_where)
@@ -5082,6 +5100,7 @@ class SQLGenerator:
             filter_ids=plan.having_filter_ids,
             target_relation=target_relation,
             target_model=target_model,
+            bundle=bundle,
         )
         if cte_having is not None:
             cte_select = cte_select.having(cte_having)
@@ -5096,6 +5115,7 @@ class SQLGenerator:
         filter_ids: List[str],
         target_relation: str,
         target_model,
+        bundle,
     ) -> Optional[exp.Expression]:
         """Build a conjunction of bound filter predicates by ID.
 
@@ -5122,6 +5142,7 @@ class SQLGenerator:
                 target_relation=target_relation,
                 target_model=target_model,
                 planned_query=planned_query,
+                bundle=bundle,
             )
             if ast is not None:
                 parts.append(ast)
@@ -5136,22 +5157,43 @@ class SQLGenerator:
         target_relation: str,
         target_model,
         planned_query,
+        bundle,
     ) -> Optional[exp.Expression]:
         """Render a bound filter's value key as SQL with bare column
         refs qualified against the cross-model CTE's local scope.
 
         The typed pipeline carries filter ASTs as ``ValueKey``-rooted
         trees (``ArithmeticKey`` / ``AggregateKey`` / ``ColumnKey`` /
-        scalars). The CTE renderer reuses the legacy ``_build_agg`` /
-        column-resolution helpers via a small local recursion that
-        binds each leaf to the target model's relation alias.
+        ``ColumnSqlKey`` / scalars). The CTE renderer reuses the legacy
+        ``_build_agg`` / column-resolution helpers via a small local
+        recursion that binds each leaf to the target model's relation alias.
         """
         from slayer.core.keys import (
             AggregateKey,
             ArithmeticKey,
             ColumnKey,
+            ColumnSqlKey,
             LiteralKey,
         )
+
+        if isinstance(value_key, ColumnSqlKey):
+            # DEV-1450 #4b: a routed filter on a DERIVED column owned by the
+            # CTE target — expand its Column.sql rooted at the target so it
+            # emits real SQL instead of falling through to a bogus literal.
+            if value_key.model != target_model.name:
+                raise NotImplementedError(
+                    f"DEV-1450: cross-model filter on derived column "
+                    f"{value_key.column_name!r} owned by {value_key.model!r} "
+                    f"(not the CTE target {target_model.name!r}) is not yet "
+                    f"rendered in the typed pipeline.",
+                )
+            expanded = self._expand_derived_column_sql(
+                source_model=target_model,
+                source_relation=target_relation,
+                column_name=value_key.column_name,
+                bundle=bundle,
+            )
+            return self._parse(expanded)
 
         if isinstance(value_key, ColumnKey):
             # Cross-model filter on the joined-target path: the column
@@ -5214,6 +5256,7 @@ class SQLGenerator:
                     target_relation=target_relation,
                     target_model=target_model,
                     planned_query=planned_query,
+                    bundle=bundle,
                 )
                 for op_key in value_key.operands
             ]

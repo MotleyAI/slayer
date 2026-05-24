@@ -638,23 +638,41 @@ def _filter_ref_paths(value_key: ValueKey) -> List[Tuple[str, ...]]:
 def _local_agg_formula(key: AggregateKey) -> str:
     """Reconstruct the LOCAL colon-formula for a cross-model aggregate
     (``customers.revenue:sum`` -> ``revenue:sum``) so it can be re-planned
-    against the target model as a plain local measure."""
+    against the target model as a plain local measure.
+
+    Column-valued kwargs (``corr(other=customers.region_id)``) are
+    re-rooted too: their join path is bound from the HOST, so the leading
+    agg-source (target) prefix is stripped to express the ref in the
+    target's local scope (``other=region_id``; a deeper hop keeps its
+    residual path, ``other=regions.code``). Dropping the path outright
+    would mis-bind or fail to bind the nested sub-query (CR review)."""
     src = key.source
+    target_path = tuple(getattr(src, "path", ()))
     if isinstance(src, StarKey):
         base = "*"
     elif isinstance(src, ColumnSqlKey):
         base = src.column_name
     else:  # ColumnKey
         base = src.leaf
+
+    def _reroot_col_kwarg(v) -> str:
+        leaf = v.leaf if isinstance(v, ColumnKey) else v.column_name
+        vpath = tuple(getattr(v, "path", ()))
+        # Strip the agg-source (target) prefix so the ref is target-local.
+        residual = (
+            vpath[len(target_path):]
+            if vpath[: len(target_path)] == target_path
+            else vpath
+        )
+        return ".".join((*residual, leaf))
+
     formula = f"{base}:{key.agg}"
     parts: List[str] = []
     for a in key.args:
         parts.append(_scalar_formula_literal(a))
     for k, v in key.kwargs:
-        if isinstance(v, ColumnKey):
-            parts.append(f"{k}={v.leaf}")
-        elif isinstance(v, ColumnSqlKey):
-            parts.append(f"{k}={v.column_name}")
+        if isinstance(v, (ColumnKey, ColumnSqlKey)):
+            parts.append(f"{k}={_reroot_col_kwarg(v)}")
         else:
             parts.append(f"{k}={_scalar_formula_literal(v)}")
     if parts:
