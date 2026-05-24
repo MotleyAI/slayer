@@ -124,6 +124,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 Column(name="revenue", type=DataType.DOUBLE, label="Revenue"),
                 Column(name="is_active", sql="status = 'active'", type=DataType.BOOLEAN),
                 Column(name="big_spender", sql="revenue > 60", type=DataType.BOOLEAN),
+                Column(name="rev_x2", sql="revenue * 2", type=DataType.DOUBLE),
             ],
             filters=["is_active"],
         )
@@ -195,6 +196,28 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     # big_spender = revenue > 60 AND is_active (active): customer 1 (100, NA),
     # customer 3 (70, EU). Customer 2 (50) fails both.
     assert by_region == pytest.approx({"NA": 100.0, "EU": 70.0})
+
+
+async def test_derived_column_as_cross_model_agg_source(engine):
+    """A DERIVED column used as a cross-model aggregate source
+    (``customers.rev_x2:sum`` where rev_x2 = revenue*2) re-roots and
+    expands correctly in the CTE, and aliases as ``rev_x2_sum`` (not the
+    star ``_sum`` form)."""
+    q = SlayerQuery(
+        source_model="orders",
+        dimensions=["customers.region"],
+        measures=[{"formula": "customers.rev_x2:sum"}],
+    )
+    dry = await engine.execute(q, dry_run=True)
+    assert "orders.customers.rev_x2_sum" in dry.columns, dry.columns
+    assert "_sum" not in [c.split(".")[-1] for c in dry.columns]
+    resp = await engine.execute(q)
+    by_region = {
+        r["orders.customers.region"]: r["orders.customers.rev_x2_sum"]
+        for r in resp.data
+    }
+    # is_active filter keeps cust1 (NA, 100*2=200) and cust3 (EU, 70*2=140).
+    assert by_region == pytest.approx({"NA": 200.0, "EU": 140.0})
 
 
 async def test_cr11_cross_model_agg_over_derived_column_metadata(engine):

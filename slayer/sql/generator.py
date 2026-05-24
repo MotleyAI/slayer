@@ -4883,6 +4883,7 @@ class SQLGenerator:
         from slayer.core.keys import (
             AggregateKey,
             ColumnKey,
+            ColumnSqlKey,
             Phase,
             TimeTruncKey,
         )
@@ -4995,16 +4996,29 @@ class SQLGenerator:
         # here with both source and ``other`` rooted at ``("customers",)``.
         # Stripping the prefix in lockstep means the synth helper's
         # path-validation invariant (``kwarg.path == source.path``) holds.
-        cross_model_path = (
-            agg_slot.key.source.path
-            if isinstance(agg_slot.key.source, ColumnKey) else ()
-        )
-        local_source_key = ColumnKey(path=(), leaf=agg_slot.key.source.leaf) \
-            if isinstance(agg_slot.key.source, ColumnKey) else agg_slot.key.source
+        # Re-root the aggregate SOURCE and any column-valued kwargs to the
+        # target's local scope (path=()). Covers a derived (ColumnSqlKey)
+        # source like ``customers.net:sum`` — Codex: otherwise the
+        # host-rooted derived key renders against the wrong alias inside the
+        # CTE. StarKey ignores path (COUNT(*)), so leave it as-is.
+        _src = agg_slot.key.source
+        cross_model_path = getattr(_src, "path", ())
+        if isinstance(_src, ColumnKey):
+            local_source_key = ColumnKey(path=(), leaf=_src.leaf)
+        elif isinstance(_src, ColumnSqlKey):
+            local_source_key = ColumnSqlKey(
+                path=(), model=_src.model, column_name=_src.column_name,
+            )
+        else:
+            local_source_key = _src
 
         def _reroot_kwarg(kval):
             if isinstance(kval, ColumnKey) and kval.path == cross_model_path:
                 return ColumnKey(path=(), leaf=kval.leaf)
+            if isinstance(kval, ColumnSqlKey) and kval.path == cross_model_path:
+                return ColumnSqlKey(
+                    path=(), model=kval.model, column_name=kval.column_name,
+                )
             return kval
 
         local_kwargs = tuple(

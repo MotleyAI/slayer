@@ -45,6 +45,12 @@ def test_over_inside_string_literal_is_not_a_window_clause():
     parse_expr('label == "x OVER (y)"')
 
 
+def test_over_inside_escaped_string_literal_not_window():
+    # OVER( inside a Python-escaped string literal must not trip the window
+    # guard (Codex round 2): the value is `x " OVER(`.
+    parse_expr(r'status == "x \" OVER("')
+
+
 def test_real_over_clause_still_rejected():
     with pytest.raises(IllegalWindowInFilterError):
         parse_expr("rank() OVER (ORDER BY x)")

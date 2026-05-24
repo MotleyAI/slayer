@@ -140,6 +140,11 @@ _PLACEHOLDER_PREFIX = "__slayer_agg_"
 _PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
 _OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)
 _STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+# Python-string-literal matcher (handles backslash escapes) — used to blank
+# string contents before the raw-OVER( pre-scan, since Mode-B expressions use
+# Python string syntax. A SQL-style ('' / "") doubling matcher would miss
+# ``"x \" OVER("`` and false-positive on the OVER( inside the literal (Codex).
+_PY_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
 _COLON_AGG_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # source: * / ident / dotted
     r":"
@@ -186,9 +191,10 @@ def parse_expr(text: str, *, allow_dunder: bool = False) -> ParsedExpr:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
 
-    # Scan for a raw window clause AFTER blanking string literals, so a
-    # value like ``status == 'OVER('`` isn't mistaken for window usage (CR).
-    if _OVER_RE.search(_STRING_LITERAL_RE.sub("", text)):
+    # Scan for a raw window clause AFTER blanking string literals (Python
+    # syntax, so escapes count), so a value like ``status == 'OVER('`` or
+    # ``status == "x \" OVER("`` isn't mistaken for window usage (CR / Codex).
+    if _OVER_RE.search(_PY_STRING_LITERAL_RE.sub("", text)):
         raise IllegalWindowInFilterError(
             filter_expr=text,
             source="raw OVER(...) is not allowed in Mode-B DSL",

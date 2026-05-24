@@ -308,10 +308,14 @@ def _aggregate_alias(*, key: AggregateKey) -> str:
     suffix matches the rest of the engine (legacy enrichment, search,
     DBT converter).
     """
-    if hasattr(key.source, "leaf"):
-        measure_name = key.source.leaf
-    else:
-        measure_name = "*"
+    # ColumnKey -> leaf, ColumnSqlKey (derived agg source) -> column_name,
+    # StarKey -> "*" (CR / Codex: a derived source must alias as
+    # ``net_sum``, not ``_sum``).
+    measure_name = (
+        getattr(key.source, "leaf", None)
+        or getattr(key.source, "column_name", None)
+        or "*"
+    )
     # AggregateKey.args / kwargs are normalised tuples of scalars /
     # ColumnKey-shaped values; convert to the (List[str],
     # Dict[str, Any]) shape ``canonical_agg_name`` expects. DEV-1450
@@ -360,7 +364,10 @@ def _make_cte_schema(
     """
     columns: List[StageColumn] = []
     agg_alias = _aggregate_alias(key=aggregate_key)
-    src_leaf = getattr(aggregate_key.source, "leaf", None)
+    src_leaf = (
+        getattr(aggregate_key.source, "leaf", None)
+        or getattr(aggregate_key.source, "column_name", None)
+    )
     agg_type: Optional[DataType] = None
     if src_leaf and hasattr(aggregate_owner, "get_column"):
         src_col = aggregate_owner.get_column(src_leaf)

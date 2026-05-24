@@ -861,13 +861,16 @@ def _measure_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
 ) -> Set[str]:
     out: Set[str] = set()
-    # Custom aggregations on any reachable model so function-style custom
-    # aggs in a stage measure rewrite to colon form before ref extraction.
-    custom_agg_names = {
-        a.name
-        for m in graph.models_by_name.values()
-        for a in (m.aggregations or [])
-    }
+    # Custom aggregations on models REACHABLE from the stage source so
+    # function-style custom aggs in a stage measure rewrite to colon form
+    # before ref extraction. Scoped to ``graph.reachable`` (not every model
+    # in the registry) so unrelated custom-agg names can't normalize a
+    # coincidental function call and produce a false cascade hit (CR).
+    custom_agg_names: Set[str] = set()
+    for model_name in graph.reachable:
+        model = graph.models_by_name.get(model_name)
+        if model is not None:
+            custom_agg_names.update(a.name for a in (model.aggregations or []))
     for m in stage.measures or []:
         formula = getattr(m, "formula", None)
         if not formula:
