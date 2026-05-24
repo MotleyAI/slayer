@@ -782,7 +782,14 @@ class SlayerQueryEngine:
         """
         sm = query.source_model
         model: Optional[SlayerModel] = None
-        if isinstance(sm, str):
+        if query.name and query.name in bundle.stage_source_models:
+            # A named non-root stage resolves to its OWN source model
+            # (string-concrete or inline) — normalize against that, not the
+            # root, so MISPLACED_MEASURE / custom-agg rewrites see the right
+            # columns/aggregations (CR). Sibling-sourced stages are absent
+            # from stage_source_models, so they fall through to model=None.
+            model = bundle.stage_source_models[query.name]
+        elif isinstance(sm, str):
             if sm not in sibling_names:
                 model = bundle.get_referenced_model(sm)
                 if model is None and (

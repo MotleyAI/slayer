@@ -365,8 +365,12 @@ def plan_query(
                 scope=scope, bundle=bundle,
             )
         else:
+            # Bind the FULL reference (``customers.region``), not just the
+            # leaf — otherwise a structured dotted ORDER ColumnRef without a
+            # raw_formula rebinds as ``region`` and hits the wrong host
+            # column or fails as ambiguous (CR).
             bo = bind_expr(
-                parse_expr(col_name, allow_dunder=flat_scope),
+                parse_expr(full_name, allow_dunder=flat_scope),
                 scope=scope, bundle=bundle,
             )
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))

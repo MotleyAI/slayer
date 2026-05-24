@@ -186,7 +186,9 @@ def parse_expr(text: str, *, allow_dunder: bool = False) -> ParsedExpr:
     if not text or not text.strip():
         raise ValueError("Empty Mode-B expression.")
 
-    if _OVER_RE.search(text):
+    # Scan for a raw window clause AFTER blanking string literals, so a
+    # value like ``status == 'OVER('`` isn't mistaken for window usage (CR).
+    if _OVER_RE.search(_STRING_LITERAL_RE.sub("", text)):
         raise IllegalWindowInFilterError(
             filter_expr=text,
             source="raw OVER(...) is not allowed in Mode-B DSL",
@@ -526,9 +528,17 @@ def _convert_call(
     args = tuple(
         _convert(a, agg_map=agg_map, original=original) for a in node.args
     )
+    # Reject ``**kwargs`` dictionary unpacking (``kw.arg is None``) rather
+    # than silently dropping it (CR) — a dropped ``**`` would change call
+    # semantics without warning.
+    if any(kw.arg is None for kw in node.keywords):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: dictionary unpacking "
+            f"(**kwargs) is not supported in calls."
+        )
     kwargs = tuple(
         (kw.arg, _convert_kwarg_value(kw.value, agg_map=agg_map, original=original))
-        for kw in node.keywords if kw.arg is not None
+        for kw in node.keywords
     )
 
     # Aggregation placeholder?

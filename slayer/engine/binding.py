@@ -672,6 +672,7 @@ def _resolve_dotted_star(
     if hop_path and hop_path[0] == host.name:
         hop_path = hop_path[1:]
     current = host
+    visited_models = {host.name}
     for hop in hop_path:
         join = next((j for j in current.joins if j.target_model == hop), None)
         if join is None:
@@ -692,6 +693,15 @@ def _resolve_dotted_star(
                 scope_summary=f"target {hop!r} not in source bundle",
                 suggestion=None,
             )
+        # A dotted star that revisits a model is a circular join (``a.b.a.*``)
+        # — reject it the same way ``_resolve_dotted`` rejects ``a.b.a.col``
+        # so the two stay consistent (CR).
+        if nxt.name in visited_models:
+            raise ValueError(
+                f"Circular join detected resolving {'.'.join(parts)!r}: "
+                f"revisits model {nxt.name!r}."
+            )
+        visited_models.add(nxt.name)
         current = nxt
     return StarKey(path=tuple(hop_path))
 

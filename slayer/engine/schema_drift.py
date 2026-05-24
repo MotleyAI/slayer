@@ -502,7 +502,9 @@ def _parsed_ref_name(node: Union[Ref, DottedRef, AggCall]) -> Optional[str]:
     return ".".join(node.parts)
 
 
-def _measure_formula_refs(formula: str) -> Set[str]:
+def _measure_formula_refs(
+    formula: str, *, custom_agg_names: Optional[Set[str]] = None,
+) -> Set[str]:
     """Best-effort: parse ``formula`` (Mode-B DSL) and return the set of
     column / measure names it references (dotted for cross-model refs, e.g.
     ``"customers.revenue"``). Returns the empty set on any parse failure.
@@ -516,10 +518,20 @@ def _measure_formula_refs(formula: str) -> Set[str]:
     Function-style aggregations on legacy / un-normalized persisted formulas
     (``sum(amount)``) are rewritten to colon syntax first via the quiet
     ``FUNC_STYLE_AGG`` slack helper — matching the legacy ``parse_formula``
-    path, which rewrote builtin function-style aggs before walking.
+    path. ``custom_agg_names`` lets model-level custom aggregations
+    (``weighted_avg(amount, weight=qty)``) rewrite too (CR); without them
+    the call parses as an unknown function and the refs are lost, leaving
+    the drift cascade incomplete.
     """
     try:
-        parsed = parse_expr(func_style_agg_to_colon(formula))
+        parsed = parse_expr(
+            func_style_agg_to_colon(
+                formula,
+                custom_agg_names=(
+                    frozenset(custom_agg_names) if custom_agg_names else None
+                ),
+            )
+        )
     except Exception:
         return set()
     out: Set[str] = set()
@@ -849,11 +861,20 @@ def _measure_refs_on_base(
     stage: SlayerQuery, base_name: str, graph: _StageGraph
 ) -> Set[str]:
     out: Set[str] = set()
+    # Custom aggregations on any reachable model so function-style custom
+    # aggs in a stage measure rewrite to colon form before ref extraction.
+    custom_agg_names = {
+        a.name
+        for m in graph.models_by_name.values()
+        for a in (m.aggregations or [])
+    }
     for m in stage.measures or []:
         formula = getattr(m, "formula", None)
         if not formula:
             continue
-        for ref in _measure_formula_refs(formula):
+        for ref in _measure_formula_refs(
+            formula, custom_agg_names=custom_agg_names,
+        ):
             attributed = _attribute_ref_to_base(
                 ref=ref, base_name=base_name, graph=graph
             )
@@ -1290,10 +1311,13 @@ def _cascade_measures(*, model: SlayerModel, state: _CascadeState) -> bool:
     dropped measure."""
     changed = False
     dropped_set = state.dropped_measures.get(model.name, set())
+    custom_agg_names = {a.name for a in (model.aggregations or [])}
     for measure in model.measures:
         if measure.name is None or measure.name in dropped_set:
             continue
-        refs = _measure_formula_refs(measure.formula)
+        refs = _measure_formula_refs(
+            measure.formula, custom_agg_names=custom_agg_names,
+        )
         cause = _first_dropped_cause(refs=refs, model=model, state=state)
         if cause is None:
             continue
