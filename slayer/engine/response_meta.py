@@ -196,6 +196,36 @@ def _measure_format(
     return NumberFormat(type=NumberFormatType.FLOAT)
 
 
+def _measure_label(
+    *, slot: ValueSlot, bundle: ResolvedSourceBundle
+) -> Optional[str]:
+    """Label for a measure slot.
+
+    A query measure (``labeled_rev:sum``) inherits its source column's label
+    when the measure spec carried none — mirroring the legacy enrichment that
+    propagated ``Column.label`` onto the aggregated field. Star aggregates and
+    transform / arithmetic slots have no single source column, so they fall
+    back to the slot's own label (usually ``None``).
+    """
+    if slot.label:
+        return slot.label
+    key = slot.key
+    if isinstance(key, AggregateKey):
+        src = key.source
+        if isinstance(src, (ColumnKey, ColumnSqlKey)):
+            model = _model_for_path(
+                bundle=bundle, path=getattr(src, "path", ()),
+            )
+            leaf = getattr(src, "leaf", None) or getattr(
+                src, "column_name", None,
+            )
+            if model is not None and leaf is not None:
+                col = model.get_column(leaf)
+                if col is not None:
+                    return col.label
+    return None
+
+
 def build_response_metadata(
     *,
     root_planned: PlannedQuery,
@@ -247,7 +277,8 @@ def build_response_metadata(
                     dim_meta[rk] = FieldMetadata(label=label, format=fmt)
             else:
                 fmt = _measure_format(slot=slot, bundle=bundle)
-                if slot.label or fmt:
-                    measure_meta[rk] = FieldMetadata(label=slot.label, format=fmt)
+                label = _measure_label(slot=slot, bundle=bundle)
+                if label or fmt:
+                    measure_meta[rk] = FieldMetadata(label=label, format=fmt)
 
     return ResponseAttributes(dimensions=dim_meta, measures=measure_meta), expected_columns

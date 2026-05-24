@@ -582,6 +582,7 @@ def _resolve_dotted(
     hop_path = parts[:-1]
     leaf = parts[-1]
     current = host
+    visited_models = {host.name}
     for hop in hop_path:
         join = next(
             (j for j in current.joins if j.target_model == hop), None,
@@ -594,7 +595,7 @@ def _resolve_dotted(
                     f"model {current.name!r} joins: "
                     f"{[j.target_model for j in current.joins]}"
                 ),
-                suggestion=f"no join from {current.name!r} to {hop!r}.",
+                suggestion=f"model {current.name!r} has no join to {hop!r}.",
             )
         nxt = bundle.get_referenced_model(hop)
         if nxt is None:
@@ -604,6 +605,16 @@ def _resolve_dotted(
                 scope_summary=f"target {hop!r} not in source bundle",
                 suggestion=None,
             )
+        # A dotted path that walks back to an already-visited model is a
+        # circular join (e.g. ``a -> b -> a``); the leaf can never resolve
+        # and an unguarded walk would otherwise just fail confusingly on the
+        # leaf. Raise the legacy-compatible ``Circular join`` ValueError.
+        if nxt.name in visited_models:
+            raise ValueError(
+                f"Circular join detected resolving {'.'.join(parts)!r}: "
+                f"revisits model {nxt.name!r}."
+            )
+        visited_models.add(nxt.name)
         current = nxt
 
     # `current` is the terminal model; `leaf` is the column on it.
