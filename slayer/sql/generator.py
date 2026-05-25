@@ -1746,7 +1746,20 @@ class SQLGenerator:
         return [(reset_cte, reset_sql)], [(value_cte, value_sql)]
 
     def _build_date_trunc(self, col_expr: exp.Expression, granularity: TimeGranularity) -> exp.Expression:
-        """Build a DATE_TRUNC expression, with SQLite STRFTIME fallback."""
+        """Build a DATE_TRUNC expression, with SQLite STRFTIME fallback.
+
+        When ``col_expr`` is not a bare column reference (e.g., a string
+        literal or other unknown-typed sub-expression), the result is
+        wrapped in ``CAST(... AS TIMESTAMP)`` before being passed to
+        ``DATE_TRUNC``. Postgres has multiple ``date_trunc`` overloads
+        keyed on the second argument's type; an ``unknown``-typed operand
+        (the bare literal `'2025-12-01'`) makes the planner fail with
+        ``function date_trunc(unknown, unknown) is not unique``. The cast
+        pins one overload. Bare columns are left alone — their live DB
+        type is already known, and an explicit cast could strip a
+        ``TIMESTAMPTZ`` to ``TIMESTAMP``. Idempotent: already-cast
+        expressions pass through unchanged.
+        """
         gran_str = _GRANULARITY_MAP.get(granularity, granularity.value)
         if self.dialect == "sqlite":
             # SQLite has no DATE_TRUNC — use STRFTIME
@@ -1777,6 +1790,8 @@ class SQLGenerator:
                 this="STRFTIME",
                 expressions=[exp.Literal.string(fmt), col_expr],
             )
+        if not isinstance(col_expr, (exp.Column, exp.Cast)):
+            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
         return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
 
     @staticmethod
