@@ -1,0 +1,37 @@
+version: 6
+name: tweets
+sql_table: tweets
+query_variables: {}
+data_source: jaffle_shop
+columns:
+- name: id
+  sql: id
+  type: TEXT
+  primary_key: true
+  hidden: false
+- name: user_id
+  sql: user_id
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: tweeted_at
+  sql: tweeted_at
+  type: DATE
+  primary_key: false
+  hidden: false
+- name: content
+  sql: content
+  type: TEXT
+  primary_key: false
+  hidden: false
+measures: []
+aggregations: []
+joins:
+- target_model: customers
+  join_pairs:
+  - - user_id
+    - id
+  join_type: left
+filters: []
+default_time_dimension: tweeted_at
+hidden: false
