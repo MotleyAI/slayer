@@ -118,6 +118,20 @@ def _orders_model() -> SlayerModel:
                     AggregationParam(name="window", sql="6"),
                 ],
             ),
+            # Model-level override of a BUILT-IN aggregation, supplying a
+            # default ``weight=quantity`` so ``amount:weighted_avg`` (no
+            # explicit kwarg) gets resolved via the model's default param
+            # rather than raising "missing param" at _resolve_agg_param.
+            # CodeRabbit fold-in on DEV-1452 PR #144 ensures
+            # _build_agg_render_spec_from_planned threads this through
+            # ``aggregation_def`` for built-ins, not just non-built-ins.
+            Aggregation(
+                name="weighted_avg",
+                formula="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+                params=[
+                    AggregationParam(name="weight", sql="quantity"),
+                ],
+            ),
         ],
     )
 
@@ -668,6 +682,67 @@ class TestBuilderCustomAggregation:
                 full_alias="orders.amount_x",
             )
 
+    def test_builtin_aggregation_model_override_threaded(self):
+        # CodeRabbit fold-in: a model-level Aggregation override for a
+        # BUILT-IN agg (here ``weighted_avg`` with a default
+        # ``weight=quantity``) must surface in ``spec.aggregation_def``,
+        # not just non-built-ins. Prior code gated the lookup on
+        # ``key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE`` and
+        # silently dropped the override, so ``amount:weighted_avg`` (no
+        # explicit weight kwarg) raised at _resolve_agg_param even
+        # though the model supplied a default.
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="weighted_avg",
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_weighted_avg",
+            public_name="amount_weighted_avg",
+            slot_type=DataType.DOUBLE,
+        )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_weighted_avg",
+        )
+        assert spec.aggregation == "weighted_avg"
+        assert spec.aggregation_def is not None
+        assert spec.aggregation_def.name == "weighted_avg"
+        # Default param the model declared must round-trip.
+        assert any(
+            p.name == "weight" and p.sql == "quantity"
+            for p in spec.aggregation_def.params
+        )
+
+    def test_builtin_aggregation_no_override_leaves_def_none(self):
+        # The lookup is unconditional, but a built-in WITHOUT a model
+        # override must still produce ``aggregation_def is None`` so the
+        # dispatcher picks the built-in renderer. Pin this so the
+        # CodeRabbit fix doesn't accidentally start picking up
+        # unrelated model-level definitions.
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="sum",
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_sum",
+            public_name="amount_sum",
+            slot_type=DataType.DOUBLE,
+        )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_sum",
+        )
+        assert spec.aggregation == "sum"
+        assert spec.aggregation_def is None
+
 
 # ---------------------------------------------------------------------------
 # _build_agg_render_spec_from_planned — parametric / stat aggs
@@ -749,6 +824,44 @@ class TestBuilderCrossModelKwargPath:
             slot_type=DataType.DOUBLE,
         )
         with pytest.raises(AggregationNotAllowedError, match=r"kwarg .* references ColumnKey"):
+            _invoke(
+                slot=slot,
+                key=key,
+                source_model=_orders_model(),
+                source_relation="orders",
+                full_alias="orders.amount_weighted_avg",
+            )
+
+    def test_kwarg_columnsqlkey_path_mismatch_raises(self):
+        # CodeRabbit fold-in: a ColumnSqlKey kwarg with a non-empty path
+        # against a local source must reject the same way ColumnKey does.
+        # Previously the isinstance check only matched ColumnKey, so a
+        # ColumnSqlKey kwarg slipped past and would have bound the
+        # derived expression against the wrong relation.
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="weighted_avg",
+            kwargs=(
+                (
+                    "weight",
+                    ColumnSqlKey(
+                        path=("customers",),
+                        model="customers",
+                        column_name="net_quantity",
+                    ),
+                ),
+            ),
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_weighted_avg",
+            public_name="amount_weighted_avg",
+            slot_type=DataType.DOUBLE,
+        )
+        with pytest.raises(
+            AggregationNotAllowedError,
+            match=r"kwarg .* references ColumnSqlKey",
+        ):
             _invoke(
                 slot=slot,
                 key=key,

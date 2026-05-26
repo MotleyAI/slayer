@@ -214,12 +214,15 @@ _STAT_AGG_NAMES: frozenset[str] = frozenset({
 # Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
-# DEV-1450 stage 7b.13: aggregations the synth-EnrichedMeasure adapter
-# handles via the built-in path (``_build_agg`` -> ``_build_*`` family).
-# Custom user-defined aggregations with ``aggregation_def`` (declared on
-# ``SlayerModel.aggregations``) still defer -- the synth adapter does
-# not yet propagate the model's ``Aggregation`` definition into the
-# ``EnrichedMeasure.aggregation_def`` field. DEV-1452 follow-up.
+# DEV-1450 stage 7b.13: aggregations dispatched through the built-in
+# path (``_build_agg`` -> ``_build_*`` family). A name in this set always
+# resolves to a built-in renderer; a name NOT in the set MUST resolve to
+# a model-level ``Aggregation`` definition (``SlayerModel.aggregations``)
+# or it's a hard error. Model-level overrides for built-in names ARE
+# permitted and get threaded into ``AggRenderSpec.aggregation_def`` so
+# ``_resolve_agg_param`` honours their default params (CodeRabbit
+# fold-in on DEV-1452 PR #144 — the prior "synth adapter doesn't
+# propagate aggregation_def for built-ins" TODO is now done).
 #
 # Name kept as ``_LOCAL_SLICE`` for grep continuity with 7b.8-7b.12
 # call sites and tests; the set is no longer local-only.
@@ -7342,45 +7345,55 @@ class SQLGenerator:
                 source_model=source_model,
                 source_relation=source_relation,
             )
-            # Aggregations outside the built-in set are custom user-defined
-            # ``Aggregation``s declared on ``SlayerModel.aggregations``; thread
-            # the model's definition into ``AggRenderSpec.aggregation_def`` so
-            # ``_build_formula_agg`` renders the custom formula. An unknown
-            # name (neither built-in nor defined) is a hard error.
-            agg_def = None
-            if key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
-                agg_def = next(
-                    (a for a in (source_model.aggregations or []) if a.name == key.agg),
-                    None,
+            # Aggregations defined on ``SlayerModel.aggregations`` are
+            # threaded into ``AggRenderSpec.aggregation_def`` so
+            # ``_build_formula_agg`` renders the custom formula AND so
+            # ``_resolve_agg_param`` can fall back to the model-level
+            # parameter defaults (``weighted_avg(weight=quantity)``,
+            # ``percentile(p=0.5)``, …). The lookup runs for built-ins too:
+            # a user model is allowed to override the default params of a
+            # built-in agg (e.g. supply a default ``weight=`` for
+            # ``weighted_avg``), and dropping that override on the planned
+            # path would turn a previously valid query into a missing-param
+            # error. Only when the name is NOT a built-in does a lookup
+            # miss raise — unknown non-built-ins are a hard error.
+            agg_def = next(
+                (a for a in (source_model.aggregations or []) if a.name == key.agg),
+                None,
+            )
+            if agg_def is None and key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
+                raise AggregationNotAllowedError(
+                    column=src_leaf,
+                    agg=key.agg,
+                    reason=(
+                        f"unknown aggregation {key.agg!r} — not a built-in "
+                        f"and not defined in {source_model.name!r}."
+                        f"aggregations."
+                    ),
                 )
-                if agg_def is None:
-                    raise AggregationNotAllowedError(
-                        column=src_leaf,
-                        agg=key.agg,
-                        reason=(
-                            f"unknown aggregation {key.agg!r} — not a built-in "
-                            f"and not defined in {source_model.name!r}."
-                            f"aggregations."
-                        ),
-                    )
-            # DEV-1450 stage 7b.13: validate kwarg ColumnKey paths against
+            # DEV-1450 stage 7b.13: validate kwarg column-ref paths against
             # source.path. A kwarg path that doesn't match the aggregate
             # source path would silently bind the kwarg to a different
             # model (host vs joined target) than the aggregate value
             # column -- meaningless SQL semantically. Caller-side
             # cross-model rerooting strips the matching prefix from
             # source AND kwargs before reaching this point; any residual
-            # mismatch surfaces here.
+            # mismatch surfaces here. Both bare-column (``ColumnKey``) and
+            # derived-column (``ColumnSqlKey``) kwarg refs go through this
+            # gate; a ``ColumnSqlKey`` slipping past would bypass the
+            # cross-model path check the same way (CodeRabbit fold-in on
+            # PR #144).
             for kname, kval in key.kwargs:
-                if isinstance(kval, ColumnKey) and kval.path != source.path:
+                if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
                     raise AggregationNotAllowedError(
                         column=src_leaf,
                         agg=key.agg,
                         reason=(
-                            f"kwarg {kname!r} references ColumnKey with "
-                            f"path {kval.path!r}; aggregate source path is "
-                            f"{source.path!r}. Cross-model kwargs must "
-                            f"share the source's join path."
+                            f"kwarg {kname!r} references "
+                            f"{type(kval).__name__} with path {kval.path!r}; "
+                            f"aggregate source path is {source.path!r}. "
+                            f"Cross-model kwargs must share the source's "
+                            f"join path."
                         ),
                     )
             col = next(
