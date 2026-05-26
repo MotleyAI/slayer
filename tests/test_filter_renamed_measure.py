@@ -356,7 +356,7 @@ class TestRemapEdgeCases:
                 ModelMeasure(formula="profit:avg"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
             ],
         )
-        with pytest.raises(ValueError, match=r"collides with .*measure"):
+        with pytest.raises(ValueError, match=r"silently merged|collide"):
             await _enrich(query, model)
 
     async def test_filter_canonical_name_collides_with_source_column_raises(

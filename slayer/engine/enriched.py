@@ -86,6 +86,18 @@ class EnrichedMeasure(BaseModel):
             "``type`` which wraps the outer aggregation result."
         ),
     )
+    from_cross_model_intercept: bool = Field(
+        default=False,
+        description=(
+            "DEV-1449 / Codex round 10: True iff this EnrichedMeasure "
+            "was produced by the cross-stage intercept "
+            "(`_try_intercept_cross_model_as_local`) as a re-aggregation "
+            "of an inner stage's cross-model projection. Downstream "
+            "stages treat its column as a safe re-aggregation source "
+            "(equivalent to a CrossModelMeasure projection) when "
+            "computing ``SourceModelOrigin.agg_column_names``."
+        ),
+    )
 
 
 class EnrichedTimeDimension(BaseModel):

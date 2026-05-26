@@ -7,10 +7,12 @@
 [![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://motley-slayer.readthedocs.io/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/djtaFyXW)
 
 **SLayer** is a semantic layer that lets AI agents query your database, manage data models, and learn from the data.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
+> Questions, ideas, or feedback? [Join our Discord](https://discord.gg/djtaFyXW).
 
 ---
 
@@ -29,7 +31,7 @@ SLayer naturally evolves when the agent uses it. For example, if a query require
 
 SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/) and much more.
 
-SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli) and [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
+SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), and [Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) (JDBC, BI-tool compatible) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
 
 ### Example
 
