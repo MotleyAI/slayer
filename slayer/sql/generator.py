@@ -3926,68 +3926,21 @@ class SQLGenerator:
         for alias, e in extra_projections:
             select_exprs.append(e.copy().as_(alias))
 
-        # Unfiltered first/last → one ROW_NUMBER per distinct effective time
-        # column (stable suffixes: first sorted gets "", then "_2", …).
-        time_col_agg_types: Dict[str, set] = {}
-        for m in synth_specs:
-            if m.aggregation in ("first", "last") and not m.filter_sql:
-                eff = m.time_column or default_time_col_sql
-                time_col_agg_types.setdefault(eff, set()).add(m.aggregation)
-        sorted_tcs = sorted(time_col_agg_types)
-        rn_suffix_map: Dict[str, str] = {
-            tc: ("" if i == 0 else f"_{i + 1}")
-            for i, tc in enumerate(sorted_tcs)
-        }
-        for tc in sorted_tcs:
-            suffix = rn_suffix_map[tc]
-            if "last" in time_col_agg_types[tc]:
-                select_exprs.append(
-                    self._parse(
-                        f"ROW_NUMBER() OVER ({partition_clause} "
-                        f"ORDER BY {tc} DESC)"
-                    ).as_(f"_last_rn{suffix}")
-                )
-            if "first" in time_col_agg_types[tc]:
-                select_exprs.append(
-                    self._parse(
-                        f"ROW_NUMBER() OVER ({partition_clause} "
-                        f"ORDER BY {tc} ASC)"
-                    ).as_(f"_first_rn{suffix}")
-                )
+        unfiltered_exprs, rn_suffix_map = self._build_unfiltered_rn_columns(
+            synth_specs=synth_specs,
+            default_time_col_sql=default_time_col_sql,
+            partition_clause=partition_clause,
+        )
+        select_exprs.extend(unfiltered_exprs)
 
-        # Filtered first/last → dedicated ROW_NUMBER + match-flag columns,
-        # deduped by (filter, time col, agg).
-        filtered_rn_map: Dict[str, str] = {}
-        filtered_match_map: Dict[str, str] = {}
-        seen_filters: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
-        filter_idx = 0
-        for m in synth_specs:
-            if m.aggregation in ("first", "last") and m.filter_sql:
-                eff = m.time_column or default_time_col_sql
-                cache_key = (m.filter_sql, eff, m.aggregation)
-                if cache_key in seen_filters:
-                    rn_alias, match_alias = seen_filters[cache_key]
-                else:
-                    kind = "first" if m.aggregation == "first" else "last"
-                    rn_alias = f"_{kind}_rn_f{filter_idx}"
-                    match_alias = f"_match_f{filter_idx}"
-                    order_dir = "ASC" if m.aggregation == "first" else "DESC"
-                    select_exprs.append(
-                        self._parse(
-                            f"ROW_NUMBER() OVER ({partition_clause} ORDER BY "
-                            f"CASE WHEN {m.filter_sql} THEN 0 ELSE 1 END, "
-                            f"{eff} {order_dir})"
-                        ).as_(rn_alias)
-                    )
-                    select_exprs.append(
-                        self._parse(
-                            f"CASE WHEN {m.filter_sql} THEN 1 ELSE 0 END"
-                        ).as_(match_alias)
-                    )
-                    seen_filters[cache_key] = (rn_alias, match_alias)
-                    filter_idx += 1
-                filtered_rn_map[m.alias] = rn_alias
-                filtered_match_map[m.alias] = match_alias
+        filtered_exprs, filtered_rn_map, filtered_match_map = (
+            self._build_filtered_rn_columns(
+                synth_specs=synth_specs,
+                default_time_col_sql=default_time_col_sql,
+                partition_clause=partition_clause,
+            )
+        )
+        select_exprs.extend(filtered_exprs)
 
         inner = exp.Select()
         for e in select_exprs:
@@ -4001,6 +3954,106 @@ class SQLGenerator:
             this=inner, alias=exp.to_identifier(source_relation),
         )
         return subquery, rn_suffix_map, filtered_rn_map, filtered_match_map
+
+    def _build_unfiltered_rn_columns(
+        self,
+        *,
+        synth_specs: List[AggRenderSpec],
+        default_time_col_sql: str,
+        partition_clause: str,
+    ) -> Tuple[List[exp.Expression], Dict[str, str]]:
+        """One ``ROW_NUMBER`` projection per distinct effective time column
+        for the unfiltered ``first`` / ``last`` specs.
+
+        Each unique effective time column gets a stable suffix in render
+        order (first sorted gets ``""``, then ``"_2"``, ...); the same
+        time column shared by both ``first`` and ``last`` produces two
+        projections (`_first_rn{suffix}` ASC, `_last_rn{suffix}` DESC).
+        Returns ``(rn_select_exprs, rn_suffix_map)``.
+        """
+        time_col_agg_types: Dict[str, set] = {}
+        for m in synth_specs:
+            if m.aggregation in ("first", "last") and not m.filter_sql:
+                eff = m.time_column or default_time_col_sql
+                time_col_agg_types.setdefault(eff, set()).add(m.aggregation)
+        sorted_tcs = sorted(time_col_agg_types)
+        rn_suffix_map: Dict[str, str] = {
+            tc: ("" if i == 0 else f"_{i + 1}")
+            for i, tc in enumerate(sorted_tcs)
+        }
+        rn_exprs: List[exp.Expression] = []
+        for tc in sorted_tcs:
+            suffix = rn_suffix_map[tc]
+            if "last" in time_col_agg_types[tc]:
+                rn_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} "
+                        f"ORDER BY {tc} DESC)"
+                    ).as_(f"_last_rn{suffix}")
+                )
+            if "first" in time_col_agg_types[tc]:
+                rn_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} "
+                        f"ORDER BY {tc} ASC)"
+                    ).as_(f"_first_rn{suffix}")
+                )
+        return rn_exprs, rn_suffix_map
+
+    def _build_filtered_rn_columns(
+        self,
+        *,
+        synth_specs: List[AggRenderSpec],
+        default_time_col_sql: str,
+        partition_clause: str,
+    ) -> Tuple[List[exp.Expression], Dict[str, str], Dict[str, str]]:
+        """One dedicated ``ROW_NUMBER`` + match-flag projection per distinct
+        ``(filter, time, agg)`` triple for the filtered ``first`` / ``last``
+        specs.
+
+        Filtered first/last needs to push non-matching rows past the
+        winners; emits ``ROW_NUMBER() OVER (... ORDER BY CASE WHEN
+        <filter> THEN 0 ELSE 1 END, <time> <dir>)`` alongside a boolean
+        match-flag column so the outer SELECT can ``MAX(CASE WHEN _rn = 1
+        AND _match = 1 THEN col END)``. Triples that repeat across specs
+        share a single (rn, match) pair; per-spec ``alias`` keys map onto
+        those.
+        """
+        filtered_rn_map: Dict[str, str] = {}
+        filtered_match_map: Dict[str, str] = {}
+        seen_filters: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
+        rn_exprs: List[exp.Expression] = []
+        filter_idx = 0
+        for m in synth_specs:
+            if not (m.aggregation in ("first", "last") and m.filter_sql):
+                continue
+            eff = m.time_column or default_time_col_sql
+            cache_key = (m.filter_sql, eff, m.aggregation)
+            cached = seen_filters.get(cache_key)
+            if cached is not None:
+                rn_alias, match_alias = cached
+            else:
+                kind = "first" if m.aggregation == "first" else "last"
+                rn_alias = f"_{kind}_rn_f{filter_idx}"
+                match_alias = f"_match_f{filter_idx}"
+                order_dir = "ASC" if m.aggregation == "first" else "DESC"
+                rn_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} ORDER BY "
+                        f"CASE WHEN {m.filter_sql} THEN 0 ELSE 1 END, "
+                        f"{eff} {order_dir})"
+                    ).as_(rn_alias)
+                )
+                rn_exprs.append(
+                    self._parse(
+                        f"CASE WHEN {m.filter_sql} THEN 1 ELSE 0 END"
+                    ).as_(match_alias)
+                )
+                seen_filters[cache_key] = (rn_alias, match_alias)
+                filter_idx += 1
+            filtered_rn_map[m.alias] = rn_alias
+            filtered_match_map[m.alias] = match_alias
+        return rn_exprs, filtered_rn_map, filtered_match_map
 
     def _build_first_last_base_select(
         self,
