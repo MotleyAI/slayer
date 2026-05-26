@@ -246,7 +246,7 @@ Arguments:
 
 Options:
   --datasource NAME         SLayer datasource name for imported models (required)
-  --storage PATH            Storage directory for output (default: ./slayer_data)
+  --storage PATH            Storage directory for output (default: platform path, see Storage docs)
   --include-hidden-models   Also import regular dbt models (not wrapped by a
                             semantic_model) as hidden SLayer models via SQL
                             introspection. Requires the `dbt` extra.

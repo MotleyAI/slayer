@@ -13,10 +13,12 @@ The agent spawns SLayer as a subprocess and communicates via stdin/stdout. You d
 **Claude Code setup:**
 
 ```bash
-claude mcp add slayer -- slayer mcp --ingest-on-startup --storage ./slayer_data
+claude mcp add slayer -- slayer mcp --ingest-on-startup
 ```
 
 `--ingest-on-startup` runs idempotent auto-ingestion across every configured datasource before the stdio channel opens. Drop the flag (or set `SLAYER_INGEST_ON_STARTUP=0`) to defer ingestion to a manual `ingest_datasource_models` call.
+
+Storage defaults to the [platform-appropriate path](../configuration/storage.md). Override with `--storage /path/to/data` if needed.
 
 If `slayer` is installed in a virtualenv (e.g. via Poetry), use the full path to the executable so the agent can find it regardless of working directory:
 
@@ -26,7 +28,7 @@ poetry env info -p
 # e.g. /home/user/.venvs/slayer-abc123
 
 # Register with the full path
-claude mcp add slayer -- /home/user/.venvs/slayer-abc123/bin/slayer mcp --storage /path/to/slayer_data
+claude mcp add slayer -- /home/user/.venvs/slayer-abc123/bin/slayer mcp
 ```
 
 ### SSE (remote)
@@ -35,7 +37,7 @@ MCP over HTTP via Server-Sent Events. You run `slayer serve` yourself — it exp
 
 ```bash
 # 1. Start the server
-slayer serve --ingest-on-startup --storage ./slayer_data
+slayer serve --ingest-on-startup
 # REST API at http://localhost:5143/
 # MCP SSE at http://localhost:5143/mcp/sse
 ```

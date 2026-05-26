@@ -1,18 +1,34 @@
-# Storage Backends
+# Storage
 
-SLayer uses a storage backend to persist model and datasource configurations.
+SLayer uses a storage backend to persist model and datasource configurations, agent memories, and embedding indexes.
 
 ## Default Location
 
-When no `--storage` flag or `$SLAYER_STORAGE` env var is set, SLayer uses a platform-appropriate default:
+When no `--storage` flag or `$SLAYER_STORAGE` env var is set, SLayer picks a platform-appropriate default:
 
 | Platform | Default path |
 |---|---|
-| Linux | `~/.local/share/slayer` (or `$XDG_DATA_HOME/slayer`) |
+| Linux | `~/.local/share/slayer` (or `$XDG_DATA_HOME/slayer` if set) |
 | macOS | `~/Library/Application Support/slayer` |
 | Windows | `%LOCALAPPDATA%\slayer` |
 
-This means `slayer serve` works out of the box with no flags. Override with `--storage` or `$SLAYER_STORAGE`.
+This means `slayer serve` works out of the box with no flags.
+
+## Overriding the Storage Path
+
+Pass `--storage` to any CLI command, or set the `$SLAYER_STORAGE` environment variable:
+
+```bash
+# YAML directory
+slayer serve --storage ./slayer_data
+
+# SQLite database (auto-detected by .db/.sqlite/.sqlite3 extension)
+slayer serve --storage slayer.db
+
+# Or via environment variable
+export SLAYER_STORAGE=./my_project/slayer_data
+slayer serve
+```
 
 ## Available Backends
 

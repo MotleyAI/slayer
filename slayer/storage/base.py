@@ -1,6 +1,7 @@
 """Abstract storage protocol and factory."""
 
 import os
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -41,7 +42,7 @@ def default_storage_path() -> str:
     2. $SLAYER_MODELS_DIR environment variable (legacy, if set)
     3. Platform default:
        - Linux: $XDG_DATA_HOME/slayer (defaults to ~/.local/share/slayer)
-       - macOS: ~/Library/Application Support/slayer
+       - macOS: ~/Library/Application Support/slayer (ignores $XDG_DATA_HOME)
        - Windows: %LOCALAPPDATA%/slayer
     """
     env = os.environ.get("SLAYER_STORAGE") or os.environ.get("SLAYER_MODELS_DIR")
@@ -51,8 +52,11 @@ def default_storage_path() -> str:
     if os.name == "nt":
         # Windows
         base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        # macOS
+        base = Path.home() / "Library" / "Application Support"
     else:
-        # MacOS, Linux, etc.
+        # Linux, etc.
         base = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 
     return str(base / "slayer")
