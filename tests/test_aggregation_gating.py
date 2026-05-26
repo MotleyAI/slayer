@@ -218,7 +218,7 @@ class TestStatAggregationEligibility:
         # the qualified value column. The earlier "( in sql" check passed
         # for any SELECT and didn't prove the aggregate survived enrichment
         # (Codex #6 / CodeRabbit nitpick on PR #82).
-        assert f"{fn}(orders.amount)" in sql
+        assert f'{fn}("orders".amount)' in sql
 
     @pytest.mark.parametrize(
         "agg,sql_fn",
@@ -243,7 +243,7 @@ class TestStatAggregationEligibility:
         )
         # Both legs must be qualified and appear in the function call's
         # two-arg slot in canonical Postgres-style order.
-        assert f"{sql_fn}(orders.amount, orders.quantity)" in sql
+        assert f'{sql_fn}("orders".amount, "orders".quantity)' in sql
 
     @pytest.mark.parametrize(
         "agg",

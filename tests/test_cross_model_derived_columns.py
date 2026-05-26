@@ -101,7 +101,7 @@ async def test_cross_model_dim_derived_column_via_query(tmp_path) -> None:
         dimensions=[ColumnRef(name="foo_normalized", model="B")],
     )
     sql = await _gen_sql(engine, query, model_a)
-    assert "B.foo_raw / 100.0" in _norm(sql), f"Expected qualified B.foo_raw, got:\n{sql}"
+    assert '"B".foo_raw / 100.0' in _norm(sql), f"Expected qualified B.foo_raw, got:\n{sql}"
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +129,9 @@ async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None
         f"Generated SQL still references B.foo_normalized literally:\n{sql}"
     )
     # The expansion must inline the derived expression
-    assert "B.foo_raw / 100.0" in norm, f"Expected inlined expansion, got:\n{sql}"
+    assert '"B".foo_raw / 100.0' in norm, f"Expected inlined expansion, got:\n{sql}"
     # The base reference A.bar passes through unchanged
-    assert "A.bar" in norm
+    assert '"A".bar' in norm
 
 
 async def test_cross_model_base_column_still_works(tmp_path) -> None:
@@ -142,7 +142,7 @@ async def test_cross_model_base_column_still_works(tmp_path) -> None:
     ])
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="ratio_using_base")])
     sql = await _gen_sql(engine, query, model_a)
-    assert "A.bar / B.foo_raw" in _norm(sql), f"Base column ref broken:\n{sql}"
+    assert '"A".bar / "B".foo_raw' in _norm(sql), f"Base column ref broken:\n{sql}"
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +170,7 @@ async def test_local_columnsql_references_local_derived(tmp_path) -> None:
         f"Local derived column A.c1 leaked into SQL:\n{sql}"
     )
     # Inlined: (A.raw_a + 1) * 2
-    assert "A.raw_a + 1" in norm
+    assert '"A".raw_a + 1' in norm
     assert "* 2" in norm
 
 
@@ -199,7 +199,7 @@ async def test_chain_of_three_derived_columns(tmp_path) -> None:
     assert _no_bare_derived_ref(norm, "A", "c1")
     assert _no_bare_derived_ref(norm, "A", "c2")
     assert _no_bare_derived_ref(norm, "A", "c3")
-    assert "A.raw_a + 1" in norm
+    assert '"A".raw_a + 1' in norm
     assert "+ 10" in norm
     assert "+ 100" in norm
 
@@ -249,11 +249,11 @@ async def test_joined_model_derived_referencing_further_joined(tmp_path) -> None
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Must qualify under the canonical multi-hop alias B__C, not bare C.
-    assert "B__C.name" in norm, (
+    assert '"B__C".name' in norm, (
         f"Expected canonical B__C alias, got:\n{sql}"
     )
     # And the C join must actually be present in the FROM.
-    assert "JOIN C AS B__C" in norm or "JOIN \"C\" AS \"B__C\"" in norm or "JOIN C B__C" in norm, (
+    assert "JOIN C AS \"B__C\"" in norm or "JOIN \"C\" AS \"B__C\"" in norm or "JOIN C B__C" in norm, (
         f"C join missing from FROM clause:\n{sql}"
     )
 
@@ -313,7 +313,7 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         f"Multi-hop derived ref leaked into SQL:\n{sql}"
     )
     # Inlined: (B__C.raw_c * 2)
-    assert "B__C.raw_c * 2" in norm
+    assert '"B__C".raw_c * 2' in norm
 
 
 # ---------------------------------------------------------------------------
@@ -382,8 +382,8 @@ async def test_diamond_join_derived(tmp_path) -> None:
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "customers__regions", "name_upper")
     assert _no_bare_derived_ref(norm, "warehouses__regions", "name_upper")
-    assert "UPPER(customers__regions.name_raw)" in norm
-    assert "UPPER(warehouses__regions.name_raw)" in norm
+    assert 'UPPER("customers__regions".name_raw)' in norm
+    assert 'UPPER("warehouses__regions".name_raw)' in norm
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +434,7 @@ async def test_self_reference_terminates(tmp_path) -> None:
     )
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="bar")])
     sql = await _gen_sql(engine, query, model_a)
-    assert "A.bar" in _norm(sql)
+    assert '"A".bar' in _norm(sql)
 
 
 # ---------------------------------------------------------------------------
@@ -454,9 +454,9 @@ async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
     query = SlayerQuery(source_model="A", dimensions=[ColumnRef(name="mixed")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
-    assert "B.foo_raw / 100.0" in norm  # derived expanded
+    assert '"B".foo_raw / 100.0' in norm  # derived expanded
     assert _no_bare_derived_ref(norm, "B", "foo_normalized")
-    assert "A.bar / B.foo_raw" in norm  # base still there as base
+    assert '"A".bar / "B".foo_raw' in norm  # base still there as base
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +478,7 @@ async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
     # in CAST when its type is set, e.g. ``SUM(CAST(B.foo_raw / 100.0 AS …))``.
     # Either form is acceptable — the assertion only pins the inlining
     # behavior, not exact CAST-vs-no-CAST shape.
-    assert "B.foo_raw / 100.0" in norm or "B.foo_raw/100.0" in norm
+    assert '"B".foo_raw / 100.0' in norm or '"B".foo_raw/100.0' in norm
     assert "SUM(" in norm
 
 
@@ -505,7 +505,7 @@ async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_p
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "B", "foo_normalized")
     assert _no_bare_derived_ref(norm, "A", "ratio_using_derived")
-    assert "B.foo_raw / 100.0" in norm
+    assert '"B".foo_raw / 100.0' in norm
     assert "SUM(" in norm
 
 
@@ -527,7 +527,7 @@ async def test_filter_referencing_derived_column(tmp_path) -> None:
     assert _no_bare_derived_ref(norm, "B", "foo_normalized"), (
         f"Filter still references B.foo_normalized literally:\n{sql}"
     )
-    assert "B.foo_raw / 100.0" in norm
+    assert '"B".foo_raw / 100.0' in norm
 
 
 # ---------------------------------------------------------------------------
@@ -587,7 +587,7 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Must qualify to B explicitly so it's not ambiguous with A.foo_raw.
-    assert "B.foo_raw / 100.0" in norm, (
+    assert '"B".foo_raw / 100.0' in norm, (
         f"Expansion did not qualify foo_raw under B:\n{sql}"
     )
 
@@ -656,7 +656,7 @@ async def test_multihop_query_dim_to_derived_target_column(tmp_path) -> None:
     )
     assert _no_bare_derived_ref(norm, "C", "x_derived")
     # Inner base ref must be qualified to the canonical multi-hop alias.
-    assert "B__C.raw_c * 2" in norm, (
+    assert '"B__C".raw_c * 2' in norm, (
         f"Expected B__C.raw_c * 2, got:\n{sql}"
     )
     # And the C join must be present under the canonical alias.
@@ -712,7 +712,7 @@ async def test_multihop_filter_on_derived_target_column(tmp_path) -> None:
     assert _no_bare_derived_ref(norm, "B__C", "x_derived"), (
         f"Filter still references B__C.x_derived literally:\n{sql}"
     )
-    assert "B__C.raw_c * 2" in norm, (
+    assert '"B__C".raw_c * 2' in norm, (
         f"Filter expansion did not qualify under B__C:\n{sql}"
     )
     # The > 0 comparison must survive past expansion.
@@ -742,7 +742,7 @@ async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # The derived sql ``raw_ts + 0`` should be qualified to B__C.
-    assert "B__C.raw_ts" in norm, (
+    assert '"B__C".raw_ts' in norm, (
         f"Multi-hop time-dim derived col not qualified to B__C:\n{sql}"
     )
 
@@ -790,7 +790,7 @@ async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
         arrays,
     )
     norm = _norm(dim_sql)
-    assert "solar_panels.energy_out / solar_panels.energy_in" in norm, (
+    assert '"solar_panels".energy_out / "solar_panels".energy_in' in norm, (
         f"Bare inner refs in derived col leaked into SQL — DEV-1339 regressed:\n{dim_sql}"
     )
     # Measure-side: the issue specifically called out measure formulas.
@@ -801,7 +801,7 @@ async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
         arrays,
     )
     norm = _norm(measure_sql)
-    assert "solar_panels.energy_out / solar_panels.energy_in" in norm, (
+    assert '"solar_panels".energy_out / "solar_panels".energy_in' in norm, (
         f"Cross-model measure agg over derived col left bare refs unqualified:\n{measure_sql}"
     )
 
@@ -1306,7 +1306,7 @@ async def test_dev1410_local_bare_ref_to_local_derived(tmp_path) -> None:
         f"Bare-ref c1 leaked into SQL as A.c1:\n{sql}"
     )
     # Inlined: (A.raw_a + 1) * 2 — the inner raw_a still gets qualified.
-    assert "A.raw_a + 1" in norm, f"raw_a not qualified:\n{sql}"
+    assert '"A".raw_a + 1' in norm, f"raw_a not qualified:\n{sql}"
     assert "* 2" in norm, f"outer arithmetic missing:\n{sql}"
 
 
@@ -1331,7 +1331,7 @@ async def test_dev1410_local_bare_ref_three_deep(tmp_path) -> None:
     assert _no_bare_derived_ref(norm, "A", "c1")
     assert _no_bare_derived_ref(norm, "A", "c2")
     assert _no_bare_derived_ref(norm, "A", "c3")
-    assert "A.raw_a + 1" in norm
+    assert '"A".raw_a + 1' in norm
     assert "+ 10" in norm
     assert "+ 100" in norm
 
@@ -1358,8 +1358,8 @@ async def test_dev1410_local_bare_ref_mixed_with_base(tmp_path) -> None:
         f"Bare derived_b leaked into SQL:\n{sql}"
     )
     # Base raw_a qualifies; derived_b inlines.
-    assert "A.raw_a +" in norm
-    assert "A.raw_a * 2" in norm  # the inlined body
+    assert '"A".raw_a +' in norm
+    assert '"A".raw_a * 2' in norm  # the inlined body
 
 
 async def test_dev1410_local_bare_ref_inside_case_coalesce_nullif_cast(tmp_path) -> None:
@@ -1403,7 +1403,7 @@ async def test_dev1410_local_bare_ref_inside_case_coalesce_nullif_cast(tmp_path)
         assert _no_bare_derived_ref(norm, "A", "score"), (
             f"score leaked as A.score in {col}:\n{sql}"
         )
-        assert "A.x * 10" in norm, f"score body not inlined in {col}:\n{sql}"
+        assert '"A".x * 10' in norm, f"score body not inlined in {col}:\n{sql}"
 
 
 async def test_dev1410_local_bare_ref_to_derived_inside_subquery_left_alone(
@@ -1439,7 +1439,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_subquery_left_alone(
     assert "MAX(score)" in norm, (
         f"Subquery-scope bare ``score`` was rewritten or removed:\n{sql}"
     )
-    assert "A.raw_a * 10" in norm, (
+    assert '"A".raw_a * 10' in norm, (
         f"Root-scope ``score`` was not inlined:\n{sql}"
     )
 
@@ -1507,7 +1507,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_window_over_partition_in
     assert _no_bare_derived_ref(norm, "A", "bucket"), (
         f"OVER-clause bare derived ref not inlined:\n{sql}"
     )
-    assert "A.raw_a / 10" in norm, f"bucket body not inlined:\n{sql}"
+    assert '"A".raw_a / 10' in norm, f"bucket body not inlined:\n{sql}"
 
 
 async def test_dev1410_local_bare_ref_to_derived_inside_union_left_alone(
@@ -1539,7 +1539,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_union_left_alone(
         f"UNION-branch bare ref was rewritten:\n{sql}"
     )
     # Root-scope ``score`` (rightmost) is inlined.
-    assert "A.raw_a + 1" in norm, f"Root-scope score body not inlined:\n{sql}"
+    assert '"A".raw_a + 1' in norm, f"Root-scope score body not inlined:\n{sql}"
 
 
 async def test_dev1410_local_bare_ref_to_derived_inside_values_left_alone(
@@ -1572,7 +1572,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_values_left_alone(
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Root-scope ``score`` is inlined.
-    assert "A.raw_a + 1" in norm, (
+    assert '"A".raw_a + 1' in norm, (
         f"Root-scope score body not inlined:\n{sql}"
     )
     # Subquery's ``score`` left bare (refers to the VALUES alias).
@@ -1611,7 +1611,7 @@ async def test_dev1410_local_bare_ref_to_string_literal_lookalike_left_alone(
     )
     # The CAST(score AS TEXT) actually inlines: CAST((A.raw_a + 1) AS TEXT)
     # — verify the body shows up at least once.
-    assert "A.raw_a + 1" in norm, f"score body not inlined:\n{sql}"
+    assert '"A".raw_a + 1' in norm, f"score body not inlined:\n{sql}"
 
 
 async def test_dev1410_local_bare_ref_with_double_underscore_name(tmp_path) -> None:
@@ -1655,7 +1655,7 @@ async def test_dev1410_local_bare_ref_with_double_underscore_name(tmp_path) -> N
         f"Double-underscore-named derived col leaked into SQL:\n{sql}"
     )
     # Inlined body with inner ref qualified to host alias.
-    assert "infrastructure.dwelling_specs * 1.0" in norm, (
+    assert '"infrastructure".dwelling_specs * 1.0' in norm, (
         f"Body not inlined with qualified inner ref:\n{sql}"
     )
 
@@ -1747,8 +1747,8 @@ async def test_dev1410_exact_repro(tmp_path) -> None:
             f"Derived column ``{derived}`` leaked as physical column ref:\n{sql}"
         )
     # CASE bodies inlined with inner refs qualified to host alias.
-    assert "infrastructure.wateraccess" in norm
-    assert "infrastructure.roadsurface" in norm
-    assert "infrastructure.parkavail" in norm
+    assert '"infrastructure".wateraccess' in norm
+    assert '"infrastructure".roadsurface' in norm
+    assert '"infrastructure".parkavail' in norm
     # Parse the result as SQLite to confirm it's syntactically valid.
     sqlglot.parse_one(sql, dialect="sqlite")

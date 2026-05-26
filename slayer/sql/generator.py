@@ -49,6 +49,35 @@ def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Exp
             return expr
     return exp.Cast(this=expr, to=exp.DataType(this=target))
 
+
+def _model_identifier(name: str) -> exp.Identifier:
+    """Quoted identifier for a model name / FROM alias / column qualifier.
+
+    Always quoted: sqlglot doesn't quote reserved keywords, so a model named
+    ``grant``/``order``/``select`` would otherwise emit bare and break. One
+    helper keeps alias defs and references quoted identically (matters on
+    case-folding dialects like Snowflake).
+    """
+    return exp.to_identifier(name, quoted=True)
+
+
+def quote_ident_for(name: str, dialect: Optional[str]) -> str:
+    """Quoted-identifier text for ``name`` in ``dialect`` (double quotes / MySQL
+    backticks / T-SQL brackets). For raw-string sites re-parsed with the same
+    dialect — a hardcoded ``"`` is a string literal on backtick dialects.
+    """
+    return exp.to_identifier(name, quoted=True).sql(dialect=dialect or "postgres")
+
+
+def _qualify_in_string(alias: str, col: str, dialect: Optional[str]) -> str:
+    """Dialect-quoted ``alias.col`` for embedding in a re-parsed SQL string.
+
+    Quoting the alias dodges sqlglot's Command-statement fallback for
+    reserved-keyword model names (bare ``grant.col`` parses as ``GRANT``).
+    """
+    return f"{quote_ident_for(alias, dialect)}.{col}"
+
+
 logger = logging.getLogger(__name__)
 
 # Maps aggregation name (string) → SQL function name.
@@ -666,24 +695,24 @@ class SQLGenerator:
                 if cm.source_sql:
                     source_from = exp.Subquery(
                         this=self._parse(cm.source_sql),
-                        alias=exp.to_identifier(cm.source_model_name),
+                        alias=_model_identifier(cm.source_model_name),
                     )
                 else:
-                    source_from = exp.to_table(cm.source_sql_table, alias=cm.source_model_name)
+                    source_from = exp.to_table(cm.source_sql_table, alias=_model_identifier(cm.source_model_name))
                 select = select.from_(source_from)
 
                 # JOIN target model
                 if cm.target_model_sql:
                     target_join = exp.Subquery(
                         this=self._parse(cm.target_model_sql),
-                        alias=exp.to_identifier(cm.target_model_name),
+                        alias=_model_identifier(cm.target_model_name),
                     )
                 else:
-                    target_join = exp.to_table(cm.target_model_sql_table, alias=cm.target_model_name)
+                    target_join = exp.to_table(cm.target_model_sql_table, alias=_model_identifier(cm.target_model_name))
                 join_on = exp.and_(*(
                     exp.EQ(
-                        this=exp.Column(this=exp.to_identifier(src), table=exp.to_identifier(cm.source_model_name)),
-                        expression=exp.Column(this=exp.to_identifier(tgt), table=exp.to_identifier(cm.target_model_name)),
+                        this=exp.Column(this=exp.to_identifier(src), table=_model_identifier(cm.source_model_name)),
+                        expression=exp.Column(this=exp.to_identifier(tgt), table=_model_identifier(cm.target_model_name)),
                     )
                     for src, tgt in cm.join_pairs
                 ))
@@ -800,10 +829,10 @@ class SQLGenerator:
                         if target_table.startswith("("):
                             join_target = exp.Subquery(
                                 this=self._parse(target_table),
-                                alias=exp.to_identifier(target_alias),
+                                alias=_model_identifier(target_alias),
                             )
                         else:
-                            join_target = exp.to_table(target_table, alias=target_alias)
+                            join_target = exp.to_table(target_table, alias=_model_identifier(target_alias))
                         join_on = self._parse(join_cond)
                         select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -1207,10 +1236,10 @@ class SQLGenerator:
             if target_table.startswith("("):
                 join_target = exp.Subquery(
                     this=self._parse(target_table),
-                    alias=exp.to_identifier(target_alias),
+                    alias=_model_identifier(target_alias),
                 )
             else:
-                join_target = exp.to_table(target_table, alias=target_alias)
+                join_target = exp.to_table(target_table, alias=_model_identifier(target_alias))
             join_on = self._parse(join_cond)
             select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -1425,10 +1454,10 @@ class SQLGenerator:
                     # Inline-SQL target: parse as subquery
                     parsed_target = self._parse(target_table)
                     join_target = exp.Subquery(
-                        this=parsed_target, alias=exp.to_identifier(target_alias),
+                        this=parsed_target, alias=_model_identifier(target_alias),
                     )
                 else:
-                    join_target = exp.to_table(target_table, alias=target_alias)
+                    join_target = exp.to_table(target_table, alias=_model_identifier(target_alias))
                 join_on = self._parse(join_cond)
                 select = select.join(join_target, on=join_on, join_type=jtype.upper())
 
@@ -1934,10 +1963,10 @@ class SQLGenerator:
 
     def _build_from_clause(self, enriched: EnrichedQuery) -> exp.Expression:
         if enriched.sql_table:
-            return exp.to_table(enriched.sql_table, alias=enriched.model_name)
+            return exp.to_table(enriched.sql_table, alias=_model_identifier(enriched.model_name))
         elif enriched.sql:
             parsed = self._parse(enriched.sql)
-            return exp.Subquery(this=parsed, alias=exp.to_identifier(enriched.model_name))
+            return exp.Subquery(this=parsed, alias=_model_identifier(enriched.model_name))
         else:
             raise ValueError(f"Model '{enriched.model_name}' has neither sql_table nor sql defined")
 
@@ -1962,8 +1991,8 @@ class SQLGenerator:
         model = enriched.model_name
         default_time_col = enriched.last_agg_time_column
 
-        # Build SELECT * plus ROW_NUMBER
-        parts = [f"{model}.*"]
+        # Quoted so a reserved-keyword model survives the _parse(ranked_sql) round-trip.
+        parts = [f"{quote_ident_for(model, self.dialect)}.*"]
 
         # Add pre-computed time dimension expressions (DATE_TRUNC)
         for td in enriched.time_dimensions:
@@ -2065,7 +2094,8 @@ class SQLGenerator:
         # `FROM <table> AS <model>` and would miss this subquery wrapper.
         if enriched.resolved_joins:
             join_sql_parts = [
-                f"{jtype.upper()} JOIN {target_table} AS {target_alias} ON {join_cond}"
+                f"{jtype.upper()} JOIN {target_table} AS "
+                f"{quote_ident_for(target_alias, self.dialect)} ON {join_cond}"
                 for target_table, target_alias, join_cond, jtype in enriched.resolved_joins
             ]
             ranked_sql += " " + " ".join(join_sql_parts)
@@ -2077,7 +2107,7 @@ class SQLGenerator:
 
         parsed = self._parse(ranked_sql)
         return (
-            exp.Subquery(this=parsed, alias=exp.to_identifier(model)),
+            exp.Subquery(this=parsed, alias=_model_identifier(model)),
             rn_suffix_map,
             filtered_rn_map,
             filtered_match_map,
@@ -2129,11 +2159,11 @@ class SQLGenerator:
         ``type``.
         """
         if sql is None:
-            return exp.Column(this=exp.to_identifier(name), table=exp.to_identifier(model_name))
+            return exp.Column(this=exp.to_identifier(name), table=_model_identifier(model_name))
         # Bare column name → qualify with model name
         # Use isidentifier() to distinguish column names from literals (e.g. "1")
         if sql.isidentifier():
-            return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
+            return exp.Column(this=exp.to_identifier(sql), table=_model_identifier(model_name))
         return _wrap_cast_for_type(self._parse(sql), type)
 
     def _resolve_value_sql(self, measure: "EnrichedMeasure") -> str:
@@ -2206,7 +2236,7 @@ class SQLGenerator:
                 ), False
             return exp.Column(
                 this=exp.to_identifier(measure.name),
-                table=exp.to_identifier(measure.model_name),
+                table=_model_identifier(measure.model_name),
             ), False
 
         # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
@@ -2284,7 +2314,7 @@ class SQLGenerator:
         else:
             inner = exp.Column(
                 this=exp.to_identifier(measure.name),
-                table=exp.to_identifier(measure.model_name),
+                table=_model_identifier(measure.model_name),
             )
 
         # --- Apply measure-level filter as CASE WHEN wrapper ---
@@ -2578,7 +2608,7 @@ class SQLGenerator:
                     elif col_name.isidentifier():
                         qualified_sql = re.sub(
                             rf'(?<!\.)(?<!\w)\b{re.escape(col_name)}\b',
-                            f"{model}.{col_name}",
+                            _qualify_in_string(model, col_name, self.dialect),
                             qualified_sql,
                         )
                 where_parts.append(qualified_sql)

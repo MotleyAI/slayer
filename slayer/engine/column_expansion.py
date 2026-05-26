@@ -25,6 +25,7 @@ from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, SlayerModel
+from slayer.sql.generator import _model_identifier
 
 ResolveModel = Callable[..., Awaitable[Optional[SlayerModel]]]
 
@@ -197,9 +198,8 @@ async def _process_column_node(
 
     target_col = target_model.get_column(col_name)
     if target_col is None or _is_trivial_base(column=target_col):
-        # Base column or unknown identifier on a known target model:
-        # rewrite the table to the canonical alias and stop.
-        col.set("table", exp.to_identifier(canonical_alias))
+        # Rewrite table to the canonical alias, quoted so reserved-keyword models survive the re-parse.
+        col.set("table", _model_identifier(canonical_alias))
         return
 
     # DEV-1410 scope guard: only inline derived-column bodies when the

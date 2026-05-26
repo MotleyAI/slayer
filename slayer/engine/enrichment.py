@@ -49,10 +49,12 @@ from slayer.engine.enriched import (
     EnrichedTransform,
 )
 from slayer.sql.sql_predicate import parse_sql_predicate
+from slayer.sql.generator import quote_ident_for
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 
 _SELF_JOIN_TRANSFORMS = {"time_shift"}
-_TABLE_COL_RE = re.compile(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
+# ``<table>.<col>`` for join-path discovery; ``"?`` tolerates quoted reserved-keyword aliases.
+_TABLE_COL_RE = re.compile(r'"?\b([a-zA-Z_]\w*)\b"?\."?\b([a-zA-Z_]\w*)\b"?')
 def _strip_string_literal(value: str) -> str:
     """Strip one layer of single/double quotes from a query parameter value."""
     if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
@@ -2457,7 +2459,10 @@ async def _resolve_joins(
             # Build join condition
             join_conds = []
             for src_col, tgt_col in join.join_pairs:
-                join_conds.append(f"{current_alias}.{src_col} = {hop_alias}.{tgt_col}")
+                # Dialect-quoted so reserved-keyword aliases survive the generator's re-parse.
+                src_q = quote_ident_for(current_alias, dialect)
+                tgt_q = quote_ident_for(hop_alias, dialect)
+                join_conds.append(f"{src_q}.{src_col} = {tgt_q}.{tgt_col}")
 
             resolved_joins[hop_alias] = (target_table, hop_alias, " AND ".join(join_conds), str(join.join_type))
 
@@ -2701,6 +2706,8 @@ async def resolve_filter_columns(
                     sql_expr = dim.sql or col_name
                     if sql_expr.isidentifier():
                         qualified = f"{model_name}.{sql_expr}"
+                        # Quote the alias for the emitted SQL; resolved_columns stays bare.
+                        repl_sql = f"{quote_ident_for(model_name, dialect)}.{sql_expr}"
                     else:
                         qualified = await _expanded_sql_expr(
                             sql_expr=sql_expr,
@@ -2708,9 +2715,10 @@ async def resolve_filter_columns(
                             alias_path=model_name,
                             is_root=True,
                         )
+                        repl_sql = qualified
                     resolved_sql = _re.sub(
                         rf"(?<!\.)(?<!\w)\b{_re.escape(col_name)}\b(?!\.)",
-                        qualified,
+                        repl_sql,
                         resolved_sql,
                     )
                     resolved_columns.append(qualified)
@@ -2790,6 +2798,7 @@ async def resolve_filter_columns(
                         table_alias = "__".join(path_parts)
                         if sql_expr.isidentifier():
                             qualified = f"{table_alias}.{sql_expr}"
+                            repl_sql = f"{quote_ident_for(table_alias, dialect)}.{sql_expr}"
                         else:
                             qualified = await _expanded_sql_expr(
                                 sql_expr=sql_expr,
@@ -2797,9 +2806,10 @@ async def resolve_filter_columns(
                                 alias_path=table_alias,
                                 is_root=False,
                             )
+                            repl_sql = qualified
                         resolved_sql = _re.sub(
                             rf"(?<!\w)\b{_re.escape(col_name)}\b",
-                            qualified,
+                            repl_sql,
                             resolved_sql,
                         )
                         # Keep the original dotted path in resolved_columns
@@ -2868,9 +2878,10 @@ async def resolve_filter_columns(
                         )
                         if stage_col is not None:
                             qualified = f"{model.name}.{stage_col.name}"
+                            repl_sql = f"{quote_ident_for(model.name, dialect)}.{stage_col.name}"
                             resolved_sql = _re.sub(
                                 rf"(?<!\w)\b{_re.escape(col_name)}\b",
-                                qualified,
+                                repl_sql,
                                 resolved_sql,
                             )
                             resolved_columns.append(qualified)

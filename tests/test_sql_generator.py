@@ -79,6 +79,10 @@ async def _generate(
         resolve_dimension_via_joins=_noop_async,
         resolve_cross_model_measure=_noop_async,
         resolve_join_target=_noop_async,
+        # Mirror the engine: enrichment and generation share one dialect, so
+        # the dialect-aware quoting of re-parsed strings (join conditions,
+        # WHERE qualifiers) matches the generator's quote character.
+        dialect=generator.dialect,
     )
     sql = generator.generate(enriched=enriched)
     _assert_valid_sql(sql, dialect=generator.dialect)
@@ -1809,6 +1813,17 @@ class TestDialectMapping:
         assert SlayerQueryEngine._dialect_for_type(ds_type) == expected
 
 
+# Per-dialect identifier quote characters (open, close). Table qualifiers
+# in generated SQL are now emitted quoted with the dialect's quote chars.
+_IDENT_QUOTES = {
+    "mysql": ("`", "`"),
+    "bigquery": ("`", "`"),
+    "databricks": ("`", "`"),
+    "spark": ("`", "`"),
+    "tsql": ("[", "]"),
+}
+
+
 class TestMultiDialectGeneration:
     """Test SQL generation across all supported dialects."""
 
@@ -2050,8 +2065,11 @@ class TestMultiDialectGeneration:
         assert "SELECT" in upper
         # The aggregate must wrap the resolved value column (orders.amount,
         # since the `revenue` Column has sql="amount") in its single-arg slot.
-        assert "(ORDERS.AMOUNT)" in upper, (
-            f"expected single-arg call (ORDERS.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
+        # The table qualifier is now emitted quoted with the dialect's
+        # identifier quote character.
+        oq, cq = _IDENT_QUOTES.get(dialect, ('"', '"'))
+        assert f"({oq}ORDERS{cq}.AMOUNT)" in upper, (
+            f"expected single-arg call ({oq}ORDERS{cq}.AMOUNT) in SQL for {formula!r} on {dialect}:\n{sql}"
         )
 
     # corr / covar_samp / covar_pop are not supported on MySQL — the generator
@@ -2086,8 +2104,9 @@ class TestMultiDialectGeneration:
         # asymmetry vs the 1-arg test is what distinguishes the test bodies
         # for Sonar python:S4144 and pins the new `_resolve_agg_param` +
         # `_resolve_value_sql` qualification path for 2-arg stats.
-        assert "(ORDERS.AMOUNT, ORDERS.QUANTITY)" in upper, (
-            f"expected two-arg call (ORDERS.AMOUNT, ORDERS.QUANTITY) in SQL for {formula!r} "
+        oq, cq = _IDENT_QUOTES.get(dialect, ('"', '"'))
+        assert f"({oq}ORDERS{cq}.AMOUNT, {oq}ORDERS{cq}.QUANTITY)" in upper, (
+            f"expected two-arg call ({oq}ORDERS{cq}.AMOUNT, {oq}ORDERS{cq}.QUANTITY) in SQL for {formula!r} "
             f"on {dialect}:\n{sql}"
         )
 
@@ -2276,27 +2295,27 @@ class TestMedianPercentilePerDialect:
         gen = SQLGenerator(dialect="postgres")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.95"})
         sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY orders.amount)"
+        assert sql == 'PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY "orders".amount)'
 
     def test_build_percentile_sqlite(self) -> None:
         gen = SQLGenerator(dialect="sqlite")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
         sql = gen._build_percentile(m).sql(dialect="sqlite")
-        assert sql == "PERCENTILE_CONT(orders.amount, 0.5)"
+        assert sql == 'PERCENTILE_CONT("orders".amount, 0.5)'
 
     def test_build_percentile_clickhouse_emits_quantile(self) -> None:
         gen = SQLGenerator(dialect="clickhouse")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.75"})
         sql = gen._build_percentile(m).sql(dialect="clickhouse")
         # ClickHouse parametric aggregate syntax.
-        assert sql == "quantile(0.75)(orders.amount)"
+        assert sql == 'quantile(0.75)("orders".amount)'
 
     @pytest.mark.parametrize("p", ["0.05", "0.25", "0.5", "0.95"])
     def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
         gen = SQLGenerator(dialect="clickhouse")
         m = self._measure(agg="percentile", agg_kwargs={"p": p})
         sql = gen._build_percentile(m).sql(dialect="clickhouse")
-        assert sql == f"quantile({p})(orders.amount)"
+        assert sql == f'quantile({p})("orders".amount)'
 
     def test_build_percentile_duckdb(self) -> None:
         gen = SQLGenerator(dialect="duckdb")
@@ -2305,7 +2324,7 @@ class TestMedianPercentilePerDialect:
         # sqlglot rewrites the WITHIN GROUP form to DuckDB's QUANTILE_CONT.
         assert "QUANTILE_CONT" in sql
         # Qualified column.
-        assert "orders.amount" in sql
+        assert '"orders".amount' in sql
 
     def test_build_percentile_mysql_raises(self) -> None:
         gen = SQLGenerator(dialect="mysql")
@@ -2342,7 +2361,7 @@ class TestMedianPercentilePerDialect:
             aggregation_def=agg_def,
         )
         sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)"
+        assert sql == 'PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY "orders".amount)'
 
     def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
         """Query-time agg_kwargs win over the model-level default."""
@@ -2361,7 +2380,7 @@ class TestMedianPercentilePerDialect:
             aggregation_def=agg_def,
         )
         sql = gen._build_percentile(m).sql(dialect="postgres")
-        assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)"
+        assert sql == 'PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY "orders".amount)'
 
     # --- A2: percentile p must be a numeric literal in [0, 1] -----------
 
@@ -2460,10 +2479,10 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize(
         "dialect,expected",
         [
-            ("postgres", "STDDEV_SAMP(orders.amount)"),
-            ("duckdb", "STDDEV_SAMP(orders.amount)"),
-            ("mysql", "STDDEV_SAMP(orders.amount)"),
-            ("sqlite", "STDDEV_SAMP(orders.amount)"),
+            ("postgres", 'STDDEV_SAMP("orders".amount)'),
+            ("duckdb", 'STDDEV_SAMP("orders".amount)'),
+            ("mysql", "STDDEV_SAMP(`orders`.amount)"),
+            ("sqlite", 'STDDEV_SAMP("orders".amount)'),
         ],
     )
     def test_build_stddev_samp(self, dialect: str, expected: str) -> None:
@@ -2477,10 +2496,10 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize(
         "dialect,expected",
         [
-            ("postgres", "STDDEV_POP(orders.amount)"),
-            ("duckdb", "STDDEV_POP(orders.amount)"),
-            ("mysql", "STDDEV_POP(orders.amount)"),
-            ("sqlite", "STDDEV_POP(orders.amount)"),
+            ("postgres", 'STDDEV_POP("orders".amount)'),
+            ("duckdb", 'STDDEV_POP("orders".amount)'),
+            ("mysql", "STDDEV_POP(`orders`.amount)"),
+            ("sqlite", 'STDDEV_POP("orders".amount)'),
         ],
     )
     def test_build_stddev_pop(self, dialect: str, expected: str) -> None:
@@ -2494,7 +2513,7 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize(
         "dialect,expected",
         [
-            ("postgres", "VAR_SAMP(orders.amount)"),
+            ("postgres", 'VAR_SAMP("orders".amount)'),
             # sqlglot rewrites VAR_SAMP → VARIANCE on SQLite/DuckDB; the
             # SQLite UDF is therefore registered under the alias `variance`
             # so generator output still resolves at runtime. MySQL is the
@@ -2503,9 +2522,9 @@ class TestStatAggsPerDialect:
             # variance), so the rewritten SQL would silently return the
             # wrong value. The generator emits ``VAR_SAMP`` directly on
             # MySQL via ``exp.Anonymous`` to bypass the transpile.
-            ("duckdb", "VARIANCE(orders.amount)"),
-            ("mysql", "VAR_SAMP(orders.amount)"),
-            ("sqlite", "VARIANCE(orders.amount)"),
+            ("duckdb", 'VARIANCE("orders".amount)'),
+            ("mysql", "VAR_SAMP(`orders`.amount)"),
+            ("sqlite", 'VARIANCE("orders".amount)'),
         ],
     )
     def test_build_var_samp(self, dialect: str, expected: str) -> None:
@@ -2519,14 +2538,14 @@ class TestStatAggsPerDialect:
     @pytest.mark.parametrize(
         "dialect,expected",
         [
-            ("postgres", "VAR_POP(orders.amount)"),
-            ("duckdb", "VAR_POP(orders.amount)"),
+            ("postgres", 'VAR_POP("orders".amount)'),
+            ("duckdb", 'VAR_POP("orders".amount)'),
             # sqlglot rewrites VAR_POP → VARIANCE_POP on SQLite (handled by
             # a registered UDF alias). MySQL gets the same buggy rewrite,
             # but ``VARIANCE_POP`` is not a real MySQL function — the
             # generator emits ``VAR_POP`` directly via ``exp.Anonymous``.
-            ("mysql", "VAR_POP(orders.amount)"),
-            ("sqlite", "VARIANCE_POP(orders.amount)"),
+            ("mysql", "VAR_POP(`orders`.amount)"),
+            ("sqlite", 'VARIANCE_POP("orders".amount)'),
         ],
     )
     def test_build_var_pop(self, dialect: str, expected: str) -> None:
@@ -2556,7 +2575,7 @@ class TestStatAggsPerDialect:
         sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
         # Both legs go through _resolve_sql, so a bare `quantity` kwarg
         # qualifies under the LHS measure's model_name.
-        assert sql == f"{sql_fn}(orders.amount, orders.quantity)"
+        assert sql == f'{sql_fn}("orders".amount, "orders".quantity)'
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
@@ -2564,7 +2583,7 @@ class TestStatAggsPerDialect:
         m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
         sql = gen._build_agg(measure=m)[0].sql(dialect="clickhouse")
         # ClickHouse casing is its own thing; assert the call shape only.
-        assert sql.lower() == f"{agg.lower()}(orders.amount, orders.quantity)"
+        assert sql.lower() == f'{agg.lower()}("orders".amount, "orders".quantity)'
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_mysql_raises(self, agg: str) -> None:
@@ -2621,7 +2640,7 @@ class TestStatAggsPerDialect:
         )
         sql = gen._build_agg(measure=m)[0].sql(dialect="postgres")
         # Filter wraps the qualified column reference.
-        assert "CASE WHEN status = 'completed' THEN orders.amount END" in sql
+        assert "CASE WHEN status = 'completed' THEN \"orders\".amount END" in sql
         assert "STDDEV_SAMP" in sql
 
     def test_build_corr_with_filter_wraps_both_columns(self) -> None:
@@ -2641,8 +2660,8 @@ class TestStatAggsPerDialect:
         assert sql.count("CASE WHEN status = 'completed'") == 2
         assert "CORR(" in sql
         # Both legs are also qualified.
-        assert "orders.amount" in sql
-        assert "orders.quantity" in sql
+        assert '"orders".amount' in sql
+        assert '"orders".quantity' in sql
 
 
 class TestStatAggsViaQueryEnrichment:
@@ -2689,7 +2708,7 @@ class TestStatAggsViaQueryEnrichment:
         # by the qualified column ref in its single-arg slot. `sales.latency`
         # being inside the call is what proves enrichment+generation reached
         # the value column, not just that the alias contains the fragment.
-        assert f"{expected_fragment}(sales.latency)" in sql
+        assert f'{expected_fragment}("sales".latency)' in sql
 
     async def test_corr_via_colon_syntax_with_other_kwarg(
         self, sales_model: SlayerModel,
@@ -2702,7 +2721,7 @@ class TestStatAggsViaQueryEnrichment:
         sql = await _generate(generator=gen, query=query, model=sales_model)
         # Both legs flow through _resolve_sql and qualify under the LHS
         # measure's model_name.
-        assert "CORR(sales.price, sales.quantity)" in sql
+        assert 'CORR("sales".price, "sales".quantity)' in sql
 
 
 class TestPathAliasJoinInference:
@@ -3421,7 +3440,7 @@ class TestFilteredMeasures:
             m for m in enriched.measures if m.source_measure_name == "active_revenue"
         )
         assert measure.filter_sql is not None
-        assert "orders_alias.status" in measure.filter_sql
+        assert '"orders_alias".status' in measure.filter_sql
         assert "orders_underlying" not in measure.filter_sql
 
     async def test_filtered_measure_source_alias_propagates_to_generated_sql(
@@ -4102,7 +4121,7 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         sql = generator.generate(enriched=enriched)
         # Normal dimension should be qualified with the table alias
-        assert "customers.status" in sql
+        assert '"customers".status' in sql
 
 
 class TestDimensionAggregation:
@@ -6065,11 +6084,11 @@ class TestGetColumnTypesSql:
         # Expression measure must NOT be corrupted: "orders.COALESCE(amount, 0)" is invalid
         assert "orders.COALESCE" not in sql, f"Expression measure corrupted:\n{sql}"
         # Bare measure should be qualified
-        assert "orders.amount" in sql
+        assert '"orders".amount' in sql
         # Bare ``amount`` inside the expression now qualifies to the model's
         # alias (``orders.amount``) — derived-ref expansion (DEV-1333) makes
         # every base-column reference unambiguous.
-        assert "COALESCE(orders.amount, 0)" in sql
+        assert 'COALESCE("orders".amount, 0)' in sql
 
     async def test_cross_model_measures_probed_via_engine(self) -> None:
         """Cross-model measures should be probed via the engine's enrich+generate pipeline."""
@@ -6786,11 +6805,11 @@ class TestStringHygieneDialectTranslation:
     @pytest.mark.parametrize(
         "dialect,expected",
         [
-            ("sqlite", "LOWER(orders.status) = 'active'"),
-            ("postgres", "LOWER(orders.status) = 'active'"),
-            ("mysql", "LOWER(orders.status) = 'active'"),
-            ("duckdb", "LOWER(orders.status) = 'active'"),
-            ("clickhouse", "lower(orders.status) = 'active'"),
+            ("sqlite", 'LOWER("orders".status) = \'active\''),
+            ("postgres", 'LOWER("orders".status) = \'active\''),
+            ("mysql", "LOWER(`orders`.status) = 'active'"),
+            ("duckdb", 'LOWER("orders".status) = \'active\''),
+            ("clickhouse", 'lower("orders".status) = \'active\''),
         ],
     )
     async def test_lower(self, orders_model: SlayerModel, dialect: str, expected: str) -> None:
@@ -6809,11 +6828,11 @@ class TestStringHygieneDialectTranslation:
     @pytest.mark.parametrize(
         "dialect,expected",
         [
-            ("sqlite", "INSTR(orders.status, ',')"),
-            ("postgres", "POSITION(',' IN orders.status)"),
-            ("mysql", "LOCATE(',', orders.status)"),
-            ("duckdb", "STRPOS(orders.status, ',')"),
-            ("clickhouse", "POSITION(orders.status, ',')"),
+            ("sqlite", 'INSTR("orders".status, \',\')'),
+            ("postgres", 'POSITION(\',\' IN "orders".status)'),
+            ("mysql", "LOCATE(',', `orders`.status)"),
+            ("duckdb", 'STRPOS("orders".status, \',\')'),
+            ("clickhouse", 'POSITION("orders".status, \',\')'),
         ],
     )
     async def test_instr_translates_per_dialect(
@@ -6834,11 +6853,11 @@ class TestStringHygieneDialectTranslation:
     @pytest.mark.parametrize(
         "dialect,expected",
         [
-            ("sqlite", "SUBSTRING(orders.status, 1, 5)"),
-            ("postgres", "SUBSTRING(orders.status FROM 1 FOR 5)"),
-            ("mysql", "SUBSTRING(orders.status, 1, 5)"),
-            ("duckdb", "SUBSTRING(orders.status, 1, 5)"),
-            ("clickhouse", "substr(orders.status, 1, 5)"),
+            ("sqlite", 'SUBSTRING("orders".status, 1, 5)'),
+            ("postgres", 'SUBSTRING("orders".status FROM 1 FOR 5)'),
+            ("mysql", "SUBSTRING(`orders`.status, 1, 5)"),
+            ("duckdb", 'SUBSTRING("orders".status, 1, 5)'),
+            ("clickhouse", 'substr("orders".status, 1, 5)'),
         ],
     )
     async def test_substr_translates_per_dialect(
@@ -6860,11 +6879,11 @@ class TestStringHygieneDialectTranslation:
         "dialect,expected_substring",
         [
             # SQLite normalises CONCAT(...) → a || b at emit time.
-            ("sqlite", "orders.status || orders.status"),
-            ("postgres", "CONCAT(orders.status, orders.status)"),
-            ("mysql", "CONCAT(orders.status, orders.status)"),
-            ("duckdb", "CONCAT(orders.status, orders.status)"),
-            ("clickhouse", "CONCAT(orders.status, orders.status)"),
+            ("sqlite", '"orders".status || "orders".status'),
+            ("postgres", 'CONCAT("orders".status, "orders".status)'),
+            ("mysql", "CONCAT(`orders`.status, `orders`.status)"),
+            ("duckdb", 'CONCAT("orders".status, "orders".status)'),
+            ("clickhouse", 'CONCAT("orders".status, "orders".status)'),
         ],
     )
     async def test_concat_via_pipe_pipe_translates_per_dialect(
