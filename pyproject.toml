@@ -25,7 +25,7 @@ classifiers = [
 [tool.poetry.urls]
 Repository = "https://github.com/MotleyAI/slayer"
 Documentation = "https://motley-slayer.readthedocs.io/"
-Discord = "https://discord.gg/djtaFyXW"
+Discord = "https://discord.gg/egWxMctHCA"
 
 [tool.poetry.dependencies]
 python = "^3.11"
