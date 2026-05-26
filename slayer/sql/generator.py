@@ -3819,6 +3819,76 @@ class SQLGenerator:
             return f"{source_relation}.{source_model.default_time_dimension}"
         return None
 
+    def _resolve_explicit_time_col(
+        self,
+        *,
+        key,
+        source_model,
+        source_relation: str,
+    ) -> Optional[str]:
+        """Resolve the explicit positional time arg on a ``first`` / ``last``
+        aggregate into a SQL string suitable for ``ORDER BY`` inside the
+        ranked subquery.
+
+        Handles both bare-column refs (``ColumnKey`` —
+        ``amount:last(created_at)``) and derived-column refs
+        (``ColumnSqlKey`` — ``amount:last(net_amount_date)`` where
+        ``net_amount_date`` has a non-trivial ``Column.sql``). For derived
+        columns the column's ``Column.sql`` is materialised: bare-identifier
+        derived columns are qualified under ``source_relation``; complex
+        expressions are emitted as-is and their inner bare refs resolve
+        against the ranked-subquery's FROM clause (which is the source
+        relation).
+
+        Returns ``None`` for non-first/last aggs and when ``key.args`` is
+        empty or its first element is neither a ``ColumnKey`` nor a
+        ``ColumnSqlKey``. Cross-model paths on derived time args
+        (``ColumnSqlKey`` with non-empty ``path``) raise
+        ``NotImplementedError`` rather than silently emitting against the
+        wrong relation alias — that case is tracked alongside the Stage B
+        cross-model reroot bug (DEV-1452 latent bug (c)).
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        if key.agg not in ("first", "last"):
+            return None
+        for a in key.args:
+            if isinstance(a, ColumnKey):
+                relation = "__".join(a.path) if a.path else source_relation
+                return f"{relation}.{a.leaf}"
+            if isinstance(a, ColumnSqlKey):
+                if a.path:
+                    raise NotImplementedError(
+                        f"Cross-model derived time column "
+                        f"(path={a.path!r}, column={a.column_name!r}) on "
+                        f"first/last positional arg is not yet supported "
+                        f"by the ranked-subquery builder; tracked alongside "
+                        f"DEV-1452 Stage B follow-ups."
+                    )
+                col = next(
+                    (c for c in source_model.columns if c.name == a.column_name),
+                    None,
+                )
+                if col is None:
+                    raise ValueError(
+                        f"Derived time column {a.column_name!r} (positional "
+                        f"arg of {key.agg!r}) not found on model "
+                        f"{source_model.name!r}."
+                    )
+                col_sql = col.sql if col.sql else col.name
+                if col_sql.isidentifier():
+                    return f"{source_relation}.{col_sql}"
+                # Complex derived expression — emit as-is. Inner bare refs
+                # resolve against the ranked-subquery's FROM (the source
+                # relation), matching how the legacy enrichment pipeline
+                # treated derived-column ORDER BY targets.
+                return self._parse(col_sql).sql(dialect=self.dialect)
+            # Unrecognised positional arg type — leave time_column unset and
+            # let _build_ranked_subquery_from_planned fall back to the
+            # query's default ranking column.
+            break
+        return None
+
     def _build_ranked_subquery_from_planned(
         self,
         *,
@@ -7205,21 +7275,15 @@ class SQLGenerator:
             # ``first`` / ``last`` aggregations rank rows via a ROW_NUMBER
             # subquery (built in ``_build_ranked_subquery_from_planned``) and
             # pick ``rn = 1`` through ``MAX(CASE WHEN _rn = 1 THEN col END)``.
-            # An explicit positional arg (``latest_amount:last(created_at)``)
-            # overrides the query's default ranking time column; bind it to a
-            # qualified SQL string here so ``_build_last_ranked_from`` / the
-            # planned ranked-subquery builder can ORDER BY it.
-            explicit_time_col: Optional[str] = None
-            if key.agg in ("first", "last"):
-                for a in key.args:
-                    if isinstance(a, ColumnKey):
-                        if a.path:
-                            explicit_time_col = (
-                                "__".join(a.path) + f".{a.leaf}"
-                            )
-                        else:
-                            explicit_time_col = f"{source_relation}.{a.leaf}"
-                        break
+            # An explicit positional arg (``latest_amount:last(created_at)``
+            # or ``…:last(derived_time_col)``) overrides the query's default
+            # ranking time column; the helper handles both bare-column
+            # (``ColumnKey``) and derived-column (``ColumnSqlKey``) args.
+            explicit_time_col = self._resolve_explicit_time_col(
+                key=key,
+                source_model=source_model,
+                source_relation=source_relation,
+            )
             # Aggregations outside the built-in set are custom user-defined
             # ``Aggregation``s declared on ``SlayerModel.aggregations``; thread
             # the model's definition into ``AggRenderSpec.aggregation_def`` so

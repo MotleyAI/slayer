@@ -95,6 +95,19 @@ def _orders_model() -> SlayerModel:
             ),
             Column(name="tax", type=DataType.DOUBLE),
             Column(name="quantity", type=DataType.INT),
+            # Derived time columns covering the two ColumnSqlKey shapes
+            # the explicit-time-arg resolver must handle (DEV-1452 Codex
+            # fix): bare-identifier rename and a non-trivial expression.
+            Column(
+                name="created_at_alias",
+                sql="created_at",
+                type=DataType.TIMESTAMP,
+            ),
+            Column(
+                name="created_at_day",
+                sql="DATE_TRUNC('day', created_at)",
+                type=DataType.DATE,
+            ),
         ],
         aggregations=[
             Aggregation(
@@ -449,6 +462,137 @@ class TestBuilderFirstLast:
         assert spec.aggregation == "last"
         # Mirrors legacy: ``__``-joined path + ``.<leaf>``.
         assert spec.time_column == "customers.signup_at"
+
+    def test_last_with_derived_bare_time_column_local(self):
+        # DEV-1452 Codex fix: a ``ColumnSqlKey`` positional arg whose
+        # ``Column.sql`` is a bare identifier (renamed column) must
+        # resolve to ``<source_relation>.<bare-sql>`` — previously the
+        # spec-build loop skipped ``ColumnSqlKey`` entirely and the
+        # ranked subquery silently fell back to the query's default
+        # ranking column.
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="last",
+            args=(
+                ColumnSqlKey(
+                    path=(), model="orders", column_name="created_at_alias",
+                ),
+            ),
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_last",
+            public_name="amount_last",
+            slot_type=DataType.DOUBLE,
+        )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_last",
+        )
+        assert spec.aggregation == "last"
+        # Bare-identifier derived column expands to its underlying SQL
+        # (``created_at``), qualified under the source relation. The
+        # derived NAME (``created_at_alias``) isn't projected in the
+        # ranked subquery's inner SELECT, so ORDER BY must reference the
+        # expanded form that IS visible (``orders.created_at``).
+        assert spec.time_column == "orders.created_at"
+
+    def test_first_with_derived_expression_time_column_local(self):
+        # A ``ColumnSqlKey`` arg whose ``Column.sql`` is a non-trivial
+        # expression (``DATE_TRUNC(...)``) is materialised verbatim
+        # (after the sqlglot round-trip); its inner bare refs resolve
+        # against the ranked-subquery's FROM (the source relation).
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="first",
+            args=(
+                ColumnSqlKey(
+                    path=(), model="orders", column_name="created_at_day",
+                ),
+            ),
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_first",
+            public_name="amount_first",
+            slot_type=DataType.DOUBLE,
+        )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=_orders_model(),
+            source_relation="orders",
+            full_alias="orders.amount_first",
+        )
+        assert spec.aggregation == "first"
+        assert spec.time_column is not None
+        # Postgres-dialect rendering of DATE_TRUNC('day', created_at).
+        # Don't pin the exact whitespace — pin the structural tokens.
+        tc = spec.time_column.upper().replace(" ", "")
+        assert "DATE_TRUNC" in tc
+        assert "'DAY'" in tc
+        assert "CREATED_AT" in tc
+
+    def test_cross_model_derived_time_column_raises(self):
+        # Cross-model derived time args are not supported by the
+        # ranked-subquery builder yet (Stage B follow-up territory). Surface
+        # a NotImplementedError rather than silently emitting against the
+        # wrong relation alias.
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="last",
+            args=(
+                ColumnSqlKey(
+                    path=("customers",),
+                    model="customers",
+                    column_name="signup_at_alias",
+                ),
+            ),
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_last",
+            public_name="amount_last",
+            slot_type=DataType.DOUBLE,
+        )
+        with pytest.raises(NotImplementedError, match="Cross-model derived time"):
+            _invoke(
+                slot=slot,
+                key=key,
+                source_model=_orders_model(),
+                source_relation="orders",
+                full_alias="orders.amount_last",
+            )
+
+    def test_unknown_derived_time_column_raises(self):
+        # ``ColumnSqlKey`` whose ``column_name`` is not on ``source_model``
+        # raises ValueError, mirroring the source-column lookup-miss path.
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="last",
+            args=(
+                ColumnSqlKey(
+                    path=(), model="orders", column_name="not_a_real_col",
+                ),
+            ),
+        )
+        slot = _slot(
+            key,
+            declared_name="amount_last",
+            public_name="amount_last",
+            slot_type=DataType.DOUBLE,
+        )
+        with pytest.raises(ValueError, match="Derived time column 'not_a_real_col'"):
+            _invoke(
+                slot=slot,
+                key=key,
+                source_model=_orders_model(),
+                source_relation="orders",
+                full_alias="orders.amount_last",
+            )
 
     def test_first_with_filter_propagates_both(self):
         key = AggregateKey(
