@@ -19,7 +19,10 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
+from pydantic import BaseModel, ConfigDict
+
 from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.column_expansion import (
     _is_trivial_base,
@@ -33,6 +36,99 @@ from slayer.engine.source_bundle import (
 )
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+
+
+class AggRenderSpec(BaseModel):
+    """DEV-1452 — typed input record for the dialect-aware aggregation
+    helpers (``_build_agg``, ``_build_percentile``, ``_build_stat_agg``,
+    ``_build_formula_agg``, ``_resolve_value_sql``, ``_resolve_agg_param``,
+    ``_build_ranked_subquery_from_planned``).
+
+    Decouples the helpers from ``EnrichedMeasure`` so the legacy enrichment
+    pipeline can be deleted without forking dialect SQL emission. Carries
+    exactly the 11 fields the helpers empirically read; ``EnrichedMeasure``
+    fields outside this set (``agg_args``, ``source_measure_name``,
+    ``distinct``, ``window``, ``user_declared``, ``label``,
+    ``filter_columns``) are deliberately NOT carried — ``count_distinct``
+    dispatches on the agg name, and the positional time arg for
+    ``first`` / ``last`` is pre-resolved into ``time_column`` at spec-build
+    time.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    sql: Optional[str]
+    """Column SQL expression (``Column.sql`` or its bare name); ``None`` for
+    ``*:count`` (renders as ``COUNT(*)``)."""
+
+    name: str
+    """Source column name — qualified under ``model_name`` when ``sql`` is
+    None or a bare identifier. Empty for star-source aggregates."""
+
+    model_name: str
+    """Qualifier for unqualified column refs in ``sql`` / ``filter_sql`` /
+    aggregation params — the source relation."""
+
+    aggregation: str
+    """Aggregation name (``sum`` / ``count`` / ``percentile`` / …). Empty
+    string for the non-aggregation bare-column branch."""
+
+    alias: str
+    """Result-column alias used by the filtered first/last ranked-subquery
+    bookkeeping (``filtered_rn_map``, ``filtered_match_map`` lookups)."""
+
+    aggregation_def: Optional[Aggregation] = None
+    """Custom-aggregation definition (formula + params) for aggregations
+    outside the built-in set. ``None`` for built-ins."""
+
+    agg_kwargs: Dict[str, str] = {}
+    """Query-time aggregation parameter overrides (already stringified via
+    ``agg_kwarg_canonical_str`` at spec-build time)."""
+
+    filter_sql: Optional[str] = None
+    """Column-filter predicate (``Column.filter``) wired in at aggregation
+    time; the helpers wrap the aggregate as ``SUM(CASE WHEN <filter> THEN
+    <col> END)``."""
+
+    time_column: Optional[str] = None
+    """Explicit time column for first/last ranking (overrides the query's
+    default). Pre-resolved from ``AggregateKey.args`` for the planner path."""
+
+    type: Optional[DataType] = None
+    """Declared outer-result type — when set, callers wrap the final
+    aggregate expression in ``CAST AS <type>`` via ``_wrap_cast_for_type``."""
+
+    column_type: Optional[DataType] = None
+    """Source column's declared type — wraps the inner (pre-aggregation)
+    expression in CAST when the column.sql is a non-bare expression (e.g.
+    ``json_extract(...)``). Distinct from ``type`` which wraps the outer
+    aggregate."""
+
+
+def _agg_render_spec_from_enriched(em: "EnrichedMeasure") -> AggRenderSpec:
+    """Adapt a legacy ``EnrichedMeasure`` to the typed ``AggRenderSpec`` for
+    the refactored dialect helpers (DEV-1452 Stage A).
+
+    Pure field-mapping shim — drops the fields the helpers don't consume
+    (``agg_args``, ``source_measure_name``, ``distinct``, ``window``,
+    ``user_declared``, ``label``, ``filter_columns``). The legacy
+    ``SQLGenerator.generate(enriched=...)`` path uses this to keep emitting
+    byte-identical SQL through the refactored helpers; the shim is deleted
+    in Stage D along with the rest of the legacy pipeline.
+    """
+    return AggRenderSpec(
+        sql=em.sql,
+        name=em.name,
+        model_name=em.model_name,
+        aggregation=em.aggregation,
+        alias=em.alias,
+        aggregation_def=em.aggregation_def,
+        agg_kwargs=dict(em.agg_kwargs),
+        filter_sql=em.filter_sql,
+        time_column=em.time_column,
+        type=em.type,
+        column_type=em.column_type,
+    )
 
 
 def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
@@ -708,7 +804,7 @@ class SQLGenerator:
                     select = select.select(td_expr.as_(td.alias))
                     group_exprs.append(td_expr)
 
-                agg_expr, _ = self._build_agg(measure=cm.measure)
+                agg_expr, _ = self._build_agg(_agg_render_spec_from_enriched(cm.measure))
                 # DEV-1361: cast the cross-model agg result if a result type
                 # was declared on the source ModelMeasure.
                 agg_expr = _wrap_cast_for_type(agg_expr, cm.measure.type)
@@ -818,7 +914,7 @@ class SQLGenerator:
                     group_exprs.append(col_expr)
 
                 agg_expr, _ = self._build_agg(
-                    measure=unfiltered,
+                    _agg_render_spec_from_enriched(unfiltered),
                     rn_suffix_map=rn_suffix_map,
                     default_time_col=enriched.last_agg_time_column,
                 )
@@ -840,7 +936,7 @@ class SQLGenerator:
                     select = select.select(td_expr.as_(td.alias))
                     group_exprs.append(td_expr)
 
-                agg_expr, _ = self._build_agg(measure=unfiltered)
+                agg_expr, _ = self._build_agg(_agg_render_spec_from_enriched(unfiltered))
                 agg_expr = _wrap_cast_for_type(agg_expr, measure.type)
                 select = select.select(agg_expr.as_(measure.alias))
 
@@ -1385,7 +1481,7 @@ class SQLGenerator:
             if skip_isolated and (_has_cross_model_filter(measure) or _is_windowed_measure(measure)):
                 continue  # Will be handled in its own CTE
             agg_expr, is_agg = self._build_agg(
-                measure=measure,
+                _agg_render_spec_from_enriched(measure),
                 rn_suffix_map=rn_suffix_map,
                 default_time_col=enriched.last_agg_time_column,
                 filtered_rn_map=filtered_rn_map,
@@ -2173,30 +2269,30 @@ class SQLGenerator:
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
         return _wrap_cast_for_type(self._parse(sql), type)
 
-    def _resolve_value_sql(self, measure: "EnrichedMeasure") -> str:
-        """Resolve ``measure.sql`` (or ``measure.name``) into a fully-qualified
+    def _resolve_value_sql(self, spec: AggRenderSpec) -> str:
+        """Resolve ``spec.sql`` (or ``spec.name``) into a fully-qualified
         SQL string for the value column. Mirrors what ``_build_agg`` does for
         the standard sum/avg/min/max path so the dialect-aware builders
         (median/percentile/stat-aggs/formula) emit the same qualified
         identifiers.
         """
         return self._resolve_sql(
-            sql=measure.sql,
-            name=measure.name,
-            model_name=measure.model_name,
-            type=measure.column_type,
+            sql=spec.sql,
+            name=spec.name,
+            model_name=spec.model_name,
+            type=spec.column_type,
         ).sql(dialect=self.dialect)
 
     def _resolve_agg_param(
         self,
-        measure: "EnrichedMeasure",
+        spec: AggRenderSpec,
         *,
         name: str,
         agg_name: str,
     ) -> str:
         """Pull a named aggregation parameter, with query-time SQL-injection
         validation and model-level-default fallback. Returns the SQL string
-        with bare identifiers qualified under ``measure.model_name`` (via
+        with bare identifiers qualified under ``spec.model_name`` (via
         ``_resolve_sql``); qualified names and numeric literals pass
         through unchanged. Raises ``ValueError`` if neither source supplies
         the parameter — reused by ``_build_percentile`` (``p=``) and
@@ -2204,11 +2300,11 @@ class SQLGenerator:
         ``weight=`` flow.
         """
         raw: Optional[str] = None
-        if name in measure.agg_kwargs:
-            raw = measure.agg_kwargs[name]
+        if name in spec.agg_kwargs:
+            raw = spec.agg_kwargs[name]
             _validate_agg_param_value(raw, name, agg_name)
-        elif measure.aggregation_def:
-            for param in measure.aggregation_def.params:
+        elif spec.aggregation_def:
+            for param in spec.aggregation_def.params:
                 if param.name == name:
                     raw = param.sql
                     break
@@ -2219,65 +2315,66 @@ class SQLGenerator:
                 f"(e.g., 'measure:{agg_name}({name}=column)')."
             )
         return self._resolve_sql(
-            sql=raw, name=raw, model_name=measure.model_name,
+            sql=raw, name=raw, model_name=spec.model_name,
         ).sql(dialect=self.dialect)
 
     def _build_agg(
         self,
-        measure: EnrichedMeasure,
+        spec: AggRenderSpec,
         rn_suffix_map: Optional[dict[str, str]] = None,
         default_time_col: Optional[str] = None,
         filtered_rn_map: Optional[dict[str, str]] = None,
         filtered_match_map: Optional[dict[str, str]] = None,
     ) -> tuple[exp.Expression, bool]:
-        """Build an aggregation expression from an enriched measure."""
-        agg_name = measure.aggregation
+        """Build an aggregation expression from an AggRenderSpec."""
+        agg_name = spec.aggregation
         if not agg_name:
             # Not an aggregation — raw expression
-            if measure.sql:
+            if spec.sql:
                 return self._resolve_sql(
-                    sql=measure.sql,
-                    name=measure.name,
-                    model_name=measure.model_name,
-                    type=measure.column_type,
+                    sql=spec.sql,
+                    name=spec.name,
+                    model_name=spec.model_name,
+                    type=spec.column_type,
                 ), False
             return exp.Column(
-                this=exp.to_identifier(measure.name),
-                table=exp.to_identifier(measure.model_name),
+                this=exp.to_identifier(spec.name),
+                table=exp.to_identifier(spec.model_name),
             ), False
 
         # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
         if agg_name in ("first", "last"):
             col_expr = self._resolve_sql(
-                sql=measure.sql,
-                name=measure.name,
-                model_name=measure.model_name,
-                type=measure.column_type,
+                sql=spec.sql,
+                name=spec.name,
+                model_name=spec.model_name,
+                type=spec.column_type,
             )
             col = col_expr.sql(dialect=self.dialect)
             suffix = ""
             if rn_suffix_map and default_time_col:
-                effective_tc = measure.time_column or default_time_col
+                effective_tc = spec.time_column or default_time_col
                 suffix = rn_suffix_map.get(effective_tc, "")
             rn_col = f"_first_rn{suffix}" if agg_name == "first" else f"_last_rn{suffix}"
             # For filtered first/last, use the dedicated ROW_NUMBER column
             # that pushes non-matching rows to the bottom of the ranking.
-            # Look up by alias (unique per enriched measure) so two filtered
-            # measures sharing source/agg but with different filters map to
-            # their own respective rank columns. Use the per-measure match
-            # flag (also projected by the ranked subquery) instead of
-            # re-emitting measure.filter_sql here — the filter can reference
-            # joined-table columns that are not in scope outside the subquery.
-            if measure.filter_sql and filtered_rn_map:
-                filtered_rn = filtered_rn_map.get(measure.alias, rn_col)
+            # Look up by alias (unique per spec) so two filtered specs
+            # sharing source/agg but with different filters map to their
+            # own respective rank columns. Use the per-spec match flag
+            # (also projected by the ranked subquery) instead of
+            # re-emitting spec.filter_sql here — the filter can reference
+            # joined-table columns that are not in scope outside the
+            # subquery.
+            if spec.filter_sql and filtered_rn_map:
+                filtered_rn = filtered_rn_map.get(spec.alias, rn_col)
                 match_col = (
-                    filtered_match_map.get(measure.alias)
+                    filtered_match_map.get(spec.alias)
                     if filtered_match_map
                     else None
                 )
                 # Fall back to the raw filter expression only if no match flag
                 # was projected (legacy callers); accepts the leak risk.
-                filter_clause = f"{match_col} = 1" if match_col else measure.filter_sql
+                filter_clause = f"{match_col} = 1" if match_col else spec.filter_sql
                 case_sql = (
                     f"MAX(CASE WHEN {filtered_rn} = 1 AND {filter_clause} "
                     f"THEN {col} END)"
@@ -2285,7 +2382,7 @@ class SQLGenerator:
             else:
                 # ``col`` is already a fully-qualified SQL expression resolved
                 # via ``_resolve_sql`` earlier in this branch, so we don't need
-                # to re-prefix ``measure.model_name``. (DEV-1333.)
+                # to re-prefix ``spec.model_name``. (DEV-1333.)
                 case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {col} END)"
             return self._parse(case_sql), True
 
@@ -2295,39 +2392,39 @@ class SQLGenerator:
             # SQLite/ClickHouse/MySQL) so it gets its own builder rather than
             # going through the BUILTIN_AGGREGATION_FORMULAS path.
             if agg_name == "percentile":
-                return self._build_percentile(measure), True
+                return self._build_percentile(spec), True
             # Statistical aggregates also dispatch to a dedicated builder so
             # the SQLite-UDF / native-function / NotImplementedError split
             # mirrors _build_median.
             if agg_name in _STAT_AGG_NAMES:
-                return self._build_stat_agg(measure), True
-            return self._build_formula_agg(measure, agg_name), True
+                return self._build_stat_agg(spec), True
+            return self._build_formula_agg(spec, agg_name), True
 
         # --- Resolve inner expression ---
-        if agg_name == "count" and measure.sql is None:
+        if agg_name == "count" and spec.sql is None:
             # COUNT(*) — if filtered, use COUNT(CASE WHEN filter THEN 1 END)
-            if measure.filter_sql:
-                case_sql = f"CASE WHEN {measure.filter_sql} THEN 1 END"
+            if spec.filter_sql:
+                case_sql = f"CASE WHEN {spec.filter_sql} THEN 1 END"
                 inner = self._parse(case_sql)
             else:
                 inner = exp.Star()
-        elif measure.sql:
+        elif spec.sql:
             inner = self._resolve_sql(
-                sql=measure.sql,
-                name=measure.name,
-                model_name=measure.model_name,
-                type=measure.column_type,
+                sql=spec.sql,
+                name=spec.name,
+                model_name=spec.model_name,
+                type=spec.column_type,
             )
         else:
             inner = exp.Column(
-                this=exp.to_identifier(measure.name),
-                table=exp.to_identifier(measure.model_name),
+                this=exp.to_identifier(spec.name),
+                table=exp.to_identifier(spec.model_name),
             )
 
-        # --- Apply measure-level filter as CASE WHEN wrapper ---
-        if measure.filter_sql and not (agg_name == "count" and measure.sql is None):
+        # --- Apply spec-level filter as CASE WHEN wrapper ---
+        if spec.filter_sql and not (agg_name == "count" and spec.sql is None):
             inner_sql = inner.sql(dialect=self.dialect)
-            case_sql = f"CASE WHEN {measure.filter_sql} THEN {inner_sql} END"
+            case_sql = f"CASE WHEN {spec.filter_sql} THEN {inner_sql} END"
             inner = self._parse(case_sql)
 
         # --- count_distinct ---
@@ -2350,12 +2447,12 @@ class SQLGenerator:
         agg_class = agg_class_map[agg_func]
         return agg_class(this=inner), True
 
-    def _build_formula_agg(self, measure: EnrichedMeasure, agg_name: str) -> exp.Expression:
+    def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> exp.Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
         # Get formula: from aggregation_def or built-in
         formula = None
-        if measure.aggregation_def and measure.aggregation_def.formula:
-            formula = measure.aggregation_def.formula
+        if spec.aggregation_def and spec.aggregation_def.formula:
+            formula = spec.aggregation_def.formula
         elif agg_name in BUILTIN_AGGREGATION_FORMULAS:
             formula = BUILTIN_AGGREGATION_FORMULAS[agg_name]
 
@@ -2367,12 +2464,12 @@ class SQLGenerator:
 
         # Collect param values: query-time overrides > aggregation_def defaults
         param_defaults = {}
-        if measure.aggregation_def:
-            param_defaults = {p.name: p.sql for p in measure.aggregation_def.params}
-        params = {**param_defaults, **measure.agg_kwargs}
+        if spec.aggregation_def:
+            param_defaults = {p.name: p.sql for p in spec.aggregation_def.params}
+        params = {**param_defaults, **spec.agg_kwargs}
 
         # Validate query-time parameter values to prevent SQL injection
-        for pname, pval in measure.agg_kwargs.items():
+        for pname, pval in spec.agg_kwargs.items():
             _validate_agg_param_value(pval, pname, agg_name)
 
         # Validate required params
@@ -2386,22 +2483,22 @@ class SQLGenerator:
                 )
 
         # Resolve {value} and {param_name} via _resolve_sql so bare identifiers
-        # are qualified under measure.model_name (matching the standard
-        # sum/avg/min/max path). When the measure carries a row-level filter,
+        # are qualified under spec.model_name (matching the standard
+        # sum/avg/min/max path). When the spec carries a row-level filter,
         # wrap row-level references (the value AND any column-ref params) in
         # CASE WHEN so non-matching rows contribute NULL to all terms — but
         # leave literal-default params unwrapped, since `(CASE WHEN ... THEN
         # 100 END)` for a constant `scale=100` would turn it into a row
         # expression and break grouped SQL semantics.
-        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
         substituted = formula.replace("{value}", col_expr)
         for param_name, param_val in params.items():
             param_ast = self._resolve_sql(
-                sql=param_val, name=param_val, model_name=measure.model_name,
+                sql=param_val, name=param_val, model_name=spec.model_name,
             )
             param_expr = param_ast.sql(dialect=self.dialect)
-            if measure.filter_sql and not isinstance(param_ast, exp.Literal):
-                param_expr = _wrap_filter(param_expr, measure.filter_sql)
+            if spec.filter_sql and not isinstance(param_ast, exp.Literal):
+                param_expr = _wrap_filter(param_expr, spec.filter_sql)
             substituted = substituted.replace(f"{{{param_name}}}", param_expr)
 
         return self._parse(substituted)
@@ -2422,20 +2519,20 @@ class SQLGenerator:
         # Postgres, DuckDB, and most others: PERCENTILE_CONT
         return self._parse(f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})")
 
-    def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
+    def _build_percentile(self, spec: AggRenderSpec) -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
 
-        ``p`` comes from ``measure.agg_kwargs['p']`` (validated against
+        ``p`` comes from ``spec.agg_kwargs['p']`` (validated against
         SQL injection) or from a model-level ``Aggregation`` default.
-        Filter handling mirrors ``_build_formula_agg``: when the measure
+        Filter handling mirrors ``_build_formula_agg``: when the spec
         carries a row-level filter, the value column is wrapped in
         ``CASE WHEN ... END`` so non-matching rows contribute NULL and
         are ignored by the aggregate. Both the value column and ``p``
         flow through ``_resolve_sql`` so bare identifiers are qualified
-        under ``measure.model_name`` and numeric literals pass through
+        under ``spec.model_name`` and numeric literals pass through
         unchanged.
         """
-        p = self._resolve_agg_param(measure, name="p", agg_name="percentile")
+        p = self._resolve_agg_param(spec, name="p", agg_name="percentile")
         # `p` must be a numeric literal in [0, 1]. Without this guard a
         # caller could pass `measure:percentile(p=quantity)` (or a model-
         # level default like `p=pg_sleep(10)` that bypasses
@@ -2463,7 +2560,7 @@ class SQLGenerator:
                 "Use MariaDB or compute the value client-side."
             )
 
-        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
 
         if self.dialect == "sqlite":
             # Provided by the percentile_cont(value, p) UDF registered on connect.
@@ -2476,7 +2573,7 @@ class SQLGenerator:
 
         return self._parse(sql_str)
 
-    def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:
+    def _build_stat_agg(self, spec: AggRenderSpec) -> exp.Expression:
         """Build SQL for the statistical aggregations added in DEV-1317.
 
         Handles ``stddev_samp``, ``stddev_pop``, ``var_samp``, ``var_pop``
@@ -2489,14 +2586,14 @@ class SQLGenerator:
         SQLite) so generator output resolves at runtime.
 
         Both legs flow through ``_resolve_sql`` so bare identifiers are
-        qualified under ``measure.model_name`` (matches the standard
+        qualified under ``spec.model_name`` (matches the standard
         sum/avg/min/max path). Filter handling mirrors
         ``_build_percentile`` / ``_build_formula_agg``: a row-level
         filter wraps the value AND the ``other`` column in
         ``CASE WHEN filter THEN col END`` so non-matching rows
         contribute NULL — which the aggregates skip.
         """
-        agg_name = measure.aggregation
+        agg_name = spec.aggregation
 
         # Resolve the `other=` kwarg before the MySQL guard so that a
         # missing-required-param error takes priority over the
@@ -2506,8 +2603,8 @@ class SQLGenerator:
         other_expr: Optional[str] = None
         if agg_name in _TWO_ARG_STAT_AGGS:
             other_expr = _wrap_filter(
-                self._resolve_agg_param(measure, name="other", agg_name=agg_name),
-                measure.filter_sql,
+                self._resolve_agg_param(spec, name="other", agg_name=agg_name),
+                spec.filter_sql,
             )
 
         if agg_name in _TWO_ARG_STAT_AGGS and self.dialect == "mysql":
@@ -2517,7 +2614,7 @@ class SQLGenerator:
                 f"Use MariaDB or compute the value client-side."
             )
 
-        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
 
         if agg_name in _TWO_ARG_STAT_AGGS:
             sql_str = f"{agg_name.upper()}({col_expr}, {other_expr})"
@@ -2591,7 +2688,7 @@ class SQLGenerator:
                     for m in enriched.measures:
                         if m.name == col_name:
                             agg_expr, _ = self._build_agg(
-                                measure=m,
+                                _agg_render_spec_from_enriched(m),
                                 rn_suffix_map=rn_suffix_map,
                                 default_time_col=enriched.last_agg_time_column,
                                 filtered_rn_map=filtered_rn_map,
@@ -3611,14 +3708,14 @@ class SQLGenerator:
                 # propagated into the synthetic EnrichedMeasure's
                 # ``filter_sql`` field so ``_build_agg`` wraps the
                 # aggregate as ``SUM(CASE WHEN <filter> THEN col END)``.
-                synth = self._synthesize_enriched_measure_from_planned(
+                synth = self._build_agg_render_spec_from_planned(
                     slot=slot,
                     key=key,
                     source_model=source_model,
                     source_relation=source_relation,
                     full_alias=full_alias,
                 )
-                agg_expr, is_agg = self._build_agg(measure=synth)
+                agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
                     has_aggregation = True
@@ -3729,7 +3826,7 @@ class SQLGenerator:
         default_time_col_sql: str,
         partition_exprs: List[exp.Expression],
         extra_projections: List[Tuple[str, exp.Expression]],
-        synth_measures: List["EnrichedMeasure"],
+        synth_specs: List[AggRenderSpec],
         from_clause: exp.Expression,
         base_joins: List,
         where_clause: Optional[exp.Expression],
@@ -3762,7 +3859,7 @@ class SQLGenerator:
         # Unfiltered first/last → one ROW_NUMBER per distinct effective time
         # column (stable suffixes: first sorted gets "", then "_2", …).
         time_col_agg_types: Dict[str, set] = {}
-        for m in synth_measures:
+        for m in synth_specs:
             if m.aggregation in ("first", "last") and not m.filter_sql:
                 eff = m.time_column or default_time_col_sql
                 time_col_agg_types.setdefault(eff, set()).add(m.aggregation)
@@ -3794,7 +3891,7 @@ class SQLGenerator:
         filtered_match_map: Dict[str, str] = {}
         seen_filters: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
         filter_idx = 0
-        for m in synth_measures:
+        for m in synth_specs:
             if m.aggregation in ("first", "last") and m.filter_sql:
                 eff = m.time_column or default_time_col_sql
                 cache_key = (m.filter_sql, eff, m.aggregation)
@@ -3971,7 +4068,7 @@ class SQLGenerator:
                 # via ``_render_aggregate_composite_expr`` (reading the
                 # subquery's ``source_relation.*``), matching the normal path.
                 synth_by_sid[sid] = (
-                    self._synthesize_enriched_measure_from_planned(
+                    self._build_agg_render_spec_from_planned(
                         slot=slot, key=slot.key, source_model=source_model,
                         source_relation=source_relation,
                         full_alias=full_alias_by_sid[sid],
@@ -3997,7 +4094,7 @@ class SQLGenerator:
             default_time_col_sql=default_time_col_sql,
             partition_exprs=partition_exprs,
             extra_projections=extra_projections,
-            synth_measures=list(synth_by_sid.values()),
+            synth_specs=list(synth_by_sid.values()),
             from_clause=from_clause,
             base_joins=base_joins,
             where_clause=where_clause,
@@ -4020,7 +4117,7 @@ class SQLGenerator:
             elif slot.phase == Phase.AGGREGATE:
                 if sid in synth_by_sid:
                     agg_expr, is_agg = self._build_agg(
-                        measure=synth_by_sid[sid],
+                        synth_by_sid[sid],
                         rn_suffix_map=rn_suffix_map,
                         default_time_col=default_time_col_sql,
                         filtered_rn_map=filtered_rn_map,
@@ -4081,11 +4178,11 @@ class SQLGenerator:
                     "AGGREGATE-phase composite is not yet supported; factor it "
                     "into a multi-stage source_queries model."
                 )
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=slot, key=key, source_model=source_model,
                 source_relation=source_relation, full_alias="__op__",
             )
-            agg_expr, is_agg = self._build_agg(measure=synth)
+            agg_expr, is_agg = self._build_agg(synth)
             return agg_expr, is_agg
         if isinstance(key, ArithmeticKey):
             operands = []
@@ -5036,14 +5133,14 @@ class SQLGenerator:
         # from the target's Column.filter — the synth helper qualifies
         # bare refs against target_model.
         local_slot = agg_slot.model_copy(update={"key": local_agg_key})
-        synth = self._synthesize_enriched_measure_from_planned(
+        synth = self._build_agg_render_spec_from_planned(
             slot=local_slot,
             key=local_agg_key,
             source_model=target_model,
             source_relation=target_relation,
             full_alias=full_agg_alias,
         )
-        agg_expr, is_agg = self._build_agg(measure=synth)
+        agg_expr, is_agg = self._build_agg(synth)
         if is_agg:
             agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
         cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
@@ -5256,14 +5353,14 @@ class SQLGenerator:
                 phase=value_key.phase,
                 type=None,
             )
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=tmp_slot,
                 key=local_agg,
                 source_model=target_model,
                 source_relation=target_relation,
                 full_alias=f"{target_relation}._having_agg",
             )
-            expr, _ = self._build_agg(measure=synth)
+            expr, _ = self._build_agg(synth)
             return expr
         if isinstance(value_key, ArithmeticKey):
             op = value_key.op
@@ -6407,14 +6504,14 @@ class SQLGenerator:
                 raise RuntimeError(
                     f"inner aggregate slot {input_sid!r} not found",
                 )
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=inner_slot,
                 key=inner_key,
                 source_model=source_model,
                 source_relation=source_relation,
                 full_alias=input_alias,
             )
-            agg_expr, _ = self._build_agg(measure=synth)
+            agg_expr, _ = self._build_agg(synth)
             agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
             shifted_select_parts.append(
                 f'{agg_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
@@ -7030,7 +7127,7 @@ class SQLGenerator:
                 _add_from_sql(self._parse(expanded_text))
         return ordered
 
-    def _synthesize_enriched_measure_from_planned(
+    def _build_agg_render_spec_from_planned(
         self,
         *,
         slot,
@@ -7038,20 +7135,20 @@ class SQLGenerator:
         source_model,
         source_relation: str,
         full_alias: str,
-    ) -> EnrichedMeasure:
-        """Adapter: build an EnrichedMeasure from a planned aggregate
-        slot so ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type``
-        emit dialect-correct SQL without forking the agg-emission
-        codebase.
+    ) -> AggRenderSpec:
+        """Build an ``AggRenderSpec`` from a planned aggregate slot so
+        ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type`` emit
+        dialect-correct SQL without forking the agg-emission codebase.
 
-        Mirrors ``enrichment.py:431`` ``sql = column.sql or column.name``
-        so ``COUNT(*)`` (StarKey source) and ``COUNT(col)`` (ColumnKey
-        source with sql=None on a bare column) take their distinct
-        legacy branches inside ``_build_agg``.
+        Replaces the legacy ``_build_agg_render_spec_from_planned``
+        adapter (DEV-1452 Stage A). Mirrors ``enrichment.py:431``
+        ``sql = column.sql or column.name`` so ``COUNT(*)`` (StarKey source)
+        and ``COUNT(col)`` (ColumnKey source with sql=None on a bare column)
+        take their distinct branches inside ``_build_agg``.
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
-        # ``slot`` may be ``None`` when this synth is built for a HAVING term
+        # ``slot`` may be ``None`` when this spec is built for a HAVING term
         # whose aggregate isn't a declared projection slot; the result type is
         # then unknown (no outer CAST needed for a comparison operand).
         slot_type = slot.type if slot is not None else None
@@ -7073,7 +7170,7 @@ class SQLGenerator:
                     f"'*:count' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
                 )
-            return EnrichedMeasure(
+            return AggRenderSpec(
                 name="",
                 sql=None,
                 aggregation=key.agg,
@@ -7112,7 +7209,7 @@ class SQLGenerator:
                         break
             # Aggregations outside the built-in set are custom user-defined
             # ``Aggregation``s declared on ``SlayerModel.aggregations``; thread
-            # the model's definition into ``EnrichedMeasure.aggregation_def`` so
+            # the model's definition into ``AggRenderSpec.aggregation_def`` so
             # ``_build_formula_agg`` renders the custom formula. An unknown
             # name (neither built-in nor defined) is a hard error.
             agg_def = None
@@ -7162,7 +7259,7 @@ class SQLGenerator:
                 )
             sql_text = col.sql if col.sql else col.name
             # DEV-1450 stage 7b.13: stringify kwargs through the shared
-            # helper. ``EnrichedMeasure.agg_kwargs`` is ``Dict[str, str]``
+            # helper. ``AggRenderSpec.agg_kwargs`` is ``Dict[str, str]``
             # and downstream ``_validate_agg_param_value`` rejects
             # anything not matching ``_SAFE_AGG_PARAM_RE``; the helper
             # emits identifiers / dotted identifiers / numeric literals
@@ -7172,7 +7269,7 @@ class SQLGenerator:
                 k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
             }
             # DEV-1450 stage 7b.12: propagate ``AggregateKey.column_filter_key``
-            # into ``EnrichedMeasure.filter_sql`` so ``_build_agg`` wraps the
+            # into ``AggRenderSpec.filter_sql`` so ``_build_agg`` wraps the
             # aggregate argument as ``SUM(CASE WHEN <filter> THEN col END)``.
             # Legacy ``resolve_filter_columns`` qualifies bare-identifier refs
             # in the filter with the host model name (so ``status = 'paid'``
@@ -7188,7 +7285,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 source_model=source_model,
             )
-            return EnrichedMeasure(
+            return AggRenderSpec(
                 name=col.name,
                 sql=sql_text,
                 aggregation=key.agg,
@@ -7202,8 +7299,7 @@ class SQLGenerator:
                 time_column=explicit_time_col,
             )
         raise NotImplementedError(
-            f"AggregateKey source {type(source).__name__} not supported "
-            f"in 7b.8."
+            f"AggregateKey source {type(source).__name__} not supported.",
         )
 
     def _build_where_having_from_planned(
@@ -7468,14 +7564,14 @@ class SQLGenerator:
                     f"per-plan CTE, not inline HAVING."
                 )
             slot = (slot_by_key or {}).get(key)
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=slot,
                 key=key,
                 source_model=source_model,
                 source_relation=source_relation,
                 full_alias="__having_ref__",
             )
-            agg_expr, _is_agg = self._build_agg(measure=synth)
+            agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
 
         if isinstance(key, ColumnKey):
