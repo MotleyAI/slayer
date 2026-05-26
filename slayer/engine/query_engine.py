@@ -2384,6 +2384,7 @@ class SlayerQueryEngine:
                 if "." not in col:
                     src_col = model.get_column(col)
                     if src_col:
+                        # Bare: re-parsed by the Python-AST parse_filter; quoted later in resolve_filter_columns.
                         remapped = re.sub(
                             rf"(?<!\.)(?<!\w)\b{re.escape(col)}\b(?!\.)",
                             f"{source_model_name}.{col}",

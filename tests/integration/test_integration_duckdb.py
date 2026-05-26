@@ -10,7 +10,7 @@ import duckdb
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -774,3 +774,136 @@ async def test_integration_duckdb_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+# Reserved-keyword model names (BUG-reserved-keyword-identifiers): a model named
+# after a reserved SQL word (table ``Grant`` → model ``grant``) must be emitted
+# quoted, else DuckDB (like Postgres) rejects the statement. Exercised in-process.
+@pytest.fixture(scope="module")
+def _reserved_kw_duckdb_env_storage(tmp_path_factory):
+    tmp_path = tmp_path_factory.mktemp("reserved_kw_duckdb_env")
+    db_path = tmp_path / "reserved.duckdb"
+    conn = duckdb.connect(str(db_path))
+
+    # Reserved-keyword table + mixed-case column (mirrors the reported schema).
+    conn.execute(
+        'CREATE TABLE "grant" ('
+        "  id INTEGER PRIMARY KEY,"
+        '  "idempotencyKey" VARCHAR,'
+        "  status VARCHAR NOT NULL,"
+        "  amount DECIMAL(10,2) NOT NULL,"
+        "  region_id INTEGER"
+        ")"
+    )
+    conn.execute(
+        "CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, population INTEGER NOT NULL)"
+    )
+    conn.executemany(
+        "INSERT INTO regions VALUES (?, ?, ?)", [(1, "US", 1000), (2, "EU", 2000)]
+    )
+    conn.executemany(
+        'INSERT INTO "grant" VALUES (?, ?, ?, ?, ?)',
+        [
+            (1, "key-a", "completed", 100, 1),
+            (2, "key-b", "completed", 200, 1),
+            (3, "key-c", "pending", 50, 2),
+            (4, "key-d", "completed", 150, 2),
+        ],
+    )
+    conn.close()
+
+    storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
+    run_sync(storage.save_datasource(DatasourceConfig(
+        name="reservedduckdb", type="duckdb", database=str(db_path),
+    )))
+    grant_model = SlayerModel(
+        name="grant",
+        sql_table='"grant"',
+        data_source="reservedduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="idempotencyKey", sql="idempotencyKey", type=DataType.TEXT),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    )
+    regions_model = SlayerModel(
+        name="regions",
+        sql_table="regions",
+        data_source="reservedduckdb",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="name", sql="name", type=DataType.TEXT),
+            Column(name="population", sql="population", type=DataType.DOUBLE),
+        ],
+    )
+    run_sync(storage.save_model(grant_model))
+    run_sync(storage.save_model(regions_model))
+    return storage
+
+
+@pytest.fixture
+def reserved_kw_duckdb_env(_reserved_kw_duckdb_env_storage):
+    return SlayerQueryEngine(storage=_reserved_kw_duckdb_env_storage)
+
+
+@pytest.mark.integration
+class TestDuckDBReservedKeywordModelName:
+    async def test_dimension_only_query(self, reserved_kw_duckdb_env: SlayerQueryEngine) -> None:
+        """Group-by on a reserved-keyword model executes (was a syntax error)."""
+        query = SlayerQuery(source_model="grant", dimensions=[ColumnRef(name="status")])
+        result = await reserved_kw_duckdb_env.execute(query=query)
+        statuses = {r["grant.status"] for r in result.data}
+        assert statuses == {"completed", "pending"}
+
+    async def test_measure_with_dimension_and_filter(
+        self, reserved_kw_duckdb_env: SlayerQueryEngine
+    ) -> None:
+        query = SlayerQuery(
+            source_model="grant",
+            measures=[{"formula": "amount:sum"}],
+            dimensions=[ColumnRef(name="status")],
+            filters=["status = 'completed'"],
+        )
+        result = await reserved_kw_duckdb_env.execute(query=query)
+        assert len(result.data) == 1
+        assert result.data[0]["grant.status"] == "completed"
+        assert float(result.data[0]["grant.amount_sum"]) == pytest.approx(450.0)
+
+    async def test_group_by_mixed_case_column(
+        self, reserved_kw_duckdb_env: SlayerQueryEngine
+    ) -> None:
+        query = SlayerQuery(
+            source_model="grant",
+            measures=[{"formula": "*:count"}],
+            dimensions=[ColumnRef(name="idempotencyKey")],
+        )
+        result = await reserved_kw_duckdb_env.execute(query=query)
+        assert result.row_count == 4
+
+    async def test_join_from_reserved_keyword_model(
+        self, reserved_kw_duckdb_env: SlayerQueryEngine
+    ) -> None:
+        """Joined dimension off a reserved-keyword source: quoted JOIN alias + ON."""
+        query = SlayerQuery(
+            source_model="grant",
+            measures=[{"formula": "amount:sum"}],
+            dimensions=[ColumnRef(name="regions.name")],
+        )
+        result = await reserved_kw_duckdb_env.execute(query=query)
+        by_region = {r["grant.regions.name"]: float(r["grant.amount_sum"]) for r in result.data}
+        assert by_region == {"US": pytest.approx(300.0), "EU": pytest.approx(200.0)}
+
+    async def test_cross_model_measure_from_reserved_keyword_model(
+        self, reserved_kw_duckdb_env: SlayerQueryEngine
+    ) -> None:
+        """Cross-model measure (regions.population:sum): the cross-model CTE path."""
+        query = SlayerQuery(
+            source_model="grant",
+            measures=[{"formula": "regions.population:sum"}],
+            dimensions=[ColumnRef(name="status")],
+        )
+        result = await reserved_kw_duckdb_env.execute(query=query)
+        assert result.row_count >= 1

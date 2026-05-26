@@ -11,7 +11,7 @@ import psycopg
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.ingestion import ingest_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -1182,3 +1182,111 @@ async def test_integration_postgres_cross_model_derived_columnsql(
     assert response.row_count == 2
     assert float(response.data[0]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
     assert float(response.data[1]["a_tbl.ratio_using_derived"]) == pytest.approx(2.0)
+
+
+# Reserved-keyword model names (BUG-reserved-keyword-identifiers): a model named
+# after a reserved SQL word (table ``Grant`` → model ``grant``) must be emitted
+# quoted, else Postgres rejects the statement with a syntax error.
+@pytest.fixture(scope="module")
+def _pg_reserved_kw_storage(postgresql_proc, tmp_path_factory):
+    conn, db_name = _create_module_db(postgresql_proc)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'CREATE TABLE "grant" ('
+            "  id INTEGER PRIMARY KEY,"
+            '  "idempotencyKey" TEXT,'
+            "  status TEXT NOT NULL,"
+            "  amount NUMERIC(10,2) NOT NULL,"
+            "  region_id INTEGER"
+            ")"
+        )
+        cur.execute("CREATE TABLE regions (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        cur.executemany(
+            "INSERT INTO regions VALUES (%s, %s)", [(1, "US"), (2, "EU")]
+        )
+        cur.executemany(
+            'INSERT INTO "grant" VALUES (%s, %s, %s, %s, %s)',
+            [
+                (1, "key-a", "completed", 100, 1),
+                (2, "key-b", "completed", 200, 1),
+                (3, "key-c", "pending", 50, 2),
+                (4, "key-d", "completed", 150, 2),
+            ],
+        )
+        conn.commit()
+
+        tmpdir = str(tmp_path_factory.mktemp("pg_reserved_kw"))
+        storage = YAMLStorage(base_dir=tmpdir)
+        info = postgresql_proc
+        run_sync(storage.save_datasource(DatasourceConfig(
+            name="reservedpg", type="postgres", host=info.host, port=info.port,
+            database=db_name, username=info.user, password="",
+        )))
+        grant_model = SlayerModel(
+            name="grant",
+            sql_table='"grant"',
+            data_source="reservedpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="idempotencyKey", sql="idempotencyKey", type=DataType.TEXT),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        )
+        regions_model = SlayerModel(
+            name="regions",
+            sql_table="regions",
+            data_source="reservedpg",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="name", sql="name", type=DataType.TEXT),
+            ],
+        )
+        run_sync(storage.save_model(grant_model))
+        run_sync(storage.save_model(regions_model))
+        yield storage
+    finally:
+        conn.close()
+        _drop_module_db(postgresql_proc, db_name)
+
+
+@pytest.fixture
+def pg_reserved_kw_env(_pg_reserved_kw_storage):
+    return SlayerQueryEngine(storage=_pg_reserved_kw_storage)
+
+
+@pytest.mark.integration
+class TestPostgresReservedKeywordModelName:
+    async def test_dimension_only_query(self, pg_reserved_kw_env: SlayerQueryEngine) -> None:
+        """Group-by on a reserved-keyword model executes (was a syntax error)."""
+        query = SlayerQuery(source_model="grant", dimensions=[ColumnRef(name="status")])
+        result = await pg_reserved_kw_env.execute(query=query)
+        assert {r["grant.status"] for r in result.data} == {"completed", "pending"}
+
+    async def test_measure_with_dimension_and_filter(
+        self, pg_reserved_kw_env: SlayerQueryEngine
+    ) -> None:
+        query = SlayerQuery(
+            source_model="grant",
+            measures=[{"formula": "amount:sum"}],
+            dimensions=[ColumnRef(name="status")],
+            filters=["status = 'completed'"],
+        )
+        result = await pg_reserved_kw_env.execute(query=query)
+        assert len(result.data) == 1
+        assert float(result.data[0]["grant.amount_sum"]) == pytest.approx(450.0)
+
+    async def test_join_from_reserved_keyword_model(
+        self, pg_reserved_kw_env: SlayerQueryEngine
+    ) -> None:
+        query = SlayerQuery(
+            source_model="grant",
+            measures=[{"formula": "amount:sum"}],
+            dimensions=[ColumnRef(name="regions.name")],
+        )
+        result = await pg_reserved_kw_env.execute(query=query)
+        by_region = {r["grant.regions.name"]: float(r["grant.amount_sum"]) for r in result.data}
+        assert by_region == {"US": pytest.approx(300.0), "EU": pytest.approx(200.0)}
