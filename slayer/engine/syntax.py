@@ -139,11 +139,11 @@ ParsedExpr = Union[
 _PLACEHOLDER_PREFIX = "__slayer_agg_"
 _PLACEHOLDER_RE = re.compile(rf"^{_PLACEHOLDER_PREFIX}(\d+)__$")
 _OVER_RE = re.compile(r"\bOVER\s*\(", re.IGNORECASE)
-_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
-# Python-string-literal matcher (handles backslash escapes) — used to blank
-# string contents before the raw-OVER( pre-scan, since Mode-B expressions use
-# Python string syntax. A SQL-style ('' / "") doubling matcher would miss
-# ``"x \" OVER("`` and false-positive on the OVER( inside the literal (Codex).
+# Python-string-literal matcher (handles backslash escapes). Mode-B expressions
+# use Python string syntax, so a SQL-style ('' / "") doubling matcher would
+# both miss ``"x \" OVER("`` and false-positive on the ``OVER(`` inside it
+# (Codex). Used by ``_normalize_sql_filter_operators``, ``_preprocess_colons``,
+# and the raw-``OVER(`` pre-scan.
 _PY_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
 _COLON_AGG_RE = re.compile(
     r"(\*|[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*(?:\.\*)?)"  # source: * / ident / dotted
@@ -160,6 +160,13 @@ _CMP_OP_MAP: Dict[type, str] = {
     ast.Eq: "==", ast.NotEq: "!=",
     ast.Lt: "<", ast.LtE: "<=",
     ast.Gt: ">", ast.GtE: ">=",
+    # ``IS`` / ``IS NOT`` (Codex review): the filter normalizer lowers SQL
+    # ``IS NULL`` / ``IS NOT NULL`` to Python ``is None`` / ``is not None``;
+    # without these entries the AST converter raised on ``ast.Is`` /
+    # ``ast.IsNot`` and any DSL filter using the SQL-style spelling failed
+    # to plan. The downstream SQL generator renders ``is`` / ``is not``
+    # against a ``None`` literal as ``IS NULL`` / ``IS NOT NULL``.
+    ast.Is: "is", ast.IsNot: "is not",
 }
 
 
@@ -241,8 +248,11 @@ def _normalize_sql_filter_operators(text: str) -> str:
     legacy ``slayer.core.formula._preprocess_sql_operators`` so the typed
     pipeline doesn't depend on the module DEV-1452 deletes.
     """
-    parts = _STRING_LITERAL_RE.split(text)
-    literals = _STRING_LITERAL_RE.findall(text)
+    # CR review: use the escape-aware Python-string matcher so backslash-
+    # escaped quotes don't leak ``IS`` / ``IN`` / ``AND`` rewrites into
+    # the string body (``"x \" IN ("``).
+    parts = _PY_STRING_LITERAL_RE.split(text)
+    literals = _PY_STRING_LITERAL_RE.findall(text)
     result: List[str] = []
     for i, part in enumerate(parts):
         part = re.sub(r"\bNULL\b", "None", part, flags=re.IGNORECASE)
@@ -359,7 +369,9 @@ def _preprocess_colons(
     agg_map: Dict[int, Tuple[Union[Ref, DottedRef, StarSource], str]] = {}
     counter = [0]
     literal_spans = [
-        (m.start(), m.end()) for m in _STRING_LITERAL_RE.finditer(text)
+        # CR review: use the escape-aware matcher so backslash-escaped
+        # quotes don't leak ``:sum`` colon rewrites into the string body.
+        (m.start(), m.end()) for m in _PY_STRING_LITERAL_RE.finditer(text)
     ]
 
     def _in_literal(pos: int) -> bool:

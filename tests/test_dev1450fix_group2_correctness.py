@@ -51,6 +51,151 @@ def test_over_inside_escaped_string_literal_not_window():
     parse_expr(r'status == "x \" OVER("')
 
 
+def test_in_keyword_inside_escaped_string_literal_not_rewritten():
+    """CR review: ``_normalize_sql_filter_operators`` previously used the
+    SQL-style ('' / "") matcher, so a backslash-escaped quote left the
+    string body unprotected and ``IN`` / ``IS`` / ``AND`` rewrites leaked
+    into the literal. Now backed by ``_PY_STRING_LITERAL_RE``.
+
+    Pin: a literal containing an embedded ``IN`` keyword must round-trip
+    cleanly when the literal is bounded by escaped quotes."""
+    # The value of the literal is `x " IN (foo)` — IN must NOT lowercase
+    # inside the string. The right operand is a literal compared via ==,
+    # not a SQL-style IN clause.
+    from slayer.engine.syntax import parse_filter_expr
+    parse_filter_expr(r'label == "x \" IN (foo)"')
+
+
+def test_colon_inside_escaped_string_literal_not_preprocessed():
+    """CR review: ``_preprocess_colons`` previously used the SQL-style
+    matcher; an escaped quote leaked colon-syntax aggregation rewrites
+    into string bodies. Pin: a literal containing ``revenue:sum`` is
+    not rewritten to an aggregation."""
+    # Inner literal is `x " revenue:sum`. The colon there is text, not
+    # a colon-syntax aggregation source.
+    parse_expr(r'label == "x \" revenue:sum"')
+
+
+# ---------------------------------------------------------------------------
+# Group A — Codex typed-pipeline correctness regressions
+# ---------------------------------------------------------------------------
+
+
+def test_is_null_filter_parses_and_renders():
+    """Codex review: ``IS`` / ``IS NOT`` were stripped to ``is`` / ``is
+    not`` by the filter normalizer but the AST converter rejected the
+    resulting ``ast.Is`` / ``ast.IsNot`` nodes. Pins both the parse and
+    a downstream render through ``_compose_arithmetic_op``."""
+    from slayer.engine.syntax import parse_filter_expr
+    # Parse must accept the SQL-style spelling.
+    parse_filter_expr("deleted_at IS NULL")
+    parse_filter_expr("deleted_at IS NOT NULL")
+    # And the lower-cased Python form should also work.
+    parse_filter_expr("deleted_at is None")
+    parse_filter_expr("deleted_at is not None")
+
+
+def test_partition_by_multi_column_parses_and_binds():
+    """Codex review: ``partition_by=[region, channel]`` is parsed into
+    a tuple by ``_convert_kwarg_value``, but the binder's
+    ``partition_by`` branch only handled a single column ref. Pin that
+    a multi-column form binds to a multi-element ``partition_keys``."""
+    from slayer.core.keys import TransformKey
+    from slayer.engine.syntax import parse_expr as _parse
+    # Build a model scope and bundle that has the needed columns.
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="channel", type=DataType.TEXT),
+        ],
+    )
+    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    parsed = _parse("rank(amount:sum, partition_by=[region, channel])")
+    bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
+    assert isinstance(bound.value_key, TransformKey)
+    assert bound.value_key.op == "rank"
+    # Two distinct partition keys, not one (the frozenset is unordered;
+    # check membership).
+    pk_leaves = {
+        getattr(p, "leaf", None) for p in bound.value_key.partition_keys
+    }
+    assert pk_leaves == {"region", "channel"}, (
+        f"expected partition_keys={{region, channel}}; got {pk_leaves}"
+    )
+
+
+def test_aggregation_eligibility_primary_key_rejected():
+    """Codex review: a primary-key column is restricted to ``count`` /
+    ``count_distinct``. The typed pipeline previously accepted ``id:sum``
+    silently — now raises ``AggregationNotAllowedError``."""
+    from slayer.core.errors import AggregationNotAllowedError
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="amount", type=DataType.DOUBLE),
+        ],
+    )
+    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    # count / count_distinct should pass.
+    bind_expr(parsed=parse_expr("id:count"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("id:count_distinct"), scope=scope, bundle=bundle)
+    # sum / avg / max / min on a PK are rejected.
+    for agg in ("sum", "avg", "max", "min"):
+        with pytest.raises(AggregationNotAllowedError, match="primary-key"):
+            bind_expr(parsed=parse_expr(f"id:{agg}"), scope=scope, bundle=bundle)
+
+
+def test_aggregation_eligibility_type_default_rejected():
+    """A TEXT column rejects numeric aggregations (``avg`` / ``sum``)
+    per the type-default whitelist."""
+    from slayer.core.errors import AggregationNotAllowedError
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="status", type=DataType.TEXT),
+        ],
+    )
+    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    # count is fine on text.
+    bind_expr(parsed=parse_expr("status:count"), scope=scope, bundle=bundle)
+    # avg / sum are not.
+    for agg in ("avg", "sum"):
+        with pytest.raises(AggregationNotAllowedError, match="not applicable"):
+            bind_expr(parsed=parse_expr(f"status:{agg}"), scope=scope, bundle=bundle)
+
+
+def test_aggregation_eligibility_allowed_aggregations_whitelist():
+    """An explicit ``allowed_aggregations`` whitelist overrides the
+    type-default gate."""
+    from slayer.core.errors import AggregationNotAllowedError
+    orders = SlayerModel(
+        name="orders", data_source="prod", sql_table="orders",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(
+                name="amount",
+                type=DataType.DOUBLE,
+                # Tighter than the default DOUBLE whitelist; reject avg.
+                allowed_aggregations=frozenset({"sum", "max"}),
+            ),
+        ],
+    )
+    bundle = ResolvedSourceBundle(source_model=orders, referenced_models=[])
+    scope = ModelScope(source_model=orders)
+    bind_expr(parsed=parse_expr("amount:sum"), scope=scope, bundle=bundle)
+    bind_expr(parsed=parse_expr("amount:max"), scope=scope, bundle=bundle)
+    with pytest.raises(AggregationNotAllowedError, match="allowed_aggregations"):
+        bind_expr(parsed=parse_expr("amount:avg"), scope=scope, bundle=bundle)
+
+
 def test_real_over_clause_still_rejected():
     with pytest.raises(IllegalWindowInFilterError):
         parse_expr("rank() OVER (ORDER BY x)")

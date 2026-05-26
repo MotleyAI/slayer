@@ -18,11 +18,13 @@ from __future__ import annotations
 import warnings as wmod
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.core.warnings import SlayerNormalizationWarning
 from slayer.engine.normalization import (
     _apply_dot_path_in_sql,
     normalize_model,
+    normalize_query,
 )
 
 
@@ -475,7 +477,6 @@ class TestDotPathInSqlIsModeAOnly:
         # ModelMeasure.formula is Mode-B (DSL). The dotted form there is a
         # join-path reference (the dotted-join Mode-B convention) and must
         # NOT be rewritten by DOT_PATH_IN_SQL.
-        from slayer.core.models import ModelMeasure
         m = _orders_with_customers_join()
         mm = ModelMeasure(name="region_count", formula="customers.regions.name:count")
         m.measures = list(m.measures) + [mm]
@@ -490,9 +491,6 @@ class TestDotPathInSqlIsModeAOnly:
     def test_query_filters_mode_b_not_rewritten(self):
         # SlayerQuery.filters is Mode-B. normalize_query must not run
         # DOT_PATH_IN_SQL over its filters.
-        from slayer.core.query import SlayerQuery
-        from slayer.engine.normalization import normalize_query
-
         m = _orders_with_customers_join()
         q = SlayerQuery(
             source_model="orders",

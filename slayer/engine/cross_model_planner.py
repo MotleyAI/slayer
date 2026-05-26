@@ -672,8 +672,15 @@ def _local_agg_formula(key: AggregateKey) -> str:
 
     formula = f"{base}:{key.agg}"
     parts: List[str] = []
+    # Positional args may carry ColumnKey / ColumnSqlKey just like kwargs do
+    # (rerooting needs path-aware handling on both — CR review). Falling
+    # through to ``_scalar_formula_literal`` would emit Pydantic-repr noise
+    # for a column-valued positional arg, mis-binding the nested sub-query.
     for a in key.args:
-        parts.append(_scalar_formula_literal(a))
+        if isinstance(a, (ColumnKey, ColumnSqlKey)):
+            parts.append(_reroot_col_kwarg(a))
+        else:
+            parts.append(_scalar_formula_literal(a))
     for k, v in key.kwargs:
         if isinstance(v, (ColumnKey, ColumnSqlKey)):
             parts.append(f"{k}={_reroot_col_kwarg(v)}")

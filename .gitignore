@@ -36,6 +36,9 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# JDBC driver JARs auto-downloaded by Flight SQL test fixtures
+tests/.cache/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
