@@ -59,6 +59,9 @@ nav:
       - Aggregations:
           - examples/07_aggregations/aggregations.md
           - Notebook: examples/07_aggregations/aggregations_nb.ipynb
+      - Lightning Talk:
+          - examples/09_lightning_talk/lightning_talk.md
+          - Notebook: examples/09_lightning_talk/lightning_talk_nb.ipynb
       - Schema Drift (worked example): examples/schema-drift.md
   - Configuration:
       - Datasources: configuration/datasources.md

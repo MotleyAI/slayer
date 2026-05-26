@@ -1,0 +1,43 @@
+version: 6
+name: supplies
+sql_table: supplies
+query_variables: {}
+data_source: jaffle_shop
+columns:
+- name: id
+  sql: id
+  type: TEXT
+  primary_key: true
+  hidden: false
+- name: name
+  sql: name
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: cost
+  sql: cost
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+  format:
+    type: float
+- name: perishable
+  sql: perishable
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: sku
+  sql: sku
+  type: TEXT
+  primary_key: true
+  hidden: false
+measures: []
+aggregations: []
+joins:
+- target_model: products
+  join_pairs:
+  - - sku
+    - sku
+  join_type: left
+filters: []
+hidden: false

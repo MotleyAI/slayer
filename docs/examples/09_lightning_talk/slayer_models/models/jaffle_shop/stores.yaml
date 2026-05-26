@@ -1,0 +1,33 @@
+version: 6
+name: stores
+sql_table: stores
+query_variables: {}
+data_source: jaffle_shop
+columns:
+- name: id
+  sql: id
+  type: TEXT
+  primary_key: true
+  hidden: false
+- name: name
+  sql: name
+  type: TEXT
+  primary_key: false
+  hidden: false
+- name: opened_at
+  sql: opened_at
+  type: DATE
+  primary_key: false
+  hidden: false
+- name: tax_rate
+  sql: tax_rate
+  type: DOUBLE
+  primary_key: false
+  hidden: false
+  format:
+    type: float
+measures: []
+aggregations: []
+joins: []
+filters: []
+hidden: false
