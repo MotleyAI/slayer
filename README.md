@@ -7,12 +7,12 @@
 [![Docs](https://img.shields.io/badge/docs-readthedocs-blue)](https://motley-slayer.readthedocs.io/)
 [![License](https://img.shields.io/github/license/MotleyAI/slayer)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MotleyAI/slayer?style=social)](https://github.com/MotleyAI/slayer/stargazers)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/djtaFyXW)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/egWxMctHCA)
 
 **SLayer** is a semantic layer that lets AI agents query your database, manage data models, and learn from the data.
 
 > If you find SLayer useful, a ⭐ helps others discover it!
-> Questions, ideas, or feedback? [Join our Discord](https://discord.gg/djtaFyXW).
+> Questions, ideas, or feedback? [Join our Discord](https://discord.gg/egWxMctHCA).
 
 ---
 
