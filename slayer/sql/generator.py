@@ -5308,12 +5308,20 @@ class SQLGenerator:
 
         Mirrors the small subset of operators the bound-filter renderer
         emits: comparisons (``==``, ``!=``, ``<``, ``<=``, ``>``,
-        ``>=``), boolean (``and``, ``or``, ``not``), arithmetic
-        (``+``, ``-``, ``*``, ``/``).
+        ``>=``, ``is``, ``is not``), boolean (``and``, ``or``, ``not``),
+        arithmetic (``+``, ``-``, ``*``, ``/``).
         """
         if op == "not":
             return exp.Not(this=operands[0])
         left, right = operands[0], operands[1]
+        # ``IS`` / ``IS NOT`` (Codex review): the typed pipeline's filter
+        # normalizer lowers SQL ``IS NULL`` / ``IS NOT NULL`` to Python
+        # ``is None`` / ``is not None``. Render against a ``Null`` literal
+        # as the standard SQL forms.
+        if op == "is":
+            return exp.Is(this=left, expression=right)
+        if op == "is not":
+            return exp.Not(this=exp.Is(this=left, expression=right))
         op_map = {
             "==": exp.EQ,
             "!=": exp.NEQ,
@@ -6023,6 +6031,11 @@ class SQLGenerator:
                 return exp.Neg(this=operands[0])
         if len(operands) == 2:
             lhs, rhs = operands
+            # ``IS`` / ``IS NOT`` (Codex review): see ``_build_arith_or_cmp_ast``.
+            if op == "is":
+                return exp.Is(this=lhs, expression=rhs)
+            if op == "is not":
+                return exp.Not(this=exp.Is(this=lhs, expression=rhs))
             binary = {
                 "+": exp.Add, "-": exp.Sub, "*": exp.Mul, "/": exp.Div,
                 "<": exp.LT, "<=": exp.LTE, ">": exp.GT, ">=": exp.GTE,

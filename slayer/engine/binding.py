@@ -38,12 +38,17 @@ from typing import Dict, List, Optional, Tuple, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.errors import (
+    AggregationNotAllowedError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     UnknownFunctionError,
     UnknownReferenceError,
 )
-from slayer.core.enums import DataType
+from slayer.core.enums import (
+    DEFAULT_AGGREGATIONS_BY_TYPE,
+    PRIMARY_KEY_AGGREGATIONS,
+    DataType,
+)
 from slayer.core.keys import (
     SCALAR_FUNCTIONS,
     AggregateKey,
@@ -756,6 +761,15 @@ def _bind_agg(
     column_filter_key = _resolve_column_filter_key(
         source=source, bundle=bundle,
     )
+    # Codex review: enforce per-column aggregation eligibility gates
+    # the legacy enrichment site at ``enrichment.py:401-417`` enforced.
+    # Without this, ``id:sum`` (a PK) or ``status:avg`` (text) compile
+    # silently in the typed pipeline. The check is best-effort against
+    # the bundle — sources whose target model can't be resolved (e.g.
+    # an unreferenced join target) skip the check.
+    _validate_agg_eligibility(
+        source=source, agg=parsed.agg, bundle=bundle,
+    )
     return AggregateKey(
         source=source,
         agg=parsed.agg,
@@ -799,6 +813,84 @@ def _resolve_column_filter_key(
     if col is None or not col.filter:
         return None
     return SqlExprKey(canonical_sql=col.filter)
+
+
+def _validate_agg_eligibility(
+    *, source, agg: str, bundle: ResolvedSourceBundle,
+) -> None:
+    """Enforce per-column aggregation eligibility gates.
+
+    Mirrors the legacy ``enrichment.py:401-417`` v2 contract:
+
+    1. Primary-key columns are always restricted to ``count`` /
+       ``count_distinct`` regardless of type or explicit whitelist.
+    2. An explicit ``Column.allowed_aggregations`` whitelist overrides
+       type defaults.
+    3. Otherwise, built-in aggregations are gated by
+       ``DEFAULT_AGGREGATIONS_BY_TYPE``; model-custom aggregations
+       (registered in ``SlayerModel.aggregations``) are exempt.
+
+    ``StarKey`` sources (``*:count`` / ``customers.*:count``) have no
+    column to attach a whitelist to and pass through. Cross-model and
+    derived (``ColumnSqlKey``) sources are best-effort: if the target
+    model can't be resolved through the bundle (an unresolved join
+    target) the gate is skipped — the compile-time path validator would
+    have raised earlier on a truly broken ref.
+    """
+    if isinstance(source, StarKey):
+        return
+    path = tuple(getattr(source, "path", ()))
+    leaf = getattr(source, "leaf", None) or getattr(source, "column_name", None)
+    if leaf is None:
+        return
+    host = bundle.source_model
+    if host is None:
+        return
+    current: SlayerModel = host
+    for hop in path:
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None:
+            return
+        current = nxt
+    col = next((c for c in current.columns if c.name == leaf), None)
+    if col is None:
+        return
+    if col.primary_key:
+        if agg not in PRIMARY_KEY_AGGREGATIONS:
+            raise AggregationNotAllowedError(
+                column=leaf,
+                agg=agg,
+                reason=(
+                    f"primary-key column {leaf!r} restricted to "
+                    f"{sorted(PRIMARY_KEY_AGGREGATIONS)}; got {agg!r}."
+                ),
+            )
+        return
+    if col.allowed_aggregations is not None:
+        if agg not in col.allowed_aggregations:
+            raise AggregationNotAllowedError(
+                column=leaf,
+                agg=agg,
+                reason=(
+                    f"column {leaf!r} restricts allowed_aggregations to "
+                    f"{sorted(col.allowed_aggregations)}; got {agg!r}."
+                ),
+            )
+        return
+    # Model-custom aggregations are exempt from the type-default gate.
+    if any(a.name == agg for a in (current.aggregations or [])):
+        return
+    allowed = DEFAULT_AGGREGATIONS_BY_TYPE.get(col.type, frozenset())
+    if agg not in allowed:
+        raise AggregationNotAllowedError(
+            column=leaf,
+            agg=agg,
+            reason=(
+                f"aggregation {agg!r} is not applicable to "
+                f"{col.type} column {leaf!r}; default aggregations are "
+                f"{sorted(allowed)}."
+            ),
+        )
 
 
 def _bind_agg_arg(
@@ -940,15 +1032,26 @@ def _bind_transform(
             )
     for k, v in [*positional_pairs, *parsed.kwargs]:
         if k == "partition_by":
-            bound_v = _bind(v, scope=scope, bundle=bundle, in_filter=False)
-            if isinstance(bound_v, (ColumnKey, ColumnSqlKey)):
-                partition_keys.append(bound_v)
-            else:
-                raise ValueError(
-                    f"transform {parsed.op!r} partition_by must resolve "
-                    f"to a column reference; got "
-                    f"{type(bound_v).__name__}."
+            # ``partition_by`` accepts a single column ref OR a tuple/list of
+            # them (Codex review): ``rank(x, partition_by=[region, channel])``.
+            # ``_convert_kwarg_value`` returns a Python tuple for the list
+            # form; bind each element independently and accumulate into
+            # ``partition_keys`` so the SQL gen emits a multi-column OVER
+            # (PARTITION BY ...). A single ref still flows through the
+            # scalar branch.
+            elements = v if isinstance(v, tuple) else (v,)
+            for elem in elements:
+                bound_elem = _bind(
+                    elem, scope=scope, bundle=bundle, in_filter=False,
                 )
+                if isinstance(bound_elem, (ColumnKey, ColumnSqlKey)):
+                    partition_keys.append(bound_elem)
+                else:
+                    raise ValueError(
+                        f"transform {parsed.op!r} partition_by must resolve "
+                        f"to a column reference; got "
+                        f"{type(bound_elem).__name__}."
+                    )
             continue
         if k not in allowed_kwargs:
             raise ValueError(

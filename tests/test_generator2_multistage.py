@@ -105,7 +105,7 @@ async def harness() -> AsyncIterator[Tuple[SlayerQueryEngine, YAMLStorage, str]]
     yield engine, storage, db_path
 
 
-def _run_sqlite(db_path: str, sql: str) -> List[dict]:
+def _run_sqlite(*, db_path: str, sql: str) -> List[dict]:
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
@@ -154,7 +154,7 @@ async def test_two_stage_local_aggregate_matches_legacy(harness):
     )
     legacy = await engine.execute([stage1, root])
     new_sql = await _new_sql(storage=storage, stages=[stage1, root])
-    new_rows = _run_sqlite(db_path, new_sql)
+    new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
 
     # Same result-key columns and same row set as legacy.
     assert set(new_rows[0].keys()) == set(legacy.columns), new_sql
@@ -184,7 +184,7 @@ async def test_three_stage_chain_matches_legacy(harness):
     )
     legacy = await engine.execute([s1, s2, root])
     new_sql = await _new_sql(storage=storage, stages=[s1, s2, root])
-    new_rows = _run_sqlite(db_path, new_sql)
+    new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
     assert set(new_rows[0].keys()) == set(legacy.columns), new_sql
     assert _rowset(new_rows) == _rowset(legacy.data), new_sql
 
@@ -208,7 +208,7 @@ async def test_cross_model_intermediate_stage_matches_legacy(harness):
     )
     legacy = await engine.execute([stage1, root])
     new_sql = await _new_sql(storage=storage, stages=[stage1, root])
-    new_rows = _run_sqlite(db_path, new_sql)
+    new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
     assert set(new_rows[0].keys()) == set(legacy.columns), new_sql
     assert _rowset(new_rows) == _rowset(legacy.data), new_sql
 
@@ -242,7 +242,7 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness):
     )
     legacy = await engine.execute([stage1, root])
     new_sql = await _new_sql(storage=storage, stages=[stage1, root])
-    new_rows = _run_sqlite(db_path, new_sql)
+    new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
     assert set(new_rows[0].keys()) == set(legacy.columns), new_sql
     assert _rowset(new_rows) == _rowset(legacy.data), new_sql
 
@@ -276,7 +276,7 @@ async def test_dev1448_named_join_measure_alias(harness):
     assert "customers__revenue_sum" not in s1_cols
     # End-to-end: renders, executes, downstream ``rev:max`` resolves.
     new_sql = generate_planned_stages(planned, bundle=bundle, dialect="sqlite")
-    new_rows = _run_sqlite(db_path, new_sql)
+    new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
     assert any("rev_max" in k for r in new_rows for k in r.keys()), new_sql
 
 
@@ -304,7 +304,7 @@ async def test_dev1449_flat_name_resolves(harness):
     )
     planned = plan_stages(queries=[stage1, root], bundle=bundle)
     new_sql = generate_planned_stages(planned, bundle=bundle, dialect="sqlite")
-    new_rows = _run_sqlite(db_path, new_sql)
+    new_rows = _run_sqlite(db_path=db_path, sql=new_sql)
     assert len(new_rows) > 0, new_sql
 
 

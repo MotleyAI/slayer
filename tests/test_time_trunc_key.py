@@ -23,6 +23,7 @@ conversion + main-TD resolution in 7b.3c.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
@@ -114,7 +115,9 @@ class TestTimeTruncKeyPhase:
 class TestTimeTruncKeyImmutability:
     def test_is_frozen(self) -> None:
         k = TimeTruncKey(column=ColumnKey(leaf="ordered_at"), granularity="month")
-        with pytest.raises(Exception):
+        # TimeTruncKey is a frozen Pydantic v2 model — mutation raises
+        # ValidationError, not the generic Exception.
+        with pytest.raises(ValidationError):
             k.granularity = "day"  # type: ignore[misc]
 
 

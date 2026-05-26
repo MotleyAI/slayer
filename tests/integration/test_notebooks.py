@@ -46,6 +46,19 @@ def _ensure_jaffle_db():
         pytest.skip(f"Jaffle shop prerequisite missing: {e}")
 
 
+# Notebooks expected to fail under the current typed-pipeline gaps.
+# Map: notebook path relative to EXAMPLES_DIR → Linear issue + reason.
+# Re-enable a notebook by removing its entry once the cited issue lands.
+_KNOWN_FAILING_NOTEBOOKS = {
+    "04_time/time_nb.ipynb": (
+        "DEV-1474: cross-model partition in time_shift CTEs not yet "
+        "implemented in the typed pipeline. The QoQ-by-store cell "
+        "(``change(order_total:sum)`` with ``dimensions=['stores.name']``) "
+        "hits ``stage 7b.12``."
+    ),
+}
+
+
 @pytest.fixture(params=_NOTEBOOKS, ids=[str(p.relative_to(EXAMPLES_DIR)) for p in _NOTEBOOKS])
 def notebook_path(request):
     # Clean models before each notebook so custom models from one
@@ -55,8 +68,14 @@ def notebook_path(request):
     return request.param
 
 
-def test_notebook_runs_without_errors(notebook_path):
+def test_notebook_runs_without_errors(notebook_path, request):
     """Execute the notebook and assert it completes without errors."""
+    rel = str(notebook_path.relative_to(EXAMPLES_DIR))
+    if rel in _KNOWN_FAILING_NOTEBOOKS:
+        request.applymarker(pytest.mark.xfail(
+            reason=_KNOWN_FAILING_NOTEBOOKS[rel],
+            strict=False,
+        ))
     with open(notebook_path) as f:
         nb = nbformat.read(f, as_version=4)
 

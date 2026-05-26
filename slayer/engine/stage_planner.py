@@ -317,7 +317,9 @@ def plan_query(
         if not isinstance(f, str):
             continue
         bf = bind_filter(
-            parse_filter_expr(f, allow_dunder=flat_scope), scope=scope, bundle=bundle,
+            parsed=parse_filter_expr(f, allow_dunder=flat_scope),
+            scope=scope,
+            bundle=bundle,
             alias_map=filter_alias_map,
         )
         if any(existing.value_key == bf.value_key for existing in bound_filters):
@@ -361,8 +363,9 @@ def plan_query(
             bo = declared_alias_to_bound[f"_{col_name}"]
         elif o.raw_formula:
             bo = bind_expr(
-                parse_expr(o.raw_formula, allow_dunder=flat_scope),
-                scope=scope, bundle=bundle,
+                parsed=parse_expr(o.raw_formula, allow_dunder=flat_scope),
+                scope=scope,
+                bundle=bundle,
             )
         else:
             # Bind the FULL reference (``customers.region``), not just the
@@ -370,8 +373,9 @@ def plan_query(
             # raw_formula rebinds as ``region`` and hits the wrong host
             # column or fails as ambiguous (CR).
             bo = bind_expr(
-                parse_expr(full_name, allow_dunder=flat_scope),
-                scope=scope, bundle=bundle,
+                parsed=parse_expr(full_name, allow_dunder=flat_scope),
+                scope=scope,
+                bundle=bundle,
             )
         order_specs.append(OrderSpec(bound=bo, direction=o.direction))
 
@@ -391,7 +395,7 @@ def plan_query(
         )
         if active_td is not None:
             active_td_bound = bind_time_dimension(
-                active_td, scope=scope, bundle=bundle,
+                td=active_td, scope=scope, bundle=bundle,
             )
             atd_key = active_td_bound.value_key
             assert isinstance(atd_key, TimeTruncKey)
@@ -778,7 +782,9 @@ def _declared_measures_from_query(
     for d in (query.dimensions or []):
         full = d.full_name
         bound = bind_expr(
-            parse_expr(full, allow_dunder=flat_scope), scope=scope, bundle=bundle,
+            parsed=parse_expr(full, allow_dunder=flat_scope),
+            scope=scope,
+            bundle=bundle,
         )
         flat_name = _flatten_dotted(full)
         declared.append(DeclaredMeasure(
@@ -792,7 +798,7 @@ def _declared_measures_from_query(
     # measures).
     for td in (query.time_dimensions or []):
         full = td.dimension.full_name
-        bound = bind_time_dimension(td, scope=scope, bundle=bundle)
+        bound = bind_time_dimension(td=td, scope=scope, bundle=bundle)
         flat_name = _flatten_dotted(full)
         declared.append(DeclaredMeasure(
             bound=bound,
@@ -815,7 +821,7 @@ def _declared_measures_from_query(
                 expr=parsed,
                 model=scope.source_model,
             )
-        bound = bind_expr(parsed, scope=scope, bundle=bundle)
+        bound = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
         # Stage 7b.10: sugar-lowering of ``change`` / ``change_pct`` now
         # runs in ``plan_query`` AFTER time-key patching, so the inner
         # ``time_shift`` inherits a patched ``time_key`` instead of
@@ -1201,7 +1207,7 @@ def _build_date_range_filter(
     """
     full = td.dimension.full_name
     parsed = parse_expr(full)
-    bound_col_expr = bind_expr(parsed, scope=scope, bundle=bundle)
+    bound_col_expr = bind_expr(parsed=parsed, scope=scope, bundle=bundle)
     col_key = bound_col_expr.value_key
     # DEV-1450 #4a: a derived (Column.sql) temporal column binds to a
     # ColumnSqlKey; the BetweenKey accepts both kinds and the generator
