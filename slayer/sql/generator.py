@@ -57,9 +57,14 @@ class AggRenderSpec(BaseModel):
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    sql: Optional[str]
+    sql: str | None
     """Column SQL expression (``Column.sql`` or its bare name); ``None`` for
-    ``*:count`` (renders as ``COUNT(*)``)."""
+    ``*:count`` (renders as ``COUNT(*)``).
+
+    Typed as ``str | None`` (not ``Optional[str]``) deliberately — the
+    field is **required** at construction; the explicit nullable form
+    documents that and dodges Sonar's S8396 false-positive on the
+    Pydantic-v2 ``Optional[X]``-implies-default-None misconception."""
 
     name: str
     """Source column name — qualified under ``model_name`` when ``sql`` is
@@ -3845,8 +3850,8 @@ class SQLGenerator:
         ``ColumnSqlKey``. Cross-model paths on derived time args
         (``ColumnSqlKey`` with non-empty ``path``) raise
         ``NotImplementedError`` rather than silently emitting against the
-        wrong relation alias — that case is tracked alongside the Stage B
-        cross-model reroot bug (DEV-1452 latent bug (c)).
+        wrong relation alias — that case is tracked alongside bug (c) of
+        the four-bug Stage B package in DEV-1476.
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey
 
@@ -3862,8 +3867,8 @@ class SQLGenerator:
                         f"Cross-model derived time column "
                         f"(path={a.path!r}, column={a.column_name!r}) on "
                         f"first/last positional arg is not yet supported "
-                        f"by the ranked-subquery builder; tracked alongside "
-                        f"DEV-1452 Stage B follow-ups."
+                        f"by the ranked-subquery builder; tracked as "
+                        f"DEV-1476."
                     )
                 col = next(
                     (c for c in source_model.columns if c.name == a.column_name),

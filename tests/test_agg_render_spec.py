@@ -538,9 +538,10 @@ class TestBuilderFirstLast:
 
     def test_cross_model_derived_time_column_raises(self):
         # Cross-model derived time args are not supported by the
-        # ranked-subquery builder yet (Stage B follow-up territory). Surface
-        # a NotImplementedError rather than silently emitting against the
-        # wrong relation alias.
+        # ranked-subquery builder yet (tracked as DEV-1476, bug (c) of the
+        # four-bug Stage B package). Surface a NotImplementedError rather
+        # than silently emitting against the wrong relation alias. When
+        # DEV-1476 lands, update this test to assert the working behaviour.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="last",
