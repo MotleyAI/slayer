@@ -5313,6 +5313,19 @@ class SQLGenerator:
         """
         if op == "not":
             return exp.Not(this=operands[0])
+        # ``and`` / ``or`` (Codex round 2): the binder produces n-ary
+        # boolean ``ArithmeticKey`` for ``a AND b AND c`` (three operands);
+        # the prior implementation took only ``operands[0]`` / ``[1]`` and
+        # silently dropped the third predicate from cross-model HAVING/
+        # WHERE, broadening results. Fold over every operand the same
+        # way ``_compose_arithmetic_op`` and ``_build_arithmetic_for_filter``
+        # already do.
+        if op in ("and", "or"):
+            node_cls = exp.And if op == "and" else exp.Or
+            acc = operands[0]
+            for o in operands[1:]:
+                acc = node_cls(this=acc, expression=o)
+            return acc
         left, right = operands[0], operands[1]
         # ``IS`` / ``IS NOT`` (Codex review): the typed pipeline's filter
         # normalizer lowers SQL ``IS NULL`` / ``IS NOT NULL`` to Python
@@ -5329,8 +5342,6 @@ class SQLGenerator:
             "<=": exp.LTE,
             ">": exp.GT,
             ">=": exp.GTE,
-            "and": lambda this, expression: exp.And(this=this, expression=expression),
-            "or": lambda this, expression: exp.Or(this=this, expression=expression),
             "+": exp.Add,
             "-": exp.Sub,
             "*": exp.Mul,
@@ -5342,8 +5353,6 @@ class SQLGenerator:
                 f"DEV-1450 stage 7b.12: arithmetic operator {op!r} not "
                 f"supported in cross-model filter rendering.",
             )
-        if op in ("and", "or"):
-            return cls(this=left, expression=right)
         return cls(this=left, expression=right)
 
     def _build_combined_order_by_sql(
@@ -7750,6 +7759,17 @@ class SQLGenerator:
             return result
         if op == "not":
             return exp.Not(this=operands[0])
+        # ``IS`` / ``IS NOT`` (Codex round 2): the filter normalizer lowers
+        # SQL ``IS NULL`` / ``IS NOT NULL`` to Python ``is None`` / ``is
+        # not None``. Render against the rhs (a ``Null`` literal) as the
+        # standard SQL forms. Without these branches a local-stage filter
+        # ``deleted_at IS NULL`` parses and binds but raises here at SQL
+        # generation. Mirrors the patches in ``_build_arith_or_cmp_ast``
+        # and ``_compose_arithmetic_op``.
+        if op == "is":
+            return exp.Is(this=operands[0], expression=operands[1])
+        if op == "is not":
+            return exp.Not(this=exp.Is(this=operands[0], expression=operands[1]))
         raise NotImplementedError(
             f"DEV-1450 stage 7b.8: ArithmeticKey op {op!r} not "
             f"supported in filter rendering."

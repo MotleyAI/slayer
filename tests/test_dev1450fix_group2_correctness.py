@@ -172,6 +172,77 @@ def test_aggregation_eligibility_type_default_rejected():
             bind_expr(parsed=parse_expr(f"status:{agg}"), scope=scope, bundle=bundle)
 
 
+async def test_is_null_filter_renders_end_to_end(engine):
+    """Codex round 2: ``b7ba22b`` patched two of the three filter
+    render sites for ``is`` / ``is not`` but missed
+    ``_build_arithmetic_for_filter`` at generator.py:7685 — local-stage
+    filters like ``deleted_at IS NULL`` parsed/bound but failed at SQL
+    generation with ``NotImplementedError``. Pin the end-to-end path."""
+    # ``region`` is TEXT on the customers seed, so ``region IS NULL``
+    # makes sense as a predicate. Use ``orders`` as the host model with
+    # an Mode-B filter through the join.
+    resp = await engine.execute(
+        SlayerQuery(
+            source_model="orders",
+            dimensions=["customers.region"],
+            measures=[{"formula": "*:count"}],
+            # IS NULL via the SQL spelling (filter normalizer lowers to
+            # ``is None``; AST converter maps to ``is``; generator emits
+            # ``IS NULL``).
+            filters=["customers.region IS NOT NULL"],
+        )
+    )
+    # Both seed rows have non-null region; the filter is inert (passes).
+    assert resp.row_count == 2
+    sql_upper = (resp.sql or "").upper()
+    # The emitted SQL renders the predicate via SQL's NULL-aware
+    # operator, not Python's ``is not None``. sqlglot emits the
+    # ``NOT x IS NULL`` form (equivalent to ``x IS NOT NULL``); accept
+    # either spelling.
+    assert "IS NULL" in sql_upper, f"expected IS NULL in SQL:\n{resp.sql}"
+    assert "NOT" in sql_upper, f"expected NOT in SQL:\n{resp.sql}"
+    # And no Python-spelling leak.
+    assert "IS NONE" not in sql_upper, (
+        f"Python ``is None`` leaked into emitted SQL:\n{resp.sql}"
+    )
+
+
+def test_nary_boolean_cross_model_filter_retains_all_operands():
+    """Codex round 2: ``_build_arith_or_cmp_ast`` (cross-model filter
+    rendering) used ``operands[0]``/``[1]`` and silently dropped n-ary
+    boolean operands past index 1. ``a AND b AND c`` would lose ``c``
+    in cross-model HAVING/WHERE, broadening results.
+
+    Unit-test the helper directly to pin the fix; the renderer is
+    static so we don't need an engine."""
+    from slayer.sql.generator import SQLGenerator
+    import sqlglot.expressions as exp
+    gen = SQLGenerator(dialect="sqlite")
+    operands = [
+        exp.column("a"),
+        exp.column("b"),
+        exp.column("c"),
+    ]
+    out = gen._build_arith_or_cmp_ast(op="and", operands=operands)
+    rendered = out.sql(dialect="sqlite")
+    # Every operand must appear in the rendered SQL — c MUST NOT be
+    # silently dropped.
+    assert "a" in rendered and "b" in rendered and "c" in rendered, (
+        f"n-ary AND lost an operand: {rendered}"
+    )
+    # The fold should produce nested And: ``(a AND b) AND c`` or
+    # equivalent. Sanity-check that both intermediate ``AND`` keywords
+    # appear.
+    assert rendered.upper().count(" AND ") == 2, (
+        f"expected two ``AND`` joiners; got {rendered}"
+    )
+    # Same for ``or``.
+    out_or = gen._build_arith_or_cmp_ast(op="or", operands=operands)
+    rendered_or = out_or.sql(dialect="sqlite")
+    assert "a" in rendered_or and "b" in rendered_or and "c" in rendered_or
+    assert rendered_or.upper().count(" OR ") == 2
+
+
 def test_aggregation_eligibility_allowed_aggregations_whitelist():
     """An explicit ``allowed_aggregations`` whitelist overrides the
     type-default gate."""
