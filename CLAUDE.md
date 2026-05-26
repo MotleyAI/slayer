@@ -147,7 +147,7 @@ poetry run ruff check slayer/ tests/
 
 ## CLI
 
-- All commands accept `--storage` (directory for YAML, `.db` file for SQLite). Defaults to platform-appropriate path (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS). Override with `$SLAYER_STORAGE` env var. Legacy `--models-dir` still works.
+- All commands accept `--storage` (directory for YAML, `.db` file for SQLite). Defaults to platform-appropriate path (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows). Override with `$SLAYER_STORAGE` env var.
 - `slayer query` supports `--dry-run` (preview SQL) and `--explain` (execution plan, dialect-aware).
 - `slayer datasources create-inline` supports `--password-stdin` for secure credential input.
 - `slayer datasources test` verifies connectivity.
