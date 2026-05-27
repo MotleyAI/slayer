@@ -268,6 +268,69 @@ class TestVirtualModelColumns:
         finally:
             tmp.cleanup()
 
+    async def test_query_measure_type_override_wins_over_inference(self) -> None:
+        """Codex review fix — a user-supplied ``type=`` on a query measure
+        spec is the override; ``_type_for_measure_formula`` is the fallback.
+
+        ``*:count`` ordinarily infers ``INT``; explicit ``type=DOUBLE``
+        on the same formula must win and surface as a DOUBLE virtual
+        column.
+        """
+        m = SlayerModel(
+            name="qb_type_override",
+            data_source="ds",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="*:count", type=DataType.DOUBLE)],
+                dimensions=["status"],
+            )],
+        )
+        engine, tmp = await _engine()
+        try:
+            saved = await engine.save_model(m)
+            count_col = next(c for c in saved.columns if c.name == "_count")
+            assert count_col.type == DataType.DOUBLE, (
+                f"User-supplied type=DOUBLE must override INT inference, "
+                f"got {count_col.type!r}"
+            )
+        finally:
+            tmp.cleanup()
+
+    async def test_promoted_hidden_slot_keeps_metadata(self) -> None:
+        """Codex review fix — when a hidden slot is later promoted to
+        public, its type / format / description must be filled in.
+
+        Repro: declare ``rank(*:count)`` first (hoists ``*:count`` as a
+        hidden dep with no display metadata), THEN declare ``*:count``
+        as a public measure. The promoted public slot must end up with
+        ``type=INT`` (not the default None → DOUBLE fallback).
+        """
+        m = SlayerModel(
+            name="qb_promoted_hidden",
+            data_source="ds",
+            source_queries=[SlayerQuery(
+                source_model="orders",
+                dimensions=["status"],
+                measures=[
+                    # rank uses *:count as a hidden inner; intern order
+                    # hoists *:count hidden first, then the public
+                    # *:count entry promotes the same slot.
+                    {"formula": "rank(*:count)", "name": "ranked"},
+                    {"formula": "*:count"},
+                ],
+            )],
+        )
+        engine, tmp = await _engine()
+        try:
+            saved = await engine.save_model(m)
+            count_col = next(c for c in saved.columns if c.name == "_count")
+            assert count_col.type == DataType.INT, (
+                f"Promoted hidden slot must inherit INT from the public "
+                f"intern, got {count_col.type!r}"
+            )
+        finally:
+            tmp.cleanup()
+
     async def test_declared_model_measure_type_honored(self) -> None:
         """A ``ModelMeasure`` with explicit ``type=DOUBLE`` carries through
         to the virtual column.

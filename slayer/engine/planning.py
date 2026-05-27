@@ -182,6 +182,10 @@ class ValueRegistry:
                 public_name=public_name,
                 declared_name=declared_name,
                 hidden=hidden,
+                label=label,
+                type=type,
+                format=format,
+                description=description,
             )
 
         # Fresh slot. Check declared_name collision against a different key.
@@ -225,6 +229,10 @@ class ValueRegistry:
         public_name: Optional[str],
         declared_name: str,
         hidden: bool,
+        label: Optional[str] = None,
+        type: Optional[DataType] = None,
+        format: Optional[NumberFormat] = None,
+        description: Optional[str] = None,
     ) -> SlotId:
         slot = self._slots[existing_sid]
         updates: Dict = {}
@@ -246,6 +254,22 @@ class ValueRegistry:
         elif not hidden and slot.hidden and public_name is None:
             # Re-intern as non-hidden — promote to public.
             updates["hidden"] = False
+        # Codex: when a hidden slot is promoted to public, carry the
+        # display metadata supplied by the public re-intern. Without this,
+        # a slot first interned as a hidden dependency of a transform
+        # (``cumsum(*:count)`` hoists ``*:count`` hidden) keeps its
+        # original ``type=None`` / ``format=None`` and the migrated query-
+        # backed virtual column regresses to ``DOUBLE`` with no format.
+        # Only fill missing fields — never overwrite metadata the first
+        # intern already supplied.
+        if slot.type is None and type is not None:
+            updates["type"] = type
+        if slot.label is None and label is not None:
+            updates["label"] = label
+        if slot.format is None and format is not None:
+            updates["format"] = format
+        if slot.description is None and description is not None:
+            updates["description"] = description
         if updates:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot

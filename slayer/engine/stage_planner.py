@@ -1002,7 +1002,11 @@ def _declared_measures_from_query(
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, formula=formula, bound=bound,
         )
-        m_type = _type_for_measure_formula(scope=scope, bound=bound)
+        # Codex: a user-supplied ``type=`` on the query measure spec is
+        # the override; aggregation-aware inference is the fallback.
+        # Mirrors how the legacy ``EnrichedMeasure.type`` honored an
+        # explicit type before falling back to inference.
+        m_type = m.type or _type_for_measure_formula(scope=scope, bound=bound)
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=declared_name,
