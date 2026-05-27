@@ -46,43 +46,29 @@ Side by side, here's LLM-generated SQL and the equivalent SLayer query.
 
 We recommend using [uv](https://docs.astral.sh/uv/), especially if you don't work in a Python project.
 
-To install:
-
-```bash
-uv tool install motley-slayer
-
-slayer
-```
-
-Try out without installing:
-
-```bash
-# Instant demo — spins up the bundled Jaffle Shop DuckDB and ingests it
-uvx --from 'motley-slayer[all]' slayer serve --demo
-
-# Or run without --demo and connect your own data afterwards
-uvx --from 'motley-slayer[all]' slayer serve
-
-# Already have datasource YAMLs configured? Ingest them all at boot:
-uvx --from 'motley-slayer[all]' slayer serve --ingest-on-startup
-```
-
-Or using Claude Code with an in-process MCP server:
-
+### Using demo dataset
 ```bash
 # With the Jaffle Shop demo preloaded (zero-config quickstart)
-claude mcp add slayer -- uvx --from motley-slayer slayer mcp --demo
-
-# Or with idempotent boot-time auto-ingestion across every configured datasource
-claude mcp add slayer -- uvx --from motley-slayer slayer mcp --ingest-on-startup
-
-# Or without either — manual ingestion via the ingest_datasource_models tool
-claude mcp add slayer -- uvx --from motley-slayer slayer mcp
+claude mcp add slayer_demo -- uvx --from motley-slayer slayer mcp --demo
 ```
 
-The `--demo` flag will preload the Jaffle Shop demo on startup – this takes a few seconds. The `--ingest-on-startup` flag walks every configured datasource and runs idempotent auto-ingestion before the server begins accepting connections (also enabled via `SLAYER_INGEST_ON_STARTUP=1`).
+### Using your own data
+Set up your datasource (make sure that the `DB_PASSWORD` environment variable is set), substituting the correct database, username, hostname, and db_name. 
 
-Then [configure a datasource](https://github.com/MotleyAI/slayer?tab=readme-ov-file#datasource-setup) or ask your agent to help you do it.
+```bash
+uvx --from motley-slayer slayer datasources create 'postgresql://user:${DB_PASSWORD}@hostname/db_name'
+```
+
+The password will be read by SLayer at init time, not saved to disk nor exposed to Claude. 
+
+
+Then add SLayer to Claude Code (use `[all]` so all DB drivers are available at boot-time ingestion):
+
+```bash
+claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp --ingest-on-startup
+```
+
+Now SLayer MCP will be visible in Claude Code next time you start it.
 
 Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
 
@@ -94,23 +80,6 @@ Adding a caching layer is on the [roadmap](https://github.com/MotleyAI/slayer?ta
 
 
 ## Interfaces
-
-### REST API
-
-```bash
-# Query
-curl -X POST http://localhost:5143/query \
-  -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
-
-# List models (returns name + description)
-curl http://localhost:5143/models
-
-# Get a single datasource (credentials masked)
-curl http://localhost:5143/datasources/my_postgres
-```
-
-See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/rest-api/).
 
 ### MCP Server
 
@@ -133,6 +102,24 @@ claude mcp add slayer-remote --transport sse --url http://localhost:5143/mcp/sse
 SLayer **does not expose credentials** to consumers once created.
 
 Both transports expose the same tools, allowing to inspect, create and update datasources and models and run queries. More info in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/mcp/).
+
+
+### CLI
+
+Slayer exposes a rich CLI:
+
+```bash
+# Show help
+slayer
+
+# Run a query directly from the terminal
+slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
+
+# Or from a file
+slayer query @query.json --format json
+```
+
+These commands do not depend on a running server. See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/cli/).
 
 ### Python Client
 
@@ -160,22 +147,26 @@ df = client.query_df(query)
 print(df)
 ```
 
-### CLI
+See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/python-client/).
 
-Slayer exposes a rich CLI:
+### REST API
 
 ```bash
-# Show help
-slayer
+# Query
+curl -X POST http://localhost:5143/query \
+  -H "Content-Type: application/json" \
+  -d '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
 
-# Run a query directly from the terminal
-slayer query '{"source_model": "orders", "measures": ["*:count"], "dimensions": ["status"]}'
+# List models (returns name + description)
+curl http://localhost:5143/models
 
-# Or from a file
-slayer query @query.json --format json
+# Get a single datasource (credentials masked)
+curl http://localhost:5143/datasources/my_postgres
 ```
 
-These commands do not depend on a running server.
+See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/rest-api/).
+
+
 
 ## Models
 
