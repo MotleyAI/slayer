@@ -3897,7 +3897,7 @@ class SQLGenerator:
             break
         return None
 
-    def _build_ranked_subquery_from_planned(
+    def _build_ranked_subquery_from_planned(  # NOSONAR(S3776) — Group 2 already factored the per-spec ROW_NUMBER passes into _build_unfiltered_rn_columns / _build_filtered_rn_columns; what's left is exp.Select / from / joins / where assembly that has to live in one place.
         self,
         *,
         source_relation: str,
@@ -7271,7 +7271,76 @@ class SQLGenerator:
                 _add_from_sql(self._parse(expanded_text))
         return ordered
 
-    def _build_agg_render_spec_from_planned(
+    def _resolve_aggregation_def(
+        self,
+        *,
+        key,
+        source_model,
+        src_leaf: str,
+    ):
+        """Look up the model-level ``Aggregation`` definition for ``key.agg``,
+        if any. Returns the matched ``Aggregation`` or ``None``.
+
+        The lookup runs for built-ins too (a user model is allowed to
+        override default params for a built-in, e.g. supply a default
+        ``weight=`` for ``weighted_avg``), and ``_resolve_agg_param``
+        relies on that override surfacing in
+        ``AggRenderSpec.aggregation_def``. Only when the name is NOT a
+        built-in does a lookup miss raise — an unknown non-built-in is a
+        hard error.
+        """
+        agg_def = next(
+            (a for a in (source_model.aggregations or []) if a.name == key.agg),
+            None,
+        )
+        if agg_def is None and key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
+            raise AggregationNotAllowedError(
+                column=src_leaf,
+                agg=key.agg,
+                reason=(
+                    f"unknown aggregation {key.agg!r} — not a built-in "
+                    f"and not defined in {source_model.name!r}."
+                    f"aggregations."
+                ),
+            )
+        return agg_def
+
+    def _validate_aggregate_kwarg_paths(
+        self,
+        *,
+        key,
+        source,
+        src_leaf: str,
+    ) -> None:
+        """Reject kwarg column refs whose join path disagrees with the
+        aggregate source path.
+
+        A kwarg path that doesn't match the aggregate source path would
+        silently bind the kwarg to a different model (host vs joined
+        target) than the aggregate value column — meaningless SQL
+        semantically. Caller-side cross-model rerooting strips the
+        matching prefix from source AND kwargs before reaching this
+        point; any residual mismatch surfaces here. Both bare-column
+        (``ColumnKey``) and derived-column (``ColumnSqlKey``) kwarg
+        refs go through this gate (CodeRabbit fold-in on PR #144).
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        for kname, kval in key.kwargs:
+            if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
+                raise AggregationNotAllowedError(
+                    column=src_leaf,
+                    agg=key.agg,
+                    reason=(
+                        f"kwarg {kname!r} references "
+                        f"{type(kval).__name__} with path {kval.path!r}; "
+                        f"aggregate source path is {source.path!r}. "
+                        f"Cross-model kwargs must share the source's "
+                        f"join path."
+                    ),
+                )
+
+    def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
         self,
         *,
         slot,
@@ -7345,57 +7414,12 @@ class SQLGenerator:
                 source_model=source_model,
                 source_relation=source_relation,
             )
-            # Aggregations defined on ``SlayerModel.aggregations`` are
-            # threaded into ``AggRenderSpec.aggregation_def`` so
-            # ``_build_formula_agg`` renders the custom formula AND so
-            # ``_resolve_agg_param`` can fall back to the model-level
-            # parameter defaults (``weighted_avg(weight=quantity)``,
-            # ``percentile(p=0.5)``, …). The lookup runs for built-ins too:
-            # a user model is allowed to override the default params of a
-            # built-in agg (e.g. supply a default ``weight=`` for
-            # ``weighted_avg``), and dropping that override on the planned
-            # path would turn a previously valid query into a missing-param
-            # error. Only when the name is NOT a built-in does a lookup
-            # miss raise — unknown non-built-ins are a hard error.
-            agg_def = next(
-                (a for a in (source_model.aggregations or []) if a.name == key.agg),
-                None,
+            agg_def = self._resolve_aggregation_def(
+                key=key, source_model=source_model, src_leaf=src_leaf,
             )
-            if agg_def is None and key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
-                raise AggregationNotAllowedError(
-                    column=src_leaf,
-                    agg=key.agg,
-                    reason=(
-                        f"unknown aggregation {key.agg!r} — not a built-in "
-                        f"and not defined in {source_model.name!r}."
-                        f"aggregations."
-                    ),
-                )
-            # DEV-1450 stage 7b.13: validate kwarg column-ref paths against
-            # source.path. A kwarg path that doesn't match the aggregate
-            # source path would silently bind the kwarg to a different
-            # model (host vs joined target) than the aggregate value
-            # column -- meaningless SQL semantically. Caller-side
-            # cross-model rerooting strips the matching prefix from
-            # source AND kwargs before reaching this point; any residual
-            # mismatch surfaces here. Both bare-column (``ColumnKey``) and
-            # derived-column (``ColumnSqlKey``) kwarg refs go through this
-            # gate; a ``ColumnSqlKey`` slipping past would bypass the
-            # cross-model path check the same way (CodeRabbit fold-in on
-            # PR #144).
-            for kname, kval in key.kwargs:
-                if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
-                    raise AggregationNotAllowedError(
-                        column=src_leaf,
-                        agg=key.agg,
-                        reason=(
-                            f"kwarg {kname!r} references "
-                            f"{type(kval).__name__} with path {kval.path!r}; "
-                            f"aggregate source path is {source.path!r}. "
-                            f"Cross-model kwargs must share the source's "
-                            f"join path."
-                        ),
-                    )
+            self._validate_aggregate_kwarg_paths(
+                key=key, source=source, src_leaf=src_leaf,
+            )
             col = next(
                 (c for c in source_model.columns if c.name == src_leaf),
                 None,
