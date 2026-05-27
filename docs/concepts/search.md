@@ -249,18 +249,36 @@ round-trips as-is.
 
 ## Sample-value cache
 
-For richer search results, every column carries an optional
-`Column.sampled` field — a formatted snapshot of the column's distinct
-values (categorical) or `min .. max` range (numeric / temporal). The
-field is populated:
+For richer search results, every column carries three optional
+sample-value fields:
+
+- `Column.sampled` — a formatted text snapshot. For categorical columns,
+  the top-20 most-common values comma-joined; for high-cardinality
+  categoricals (> 50 distinct), the top-20 plus a `... (N distinct)`
+  suffix carrying the true total. For numeric / temporal columns, the
+  `min .. max` range.
+- `Column.sampled_values` (DEV-1480) — the structured top-50-by-frequency
+  list for categorical columns. Stays `None` for numeric / temporal
+  columns. Consumers comparing predicate literals against actual stored
+  values should read this field directly — text-split on `sampled` is
+  ambiguous for values that themselves contain commas
+  (e.g. `"R$ 1,000–3,000"`).
+- `Column.distinct_count` (DEV-1480) — the true total cardinality at
+  profile time. Set for every profiled categorical column (computed via a
+  secondary `count_distinct` query when overflow is detected so the count
+  is exact, not capped). Stays `None` for numeric / temporal columns.
+
+All three are populated:
 
 - on every `slayer ingest` / `ingest_datasource_models` MCP call /
   `POST /ingest` for every table-backed model in the touched datasource;
 - on `slayer search refresh-samples [--data-source X] [--model M ...]`;
 - on `edit_model` (column edits → that column; model-level filter / sql /
   source-query body change → every column);
-- lazily on `inspect_model` when the cached value is `None` (write-back
-  best-effort).
+- lazily on `inspect_model` when the cached value is missing (write-back
+  best-effort). Cache validity for categorical columns requires
+  `sampled_values is not None` — v6 (legacy `sampled` only) models
+  re-profile on next call so the structured field gets populated.
 
 sql-mode and query-backed models are silently skipped in v1.
 

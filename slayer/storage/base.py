@@ -22,6 +22,35 @@ from slayer.storage.type_refinement import (
 )
 
 
+def _write_sample_fields(
+    col: Dict[str, Any],
+    *,
+    sampled: Optional[str],
+    sampled_values: Optional[List[str]],
+    distinct_count: Optional[int],
+) -> None:
+    """Apply the DEV-1375 + DEV-1480 sample-field write convention to a
+    column dict in place: ``None`` pops the corresponding key, non-None
+    writes it.
+
+    Lives on the ABC module so every backend's ``update_column_sampled``
+    implementation can route through the same write logic (see
+    ``feedback_backend_agnostic.md``).
+    """
+    if sampled is None:
+        col.pop("sampled", None)
+    else:
+        col["sampled"] = sampled
+    if sampled_values is None:
+        col.pop("sampled_values", None)
+    else:
+        col["sampled_values"] = sampled_values
+    if distinct_count is None:
+        col.pop("distinct_count", None)
+    else:
+        col["distinct_count"] = distinct_count
+
+
 def storage_base_dir(path: str) -> str:
     """Return the on-disk directory associated with a storage path.
 
@@ -229,12 +258,19 @@ class StorageBackend(ABC):
         model_name: str,
         column_name: str,
         sampled: Optional[str],
+        sampled_values: Optional[List[str]],
+        distinct_count: Optional[int],
     ) -> None:
-        """Patch a single column's ``sampled`` field in-place (DEV-1375).
+        """Patch a single column's sample-value fields in-place (DEV-1375 +
+        DEV-1480).
 
-        Avoids a full ``save_model`` per refresh — read-modify-write the
-        single field, leave every other field untouched. Raises
-        ``ValueError`` when the model or column doesn't exist.
+        Writes ``sampled``, ``sampled_values``, and ``distinct_count`` as a
+        single read-modify-write so the three stay consistent with each
+        other. ``None`` for any field drops the corresponding key from the
+        persisted dict; non-None writes it. Other column fields are
+        untouched.
+
+        Raises ``ValueError`` when the model or column doesn't exist.
         """
 
     # ---- shared model lookup / load helpers --------------------------------
