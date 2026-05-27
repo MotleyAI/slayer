@@ -2904,6 +2904,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 slots_by_id=slots_by_id,
                 source_model=source_model,
+                bundle=bundle,
             )
             return base_select.sql(dialect=self.dialect, pretty=True)
 
@@ -3693,6 +3694,7 @@ class SQLGenerator:
                         slot=slot,
                         source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                     if any_agg:
                         composite = _wrap_cast_for_type(composite, slot.type)
@@ -4230,6 +4232,7 @@ class SQLGenerator:
                         slot=slot, key=slot.key, source_model=source_model,
                         source_relation=source_relation,
                         full_alias=full_alias_by_sid[sid],
+                        bundle=bundle,
                     )
                 )
 
@@ -4286,6 +4289,7 @@ class SQLGenerator:
                     agg_expr, is_agg = self._render_aggregate_composite_expr(
                         key=slot.key, slot=slot, source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
@@ -4309,6 +4313,7 @@ class SQLGenerator:
         slot,
         source_model,
         source_relation: str,
+        bundle=None,
     ) -> "tuple[exp.Expression, bool]":
         """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
         ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
@@ -4339,6 +4344,7 @@ class SQLGenerator:
             synth = self._build_agg_render_spec_from_planned(
                 slot=slot, key=key, source_model=source_model,
                 source_relation=source_relation, full_alias="__op__",
+                bundle=bundle,
             )
             agg_expr, is_agg = self._build_agg(synth)
             return agg_expr, is_agg
@@ -4349,6 +4355,7 @@ class SQLGenerator:
                 e, a = self._render_aggregate_composite_expr(
                     key=o, slot=slot, source_model=source_model,
                     source_relation=source_relation,
+                    bundle=bundle,
                 )
                 operands.append(e)
                 any_agg = any_agg or a
@@ -4361,6 +4368,7 @@ class SQLGenerator:
                     e, ag = self._render_aggregate_composite_expr(
                         key=a, slot=slot, source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                     args.append(e)
                     any_agg = any_agg or ag
@@ -5582,6 +5590,7 @@ class SQLGenerator:
                 source_model=target_model,
                 source_relation=target_relation,
                 full_alias=f"{target_relation}._having_agg",
+                bundle=bundle,
             )
             expr, _ = self._build_agg(synth)
             return expr
@@ -6746,6 +6755,7 @@ class SQLGenerator:
                 source_model=source_model,
                 source_relation=source_relation,
                 full_alias=input_alias,
+                bundle=bundle,
             )
             agg_expr, _ = self._build_agg(synth)
             agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
@@ -7854,6 +7864,7 @@ class SQLGenerator:
                 source_model=source_model,
                 source_relation=source_relation,
                 full_alias="__having_ref__",
+                bundle=bundle,
             )
             agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
@@ -8130,6 +8141,7 @@ class SQLGenerator:
         source_relation: str,
         slots_by_id: dict,
         source_model=None,
+        bundle=None,
     ) -> exp.Select:
         """ORDER BY entries reference slot ids — resolve to the slot's
         public alias and emit ``ORDER BY "source_relation.alias"
@@ -8158,6 +8170,7 @@ class SQLGenerator:
                         slot=slot,
                         source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                     ascending = order_entry.direction == "asc"
                     select = select.order_by(

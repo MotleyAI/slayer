@@ -227,6 +227,49 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
 # ---------------------------------------------------------------------------
 
 
+async def test_local_first_last_over_derived_column_expands_inner_refs(
+    engine_with_seeded_data,
+) -> None:
+    """Codex round-3 fix — local ``first``/``last`` over a derived
+    ``ColumnSqlKey`` aggregate source must qualify the inner bare refs
+    in ``Column.sql`` via ``_expand_derived_column_sql``.
+
+    Without bundle threading, the ranked-subquery path bypassed the
+    derived-ref expansion, so e.g. ``net_amount:last(created_at)``
+    where ``net_amount.sql = "amount * 0.9"`` would render the bare
+    ``amount`` inside the CASE expression without qualifying it under
+    the source relation.
+
+    We can't easily inspect the rendered SQL here (the ``MAX(CASE WHEN
+    _last_rn = 1 ...)`` body wraps the derived sql); the end-to-end
+    execute is the strongest pin — if the bare ``amount`` is unqualified
+    and the FROM is the ranked subquery's own alias, SQLite will fail
+    with "no such column".
+    """
+    engine, _ = engine_with_seeded_data
+    # Add a derived ``net_amount`` column on orders so ``net_amount:last``
+    # exercises the ColumnSqlKey aggregate-source path.
+    orders = await engine.storage.get_model("orders")
+    assert orders is not None
+    orders = orders.model_copy(update={
+        "columns": list(orders.columns) + [
+            Column(
+                name="net_amount",
+                sql="amount * 0.9",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    })
+    await engine.storage.save_model(orders)
+
+    resp = await engine.execute(SlayerQuery(
+        source_model="orders",
+        dimensions=["status"],
+        measures=[{"formula": "net_amount:last(created_at)"}],
+    ))
+    assert resp.data, resp.sql
+
+
 async def test_cross_model_first_last_uses_target_default_time_dimension(
     engine_with_seeded_data,
 ) -> None:
