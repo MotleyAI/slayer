@@ -36,6 +36,7 @@ from slayer.engine.source_bundle import (
 )
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
 
 class AggRenderSpec(BaseModel):
@@ -3722,6 +3723,7 @@ class SQLGenerator:
                     source_model=source_model,
                     source_relation=source_relation,
                     full_alias=full_alias,
+                    bundle=bundle,
                 )
                 agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
@@ -4106,13 +4108,38 @@ class SQLGenerator:
             source_relation=source_relation,
             bundle=bundle,
         )
+        # DEV-1476 bug (b): the raise must gate on whether ANY first/last
+        # aggregate slot lacks an explicit positional time arg. When every
+        # first/last spec carries its own ``key.args`` time column, no
+        # default is needed and the helper should not raise.
         if default_time_col_sql is None:
-            raise ValueError(
-                "first/last aggregation requires a ranking time column "
-                "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-                "model's default_time_dimension); none is resolvable for "
-                f"model {source_model.name!r}."
-            )
+            needs_default = False
+            for sid in base_render_order:
+                slot = slots_by_id[sid]
+                if slot.phase != Phase.AGGREGATE:
+                    continue
+                key = slot.key
+                if not isinstance(key, AggregateKey):
+                    continue
+                if key.agg not in ("first", "last"):
+                    continue
+                # An explicit time arg is the first ColumnKey / ColumnSqlKey
+                # in ``key.args``. If any first/last slot is missing one, we
+                # need the default.
+                has_explicit = any(
+                    isinstance(a, (ColumnKey, ColumnSqlKey))
+                    for a in key.args
+                )
+                if not has_explicit:
+                    needs_default = True
+                    break
+            if needs_default:
+                raise ValueError(
+                    "first/last aggregation requires a ranking time column "
+                    "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
+                    "model's default_time_dimension); none is resolvable for "
+                    f"model {source_model.name!r}."
+                )
 
         # Pass 1: full aliases (in render order, for C13 cycling), ROW-slot
         # classification (partition / subquery projection / outer ref), and
@@ -5252,10 +5279,21 @@ class SQLGenerator:
         local_kwargs = tuple(
             (k, _reroot_kwarg(v)) for k, v in agg_slot.key.kwargs
         )
+        # DEV-1476 bug (c): symmetric reroot of positional args. An explicit
+        # time arg ``customers.amount:last(customers.signup_at)`` arrives
+        # here with ``key.args=(ColumnKey(path=("customers",),
+        # leaf="signup_at"),)``. Without rerooting, ``_resolve_explicit_
+        # time_col`` qualifies the time column under the wrong alias inside
+        # the target-rooted CTE. ``_reroot_kwarg`` already does the right
+        # thing for ``ColumnKey`` / ``ColumnSqlKey``; reuse it.
+        local_args = tuple(
+            _reroot_kwarg(a) if isinstance(a, (ColumnKey, ColumnSqlKey)) else a
+            for a in agg_slot.key.args
+        )
         local_agg_key = AggregateKey(
             source=local_source_key,
             agg=agg_slot.key.agg,
-            args=agg_slot.key.args,
+            args=local_args,
             kwargs=local_kwargs,
             column_filter_key=agg_slot.key.column_filter_key,
         )
@@ -5270,21 +5308,52 @@ class SQLGenerator:
             source_model=target_model,
             source_relation=target_relation,
             full_alias=full_agg_alias,
+            bundle=bundle,
         )
-        agg_expr, is_agg = self._build_agg(synth)
+
+        # DEV-1476 bug (c): for first/last aggregates the FROM must be a
+        # ROW_NUMBER-ranked subquery so the ``MAX(CASE WHEN _last_rn = 1
+        # THEN col END)`` expression has a ranking column. The local
+        # first/last path (``_build_first_last_base_select``) wraps via
+        # ``_build_ranked_subquery_from_planned``; mirror that here for
+        # the cross-model CTE.
+        is_first_or_last = local_agg_key.agg in ("first", "last")
+        if is_first_or_last:
+            agg_expr, is_agg = self._build_agg(
+                synth,
+                rn_suffix_map={(synth.time_column, synth.aggregation): ""},
+                default_time_col=synth.time_column,
+            )
+        else:
+            agg_expr, is_agg = self._build_agg(synth)
         if is_agg:
             agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
         cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
 
-        # Build the CTE Select. FROM is the target table directly.
+        # Build the CTE Select. FROM is the target table directly OR a
+        # ROW_NUMBER-ranked subquery over it for first/last aggregates.
         cte_select = exp.Select()
         for col in cte_select_columns:
             cte_select = cte_select.select(col)
-        cte_select = cte_select.from_(
-            self._build_from_clause_from_planned(
-                source_model=target_model, source_relation=target_relation,
-            ),
+        target_from = self._build_from_clause_from_planned(
+            source_model=target_model, source_relation=target_relation,
         )
+        if is_first_or_last and synth.time_column:
+            ranked_from, _rn, _filtered_rn, _filtered_match = (
+                self._build_ranked_subquery_from_planned(
+                    source_relation=target_relation,
+                    default_time_col_sql=synth.time_column,
+                    partition_exprs=list(cte_group_by),
+                    extra_projections=[],
+                    synth_specs=[synth],
+                    from_clause=target_from,
+                    base_joins=[],
+                    where_clause=None,
+                )
+            )
+            cte_select = cte_select.from_(ranked_from)
+        else:
+            cte_select = cte_select.from_(target_from)
 
         # WHERE: target-model-filters (qualified bare-identifier refs
         # so ``deleted_at IS NULL`` becomes ``customers.deleted_at IS
@@ -7348,6 +7417,7 @@ class SQLGenerator:
         source_model,
         source_relation: str,
         full_alias: str,
+        bundle=None,
     ) -> AggRenderSpec:
         """Build an ``AggRenderSpec`` from a planned aggregate slot so
         ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type`` emit
@@ -7429,7 +7499,26 @@ class SQLGenerator:
                     f"Aggregate source column {src_leaf!r} not found "
                     f"on model {source_model.name!r}",
                 )
-            sql_text = col.sql if col.sql else col.name
+            # DEV-1452 Stage B — for derived (``ColumnSqlKey``) aggregate
+            # sources, the inner bare refs in ``Column.sql`` must qualify
+            # to ``source_relation`` (legacy enrichment did this pre-CAST
+            # via ``_enrich``'s derived-ref expansion; the typed pipeline
+            # never invoked the expander on aggregate sources, so the
+            # rendered SQL kept bare ``amount`` where it should be
+            # ``orders.amount``).
+            if (
+                isinstance(source, ColumnSqlKey)
+                and col.sql is not None
+                and bundle is not None
+            ):
+                sql_text = self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=col.name,
+                    bundle=bundle,
+                )
+            else:
+                sql_text = col.sql if col.sql else col.name
             # DEV-1450 stage 7b.13: stringify kwargs through the shared
             # helper. ``AggRenderSpec.agg_kwargs`` is ``Dict[str, str]``
             # and downstream ``_validate_agg_param_value`` rejects
@@ -8230,48 +8319,15 @@ def _stage_rename_wrapper(*, planned, stage_sql, dialect):
     """Wrap a rendered intermediate-stage SQL so its output columns are the
     flat names downstream stages bound against.
 
-    Derived from the ACTUAL rendered output aliases (``named_selects``), not
-    from a positional column list: ``generate_from_planned`` aliases each
-    public column as ``<source_relation>.<dotted_path_or_canonical>`` (e.g.
-    ``orders.status``, ``orders.customers.region``,
-    ``orders.customers.revenue_sum``). The wrapper strips the
-    ``<source_relation>.`` prefix and ``__``-flattens the remainder to the
-    downstream bind name (``customers__region``, ``customers__revenue_sum``),
-    matching ``StageColumn.name`` exactly. By-name, so robust to the cross-
-    model renderer emitting base columns before cross-model ones (which
-    diverges from ``public_projection`` order); and correct for joined
-    dimensions, whose rendered alias is the dotted path, not ``public_alias``.
+    Thin adapter around :func:`slayer.sql.stage_wrapper.build_flat_rename_wrapper`
+    (DEV-1452 Stage B decision B) — pulls ``source_relation`` and the
+    expected StageSchema column names off the ``PlannedQuery`` and forwards
+    to the shared helper. The migrated ``_expand_query_backed_model`` path
+    calls the helper directly with names derived from the typed plan.
     """
-    inner_alias = "_stage_inner"
-    body = sqlglot.parse_one(stage_sql, dialect=dialect)
-    prefix = f"{planned.source_relation}."
-    select = exp.Select()
-    produced: List[str] = []
-    for out_name in body.named_selects:
-        remainder = out_name[len(prefix):] if out_name.startswith(prefix) else out_name
-        flat = remainder.replace(".", "__")
-        produced.append(flat)
-        src = exp.Column(
-            this=exp.to_identifier(out_name, quoted=True),
-            table=exp.to_identifier(inner_alias),
-        )
-        select = select.select(
-            exp.alias_(src, exp.to_identifier(flat, quoted=True)),
-        )
-    # Fail fast if the rendered stage's output columns don't line up with the
-    # StageSchema the downstream stage bound against — a planner / generator
-    # divergence (e.g. a hidden aux column leaking, or a C13 multi-alias
-    # over-projection) would otherwise surface as a confusing downstream
-    # bind miss rather than here.
-    expected = [c.name for c in planned.stage_schema.columns]
-    if sorted(produced) != sorted(expected):
-        raise ValueError(
-            f"stage {planned.source_relation!r}: rendered output columns "
-            f"{produced!r} do not match the StageSchema {expected!r}.",
-        )
-    return select.from_(
-        exp.Subquery(
-            this=body,
-            alias=exp.TableAlias(this=exp.to_identifier(inner_alias)),
-        ),
+    return build_flat_rename_wrapper(
+        source_relation=planned.source_relation,
+        stage_sql=stage_sql,
+        expected_columns=[c.name for c in planned.stage_schema.columns],
+        dialect=dialect,
     )

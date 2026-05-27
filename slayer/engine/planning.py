@@ -30,6 +30,7 @@ from typing import Dict, FrozenSet, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DuplicateMeasureNameError,
@@ -115,6 +116,8 @@ class ValueRegistry:
         label: Optional[str] = None,
         type: Optional[DataType] = None,
         expression: Optional["BoundExpr"] = None,
+        format: Optional[NumberFormat] = None,
+        description: Optional[str] = None,
     ) -> SlotId:
         # Alias-collision validations (P4 / DEV-1443).
         # Exemption: a dimension whose public name IS its own column
@@ -206,6 +209,8 @@ class ValueRegistry:
             label=label,
             type=type,
             expression=expression if expression is not None else BoundExpr(value_key=key),
+            format=format,
+            description=description,
         )
         self._slots[sid] = slot
         self._by_key[key] = sid
@@ -373,6 +378,13 @@ class DeclaredMeasure(BaseModel):
     ``bound`` is the binder's output. ``declared_name`` is the canonical
     or user-supplied name. ``public_name`` is the user-facing alias —
     set when the user supplied an explicit ``name`` on the measure spec.
+
+    DEV-1452 Stage B decisions #2 + #8: ``type``, ``format``, and
+    ``description`` carry typed display + slot metadata from the source
+    ``ModelMeasure`` / ``Column`` so the public slot retains the same
+    contract the legacy enrichment pipeline produced. ``type`` mirrors
+    the legacy ``EnrichedMeasure.type`` (count → INT, avg → DOUBLE,
+    sum/min/max → source column type).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -382,6 +394,9 @@ class DeclaredMeasure(BaseModel):
     public_name: Optional[str] = None
     label: Optional[str] = None
     canonical_alias: Optional[str] = None
+    type: Optional[DataType] = None
+    format: Optional[NumberFormat] = None
+    description: Optional[str] = None
 
 
 class OrderSpec(BaseModel):
@@ -493,6 +508,9 @@ class ProjectionPlanner:
                 canonical_alias=m.canonical_alias,
                 phase=m.bound.phase,
                 label=m.label,
+                type=m.type,
+                format=m.format,
+                description=m.description,
             )
             public_projection.append(sid)
             # Materialise any auxiliary slot-worthy deps of the measure

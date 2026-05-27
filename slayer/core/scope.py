@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
 from slayer.core.models import SlayerModel
 
 
@@ -40,6 +41,11 @@ class StageColumn(BaseModel):
     or alias-bearing forms without coupling them). ``public_alias`` is
     the result-key piece returned to the user — set only for non-hidden
     columns.
+
+    ``format`` (DEV-1452 Stage B decision #8) is the typed ``NumberFormat``
+    inherited from the source ``ModelMeasure`` / ``Column`` or computed
+    by ``_infer_aggregated_format``. ``description`` propagates the source
+    column's documentation through the typed plan.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -49,7 +55,7 @@ class StageColumn(BaseModel):
     public_alias: Optional[str] = None
     type: Optional[DataType] = None
     label: Optional[str] = None
-    format: Optional[str] = None
+    format: Optional[NumberFormat] = None
     hidden: bool = False
     description: Optional[str] = None
     meta: Optional[Dict[str, Any]] = None

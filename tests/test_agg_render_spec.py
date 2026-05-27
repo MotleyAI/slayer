@@ -550,18 +550,41 @@ class TestBuilderFirstLast:
         assert "'DAY'" in tc
         assert "CREATED_AT" in tc
 
-    def test_cross_model_derived_time_column_raises(self):
-        # Cross-model derived time args are not supported by the
-        # ranked-subquery builder yet (tracked as DEV-1476, bug (c) of the
-        # four-bug Stage B package). Surface a NotImplementedError rather
-        # than silently emitting against the wrong relation alias. When
-        # DEV-1476 lands, update this test to assert the working behaviour.
+    def test_cross_model_derived_time_column_resolves_after_reroot(self):
+        # DEV-1452 Stage B (DEV-1476 bug (c) + bug (d-cross)) — once the
+        # cross-model reroot pass strips the path from ``key.args``
+        # symmetrically to kwargs (bug (c)), the spec builder sees the
+        # post-reroot shape (path=()) and resolves the derived column on
+        # the rerooted source model (the target — ``customers`` here).
+        #
+        # Pre-Stage-B this raised ``NotImplementedError`` because the
+        # reroot did NOT strip the path; the helper guarded against the
+        # path-bearing shape. Post-Stage-B the helper never sees a
+        # path-bearing ColumnSqlKey in this position (the reroot pass
+        # handles the path strip), and the local-derived branch resolves
+        # ``signup_at_alias`` on the rerooted source model.
+        customers = SlayerModel(
+            name="customers",
+            data_source="prod",
+            sql_table="customers",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="signup_at", type=DataType.TIMESTAMP),
+                Column(
+                    name="signup_at_alias",
+                    sql="signup_at",
+                    type=DataType.TIMESTAMP,
+                ),
+                Column(name="amount", type=DataType.DOUBLE),
+            ],
+        )
+        # POST-REROOT shape: path stripped on both source AND args.
         key = AggregateKey(
             source=ColumnKey(path=(), leaf="amount"),
             agg="last",
             args=(
                 ColumnSqlKey(
-                    path=("customers",),
+                    path=(),
                     model="customers",
                     column_name="signup_at_alias",
                 ),
@@ -573,14 +596,17 @@ class TestBuilderFirstLast:
             public_name="amount_last",
             slot_type=DataType.DOUBLE,
         )
-        with pytest.raises(NotImplementedError, match="Cross-model derived time"):
-            _invoke(
-                slot=slot,
-                key=key,
-                source_model=_orders_model(),
-                source_relation="orders",
-                full_alias="orders.amount_last",
-            )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=customers,
+            source_relation="customers",
+            full_alias="customers.amount_last",
+        )
+        assert spec.time_column is not None
+        # The derived ``signup_at_alias`` (sql=``signup_at``) expands to
+        # the underlying SQL, qualified under the rerooted source relation.
+        assert "signup_at" in spec.time_column.lower(), spec.time_column
 
     def test_unknown_derived_time_column_raises(self):
         # ``ColumnSqlKey`` whose ``column_name`` is not on ``source_model``
