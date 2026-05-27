@@ -152,7 +152,11 @@ def render_column_text(*, model: SlayerModel, column: Column) -> str:
         lines.append(f"SQL: {column.sql}")
     if column.filter:
         lines.append(f"Filter: {column.filter}")
-    if column.sampled is not None:
+    # DEV-1480: skip the line when ``sampled`` is empty (all-NULL profiled
+    # categorical column). Avoids a bare ``Sample values: `` trailer in the
+    # embedded doc text, and keeps the content_hash stable for columns whose
+    # only DEV-1480 change is the new structured ``sampled_values`` field.
+    if column.sampled:
         lines.append(f"Sample values: {column.sampled}")
     if column.primary_key:
         lines.append("Primary key: yes")

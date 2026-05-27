@@ -1,4 +1,4 @@
-"""Sample-value profiling for ``Column.sampled`` (DEV-1375).
+"""Sample-value profiling for ``Column.sampled`` (DEV-1375 + DEV-1480).
 
 The internals were extracted from ``slayer/mcp/server.py``'s
 ``_collect_dim_profile`` so both ``inspect_model`` and the search-index
@@ -6,8 +6,10 @@ refresh hooks can call them without circular imports.
 
 Public surface:
 
-* :func:`profile_column` — produce the formatted ``sampled`` string for
-  a single column.
+* :class:`ColumnSample` — three-field result of profiling a single column.
+  Carries ``sampled`` (text), ``sampled_values`` (structured top-N for
+  categorical), and ``distinct_count`` (true cardinality for categorical).
+* :func:`profile_column` — produce the ``ColumnSample`` for a single column.
 * :func:`refresh_table_backed_model_sampled` — walk every non-hidden
   column on a table-backed model, profile, persist via storage. Best-
   effort: per-column failures are accumulated and returned as strings.
@@ -19,17 +21,62 @@ Public surface:
 
 sql-mode and query-backed models are silently skipped in v1; broader
 coverage is tracked in DEV-1377.
+
+DEV-1480 changes:
+- Categorical cap raised from 20 → 50 distinct values.
+- Categorical query orders by per-value count desc (alphabetical tie-break
+  in SQL) so the persisted top-N is "most common values first".
+- New ``Column.sampled_values: Optional[List[str]]`` carries the top-50
+  list verbatim (no ambiguous text split). Stays ``None`` for overflow >50
+  and for numeric/temporal columns.
+- New ``Column.distinct_count: Optional[int]`` carries the true total
+  cardinality; the overflow branch fires a second ``count_distinct`` query
+  via a transient ``ModelExtension`` (bypassing ``Column.allowed_aggregations``
+  and ``Column.filter``).
+- Text ``sampled`` format unchanged for ≤ 50 distinct (top-20 joined). For
+  overflow it becomes ``", ".join(top_20) + " ... (N distinct)"`` carrying
+  the true total — replacing the legacy ``"> 50 distinct"`` marker.
+- The internal ``_DimProfileEntry`` shape stays the same — overflow keeps
+  ``values=None, distinct_count=None`` to signal "data omitted from the
+  legacy entry". The richer DEV-1480 data only lives on ``ColumnSample``
+  produced by ``profile_column``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, NamedTuple, Optional, Set
+from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
+
+
+# ---------------------------------------------------------------------------
+# DEV-1480: categorical cap and public-ish result type
+# ---------------------------------------------------------------------------
+
+
+# Categorical cardinality cap. Lifts the legacy 20 from DEV-1375.
+_MAX_CATEGORICAL_VALUES = 50
+# How many of the top values get joined into the text ``sampled`` summary.
+_TEXT_SAMPLE_CAP = 20
+
+
+class ColumnSample(NamedTuple):
+    """Three-field result of profiling a single column.
+
+    - ``sampled`` is the human-readable string (``Column.sampled``).
+    - ``sampled_values`` is the structured top-N list (``Column.sampled_values``).
+      ``None`` for overflow > 50 and for numeric/temporal columns.
+    - ``distinct_count`` is the true cardinality (``Column.distinct_count``).
+      ``None`` for numeric/temporal columns.
+    """
+
+    sampled: Optional[str]
+    sampled_values: Optional[List[str]]
+    distinct_count: Optional[int]
 
 
 # ---------------------------------------------------------------------------
@@ -60,16 +107,25 @@ def _format_dim_profile_value(entry: _DimProfileEntry) -> str:
     Plain text — no backticks; backticking happens at render time in
     ``inspect_model`` if needed (this string lives on disk in
     ``Column.sampled`` for the search index to consume).
+
+    For categorical entries this is the "first ``_TEXT_SAMPLE_CAP`` values
+    joined by ``, ``" form; the DEV-1480 overflow suffix is appended only
+    by the higher-level ``profile_column`` flow when it has the true total
+    in hand.
     """
     if entry.values is not None:
-        return ", ".join(str(v) for v in entry.values)
+        return ", ".join(str(v) for v in entry.values[:_TEXT_SAMPLE_CAP])
     if (
         entry.distinct_count is None
         and entry.values is None
         and entry.min_value is None
         and entry.max_value is None
     ):
-        return "> 20 distinct"
+        # Pre-DEV-1480 legacy callers still get a textual overflow marker;
+        # the DEV-1480 ``profile_column`` flow doesn't use this branch and
+        # produces the richer ``", ".join(top_20) + " ... (N distinct)"``
+        # form directly.
+        return f"> {_MAX_CATEGORICAL_VALUES} distinct"
     return f"{entry.min_value} .. {entry.max_value}"
 
 
@@ -80,22 +136,48 @@ async def _profile_categorical_column(
     engine: SlayerQueryEngine,
     max_values: int,
 ) -> Optional[_DimProfileEntry]:
-    """Profile one string/boolean column via a one-shot distinct-values query.
+    """Profile one string/boolean column.
+
+    DEV-1480: orders by per-value count desc with alphabetical tie-break in
+    SQL, so the top-N persisted is deterministic and "most common first".
+    LIMIT is ``max_values + 2`` so a single NULL row doesn't push a
+    legitimate non-overflow result over the cap.
 
     Returns ``None`` when the column query fails — caller skips the column.
+    The returned entry uses the legacy shape (``values=None, distinct_count=None``
+    signals overflow); DEV-1480's true-total ``distinct_count`` is filled
+    by ``profile_column``.
     """
     try:
         q = SlayerQuery.model_validate({
             "source_model": model.name,
             "dimensions": [{"name": column.name}],
             "measures": [{"formula": "*:count"}],
-            "limit": max_values + 1,
+            "order": [
+                {"column": "_count", "direction": "desc"},
+                {"column": column.name, "direction": "asc"},
+            ],
+            "limit": max_values + 2,
         })
         r = await engine.execute(query=q, data_source=model.data_source or None)
     except Exception:
         return None
     value_key = f"{model.name}.{column.name}"
-    values = [row.get(value_key) for row in r.data]
+    # Filter NULL values out — they map to ``col IS NULL`` predicates, not
+    # to literal-equality use cases the validator cares about.
+    raw_pairs: List[Tuple[Any, Any]] = []
+    count_key = f"{model.name}._count"
+    for row in r.data:
+        v = row.get(value_key)
+        if v is None:
+            continue
+        raw_pairs.append((v, row.get(count_key)))
+    # SQL already sorted by (count desc, value asc). Python belt-and-braces
+    # re-sort guards against backends that ignore tie-break or return
+    # equally-ranked rows in arbitrary order. NB: this only re-orders what
+    # we received — the LIMIT cutoff is the SQL's responsibility.
+    raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
+    values: List[str] = [str(v) for v, _ in raw_pairs]
     overflow = len(values) > max_values
     return _DimProfileEntry(
         name=column.name,
@@ -157,7 +239,7 @@ async def _collect_dim_profile(
     *,
     model: SlayerModel,
     engine: SlayerQueryEngine,
-    max_values: int = 20,
+    max_values: int = _MAX_CATEGORICAL_VALUES,
     max_dims: int = 10,
     only_columns: Optional[Set[str]] = None,
 ) -> List[_DimProfileEntry]:
@@ -173,6 +255,11 @@ async def _collect_dim_profile(
     failures are swallowed — the column is simply omitted from the result.
     When ``only_columns`` is supplied, the eligibility filter is intersected
     with the set, so callers can profile a single column cheaply.
+
+    DEV-1480: ``max_values`` defaults to 50 (was 20). Callers that need
+    the structured top-50 + true total should use :func:`profile_column`
+    per column, which fires the secondary ``count_distinct`` query on
+    overflow and returns a :class:`ColumnSample`.
     """
     eligible = [
         c for c in model.columns
@@ -201,6 +288,37 @@ async def _collect_dim_profile(
 
 
 # ---------------------------------------------------------------------------
+# DEV-1480: cache-validity helper
+# ---------------------------------------------------------------------------
+
+
+_CATEGORICAL_TYPES = (DataType.TEXT, DataType.BOOLEAN)
+
+
+def _is_sample_cached(column: Column) -> bool:
+    """Return ``True`` when the column's persisted sample-value cache is
+    valid (no re-profile needed), ``False`` when it's missing/stale.
+
+    Hidden/PK columns are never profiled — treat them as "cached" (the
+    caller still skips them).
+
+    For categorical columns the structured ``sampled_values`` field is
+    authoritative: when it's ``None`` the cache is stale, even if a
+    pre-DEV-1480 ``sampled`` text string is set. This forces v6→v7
+    upgrades to re-profile categorical columns on next ``inspect_model``
+    so the new structured field gets populated.
+
+    For numeric/temporal columns ``sampled_values`` is always ``None`` —
+    the legacy ``sampled`` text is the cache indicator.
+    """
+    if column.hidden or column.primary_key:
+        return True
+    if column.type in _CATEGORICAL_TYPES:
+        return column.sampled_values is not None
+    return column.sampled is not None
+
+
+# ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
@@ -214,26 +332,158 @@ def _is_table_backed(model: SlayerModel) -> bool:
     return bool(model.sql_table) and not model.sql and not model.source_queries
 
 
+async def _count_distinct_via_model_extension(
+    *,
+    model: SlayerModel,
+    column: Column,
+    engine: SlayerQueryEngine,
+) -> Optional[int]:
+    """Fire a secondary ``count_distinct`` query via a transient
+    ``ModelExtension`` column.
+
+    Bypasses both ``Column.allowed_aggregations`` (which might omit
+    ``count_distinct``) and ``Column.filter`` (which would otherwise apply
+    a CASE-WHEN at aggregation time and under-count). Mirrors the existing
+    ``_profile_numeric_temporal_columns`` pattern.
+
+    Returns ``None`` when the query fails.
+    """
+    try:
+        ext_q = SlayerQuery.model_validate({
+            "source_model": {
+                "source_name": model.name,
+                "columns": [{
+                    "name": "_slayer_distinct_probe",
+                    "sql": column.sql if column.sql else column.name,
+                    "type": str(column.type),
+                }],
+            },
+            "measures": [{
+                "formula": "_slayer_distinct_probe:count_distinct",
+            }],
+        })
+        r = await engine.execute(query=ext_q, data_source=model.data_source or None)
+    except Exception:  # NOSONAR(S112) — best-effort: see module docstring
+        return None
+    if not r.data:
+        return None
+    raw = r.data[0].get(
+        f"{model.name}._slayer_distinct_probe_count_distinct",
+    )
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _profile_categorical_with_total(
+    *,
+    model: SlayerModel,
+    column: Column,
+    engine: SlayerQueryEngine,
+) -> Optional[ColumnSample]:
+    """DEV-1480 categorical profile: top-50 by frequency + true total on
+    overflow.
+
+    Re-runs the query without the post-overflow path of
+    ``_profile_categorical_column`` so we can keep the top-50 list when
+    overflow is detected (the legacy entry shape would have discarded it).
+    """
+    # Run the top-values query directly (instead of going through
+    # ``_profile_categorical_column``) so we retain the values list even
+    # in the overflow case.
+    try:
+        q = SlayerQuery.model_validate({
+            "source_model": model.name,
+            "dimensions": [{"name": column.name}],
+            "measures": [{"formula": "*:count"}],
+            "order": [
+                {"column": "_count", "direction": "desc"},
+                {"column": column.name, "direction": "asc"},
+            ],
+            "limit": _MAX_CATEGORICAL_VALUES + 2,
+        })
+        r = await engine.execute(query=q, data_source=model.data_source or None)
+    except Exception:  # NOSONAR(S112) — best-effort: see module docstring
+        return None
+    value_key = f"{model.name}.{column.name}"
+    count_key = f"{model.name}._count"
+    raw_pairs: List[Tuple[Any, Any]] = []
+    for row in r.data:
+        v = row.get(value_key)
+        if v is None:
+            continue
+        raw_pairs.append((v, row.get(count_key)))
+    raw_pairs.sort(key=lambda p: (-(p[1] or 0), str(p[0])))
+    values: List[str] = [str(v) for v, _ in raw_pairs]
+    overflow = len(values) > _MAX_CATEGORICAL_VALUES
+    if not overflow:
+        text = ", ".join(values[:_TEXT_SAMPLE_CAP])
+        return ColumnSample(
+            sampled=text,
+            sampled_values=values,
+            distinct_count=len(values),
+        )
+    # Overflow: fire the secondary count_distinct query for the true total.
+    total = await _count_distinct_via_model_extension(
+        model=model, column=column, engine=engine,
+    )
+    top_50 = values[:_MAX_CATEGORICAL_VALUES]
+    top_20_text = ", ".join(top_50[:_TEXT_SAMPLE_CAP])
+    if total is None:
+        # Defensive: count_distinct query failed; fall back to legacy marker
+        # while still preserving the top-50 we already have.
+        return ColumnSample(
+            sampled=f"> {_MAX_CATEGORICAL_VALUES} distinct",
+            sampled_values=top_50,
+            distinct_count=None,
+        )
+    return ColumnSample(
+        sampled=f"{top_20_text} ... ({total} distinct)",
+        sampled_values=top_50,
+        distinct_count=total,
+    )
+
+
 async def profile_column(
     *,
     model: SlayerModel,
     column: Column,
     engine: SlayerQueryEngine,
-) -> Optional[str]:
-    """Return the formatted ``sampled`` string for ``column`` on ``model``.
+) -> Optional[ColumnSample]:
+    """Return the :class:`ColumnSample` for ``column`` on ``model``.
 
     Returns ``None`` for primary-key / hidden columns and when the
     profile query fails or yields no data. Caller decides whether to
     persist the ``None`` (clearing any stale value) or skip it.
+
+    DEV-1480: signature widened from ``Optional[str]`` to
+    ``Optional[ColumnSample]`` so the structured ``sampled_values`` and
+    ``distinct_count`` are returned alongside the legacy text.
     """
     if column.hidden or column.primary_key:
         return None
+    if column.type in _CATEGORICAL_TYPES:
+        return await _profile_categorical_with_total(
+            model=model, column=column, engine=engine,
+        )
+    # Numeric / temporal: route through the batched legacy entry path,
+    # then build a ColumnSample with only ``sampled`` populated.
     entries = await _collect_dim_profile(
         model=model, engine=engine, only_columns={column.name},
     )
     if not entries:
         return None
-    return _format_dim_profile_value(entries[0])
+    entry = entries[0]
+    if entry.min_value is None and entry.max_value is None:
+        return None
+    return ColumnSample(
+        sampled=f"{entry.min_value} .. {entry.max_value}",
+        sampled_values=None,
+        distinct_count=None,
+    )
 
 
 async def refresh_table_backed_model_sampled(
@@ -243,7 +493,8 @@ async def refresh_table_backed_model_sampled(
     storage: StorageBackend,
     only_columns: Optional[Set[str]] = None,
 ) -> List[str]:
-    """Refresh ``Column.sampled`` for each eligible column on ``model``.
+    """Refresh ``Column.sampled``, ``Column.sampled_values``, and
+    ``Column.distinct_count`` for each eligible column on ``model``.
 
     sql-mode and query-backed models are silently skipped (returns ``[]``).
     Best-effort: a per-column profile or persistence error is captured as
@@ -258,20 +509,22 @@ async def refresh_table_backed_model_sampled(
             continue
         if only_columns is not None and column.name not in only_columns:
             continue
-        sampled: Optional[str] = None
+        sample: Optional[ColumnSample] = None
         try:
-            sampled = await profile_column(
+            sample = await profile_column(
                 model=model, column=column, engine=engine,
             )
         except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
             errors.append(f"{model.name}.{column.name}: {exc}")
-            sampled = None
+            sample = None
         try:
             await storage.update_column_sampled(
                 data_source=model.data_source,
                 model_name=model.name,
                 column_name=column.name,
-                sampled=sampled,
+                sampled=sample.sampled if sample else None,
+                sampled_values=sample.sampled_values if sample else None,
+                distinct_count=sample.distinct_count if sample else None,
             )
         except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
             errors.append(f"{model.name}.{column.name} (persist): {exc}")

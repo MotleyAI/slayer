@@ -171,6 +171,8 @@ class Column(BaseModel):
     filter: Optional[str] = None  # Applied inside CASE WHEN at aggregation time only
     meta: Optional[Dict[str, Any]] = None
     sampled: Optional[str] = None  # DEV-1375: cached sample-value snapshot
+    sampled_values: Optional[List[str]] = None  # DEV-1480: structured top-N
+    distinct_count: Optional[int] = None  # DEV-1480: true cardinality at profile time
 
     @model_validator(mode="before")
     @classmethod
@@ -416,7 +418,7 @@ class ModelJoin(BaseModel):
 
 
 class SlayerModel(BaseModel):
-    version: int = 6
+    version: int = 7
     name: str
     sql_table: Optional[str] = None
     sql: Optional[str] = None

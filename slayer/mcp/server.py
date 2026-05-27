@@ -23,9 +23,9 @@ from slayer.core.models import (
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import (
-    _collect_dim_profile,
-    _format_dim_profile_value,
+    _is_sample_cached,
     handle_edit_refresh,
+    profile_column,
 )
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.help import TOPIC_SUMMARY_LINE, render_help
@@ -514,15 +514,30 @@ async def _collect_measure_profile(
     model: SlayerModel,
     engine: SlayerQueryEngine,
 ) -> Dict[str, str]:
-    """Probe min/max for each non-hidden, non-primary-key column via a single
-    batched query.
+    """Probe min/max for each non-hidden, non-primary-key NUMERIC/TEMPORAL
+    column via a single batched query.
 
     Returns ``{column_name: "min .. max"}`` for columns with data, or
     ``{column_name: "all NULL"}`` for columns where both min and max are NULL.
     Skips primary-key columns (their values are identifiers, not values to
     profile).
+
+    DEV-1480: text/boolean columns are excluded here so they are served
+    exclusively by the categorical dim profile (which populates both
+    ``Column.sampled`` and ``Column.sampled_values``). Mixing the two
+    paths for the same column would leave ``sampled_values=None`` while
+    ``sampled`` is set, which ``_is_sample_cached`` correctly treats as a
+    cache miss — leading to permanent re-profile every ``inspect_model``
+    call.
     """
-    columns = [c for c in model.columns if not c.hidden and not c.primary_key]
+    _NUMERIC_TEMPORAL = (
+        DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP,
+    )
+    columns = [
+        c for c in model.columns
+        if not c.hidden and not c.primary_key
+        and c.type in _NUMERIC_TEMPORAL
+    ]
     if not columns:
         return {}
 
@@ -1176,8 +1191,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         - ``columns`` — unified row-level columns table with a ``sampled``
           column (distinct values for string/boolean, ``min .. max`` for
-          number/date/time, or ``> 20 distinct`` for high-cardinality
-          categoricals).
+          number/date/time, or ``top20 ... (N distinct)`` for high-
+          cardinality categoricals).
         - ``measures`` — named-formula library.
         - ``aggregations`` — custom aggregation definitions. The ``formula``
           column and the ``sql`` field of each ``params[]`` entry are gated
@@ -1307,43 +1322,67 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # ------------------------------------------------------------------
         # DB-hitting computations — skip when their consumers aren't requested.
         # ------------------------------------------------------------------
-        # Dimension/measure profile populates the ``sampled`` column of the
-        # columns table. Read cached ``Column.sampled`` first; on miss, profile
-        # live and write back via storage so subsequent calls (and any search)
-        # get the cached value for free (DEV-1375).
+        # Dimension/measure profile populates the ``sampled`` / ``sampled_values``
+        # / ``distinct_count`` columns of the row. Read the cache first; on
+        # miss, profile live and write back via storage so subsequent calls
+        # (and any search) hit the cache for free (DEV-1375 + DEV-1480).
         profile_by_name: Dict[str, str] = {}
+        profile_values_by_name: Dict[str, Optional[List[str]]] = {}
+        distinct_count_by_name: Dict[str, Optional[int]] = {}
         measure_profile: Dict[str, str] = {}
         if "columns" in included_set:
-            cached_columns: List[str] = []
             uncached_columns: List[Column] = []
             for c in model.columns:
                 if c.hidden or c.primary_key:
                     continue
-                if c.sampled is not None:
-                    profile_by_name[c.name] = c.sampled
-                    cached_columns.append(c.name)
+                # DEV-1480 cache validity: categorical needs
+                # ``sampled_values`` to be present (the structured field
+                # is authoritative); numeric/temporal needs ``sampled``.
+                if _is_sample_cached(c):
+                    if c.sampled is not None:
+                        profile_by_name[c.name] = c.sampled
+                    profile_values_by_name[c.name] = c.sampled_values
+                    distinct_count_by_name[c.name] = c.distinct_count
                 else:
                     uncached_columns.append(c)
             if uncached_columns:
-                live_entries = await _collect_dim_profile(
-                    model=model, engine=engine,
-                    only_columns={c.name for c in uncached_columns},
-                )
-                for e in live_entries:
-                    live_value = _format_dim_profile_value(e)
-                    profile_by_name[e.name] = live_value
+                # DEV-1480: profile each uncached column via ``profile_column``
+                # so we capture both ``sampled_values`` and ``distinct_count``
+                # in one go. Categorical columns fire a top-values query
+                # (and a secondary count_distinct on overflow); numeric/
+                # temporal columns route through the batched min/max
+                # internally.
+                for col in uncached_columns:
+                    try:
+                        sample = await profile_column(
+                            model=model, column=col, engine=engine,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "inspect_model: failed to profile %s.%s.%s: %s",
+                            model.data_source, model.name, col.name, exc,
+                        )
+                        sample = None
+                    if sample is None:
+                        continue
+                    if sample.sampled is not None:
+                        profile_by_name[col.name] = sample.sampled
+                    profile_values_by_name[col.name] = sample.sampled_values
+                    distinct_count_by_name[col.name] = sample.distinct_count
                     try:
                         await storage.update_column_sampled(
                             data_source=model.data_source,
                             model_name=model.name,
-                            column_name=e.name,
-                            sampled=live_value,
+                            column_name=col.name,
+                            sampled=sample.sampled,
+                            sampled_values=sample.sampled_values,
+                            distinct_count=sample.distinct_count,
                         )
                     except Exception as exc:
                         logger.warning(
                             "inspect_model: failed to persist sampled value for "
                             "%s.%s.%s: %s",
-                            model.data_source, model.name, e.name, exc,
+                            model.data_source, model.name, col.name, exc,
                         )
                 measure_profile = await _collect_measure_profile(model=model, engine=engine)
                 # Persist any measure-side (numeric/temporal) profile
@@ -1364,6 +1403,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                             model_name=model.name,
                             column_name=col.name,
                             sampled=sampled_value,
+                            sampled_values=None,
+                            distinct_count=None,
                         )
                     except Exception as exc:
                         logger.warning(
@@ -1389,6 +1430,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             col_rows: List[Dict[str, Any]] = []
             for c in visible_columns:
                 aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
+                # DEV-1480: key-presence check (not ``or`` truthiness) so an
+                # all-NULL categorical column's ``sampled=""`` doesn't
+                # silently fall through to the measure_profile fallback's
+                # ``"all NULL"`` text.
+                if c.name in profile_by_name:
+                    sampled_cell = profile_by_name[c.name]
+                else:
+                    sampled_cell = measure_profile.get(c.name)
                 col_rows.append({
                     "name": c.name,
                     "type": str(c.type),
@@ -1399,10 +1448,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     "label": c.label,
                     "description": _truncate_description(c.description, descriptions_max_chars),
                     "meta": _format_meta(c.meta),
-                    "sampled": (
-                        profile_by_name.get(c.name)
-                        or measure_profile.get(c.name)
-                    ),
+                    "sampled": sampled_cell,
                 })
             col_columns = [
                 "name", "type", "primary_key", "sql", "allowed_aggregations",
@@ -1637,8 +1683,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
             # Columns
             if "columns" in included_set:
-                payload["columns"] = [
-                    {
+                col_payloads: List[Dict[str, Any]] = []
+                for c in visible_columns:
+                    # DEV-1480 key-presence (not ``or`` truthiness) so empty
+                    # string ``sampled=""`` (all-NULL categorical) survives.
+                    if c.name in profile_by_name:
+                        sampled_cell = profile_by_name[c.name]
+                    else:
+                        sampled_cell = measure_profile.get(c.name)
+                    col_payloads.append({
                         "name": c.name,
                         "type": str(c.type),
                         "primary_key": c.primary_key,
@@ -1650,13 +1703,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                             c.description, descriptions_max_chars,
                         ),
                         "meta": c.meta,
-                        "sampled": (
-                            profile_by_name.get(c.name)
-                            or measure_profile.get(c.name)
-                        ),
-                    }
-                    for c in visible_columns
-                ]
+                        "sampled": sampled_cell,
+                        # DEV-1480: structured top-50 list + true cardinality,
+                        # surfaced only in the JSON shape (the markdown table
+                        # text format is unchanged per the issue).
+                        "sampled_values": profile_values_by_name.get(c.name),
+                        "distinct_count": distinct_count_by_name.get(c.name),
+                    })
+                payload["columns"] = col_payloads
             elif visible_columns:
                 payload["columns_names"] = [c.name for c in visible_columns]
 
