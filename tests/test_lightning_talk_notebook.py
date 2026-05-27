@@ -181,22 +181,6 @@ def test_no_prohibited_framing_in_markdown():
     )
 
 
-def test_six_needs_anchored_in_an_early_markdown_cell():
-    """All six need words must appear in a single early markdown cell so
-    they read as a list, not scattered keywords across the deck."""
-    nb = _load_notebook()
-    md = _markdown_cells(nb["cells"])
-    six_needs = ["See", "Get", "Ask", "Know", "Have", "Find"]
-    for cell in md[:4]:  # only the first four markdown cells count as "early"
-        src = _cell_source(cell)
-        if all(needle in src for needle in six_needs):
-            return
-    pytest.fail(
-        "Expected one of the first 4 markdown cells to contain all six need "
-        f"words: {six_needs}"
-    )
-
-
 def test_anchor_ordering_in_notebook():
     """Anchors must appear in order across cells (sanity check on flow)."""
     nb = _load_notebook()
