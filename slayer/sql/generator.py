@@ -5317,12 +5317,34 @@ class SQLGenerator:
         # first/last path (``_build_first_last_base_select``) wraps via
         # ``_build_ranked_subquery_from_planned``; mirror that here for
         # the cross-model CTE.
+        #
+        # Codex round 2: when no explicit positional time arg was
+        # supplied, fall back to the target model's
+        # ``default_time_dimension`` (qualified under the target
+        # relation). If even that is unset, raise the standard
+        # "first/last requires a ranking time column" error rather than
+        # silently emitting an agg_expr that references a non-existent
+        # ``_first_rn`` / ``_last_rn`` column.
         is_first_or_last = local_agg_key.agg in ("first", "last")
+        time_col_sql: Optional[str] = synth.time_column
+        if is_first_or_last and time_col_sql is None:
+            if target_model.default_time_dimension:
+                time_col_sql = (
+                    f"{target_relation}.{target_model.default_time_dimension}"
+                )
+            else:
+                raise ValueError(
+                    f"first/last aggregation requires a ranking time column "
+                    f"(an explicit positional time arg, or the target "
+                    f"model's default_time_dimension); none is resolvable "
+                    f"for cross-model aggregate on target "
+                    f"{target_model_name!r}."
+                )
         if is_first_or_last:
             agg_expr, is_agg = self._build_agg(
                 synth,
-                rn_suffix_map={(synth.time_column, synth.aggregation): ""},
-                default_time_col=synth.time_column,
+                rn_suffix_map={(time_col_sql, synth.aggregation): ""},
+                default_time_col=time_col_sql,
             )
         else:
             agg_expr, is_agg = self._build_agg(synth)
@@ -5338,11 +5360,12 @@ class SQLGenerator:
         target_from = self._build_from_clause_from_planned(
             source_model=target_model, source_relation=target_relation,
         )
-        if is_first_or_last and synth.time_column:
+        if is_first_or_last:
+            assert time_col_sql is not None  # narrowed by the guard above
             ranked_from, _rn, _filtered_rn, _filtered_match = (
                 self._build_ranked_subquery_from_planned(
                     source_relation=target_relation,
-                    default_time_col_sql=synth.time_column,
+                    default_time_col_sql=time_col_sql,
                     partition_exprs=list(cte_group_by),
                     extra_projections=[],
                     synth_specs=[synth],

@@ -227,6 +227,153 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
 # ---------------------------------------------------------------------------
 
 
+async def test_cross_model_first_last_uses_target_default_time_dimension(
+    engine_with_seeded_data,
+) -> None:
+    """Codex round-2 fix — cross-model ``customers.amount:last`` with NO
+    explicit positional time arg falls back to the target model's
+    ``default_time_dimension``. Without this fix the rendered SQL
+    references ``_last_rn`` against a bare ``FROM customers`` and the
+    SQLite execute trips.
+
+    Set ``customers.default_time_dimension="signup_at"`` on the fly via
+    a fresh storage so the fallback is exercised.
+    """
+    import os
+    import sqlite3
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    db_path = os.path.join(d, "t.db")
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute(
+        "CREATE TABLE orders ("
+        "id INTEGER PRIMARY KEY, status TEXT, amount REAL, "
+        "created_at TEXT, customer_id INTEGER)"
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?,?,?,?,?)",
+        [
+            (1, "paid", 10.0, "2024-01-01", 1),
+            (2, "open", 7.0, "2024-01-02", 2),
+        ],
+    )
+    cur.execute(
+        "CREATE TABLE customers ("
+        "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
+        "signup_at TEXT)"
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?,?,?,?)",
+        [
+            (1, "NA", 100.0, "2023-06-01"),
+            (2, "NA", 50.0, "2023-07-01"),
+            (3, "EU", 70.0, "2023-08-01"),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=db_path)
+    )
+    await storage.save_model(SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="prod",
+        default_time_dimension="signup_at",  # ← the fallback target
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="signup_at", type=DataType.TIMESTAMP),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="prod",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="status", type=DataType.TEXT),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="created_at", type=DataType.TIMESTAMP),
+            Column(name="customer_id", type=DataType.INT),
+        ],
+        joins=[ModelJoin(
+            target_model="customers",
+            join_pairs=[["customer_id", "id"]],
+        )],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+
+    resp = await engine.execute(SlayerQuery(
+        source_model="orders",
+        dimensions=["customers.region"],
+        measures=[{"formula": "customers.amount:last"}],  # ← NO explicit time arg
+    ))
+    assert resp.data, resp.sql
+
+
+async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
+    """Codex round-2 fix — cross-model first/last with neither an explicit
+    positional time arg NOR a ``target_model.default_time_dimension`` must
+    raise a clear ValueError, not silently emit broken SQL.
+    """
+    import os
+    import sqlite3
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    db_path = os.path.join(d, "t.db")
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)")
+    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, amount REAL)")
+    con.commit()
+    con.close()
+
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=db_path)
+    )
+    await storage.save_model(SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="prod",
+        # default_time_dimension intentionally unset
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="amount", type=DataType.DOUBLE),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="prod",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="customer_id", type=DataType.INT),
+            Column(name="amount", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(
+            target_model="customers",
+            join_pairs=[["customer_id", "id"]],
+        )],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+
+    with pytest.raises(ValueError, match=r"first/last.*ranking time"):
+        await engine.execute(SlayerQuery(
+            source_model="orders",
+            dimensions=["customers.region"],
+            measures=[{"formula": "customers.amount:last"}],
+        ))
+
+
 async def test_d_cross_cross_model_derived_time_arg(
     engine_with_seeded_data,
 ) -> None:

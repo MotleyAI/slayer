@@ -1215,9 +1215,16 @@ class SlayerQueryEngine:
         # a query-backed join target that transitively references its
         # parent short-circuits via cached ``backing_query_sql`` rather
         # than recursing forever.
+        #
+        # Codex: pass the bundle's MERGED variables (which already include
+        # ``{model.query_variables, outer_vars, stage, runtime}`` per
+        # precedence) rather than the bare stage-level ``final_stage.
+        # variables``. Otherwise nested expansions / sibling stages lose
+        # the outer model's ``query_variables`` layer and substitution
+        # diverges between execute and save-time dry-run.
         bundle = await expand_query_backed_models_in_bundle(
             bundle=bundle,
-            outer_vars=final_stage.variables,
+            outer_vars=bundle.query_variables,
             runtime_kwarg=runtime_kwarg,
             dry_run_placeholders=dry_run_placeholders,
             expander=self._expand_query_backed_model,
