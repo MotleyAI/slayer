@@ -282,10 +282,6 @@ async def test_cross_model_first_last_uses_target_default_time_dimension(
     Set ``customers.default_time_dimension="signup_at"`` on the fly via
     a fresh storage so the fallback is exercised.
     """
-    import os
-    import sqlite3
-    import tempfile
-
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
     con = sqlite3.connect(db_path)
@@ -357,7 +353,14 @@ async def test_cross_model_first_last_uses_target_default_time_dimension(
         dimensions=["customers.region"],
         measures=[{"formula": "customers.amount:last"}],  # ← NO explicit time arg
     ))
-    assert resp.data, resp.sql
+    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    # Only NA appears because no order references the EU customer.
+    assert set(by_region) == {"NA"}, resp.sql
+    last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
+    # NA rows: (100.0 @ 2023-06-01) and (50.0 @ 2023-07-01); ``last`` by
+    # signup_at picks 50.0. Without the default_time_dimension fallback,
+    # this would NULL out or pick by another (non-deterministic) order.
+    assert by_region["NA"][last_key] == pytest.approx(50.0), resp.sql
 
 
 async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
@@ -365,10 +368,6 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
     positional time arg NOR a ``target_model.default_time_dimension`` must
     raise a clear ValueError, not silently emit broken SQL.
     """
-    import os
-    import sqlite3
-    import tempfile
-
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
     con = sqlite3.connect(db_path)
@@ -437,3 +436,95 @@ async def test_d_cross_cross_model_derived_time_arg(
         }],
     ))
     assert resp.data, resp.sql
+
+
+async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None:
+    """Codex fix — cross-model first/last must compute ``_last_rn`` /
+    ``_first_rn`` over the FILTERED row set, not the full target table.
+
+    Without the fix, a target-model filter (``deleted_at IS NULL``)
+    applies on the outer CTE after ranking; a soft-deleted row that is
+    the most-recent by ``signup_at`` still wins ``_last_rn = 1`` inside
+    the subquery, and the outer ``MAX(CASE WHEN _last_rn = 1 ...)`` then
+    returns NULL because that winning row is excluded by the WHERE.
+
+    With the fix, the filter is pushed inside the ranked subquery, so
+    ``_last_rn = 1`` points at the most-recent non-deleted row.
+    """
+    d = tempfile.mkdtemp()
+    db_path = os.path.join(d, "t.db")
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute(
+        "CREATE TABLE orders ("
+        "id INTEGER PRIMARY KEY, status TEXT, customer_id INTEGER)"
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?,?,?)",
+        [(1, "paid", 1), (2, "paid", 2)],
+    )
+    cur.execute(
+        "CREATE TABLE customers ("
+        "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
+        "signup_at TEXT, deleted_at TEXT)"
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?,?,?,?,?)",
+        [
+            # NA: id=1 is older and active; id=2 is newer but soft-deleted.
+            # With the filter applied BEFORE ranking, last(amount) = 100.0
+            # (the active row). With the buggy post-rank filter, the
+            # newer-but-deleted row wins _last_rn = 1 and the outer
+            # MAX(CASE WHEN _last_rn = 1 ...) is NULL.
+            (1, "NA", 100.0, "2023-06-01", None),
+            (2, "NA", 999.0, "2023-08-01", "2024-01-01"),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=db_path)
+    )
+    await storage.save_model(SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="prod",
+        default_time_dimension="signup_at",
+        filters=["deleted_at IS NULL"],
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="signup_at", type=DataType.TIMESTAMP),
+            Column(name="deleted_at", type=DataType.TIMESTAMP),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="prod",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="status", type=DataType.TEXT),
+            Column(name="customer_id", type=DataType.INT),
+        ],
+        joins=[ModelJoin(
+            target_model="customers",
+            join_pairs=[["customer_id", "id"]],
+        )],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+
+    resp = await engine.execute(SlayerQuery(
+        source_model="orders",
+        dimensions=["customers.region"],
+        measures=[{"formula": "customers.amount:last"}],
+    ))
+    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    assert set(by_region) == {"NA"}, resp.sql
+    last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
+    # The newer (999.0) row is deleted; ranking should skip it and surface
+    # the older active row's amount (100.0). A NULL here is the regression.
+    assert by_region["NA"][last_key] == pytest.approx(100.0), resp.sql

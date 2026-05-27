@@ -5376,36 +5376,13 @@ class SQLGenerator:
             agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
         cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
 
-        # Build the CTE Select. FROM is the target table directly OR a
-        # ROW_NUMBER-ranked subquery over it for first/last aggregates.
-        cte_select = exp.Select()
-        for col in cte_select_columns:
-            cte_select = cte_select.select(col)
-        target_from = self._build_from_clause_from_planned(
-            source_model=target_model, source_relation=target_relation,
-        )
-        if is_first_or_last:
-            assert time_col_sql is not None  # narrowed by the guard above
-            ranked_from, _rn, _filtered_rn, _filtered_match = (
-                self._build_ranked_subquery_from_planned(
-                    source_relation=target_relation,
-                    default_time_col_sql=time_col_sql,
-                    partition_exprs=list(cte_group_by),
-                    extra_projections=[],
-                    synth_specs=[synth],
-                    from_clause=target_from,
-                    base_joins=[],
-                    where_clause=None,
-                )
-            )
-            cte_select = cte_select.from_(ranked_from)
-        else:
-            cte_select = cte_select.from_(target_from)
-
         # WHERE: target-model-filters (qualified bare-identifier refs
         # so ``deleted_at IS NULL`` becomes ``customers.deleted_at IS
         # NULL`` to match the legacy enrichment's filter-column
-        # resolution) + host filters routed to WHERE.
+        # resolution) + host filters routed to WHERE. Computed up-front
+        # so the first/last branch can push them INSIDE the ranked
+        # subquery — otherwise rows excluded by a filter could still
+        # win ``_last_rn = 1`` and yield NULL aggregates.
         where_parts: List[exp.Expression] = []
         for filter_text in plan.target_model_filters:
             # DEV-1450 #4b: a target model filter that references a
@@ -5447,10 +5424,43 @@ class SQLGenerator:
         )
         if cte_where is not None:
             where_parts.append(cte_where)
+        combined_where: Optional[exp.Expression] = None
         if where_parts:
-            cte_select = cte_select.where(
-                exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
+            combined_where = (
+                exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0]
             )
+
+        # Build the CTE Select. FROM is the target table directly OR a
+        # ROW_NUMBER-ranked subquery over it for first/last aggregates.
+        cte_select = exp.Select()
+        for col in cte_select_columns:
+            cte_select = cte_select.select(col)
+        target_from = self._build_from_clause_from_planned(
+            source_model=target_model, source_relation=target_relation,
+        )
+        if is_first_or_last:
+            assert time_col_sql is not None  # narrowed by the guard above
+            # Push WHERE into the ranked subquery so RN is computed over
+            # the filtered row set — otherwise filtered-out rows can win
+            # ``_last_rn = 1`` / ``_first_rn = 1`` and the CASE-WHEN
+            # aggregate returns NULL.
+            ranked_from, _rn, _filtered_rn, _filtered_match = (
+                self._build_ranked_subquery_from_planned(
+                    source_relation=target_relation,
+                    default_time_col_sql=time_col_sql,
+                    partition_exprs=list(cte_group_by),
+                    extra_projections=[],
+                    synth_specs=[synth],
+                    from_clause=target_from,
+                    base_joins=[],
+                    where_clause=combined_where,
+                )
+            )
+            cte_select = cte_select.from_(ranked_from)
+        else:
+            cte_select = cte_select.from_(target_from)
+            if combined_where is not None:
+                cte_select = cte_select.where(combined_where)
 
         if cte_group_by:
             for gb in cte_group_by:
