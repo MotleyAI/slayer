@@ -10,7 +10,9 @@ A lightweight, open-source semantic layer by [MotleyAI](https://github.com/motle
 
 ## Why?
 
-When AI agents write raw SQL, they hallucinate column names, get joins wrong, and produce metrics that drift between queries. Existing semantic layers (Cube, dbt metrics) were built for dashboards — heavy infrastructure, slow model refresh cycles, and not enough flexibility for ad-hoc agent queries.
+When AI agents write raw SQL, they can get joins wrong, and produce metrics that drift between queries. 
+
+Existing semantic layers (Cube, dbt semantic layer) were built for dashboards — heavy infrastructure, slow model refresh cycles, and not enough flexibility for ad-hoc agent queries.
 
 SLayer is different: models are editable at runtime, aggregation is chosen at query time, and there's no build step.
 
