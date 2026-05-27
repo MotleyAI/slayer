@@ -172,9 +172,9 @@ def freq_setup():
         conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, category TEXT, label TEXT, flag INTEGER)")
         rows = []
         # category counts: alpha 5, beta 2, gamma 1
-        for i in range(5):
+        for _ in range(5):
             rows.append((len(rows) + 1, "alpha", "x", 1))
-        for i in range(2):
+        for _ in range(2):
             rows.append((len(rows) + 1, "beta", "x", 0))
         rows.append((len(rows) + 1, "gamma", "x", None))
         conn.executemany("INSERT INTO items VALUES (?, ?, ?, ?)", rows)

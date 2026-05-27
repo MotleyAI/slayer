@@ -24,6 +24,7 @@ from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.ingestion import _friendly_db_error
 from slayer.engine.profiling import (
     _is_sample_cached,
+    _profile_numeric_temporal_columns,
     handle_edit_refresh,
     profile_column,
 )
@@ -1346,13 +1347,49 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 else:
                     uncached_columns.append(c)
             if uncached_columns:
-                # DEV-1480: profile each uncached column via ``profile_column``
-                # so we capture both ``sampled_values`` and ``distinct_count``
-                # in one go. Categorical columns fire a top-values query
-                # (and a secondary count_distinct on overflow); numeric/
-                # temporal columns route through the batched min/max
-                # internally.
-                for col in uncached_columns:
+                # DEV-1480: split the live profile into two paths so we
+                # preserve the pre-DEV-1480 batching for numeric/temporal
+                # columns. Categorical columns fire a top-values query
+                # (and a secondary count_distinct on overflow) per column —
+                # there's no efficient cross-column batching for those.
+                # Numeric/temporal columns share one batched min/max query.
+                _CATEGORICAL = (DataType.TEXT, DataType.BOOLEAN)
+                _NUMERIC_TEMPORAL = (
+                    DataType.INT, DataType.DOUBLE,
+                    DataType.DATE, DataType.TIMESTAMP,
+                )
+                cat_uncached = [
+                    c for c in uncached_columns if c.type in _CATEGORICAL
+                ]
+                num_uncached = [
+                    c for c in uncached_columns if c.type in _NUMERIC_TEMPORAL
+                ]
+
+                async def _persist_sample(
+                    *, col_name: str,
+                    sampled: Optional[str],
+                    sampled_values: Optional[List[str]],
+                    distinct_count: Optional[int],
+                ) -> None:
+                    try:
+                        await storage.update_column_sampled(
+                            data_source=model.data_source,
+                            model_name=model.name,
+                            column_name=col_name,
+                            sampled=sampled,
+                            sampled_values=sampled_values,
+                            distinct_count=distinct_count,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "inspect_model: failed to persist sampled value for "
+                            "%s.%s.%s: %s",
+                            model.data_source, model.name, col_name, exc,
+                        )
+
+                # Categorical: one top-values query per column (+ optional
+                # count_distinct on overflow).
+                for col in cat_uncached:
                     try:
                         sample = await profile_column(
                             model=model, column=col, engine=engine,
@@ -1369,20 +1406,37 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                         profile_by_name[col.name] = sample.sampled
                     profile_values_by_name[col.name] = sample.sampled_values
                     distinct_count_by_name[col.name] = sample.distinct_count
-                    try:
-                        await storage.update_column_sampled(
-                            data_source=model.data_source,
-                            model_name=model.name,
-                            column_name=col.name,
-                            sampled=sample.sampled,
-                            sampled_values=sample.sampled_values,
-                            distinct_count=sample.distinct_count,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "inspect_model: failed to persist sampled value for "
-                            "%s.%s.%s: %s",
-                            model.data_source, model.name, col.name, exc,
+                    await _persist_sample(
+                        col_name=col.name,
+                        sampled=sample.sampled,
+                        sampled_values=sample.sampled_values,
+                        distinct_count=sample.distinct_count,
+                    )
+
+                # Numeric/temporal: one batched min/max query for all of
+                # them at once (restores the pre-DEV-1480 batching for
+                # wide models).
+                if num_uncached:
+                    num_entries = await _profile_numeric_temporal_columns(
+                        model=model, columns=num_uncached, engine=engine,
+                    )
+                    for col in num_uncached:
+                        entry = num_entries.get(col.name)
+                        if entry is None:
+                            continue
+                        if entry.min_value is None and entry.max_value is None:
+                            continue
+                        sampled_text = f"{entry.min_value} .. {entry.max_value}"
+                        profile_by_name[col.name] = sampled_text
+                        # Numeric/temporal columns carry no structured list
+                        # and no distinct_count per the DEV-1480 contract.
+                        profile_values_by_name[col.name] = None
+                        distinct_count_by_name[col.name] = None
+                        await _persist_sample(
+                            col_name=col.name,
+                            sampled=sampled_text,
+                            sampled_values=None,
+                            distinct_count=None,
                         )
                 measure_profile = await _collect_measure_profile(model=model, engine=engine)
                 # Persist any measure-side (numeric/temporal) profile

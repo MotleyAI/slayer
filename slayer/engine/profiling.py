@@ -433,11 +433,16 @@ async def _profile_categorical_with_total(
     top_50 = values[:_MAX_CATEGORICAL_VALUES]
     top_20_text = ", ".join(top_50[:_TEXT_SAMPLE_CAP])
     if total is None:
-        # Defensive: count_distinct query failed; fall back to legacy marker
-        # while still preserving the top-50 we already have.
+        # Defensive: count_distinct query failed (transient backend error,
+        # missing permission, etc.). Persist ``sampled_values=None`` rather
+        # than the top-50 list so ``_is_sample_cached`` classifies the
+        # column as a cache miss and the next ``inspect_model`` /
+        # ``refresh-samples`` call retries the secondary query. Persisting
+        # the top-50 here would mark the column "cached" forever despite
+        # ``distinct_count`` being permanently None.
         return ColumnSample(
             sampled=f"> {_MAX_CATEGORICAL_VALUES} distinct",
-            sampled_values=top_50,
+            sampled_values=None,
             distinct_count=None,
         )
     return ColumnSample(
@@ -486,6 +491,44 @@ async def profile_column(
     )
 
 
+async def _refresh_one_column(
+    *,
+    model: SlayerModel,
+    column: Column,
+    engine: SlayerQueryEngine,
+    storage: StorageBackend,
+) -> List[str]:
+    """Profile + persist a single column. Best-effort — returns the list of
+    error strings produced (empty on full success). Extracted from
+    ``refresh_table_backed_model_sampled`` to keep that function's cognitive
+    complexity low.
+    """
+    errors: List[str] = []
+    sample: Optional[ColumnSample] = None
+    try:
+        sample = await profile_column(model=model, column=column, engine=engine)
+    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
+        errors.append(f"{model.name}.{column.name}: {exc}")
+    if sample is not None:
+        sampled = sample.sampled
+        sampled_values = sample.sampled_values
+        distinct_count = sample.distinct_count
+    else:
+        sampled = sampled_values = distinct_count = None
+    try:
+        await storage.update_column_sampled(
+            data_source=model.data_source,
+            model_name=model.name,
+            column_name=column.name,
+            sampled=sampled,
+            sampled_values=sampled_values,
+            distinct_count=distinct_count,
+        )
+    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
+        errors.append(f"{model.name}.{column.name} (persist): {exc}")
+    return errors
+
+
 async def refresh_table_backed_model_sampled(
     *,
     model: SlayerModel,
@@ -509,25 +552,9 @@ async def refresh_table_backed_model_sampled(
             continue
         if only_columns is not None and column.name not in only_columns:
             continue
-        sample: Optional[ColumnSample] = None
-        try:
-            sample = await profile_column(
-                model=model, column=column, engine=engine,
-            )
-        except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
-            errors.append(f"{model.name}.{column.name}: {exc}")
-            sample = None
-        try:
-            await storage.update_column_sampled(
-                data_source=model.data_source,
-                model_name=model.name,
-                column_name=column.name,
-                sampled=sample.sampled if sample else None,
-                sampled_values=sample.sampled_values if sample else None,
-                distinct_count=sample.distinct_count if sample else None,
-            )
-        except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
-            errors.append(f"{model.name}.{column.name} (persist): {exc}")
+        errors.extend(await _refresh_one_column(
+            model=model, column=column, engine=engine, storage=storage,
+        ))
     return errors
 
 

@@ -826,7 +826,7 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         # truthiness ``or`` bug would silently swap "" → "FALLBACK".
         from slayer.mcp import server as mcp_server
 
-        async def injected_measure_profile(*, model, engine):  # noqa: ARG001
+        async def injected_measure_profile(*, model, engine):  # noqa: ARG001  # NOSONAR(S7503) — must be async to replace _collect_measure_profile which the production caller awaits
             return {"notes": "FALLBACK_VALUE_SHOULD_NOT_APPEAR"}
 
         monkeypatch.setattr(
