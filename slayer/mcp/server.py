@@ -1345,6 +1345,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     profile_values_by_name[c.name] = c.sampled_values
                     distinct_count_by_name[c.name] = c.distinct_count
                 else:
+                    # v6-upgrade fallback: a categorical column may have
+                    # legacy ``sampled`` text but no ``sampled_values``
+                    # yet. Surface the legacy text in case the live
+                    # re-profile below fails for transient reasons —
+                    # ``profile_column`` will overwrite on success.
+                    if c.sampled is not None:
+                        profile_by_name[c.name] = c.sampled
                     uncached_columns.append(c)
             if uncached_columns:
                 # DEV-1480: split the live profile into two paths so we
