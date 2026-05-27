@@ -539,6 +539,54 @@ class BetweenKey(_FrozenKey):
 
 
 # ---------------------------------------------------------------------------
+# InKey — DEV-1475
+# ---------------------------------------------------------------------------
+
+
+class InKey(_FrozenKey):
+    """Typed identity for a ``col IN (lit, lit, …)`` / ``NOT IN`` predicate.
+
+    Modelled on ``BetweenKey``: a closed-form SQL predicate with a column
+    LHS and a fixed tuple of literal-valued RHS operands. Two ``InKey``s
+    with the same column and the same set of values (in the same order)
+    intern; ``negated`` flips IN vs NOT IN without doubling the class
+    count.
+
+    ``values`` is a tuple of ``LiteralKey`` (not bare scalars) so equality
+    rides through ``LiteralKey``'s type-stable ``_typed_leaf`` machinery
+    — ``InKey(values=(LiteralKey(True),))`` does not collide with
+    ``InKey(values=(LiteralKey(Decimal(1)),))``.
+
+    Phase is always ROW; the renderer emits ``exp.In`` (wrapped in
+    ``exp.Not`` when ``negated``).
+    """
+
+    column: "ValueKey"
+    values: Tuple[LiteralKey, ...]
+    negated: bool = False
+
+    @field_validator("values")
+    @classmethod
+    def _reject_empty_values(
+        cls, v: Tuple[LiteralKey, ...],
+    ) -> Tuple[LiteralKey, ...]:
+        # Defense in depth (Codex review): the parser's ``ast.Compare``
+        # branch already rejects empty RHS, but direct construction can
+        # bypass it and reach the SQL generator, which would emit
+        # ``col IN ()`` — invalid in every supported dialect.
+        if not v:
+            raise ValueError(
+                "InKey requires a non-empty ``values`` tuple; ``col IN "
+                "()`` is invalid SQL across every supported dialect.",
+            )
+        return v
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.ROW
+
+
+# ---------------------------------------------------------------------------
 # Union alias + rebuild for forward refs
 # ---------------------------------------------------------------------------
 
@@ -554,6 +602,7 @@ ValueKey = Union[
     ArithmeticKey,
     ScalarCallKey,
     BetweenKey,
+    InKey,
 ]
 
 
@@ -562,5 +611,6 @@ TransformKey.model_rebuild()
 ArithmeticKey.model_rebuild()
 ScalarCallKey.model_rebuild()
 BetweenKey.model_rebuild()
+InKey.model_rebuild()
 # TimeTruncKey.column is a Union[ColumnKey, ColumnSqlKey] (DEV-1450 #4a).
 TimeTruncKey.model_rebuild()
