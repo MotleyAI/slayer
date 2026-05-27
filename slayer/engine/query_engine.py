@@ -337,7 +337,13 @@ class SlayerQueryEngine:
                 f"with source_model='{name}'."
             )
 
-        stages = list(model.source_queries)
+        # Codex: stored ``source_queries`` may be in non-topological order
+        # for ``joins[].target_model`` deps (the save path's
+        # ``_expand_query_backed_model`` calls ``topologically_order_stages``
+        # so it accepts that; ``plan_stages._topo_sort`` only handles
+        # ``source_model`` deps). Re-use the engine-wide topo-sort here so
+        # run-by-name matches save-time semantics.
+        stages = topologically_order_stages(list(model.source_queries))
         main_query = stages[-1]
         named_queries: Dict[str, SlayerQuery] = {}
         for q in stages[:-1]:

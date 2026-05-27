@@ -103,6 +103,48 @@ async def _engine(*extra_models: SlayerModel) -> Tuple[SlayerQueryEngine, tempfi
 
 
 class TestStoredSourceQueriesTopoSort:
+    async def test_run_by_name_accepts_nonordered_join_target_stages(self) -> None:
+        """Codex round-5 fix — ``engine.execute(name)`` must topologically
+        sort stored ``source_queries`` so out-of-order ``joins[].target_
+        model`` deps work end-to-end. Pre-fix the save path went through
+        ``_expand_query_backed_model`` (which sorts) but run-by-name went
+        through ``_execute_pipeline`` directly, and ``plan_stages._topo_
+        sort`` only handles ``source_model`` deps. So a model that saved
+        successfully would fail when run by name.
+        """
+        non_ordered = SlayerModel(
+            name="qb_runbyname_topo",
+            data_source="ds",
+            source_queries=[
+                # Out-of-order: ``main`` references ``kpi`` via
+                # joins.target_model but appears FIRST.
+                SlayerQuery(
+                    name="main",
+                    source_model={
+                        "source_name": "orders",
+                        "joins": [{"target_model": "kpi", "join_pairs": [["id", "kpi_id"]]}],
+                    },
+                    dimensions=["status"],
+                    measures=[{"formula": "kpi._count:sum"}],
+                ),
+                SlayerQuery(
+                    name="kpi",
+                    source_model="orders",
+                    measures=[{"formula": "*:count"}],
+                    dimensions=[{"name": "id", "label": "kpi_id"}],  # type: ignore[list-item]
+                ),
+                SlayerQuery(source_model="main"),
+            ],
+        )
+        engine, tmp = await _engine()
+        try:
+            await engine.save_model(non_ordered)
+            # Save worked (round-1 test pinned this). Now run by name:
+            resp = await engine.execute("qb_runbyname_topo", dry_run=True)
+            assert resp.sql is not None, "run-by-name must produce SQL"
+        finally:
+            tmp.cleanup()
+
     async def test_topo_sort_accepts_nonordered_save_path(self) -> None:
         """A query-backed model whose stored ``source_queries`` are NOT in
         topological order saves cleanly under Stage B (legacy strict order
@@ -359,6 +401,52 @@ class TestVirtualModelColumns:
             saved = await engine.save_model(m)
             col = next(c for c in saved.columns if c.name == "adjusted_total")
             assert col.type == DataType.DOUBLE
+        finally:
+            tmp.cleanup()
+
+    async def test_saved_model_measure_type_wins_over_inference(self) -> None:
+        """Codex round-5 fix — when the query formula is a bare reference
+        to a saved ``ModelMeasure`` whose explicit ``type=`` differs from
+        the type ``_type_for_measure_formula`` would infer, the saved
+        measure's type wins. ``expand_model_measures`` rewrites the AST
+        but drops the measure's type metadata; the type-priority chain
+        re-looks-up the saved measure here.
+
+        Repro: ``ModelMeasure(formula="amount:sum", type=DataType.INT)``
+        on the source model — inference for ``amount:sum`` over a DOUBLE
+        ``amount`` would normally pick DOUBLE, but the explicit
+        ``type=INT`` must win.
+        """
+        orders_with_int_measure = _orders_model().model_copy(update={
+            "measures": [
+                ModelMeasure(
+                    formula="amount:sum",
+                    name="rounded_total",
+                    type=DataType.INT,  # ← explicit override
+                ),
+            ],
+        })
+        engine, tmp = await _engine()
+        try:
+            await engine.storage.save_model(orders_with_int_measure)
+            m = SlayerModel(
+                name="qb_saved_measure_type",
+                data_source="ds",
+                source_queries=[SlayerQuery(
+                    source_model="orders",
+                    # Bare-ref + explicit ``name="rounded_total"`` keeps
+                    # the column alias as the user-chosen name so the
+                    # test can look it up unambiguously.
+                    measures=[{"formula": "rounded_total", "name": "rounded_total"}],
+                    dimensions=["status"],
+                )],
+            )
+            saved = await engine.save_model(m)
+            col = next(c for c in saved.columns if c.name == "rounded_total")
+            assert col.type == DataType.INT, (
+                f"Saved ModelMeasure.type=INT must override inference "
+                f"(which would pick DOUBLE for amount:sum); got {col.type!r}"
+            )
         finally:
             tmp.cleanup()
 

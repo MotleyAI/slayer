@@ -927,6 +927,35 @@ def _type_for_dimension(
     return col.type if col is not None else None
 
 
+def _saved_model_measure_type(
+    *, scope: Union[ModelScope, StageSchema], formula: str,
+) -> Optional[DataType]:
+    """Lift the explicit ``type`` from a saved ``ModelMeasure`` when the
+    query formula is a bare reference to one.
+
+    ``expand_model_measures`` rewrites ``adjusted_total`` to the saved
+    measure's underlying formula AST but doesn't surface the measure's
+    explicit ``type=`` to downstream consumers — so an explicit
+    ``ModelMeasure(formula="amount:sum * 1.0", type=DataType.DOUBLE)``
+    on a reusable named measure would otherwise be lost unless
+    ``_type_for_measure_formula`` happens to infer the same value. This
+    helper rescues it by re-looking-up the saved measure here.
+
+    Only fires when the formula text is itself a bare identifier
+    matching a ``ModelMeasure.name`` on the source model; arithmetic /
+    function-call / colon-suffix formulas always fall through to
+    inference (the saved-measure type only applies when the user
+    references the saved measure by name directly).
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    bare = formula.strip()
+    if not bare.isidentifier():
+        return None
+    saved = scope.source_model.get_measure(bare)
+    return saved.type if saved is not None else None
+
+
 def _declared_measures_from_query(
     *,
     query: SlayerQuery,
@@ -1002,11 +1031,21 @@ def _declared_measures_from_query(
         fmt, desc = _format_description_for_measure_formula(
             scope=scope, bound=bound,
         )
-        # Codex: a user-supplied ``type=`` on the query measure spec is
-        # the override; aggregation-aware inference is the fallback.
+        # Codex: type-priority chain (highest wins):
+        #   1. ``m.type`` — user-supplied override on the query measure.
+        #   2. Saved ``ModelMeasure.type`` — when the query formula is a
+        #      bare reference to a reusable saved measure on the source
+        #      model, that measure's explicit type wins over inference.
+        #      ``expand_model_measures`` rewrites the AST but drops the
+        #      source measure's type metadata; re-look-up here.
+        #   3. ``_type_for_measure_formula`` — aggregation-aware inference.
         # Mirrors how the legacy ``EnrichedMeasure.type`` honored an
         # explicit type before falling back to inference.
-        m_type = m.type or _type_for_measure_formula(scope=scope, bound=bound)
+        m_type = (
+            m.type
+            or _saved_model_measure_type(scope=scope, formula=formula)
+            or _type_for_measure_formula(scope=scope, bound=bound)
+        )
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=declared_name,
