@@ -74,6 +74,32 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _fill_missing_metadata(
+    *,
+    slot: ValueSlot,
+    updates: Dict,
+    label: Optional[str] = None,
+    type: Optional[DataType] = None,
+    format: Optional[NumberFormat] = None,
+    description: Optional[str] = None,
+) -> None:
+    """Populate ``updates`` with each per-field value that is set on the
+    incoming intern call AND missing on the existing slot (DEV-1452 round-2
+    refactor of the previous if-chain to keep
+    :meth:`ValueRegistry._merge_into_existing` under the S3776 complexity
+    cap). Mutates ``updates`` in place; never overrides an already-set
+    field on the slot.
+    """
+    for field_name, new_value in (
+        ("label", label),
+        ("type", type),
+        ("format", format),
+        ("description", description),
+    ):
+        if getattr(slot, field_name) is None and new_value is not None:
+            updates[field_name] = new_value
+
+
 class ValueRegistry:
     """Interns ``ValueKey``s by structural identity into ``ValueSlot``s.
 
@@ -255,21 +281,17 @@ class ValueRegistry:
             # Re-intern as non-hidden — promote to public.
             updates["hidden"] = False
         # Codex: when a hidden slot is promoted to public, carry the
-        # display metadata supplied by the public re-intern. Without this,
-        # a slot first interned as a hidden dependency of a transform
-        # (``cumsum(*:count)`` hoists ``*:count`` hidden) keeps its
-        # original ``type=None`` / ``format=None`` and the migrated query-
-        # backed virtual column regresses to ``DOUBLE`` with no format.
-        # Only fill missing fields — never overwrite metadata the first
-        # intern already supplied.
-        if slot.type is None and type is not None:
-            updates["type"] = type
-        if slot.label is None and label is not None:
-            updates["label"] = label
-        if slot.format is None and format is not None:
-            updates["format"] = format
-        if slot.description is None and description is not None:
-            updates["description"] = description
+        # display metadata supplied by the public re-intern. Only fill
+        # missing fields — never overwrite metadata the first intern
+        # already supplied.
+        _fill_missing_metadata(
+            slot=slot,
+            updates=updates,
+            label=label,
+            type=type,
+            format=format,
+            description=description,
+        )
         if updates:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot
