@@ -822,6 +822,50 @@ class TestSavePath:
         finally:
             tmp.cleanup()
 
+    async def test_sibling_stage_inherits_outer_model_query_variables(self) -> None:
+        """Codex round-4 fix — a named non-final sibling stage's filter
+        ``amount > {threshold}`` must see the OUTER model's
+        ``query_variables`` (precedence runtime > stage > outer > model
+        defaults). Pre-fix, ``apply_variables_to_query`` substituted the
+        FINAL stage's filters with ``bundle.query_variables`` but
+        siblings only saw the stage-level ``final_stage.variables`` dict
+        (which doesn't include ``model.query_variables``), so the
+        sibling's ``{threshold}`` was filled with the dry-run ``"0"``
+        sentinel.
+        """
+        m = SlayerModel(
+            name="qb_sibling_vars",
+            data_source="ds",
+            # Outer model's defaults — sibling must see ``threshold=100``.
+            query_variables={"threshold": "100"},
+            source_queries=[
+                SlayerQuery(
+                    name="filtered",
+                    source_model="orders",
+                    measures=[{"formula": "amount:sum"}],
+                    dimensions=["status"],
+                    filters=["amount > {threshold}"],  # ← references outer var
+                ),
+                SlayerQuery(
+                    source_model="filtered",
+                    dimensions=["status"],
+                ),
+            ],
+        )
+        engine, tmp = await _engine()
+        try:
+            saved = await engine.save_model(m)
+            assert saved.backing_query_sql is not None
+            # The sibling's filter ``amount > {threshold}`` must
+            # substitute to ``amount > 100`` (the outer model default),
+            # not to ``amount > 0`` (the dry-run placeholder fallback).
+            assert "> 100" in saved.backing_query_sql, (
+                f"Sibling filter must inherit outer model.query_variables; "
+                f"placeholder fill leaked into:\n{saved.backing_query_sql}"
+            )
+        finally:
+            tmp.cleanup()
+
     async def test_data_source_refresh_when_backing_query_changes(self) -> None:
         """Save a query-backed model whose backing query routes through
         ds=A; replace its ``source_queries`` to root in ds=B (with a

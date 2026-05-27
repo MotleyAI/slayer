@@ -1248,7 +1248,14 @@ class SlayerQueryEngine:
             variables=bundle.query_variables,
             dry_run_placeholders=dry_run_placeholders,
         )
-        root_vars = final_stage.variables
+        # Codex: ``final_stage.variables`` is the user-supplied stage-level
+        # dict; ``apply_variables_to_query`` substitutes into filters but
+        # does not promote merged layers onto ``.variables``. Sibling
+        # substitution therefore needs ``bundle.query_variables`` (the
+        # merged ``{runtime > final_stage.variables > model.query_variables
+        # > outer_vars > source_model_defaults}`` set) — using the bare
+        # stage dict drops ``model.query_variables`` and dry-run save
+        # fills sibling filters' ``{var}`` placeholders with ``0``.
         normed_named = {
             nm: apply_variables_to_query(
                 query=nq,
@@ -1264,7 +1271,7 @@ class SlayerQueryEngine:
                         )
                         or {}
                     ),
-                    **(root_vars or {}),
+                    **(bundle.query_variables or {}),
                     **(nq.variables or {}),
                     **(runtime_kwarg or {}),
                 },
