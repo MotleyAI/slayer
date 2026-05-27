@@ -39,6 +39,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    InKey,
     LiteralKey,
     Phase,
     ScalarCallKey,
@@ -159,6 +160,14 @@ def _attach_time_keys(
         if nc is key.column and nl is key.low and nh is key.high:
             return key
         return BetweenKey(column=nc, low=nl, high=nh)
+    if isinstance(key, InKey):
+        # DEV-1475: ``InKey.values`` is a literal-only tuple — no
+        # transforms to attach a time key to. Only the LHS column path
+        # can carry a transform; rebuild only if it changed.
+        nc = _attach_time_keys(key.column, td_key=td_key)
+        if nc is key.column:
+            return key
+        return InKey(column=nc, values=key.values, negated=key.negated)
     return key
 
 
@@ -192,6 +201,10 @@ def _find_unresolved_time_needing_op(key: ValueKey) -> Optional[str]:
             if found:
                 return found
         return None
+    if isinstance(key, InKey):
+        # DEV-1475: only the LHS column can host a time-needing
+        # transform; the RHS values are literals.
+        return _find_unresolved_time_needing_op(key.column)
     return None
 
 

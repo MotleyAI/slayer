@@ -208,6 +208,45 @@ async def test_filter_gt(integration_env):
     assert response.data[0]["orders._count"] == 4
 
 
+async def test_filter_in_tuple(integration_env):
+    """DEV-1475: ``IN`` filter with literal-tuple RHS.
+
+    Smoke test for the typed-pipeline ``InKey`` render path against a
+    real SQLite engine. Orders with status in ('completed', 'pending')
+    matches 5 of 6 rows (everything except the single cancelled one).
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["status in ('completed', 'pending')"],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 5
+
+
+async def test_filter_not_in_tuple(integration_env):
+    """DEV-1475: ``NOT IN`` filter with literal-tuple RHS.
+
+    Inverse smoke test: status NOT IN ('cancelled') matches the same 5
+    rows.
+    """
+    engine = integration_env
+
+    query = SlayerQuery(
+        source_model="orders",
+        measures=[ModelMeasure(formula="*:count")],
+        filters=["status not in ('cancelled',)"],
+    )
+    response = await engine.execute(query)
+
+    assert response.row_count == 1
+    assert response.data[0]["orders._count"] == 5
+
+
 async def test_order_by(integration_env):
     """Order results by count descending."""
     engine = integration_env

@@ -56,6 +56,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    InKey,
     LiteralKey,
     Phase,
     ScalarCallKey,
@@ -84,6 +85,7 @@ from slayer.engine.syntax import (
     ScalarCall,
     StarSource,
     TransformCall,
+    TupleLit,
     UnaryOp,
 )
 from slayer.sql.sql_expr import has_window_function
@@ -326,7 +328,7 @@ def bind_filter(
 _VALUE_KEY_TYPES = (
     ColumnKey, ColumnSqlKey, StarKey, LiteralKey,
     AggregateKey, TransformKey, ArithmeticKey, ScalarCallKey,
-    BetweenKey, TimeTruncKey,
+    BetweenKey, InKey, TimeTruncKey,
 )
 
 
@@ -366,6 +368,14 @@ def walk_value_keys(key: ValueKey):
         yield from walk_value_keys(key.column)
         yield from walk_value_keys(key.low)
         yield from walk_value_keys(key.high)
+    elif isinstance(key, InKey):
+        # DEV-1475: walk the column LHS and every literal RHS so the
+        # cross-model filter router and the windowed-column rejection
+        # check both see InKey-rooted predicates the same way they see
+        # BetweenKey ones.
+        yield from walk_value_keys(key.column)
+        for v in key.values:
+            yield from walk_value_keys(v)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +435,17 @@ def _bind(
         )
 
     if isinstance(parsed, Cmp):
+        # DEV-1475: ``IN`` / ``NOT IN`` predicates fold into a single
+        # ``InKey`` rather than an ``ArithmeticKey`` so the SQL generator
+        # has a structured handle on the column + literal-tuple shape.
+        # The parser already validated that ``parsed.right`` is a
+        # ``TupleLit`` of ``Literal`` elements for these ops.
+        if parsed.op in ("in", "not in"):
+            return _bind_in(
+                parsed,
+                scope=scope, bundle=bundle, in_filter=in_filter,
+                alias_map=alias_map,
+            )
         return ArithmeticKey(
             op=parsed.op,
             operands=(
@@ -442,6 +463,48 @@ def _bind(
 
     raise ValueError(
         f"Unsupported ParsedExpr node: {type(parsed).__name__}"
+    )
+
+
+def _bind_in(
+    parsed: Cmp,
+    *,
+    scope: Union[ModelScope, StageSchema],
+    bundle: ResolvedSourceBundle,
+    in_filter: bool,
+    alias_map: Optional[Dict[str, "ValueKey"]] = None,
+) -> InKey:
+    """Bind an ``IN`` / ``NOT IN`` predicate into an ``InKey`` (DEV-1475).
+
+    The LHS is bound through the normal column-resolution path
+    (``ColumnKey`` for a bare ref, ``ColumnKey`` with a non-empty
+    ``path`` for a dotted join ref, ``ColumnSqlKey`` for a derived
+    column, or an alias-map hit for a declared-measure name).
+
+    The RHS is a ``TupleLit`` of ``Literal`` nodes (the parser already
+    enforced that shape); every element binds to a ``LiteralKey`` after
+    scalar normalization.
+    """
+    if not isinstance(parsed.right, TupleLit):
+        # Defensive — the parser's ``ast.Compare`` branch guarantees a
+        # ``TupleLit`` on the RHS for ``in`` / ``not in``. Surface a
+        # clear runtime error if a future caller bypasses the parser.
+        raise ValueError(
+            f"_bind_in: expected TupleLit on RHS of {parsed.op!r}, got "
+            f"{type(parsed.right).__name__}."
+        )
+    column = _bind(
+        parsed.left,
+        scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map,
+    )
+    values = tuple(
+        LiteralKey(value=normalize_scalar(elt.value))
+        for elt in parsed.right.elements
+    )
+    return InKey(
+        column=column,
+        values=values,
+        negated=(parsed.op == "not in"),
     )
 
 

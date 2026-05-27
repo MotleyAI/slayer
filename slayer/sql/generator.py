@@ -3193,6 +3193,7 @@ class SQLGenerator:
             BetweenKey,
             ColumnKey,
             ColumnSqlKey,
+            InKey,
             ScalarCallKey,
             TimeTruncKey,
             TransformKey,
@@ -3222,7 +3223,7 @@ class SQLGenerator:
                 for a in key.args:
                     if isinstance(
                         a,
-                        (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey),
+                        (TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey, InKey),
                     ):
                         found = _walk(a)
                         if found:
@@ -3234,6 +3235,9 @@ class SQLGenerator:
                     if found:
                         return found
                 return None
+            if isinstance(key, InKey):
+                # DEV-1475: only LHS column can host a deferred transform.
+                return _walk(key.column)
             return None
 
         # Explicit layer ops + composite-input enforcement.
@@ -3315,6 +3319,7 @@ class SQLGenerator:
             BetweenKey,
             ColumnKey,
             ColumnSqlKey,
+            InKey,
             Phase,
             ScalarCallKey,
             TimeTruncKey,
@@ -3347,8 +3352,8 @@ class SQLGenerator:
                         a,
                         (
                             TransformKey, ArithmeticKey, ScalarCallKey,
-                            BetweenKey, ColumnKey, ColumnSqlKey, TimeTruncKey,
-                            AggregateKey,
+                            BetweenKey, InKey, ColumnKey, ColumnSqlKey,
+                            TimeTruncKey, AggregateKey,
                         ),
                     ):
                         _collect_from(a)
@@ -3357,6 +3362,12 @@ class SQLGenerator:
                 _collect_from(key.column)
                 _collect_from(key.low)
                 _collect_from(key.high)
+                return
+            if isinstance(key, InKey):
+                # DEV-1475: only the LHS column references a slot; the
+                # RHS values are bare literals with no slot identity.
+                _collect_from(key.column)
+                return
             # LiteralKey / StarKey / unknown: nothing to materialise.
 
         # Transform layer deps.
@@ -3411,6 +3422,7 @@ class SQLGenerator:
             BetweenKey,
             ColumnKey,
             ColumnSqlKey,
+            InKey,
             ScalarCallKey,
             TimeTruncKey,
             TransformKey,
@@ -3435,8 +3447,8 @@ class SQLGenerator:
                         a,
                         (
                             TransformKey, ArithmeticKey, ScalarCallKey,
-                            BetweenKey, ColumnKey, ColumnSqlKey, TimeTruncKey,
-                            AggregateKey,
+                            BetweenKey, InKey, ColumnKey, ColumnSqlKey,
+                            TimeTruncKey, AggregateKey,
                         ),
                     ) and not _ready(a):
                         return False
@@ -3445,6 +3457,10 @@ class SQLGenerator:
                 return all(
                     _ready(k) for k in (key.column, key.low, key.high)
                 )
+            if isinstance(key, InKey):
+                # DEV-1475: only LHS column needs slot readiness; RHS
+                # values are literals (always ready).
+                return _ready(key.column)
             return True
 
         for slot_id in layer.slot_ids:
@@ -5518,6 +5534,7 @@ class SQLGenerator:
             ArithmeticKey,
             ColumnKey,
             ColumnSqlKey,
+            InKey,
             LiteralKey,
         )
 
@@ -5607,6 +5624,24 @@ class SQLGenerator:
                 for op_key in value_key.operands
             ]
             return self._build_arith_or_cmp_ast(op=op, operands=rendered_operands)
+        if isinstance(value_key, InKey):
+            # DEV-1475: cross-model IN filter — render the LHS column
+            # rooted at the CTE's target relation (so a bare ``name`` on
+            # ``stores`` becomes ``stores.name``), and the RHS literals
+            # inline. The cross-model routing path lands here only when
+            # the InKey's LHS column lives on the CTE target.
+            col_expr = self._render_filter_value_key_in_target_scope(
+                value_key=value_key.column,
+                target_relation=target_relation,
+                target_model=target_model,
+                planned_query=planned_query,
+                bundle=bundle,
+            )
+            value_exprs = [
+                self._literal_key_to_exp(lit) for lit in value_key.values
+            ]
+            in_expr = exp.In(this=col_expr, expressions=value_exprs)
+            return exp.Not(this=in_expr) if value_key.negated else in_expr
         # Scalars stored inline (Decimal / str / bool / None).
         return self._literal_key_to_exp(value_key)
 
@@ -5642,6 +5677,19 @@ class SQLGenerator:
         """
         if op == "not":
             return exp.Not(this=operands[0])
+        # ``and`` / ``or`` (Codex round 2): the binder produces n-ary
+        # boolean ``ArithmeticKey`` for ``a AND b AND c`` (three operands);
+        # the prior implementation took only ``operands[0]`` / ``[1]`` and
+        # silently dropped the third predicate from cross-model HAVING/
+        # WHERE, broadening results. Fold over every operand the same
+        # way ``_compose_arithmetic_op`` and ``_build_arithmetic_for_filter``
+        # already do.
+        if op in ("and", "or"):
+            node_cls = exp.And if op == "and" else exp.Or
+            acc = operands[0]
+            for o in operands[1:]:
+                acc = node_cls(this=acc, expression=o)
+            return acc
         left, right = operands[0], operands[1]
         # ``IS`` / ``IS NOT`` (Codex review): the typed pipeline's filter
         # normalizer lowers SQL ``IS NULL`` / ``IS NOT NULL`` to Python
@@ -5658,8 +5706,6 @@ class SQLGenerator:
             "<=": exp.LTE,
             ">": exp.GT,
             ">=": exp.GTE,
-            "and": lambda this, expression: exp.And(this=this, expression=expression),
-            "or": lambda this, expression: exp.Or(this=this, expression=expression),
             "+": exp.Add,
             "-": exp.Sub,
             "*": exp.Mul,
@@ -5671,8 +5717,6 @@ class SQLGenerator:
                 f"DEV-1450 stage 7b.12: arithmetic operator {op!r} not "
                 f"supported in cross-model filter rendering.",
             )
-        if op in ("and", "or"):
-            return cls(this=left, expression=right)
         return cls(this=left, expression=right)
 
     def _build_combined_order_by_sql(
@@ -6231,6 +6275,7 @@ class SQLGenerator:
             BetweenKey,
             ColumnKey,
             ColumnSqlKey,
+            InKey,
             LiteralKey,
             ScalarCallKey,
             TimeTruncKey,
@@ -6279,8 +6324,8 @@ class SQLGenerator:
                     a,
                     (
                         TransformKey, ArithmeticKey, ScalarCallKey, BetweenKey,
-                        ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey,
-                        LiteralKey,
+                        InKey, ColumnKey, ColumnSqlKey, TimeTruncKey,
+                        AggregateKey, LiteralKey,
                     ),
                 ):
                     args.append(self._render_value_key_against_aliases(
@@ -6315,6 +6360,26 @@ class SQLGenerator:
                 available_alias_by_slot_id=available_alias_by_slot_id,
             )
             return exp.Between(this=col, low=low, high=high)
+
+        if isinstance(key, InKey):
+            # DEV-1475: POST-phase IN filter — LHS column resolves to a
+            # quoted alias materialised in the ``_filtered`` wrapper; RHS
+            # literals are inlined as bare sqlglot scalars.
+            col = self._render_value_key_against_aliases(
+                key=key.column,
+                slot_id_by_key=slot_id_by_key,
+                available_alias_by_slot_id=available_alias_by_slot_id,
+            )
+            value_exprs = [
+                self._render_value_key_against_aliases(
+                    key=lit,
+                    slot_id_by_key=slot_id_by_key,
+                    available_alias_by_slot_id=available_alias_by_slot_id,
+                )
+                for lit in key.values
+            ]
+            in_expr = exp.In(this=col, expressions=value_exprs)
+            return exp.Not(this=in_expr) if key.negated else in_expr
 
         raise NotImplementedError(
             f"DEV-1450 stage 7b.10: POST-phase filter key type "
@@ -7291,6 +7356,7 @@ class SQLGenerator:
             BetweenKey,
             ColumnKey,
             ColumnSqlKey,
+            InKey,
             Phase,
             ScalarCallKey,
         )
@@ -7351,6 +7417,11 @@ class SQLGenerator:
                 _walk(key.column)
                 _walk(key.low)
                 _walk(key.high)
+            elif isinstance(key, InKey):
+                # DEV-1475: an IN filter on a joined column must still
+                # pull the join into the FROM. Only the LHS column can
+                # carry a join path; literal RHS values never do.
+                _walk(key.column)
 
         skip = skip_filter_ids or set()
         for fp in planned_query.filters_by_phase:
@@ -7839,6 +7910,7 @@ class SQLGenerator:
             BetweenKey,
             ColumnKey,
             ColumnSqlKey,
+            InKey,
             LiteralKey,
             ScalarCallKey,
             StarKey,
@@ -7993,6 +8065,23 @@ class SQLGenerator:
                 slot_by_key=slot_by_key,
             )
             return exp.Between(this=col_expr, low=low_expr, high=high_expr)
+        if isinstance(key, InKey):
+            # DEV-1475: render the LHS column through the normal filter
+            # path (local + joined paths both supported via ColumnKey /
+            # ColumnSqlKey), and the RHS as a sequence of scalar
+            # literals. Wrap in ``exp.Not`` for ``not in``.
+            col_expr = self._render_value_key_for_filter(
+                key=key.column,
+                source_relation=source_relation,
+                source_model=source_model,
+                bundle=bundle,
+                slot_by_key=slot_by_key,
+            )
+            value_exprs = [
+                self._scalar_to_sqlglot(lit.value) for lit in key.values
+            ]
+            in_expr = exp.In(this=col_expr, expressions=value_exprs)
+            return exp.Not(this=in_expr) if key.negated else in_expr
         if isinstance(key, (
             AggregateKey, TransformKey, TimeTruncKey, StarKey,
         )):
@@ -8016,6 +8105,7 @@ class SQLGenerator:
             ArithmeticKey,
             BetweenKey,
             ColumnKey,
+            InKey,
             ScalarCallKey,
             TransformKey,
         )
@@ -8039,6 +8129,10 @@ class SQLGenerator:
                 _walk(k.column)
                 _walk(k.low)
                 _walk(k.high)
+            elif isinstance(k, InKey):
+                # DEV-1475: only the LHS column can be a direct local
+                # row-column; literal RHS values aren't grouped against.
+                _walk(k.column)
 
         _walk(key)
         return out
@@ -8128,6 +8222,17 @@ class SQLGenerator:
             return result
         if op == "not":
             return exp.Not(this=operands[0])
+        # ``IS`` / ``IS NOT`` (Codex round 2): the filter normalizer lowers
+        # SQL ``IS NULL`` / ``IS NOT NULL`` to Python ``is None`` / ``is
+        # not None``. Render against the rhs (a ``Null`` literal) as the
+        # standard SQL forms. Without these branches a local-stage filter
+        # ``deleted_at IS NULL`` parses and binds but raises here at SQL
+        # generation. Mirrors the patches in ``_build_arith_or_cmp_ast``
+        # and ``_compose_arithmetic_op``.
+        if op == "is":
+            return exp.Is(this=operands[0], expression=operands[1])
+        if op == "is not":
+            return exp.Not(this=exp.Is(this=operands[0], expression=operands[1]))
         raise NotImplementedError(
             f"DEV-1450 stage 7b.8: ArithmeticKey op {op!r} not "
             f"supported in filter rendering."

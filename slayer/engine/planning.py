@@ -42,6 +42,7 @@ from slayer.core.keys import (
     BetweenKey,
     ColumnKey,
     ColumnSqlKey,
+    InKey,
     LiteralKey,
     Phase,
     ScalarCallKey,
@@ -388,6 +389,14 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
         ):
             return key
         return BetweenKey(column=new_col, low=new_low, high=new_high)
+    if isinstance(key, InKey):
+        # DEV-1475: ``InKey.values`` is a literal-only tuple, so it
+        # carries no sugar to lower; only the LHS column can host a
+        # rewritable transform. Rebuild only if the column changed.
+        new_col = lower_sugar_transforms(key.column)
+        if new_col is key.column:
+            return key
+        return InKey(column=new_col, values=key.values, negated=key.negated)
     return key
 
 
@@ -525,6 +534,12 @@ def _iter_slot_deps(key: ValueKey):
         yield from _iter_slot_deps(key.column)
         yield from _iter_slot_deps(key.low)
         yield from _iter_slot_deps(key.high)
+    if isinstance(key, InKey):
+        # DEV-1475: InKey, like BetweenKey, is inlined into WHERE by the
+        # generator (no public slot of its own). Surface its LHS column
+        # for cross-model routing / hidden-slot collection; the literal
+        # RHS values are never slottable.
+        yield from _iter_slot_deps(key.column)
     # StarKey, LiteralKey — never slottable on their own.
 
 
@@ -643,6 +658,10 @@ def _canonical_name(key: ValueKey) -> str:
         # Defensive — BetweenKey shouldn't materialise as a public slot
         # in 7b.9; it's always inlined into WHERE by the renderer.
         return f"_between_{_canonical_name(key.column)}"
+    if isinstance(key, InKey):
+        # Defensive — InKey (DEV-1475) is always inlined into WHERE
+        # like BetweenKey; never materialises as a public slot.
+        return f"_in_{_canonical_name(key.column)}"
     return "_hidden"
 
 

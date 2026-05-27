@@ -83,6 +83,20 @@ class Literal(_BaseNode):
     value: Union[Decimal, str, bool, None] = None
 
 
+class TupleLit(_BaseNode):
+    """A literal-only tuple/list RHS for ``IN`` / ``NOT IN`` filters (DEV-1475).
+
+    Only emitted on the right-hand side of a ``Cmp`` whose op is ``in`` or
+    ``not in``. Every ``elements`` entry is a ``Literal`` — references and
+    expressions on the RHS are rejected at parse time so the binder can
+    fold the predicate into a single ``InKey`` with a tuple of
+    ``LiteralKey``. Empty tuples are rejected too (an empty IN is a SQL
+    quirk that varies by dialect; reject early with a clear message).
+    """
+
+    elements: Tuple[Literal, ...]
+
+
 class AggCall(_BaseNode):
     source: Union[Ref, DottedRef, StarSource]
     agg: str
@@ -125,7 +139,7 @@ class BoolOp(_BaseNode):
 
 
 ParsedExpr = Union[
-    Ref, DottedRef, StarSource, Literal,
+    Ref, DottedRef, StarSource, Literal, TupleLit,
     AggCall, TransformCall, ScalarCall,
     Arith, UnaryOp, Cmp, BoolOp,
 ]
@@ -167,6 +181,13 @@ _CMP_OP_MAP: Dict[type, str] = {
     # to plan. The downstream SQL generator renders ``is`` / ``is not``
     # against a ``None`` literal as ``IS NULL`` / ``IS NOT NULL``.
     ast.Is: "is", ast.IsNot: "is not",
+    # DEV-1475: SQL-style ``IN`` / ``NOT IN`` with a literal-tuple RHS.
+    # ``_normalize_sql_filter_operators`` already lowercases ``IN`` /
+    # ``NOT IN`` to the Python keywords; the AST then carries ``ast.In``
+    # / ``ast.NotIn`` here. The ``ast.Compare`` branch enforces the
+    # tuple/list-only RHS shape and validates that every element is a
+    # literal.
+    ast.In: "in", ast.NotIn: "not in",
 }
 
 
@@ -321,7 +342,10 @@ def walk_parsed_refs(
         for op in parsed.operands:
             yield from walk_parsed_refs(op)
         return
-    # Literal / StarSource → no references.
+    # Literal / StarSource / TupleLit → no references.
+    # ``TupleLit`` carries only ``Literal`` elements by construction
+    # (see the ``ast.Compare`` branch of ``_convert``) so the walk stops
+    # here without descending — same shape as ``Literal``.
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +487,40 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:
                 f"Invalid Mode-B expression {original!r}: unsupported "
                 f"comparison operator {op_type.__name__}."
             )
+        # DEV-1475: ``IN`` / ``NOT IN`` carry a literal-only tuple RHS
+        # (``status in ('completed', 'pending')``). Reject scalar RHS,
+        # empty RHS, and any non-literal element so the binder can fold
+        # the predicate into a single ``InKey`` with confidence. Signed
+        # numerics (``amount in (-1, -2)``) are admitted by collapsing
+        # ``UnaryOp(USub/UAdd, Constant(int|float))`` to a signed
+        # ``Literal`` at validation time (Codex review).
+        if op_type in (ast.In, ast.NotIn):
+            rhs_node = node.comparators[0]
+            if not isinstance(rhs_node, (ast.Tuple, ast.List)):
+                raise ValueError(
+                    f"Invalid Mode-B expression {original!r}: the right-"
+                    f"hand side of ``in`` / ``not in`` must be a tuple/"
+                    f"list literal (e.g. ``status in ('a', 'b')``); got "
+                    f"{type(rhs_node).__name__}."
+                )
+            if not rhs_node.elts:
+                raise ValueError(
+                    f"Invalid Mode-B expression {original!r}: empty "
+                    f"tuple is not allowed on the right-hand side of "
+                    f"``in`` / ``not in`` (dialect-dependent SQL); use "
+                    f"a non-empty literal tuple."
+                )
+            elements: List[Literal] = []
+            for elt in rhs_node.elts:
+                converted = _convert_in_rhs_element(
+                    elt, agg_map=agg_map, original=original,
+                )
+                elements.append(converted)
+            return Cmp(
+                op=_CMP_OP_MAP[op_type],
+                left=_convert(node.left, agg_map=agg_map, original=original),
+                right=TupleLit(elements=tuple(elements)),
+            )
         return Cmp(
             op=_CMP_OP_MAP[op_type],
             left=_convert(node.left, agg_map=agg_map, original=original),
@@ -480,6 +538,41 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:
         f"Invalid Mode-B expression {original!r}: unsupported AST node "
         f"{type(node).__name__}."
     )
+
+
+def _convert_in_rhs_element(
+    node: ast.AST, *, agg_map: Dict, original: str,
+) -> Literal:
+    """Convert one element of an ``IN`` / ``NOT IN`` literal-tuple RHS.
+
+    The Python parser emits a negative numeric literal as
+    ``UnaryOp(USub, Constant(int|float))`` rather than a bare
+    ``Constant`` with a negative value, so a strict ``isinstance(_,
+    Literal)`` check against ``_convert``'s output would reject
+    ``amount in (-1, -2)``. This helper collapses the sign onto the
+    inner numeric before the literal check (Codex review). Boolean and
+    string literals are unaffected.
+    """
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        inner = node.operand
+        if (
+            isinstance(inner, ast.Constant)
+            and isinstance(inner.value, (int, float))
+            and not isinstance(inner.value, bool)
+        ):
+            signed = -inner.value if isinstance(node.op, ast.USub) else inner.value
+            if isinstance(signed, int):
+                return Literal(value=Decimal(signed))
+            return Literal(value=Decimal(str(signed)))
+    converted = _convert(node, agg_map=agg_map, original=original)
+    if not isinstance(converted, Literal):
+        raise ValueError(
+            f"Invalid Mode-B expression {original!r}: every element on "
+            f"the right-hand side of ``in`` / ``not in`` must be a "
+            f"literal (string, number, or boolean); got "
+            f"{type(converted).__name__}."
+        )
+    return converted
 
 
 def _convert_constant(node: ast.Constant, *, original: str) -> Literal:
