@@ -785,7 +785,7 @@ class SlayerQueryEngine:
             measures.append(ModelMeasure(formula=f"{c.name}:{agg}"))
         return SlayerQuery(source_model=model.name, measures=measures)
 
-    async def get_column_types(
+    async def get_column_types(  # NOSONAR(S3776) — linear probe pipeline: query-backed prelude → bundle → expand-nested → plan → render → execute → result-key map-back. Splitting hides the order; each step is its own try/except + early-return so flatness is the easier read.
         self,
         model_name: str,
         data_source: Optional[str] = None,

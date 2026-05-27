@@ -3829,7 +3829,7 @@ class SQLGenerator:
             return f"{source_relation}.{source_model.default_time_dimension}"
         return None
 
-    def _resolve_explicit_time_col(
+    def _resolve_explicit_time_col(  # NOSONAR(S3776) — sequential isinstance dispatch over ColumnKey (bare ref → ``__``-joined path alias) and ColumnSqlKey (derived column → bare-ident-qualify vs complex-emit-verbatim). Extracting the per-shape branches would scatter the time-arg resolution contract; each branch is one decision.
         self,
         *,
         key,
@@ -4065,7 +4065,7 @@ class SQLGenerator:
             filtered_match_map[m.alias] = match_alias
         return rn_exprs, filtered_rn_map, filtered_match_map
 
-    def _build_first_last_base_select(
+    def _build_first_last_base_select(  # NOSONAR(S3776) — single conceptual unit: dimension/td/derived-dim classification pass + agg-spec synth + ranked-subquery wrap + outer SELECT/GROUP BY assembly. Splitting forces shared mutable state (partition_exprs / extra_projections / outer_ref_by_sid / synth_by_sid) across helpers without simplifying anything.
         self,
         *,
         planned_query,
@@ -5110,7 +5110,7 @@ class SQLGenerator:
         )
         return cte_sql, joinback_pairs, agg_col_alias
 
-    def _render_cross_model_cte(
+    def _render_cross_model_cte(  # NOSONAR(S3776) — single conceptual unit: shared-grain projection + GROUP BY classification + aggregate reroot (source / args / kwargs) + first/last ranked-subquery wrap + target-model-filter qualification + WHERE/HAVING routing. Each block is interdependent state for the same CTE; splitting forces the same cross-cutting state through helpers without simplifying anything.
         self,
         *,
         plan,

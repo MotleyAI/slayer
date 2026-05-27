@@ -44,7 +44,7 @@ def _extract_sibling_refs(query: Any, against: Set[str]) -> Set[str]:
     return out
 
 
-def _walk_spec(spec: Any, against: Set[str], out: Set[str]) -> None:
+def _walk_spec(spec: Any, against: Set[str], out: Set[str]) -> None:  # NOSONAR(S3776) — recursive walker over five ``source_model`` shapes (str / dict-ModelExtension / dict-inline-SlayerModel / typed ModelExtension / typed SlayerModel) plus nested ``source_queries`` recursion. Splitting fragments the per-shape contract; the recursion + isinstance dispatch IS the function.
     """Recursively collect sibling refs from a ``source_model`` spec.
 
     Handled shapes:

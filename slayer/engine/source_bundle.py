@@ -408,7 +408,7 @@ def stage_bundle_with_siblings(
     )
 
 
-async def expand_query_backed_models_in_bundle(
+async def expand_query_backed_models_in_bundle(  # NOSONAR(S3776) — three sequential expansion blocks (source + referenced + stage_source) that mutate the bundle in series. Each block guards on its own condition; splitting forces ``bundle`` to ping-pong through helpers without simplifying anything. The inner recursion guard is the only shared state.
     *,
     bundle: ResolvedSourceBundle,
     outer_vars: Optional[Dict[str, Any]],
