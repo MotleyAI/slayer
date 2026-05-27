@@ -758,7 +758,7 @@ class TestNestedQueryBackedSavePath:
     """Decision F end-to-end — save a query-backed model whose own
     backing query joins ANOTHER query-backed model (qb-A joins qb-B)."""
 
-    async def test_qb_A_joins_qb_B_save_path(self) -> None:
+    async def test_qb_a_joins_qb_b_save_path(self) -> None:
         # qb_B aggregates customers.
         qb_b = SlayerModel(
             name="qb_b_customers_kpi",

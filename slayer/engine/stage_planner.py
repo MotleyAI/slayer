@@ -838,7 +838,7 @@ def _infer_aggregated_type(
 
 
 def _format_description_for_measure_formula(
-    *, scope: Union[ModelScope, StageSchema], formula: str, bound,
+    *, scope: Union[ModelScope, StageSchema], bound,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     """Lift ``format`` / ``description`` for a measure formula. The
     aggregation-aware format comes from ``_infer_aggregated_format`` when
@@ -1000,7 +1000,7 @@ def _declared_measures_from_query(
         declared_name = explicit_name or canonical
         public_name = explicit_name or canonical
         fmt, desc = _format_description_for_measure_formula(
-            scope=scope, formula=formula, bound=bound,
+            scope=scope, bound=bound,
         )
         # Codex: a user-supplied ``type=`` on the query measure spec is
         # the override; aggregation-aware inference is the fallback.
