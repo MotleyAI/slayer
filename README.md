@@ -45,30 +45,34 @@ Side by side, here's LLM-generated SQL and the equivalent SLayer query.
 ## Quickstart
 
 We recommend using [uv](https://docs.astral.sh/uv/), especially if you don't work in a Python project.
+```bash
+uv tool install 'motley-slayer[all]'
+```
+
+If `slayer` isn't found on PATH afterwards, run `uv tool update-shell` and reopen your terminal.
 
 ### Using demo dataset
 ```bash
 # With the Jaffle Shop demo preloaded (zero-config quickstart)
-claude mcp add slayer_demo -- uvx --from motley-slayer slayer mcp --demo
+claude mcp add slayer_demo -- slayer mcp --demo
 ```
 
 ### Using your own data
-Set up your datasource (make sure that the `DB_PASSWORD` environment variable is set), substituting the correct database, username, hostname, and db_name. 
+Set up your datasource, substituting the correct database, username, hostname, and db_name. 
 
 ```bash
-uvx --from motley-slayer slayer datasources create 'postgresql://user:${DB_PASSWORD}@hostname/db_name'
+slayer datasources create 'postgresql://user:${DB_PASSWORD}@hostname/db_name'
 ```
 
-The password will be read by SLayer at init time, not saved to disk nor exposed to Claude. 
+The password will be read by SLayer at init time, not saved to disk nor exposed to Claude.
 
-
-Then add SLayer to Claude Code (use `[all]` so all DB drivers are available at boot-time ingestion):
+Then add SLayer to Claude Code:
 
 ```bash
-claude mcp add slayer -- uvx --from 'motley-slayer[all]' slayer mcp --ingest-on-startup
+claude mcp add slayer -- slayer mcp --ingest-on-startup
 ```
 
-Now SLayer MCP will be visible in Claude Code next time you start it.
+Now SLayer MCP will be visible in Claude Code next time you start it. Make sure to launch Claude Code from a shell where `DB_PASSWORD` is exported — the MCP subprocess inherits its environment from the launching process.
 
 Read more on how to get started with [MCP](https://motley-slayer.readthedocs.io/en/latest/getting-started/mcp/), [CLI](https://motley-slayer.readthedocs.io/en/latest/getting-started/cli/), [REST API](https://motley-slayer.readthedocs.io/en/latest/getting-started/rest-api/), [Python](https://motley-slayer.readthedocs.io/en/latest/getting-started/python/) in the docs.
 
