@@ -375,6 +375,49 @@ class TestBuilderColumnKey:
         assert "orders" in spec.filter_sql
         assert "status" in spec.filter_sql
 
+    def test_filter_qualifies_with_source_relation_not_model_name(self):
+        # DEV-1484 (relocated from test_sql_generator.py
+        # TestFilteredMeasures::test_filtered_measure_uses_source_alias_* and
+        # ::test_filtered_measure_source_alias_propagates_to_generated_sql).
+        # When the source RELATION alias differs from the underlying
+        # model.name (named-query / sub-query sources), the filter columns
+        # AND the spec.model_name must qualify with the source relation, never
+        # the underlying model.name — otherwise the emitted FROM (which uses
+        # the relation alias) and the CASE-WHEN filter would disagree and the
+        # SQL would be invalid.
+        model = SlayerModel(
+            name="orders_underlying",
+            data_source="prod",
+            sql_table="orders",
+            columns=[
+                Column(name="id", type=DataType.INT, primary_key=True),
+                Column(name="amount", type=DataType.DOUBLE),
+                Column(name="status", type=DataType.TEXT),
+            ],
+        )
+        key = AggregateKey(
+            source=ColumnKey(path=(), leaf="amount"),
+            agg="sum",
+            column_filter_key=SqlExprKey(canonical_sql="status = 'active'"),
+        )
+        slot = _slot(
+            key,
+            declared_name="active_revenue_sum",
+            public_name="active_revenue_sum",
+            slot_type=DataType.DOUBLE,
+        )
+        spec = _invoke(
+            slot=slot,
+            key=key,
+            source_model=model,
+            source_relation="orders_alias",
+            full_alias="orders_alias.active_revenue_sum",
+        )
+        assert spec.model_name == "orders_alias"
+        assert spec.filter_sql is not None
+        assert "orders_alias.status" in spec.filter_sql
+        assert "orders_underlying" not in spec.filter_sql
+
     def test_columnsqlkey_derived_uses_column_sql(self):
         # The derived ``net_amount`` column has ``sql = "amount - tax"`` and
         # type DOUBLE; aggregating it must surface the expression as

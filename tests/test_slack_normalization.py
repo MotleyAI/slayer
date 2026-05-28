@@ -185,6 +185,88 @@ class TestMisplacedMeasure:
         assert any(w.rule_id == "FUNC_STYLE_AGG" for w in result.warnings)
         assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
 
+    # DEV-1484 backfill from TestAutoMoveDimensions.test_colon_fields_kept
+    def test_colon_form_measures_kept(self):
+        # Colon-form aggregations (`revenue:sum`, `*:count`) are real
+        # measures — never reclassified as dimensions.
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenue:sum"}, {"formula": "*:count"}],
+        )
+        result = normalize_query(q, model=_orders())
+        assert len(result.query.measures) == 2
+        assert not result.query.dimensions
+        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+
+    # DEV-1484 backfill from TestAutoMoveDimensions.test_arithmetic_kept
+    def test_arithmetic_formula_kept(self):
+        # An arithmetic-over-aggregates formula stays a measure.
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "revenue:sum / *:count"}],
+        )
+        result = normalize_query(q, model=_orders())
+        assert len(result.query.measures) == 1
+        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+
+    # DEV-1484 backfill from TestAutoMoveDimensions.test_invalid_cross_model_path_kept
+    def test_dotted_cross_model_ref_kept(self):
+        # A dotted cross-model ref (`customers.nonexistent`) is NOT a bare
+        # local column, so MISPLACED_MEASURE leaves it in measures (the
+        # binder errors later if the path is invalid). This also covers the
+        # legacy dotted-named-measure case — every dotted ref is kept.
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "customers.nonexistent"}, {"formula": "revenue:sum"}],
+        )
+        result = normalize_query(q, model=_orders())
+        assert len(result.query.measures) == 2
+        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+
+    # DEV-1484 backfill from
+    # TestAutoMoveDimensions.test_dotted_named_measure_not_moved_via_named_queries
+    def test_dotted_named_measure_ref_kept(self):
+        # A dotted ref to a named ModelMeasure on a joined model
+        # (`customers.name_count`) is dotted, so MISPLACED_MEASURE keeps it
+        # in measures rather than moving it to dimensions.
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "customers.name_count"}, {"formula": "revenue:sum"}],
+        )
+        result = normalize_query(q, model=_orders())
+        assert len(result.query.measures) == 2
+        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+
+    # DEV-1484 backfill from TestAutoMoveDimensions.test_no_fields_noop
+    def test_no_measures_is_noop(self):
+        # No measures to classify — the rule short-circuits and leaves the
+        # query untouched.
+        q = SlayerQuery(source_model="orders", dimensions=["status"])
+        result = normalize_query(q, model=_orders())
+        assert not result.query.measures
+        assert [getattr(d, "name", d) for d in result.query.dimensions] == ["status"]
+        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+
+    # DEV-1484 backfill from TestAutoMoveDimensions.test_appends_to_existing_dimensions
+    def test_moved_column_appends_to_existing_dimensions(self):
+        # A misplaced bare column is appended to existing dimensions, not
+        # replacing them.
+        m = _orders().model_copy(update={
+            "columns": _orders().columns + [Column(name="customer_id", type=DataType.INT)],
+        })
+        q = SlayerQuery(
+            source_model="orders",
+            measures=[{"formula": "customer_id"}, {"formula": "revenue:sum"}],
+            dimensions=["status"],
+        )
+        result = normalize_query(q, model=m)
+        assert len(result.query.measures) == 1
+        assert result.query.measures[0].formula == "revenue:sum"
+        dim_names = [getattr(d, "name", d) for d in result.query.dimensions]
+        assert "status" in dim_names
+        assert "customer_id" in dim_names
+        assert any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+
 
 # ---------------------------------------------------------------------------
 # NormalizationResult shape
@@ -338,6 +420,50 @@ class TestEngineWiring:
                 and "custom_sum" in w.original
                 for w in resp.warnings
             )
+
+    # DEV-1484 backfill from TestAutoMoveDimensions.test_cross_model_dimension_moved
+    async def test_cross_model_dimension_in_measures_groups_correctly(self):
+        # Legacy `_auto_move_fields_to_dimensions` moved a bare cross-model
+        # dimension ref out of measures. On the typed pipeline the slack rule
+        # leaves dotted refs alone, but the binder classifies a cross-model
+        # dotted ref in `measures` as a dimension end-to-end: it must surface
+        # in GROUP BY and the projection, with the join emitted.
+        from slayer.engine.query_engine import SlayerQueryEngine
+        from slayer.storage.yaml_storage import YAMLStorage
+        from slayer.core.models import DatasourceConfig, ModelJoin
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            storage = YAMLStorage(base_dir=Path(td) / "models")
+            await storage.save_datasource(
+                DatasourceConfig(name="prod", type="sqlite", url="sqlite:///:memory:")
+            )
+            await storage.save_model(SlayerModel(
+                name="customers", data_source="prod", sql_table="customers",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="name", type=DataType.TEXT),
+                ],
+            ))
+            await storage.save_model(SlayerModel(
+                name="orders", data_source="prod", sql_table="orders",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="customer_id", type=DataType.INT),
+                    Column(name="revenue", type=DataType.DOUBLE),
+                ],
+                joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            ))
+            engine = SlayerQueryEngine(storage=storage)
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[{"formula": "customers.name"}, {"formula": "revenue:sum"}],
+            )
+            resp = await engine.execute(q, dry_run=True)
+            sql = resp.sql
+            assert "GROUP BY" in sql and "customers.name" in sql, sql
+            assert "JOIN customers" in sql, sql
 
     async def test_save_model_normalizes_formulas(self):
         from slayer.engine.query_engine import SlayerQueryEngine
