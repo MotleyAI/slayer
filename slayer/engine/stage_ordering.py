@@ -7,9 +7,13 @@ can validate stored ``source_queries`` with the same fault-tolerance
 contract the runtime ``execute(query=list[...])`` path uses. Decisions
 #1 + E of the Stage B plan:
 
-* Last stage stays root / sink. Cycles, self-references, duplicate names,
-  root referenced by another stage, and forward references all raise
-  ``ValueError`` with messages that name the offending stage.
+* Last stage stays root / sink. Cycles, self-references, duplicate
+  names, and root referenced by another stage all raise ``ValueError``
+  with messages that name the offending stage. Forward references —
+  a stage that names a sibling appearing later in the input list — are
+  reordered, not rejected: that is the whole point of the topo-sort,
+  and the user-facing contract is that stored / runtime stage lists
+  may be supplied in any topologically valid order.
 * Sibling refs are walked recursively through inline ``SlayerModel``
   (typed or dict), ``ModelExtension`` (typed or dict), and ``ModelJoin``
   shapes inside ``joins[].target_model``. An inline-nested

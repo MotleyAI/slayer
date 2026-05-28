@@ -928,14 +928,54 @@ def _type_for_measure_formula(
     )
 
 
-def _type_for_dimension(
-    *, scope: Union[ModelScope, StageSchema], full_name: str,
+def _joined_column_type(
+    *, source_model: SlayerModel, full_name: str, bundle: ResolvedSourceBundle,
 ) -> Optional[DataType]:
-    """Lift ``type`` for a plain dimension. ``None`` for joined refs."""
+    """Best-effort type of a dotted (joined) dimension by walking the join
+    chain — mirrors ``binding._resolve_dotted`` (``parts[:-1]`` are join
+    hops matched on ``target_model``, ``parts[-1]`` is the leaf column),
+    but returns ``None`` on any miss instead of raising. The binder has
+    already validated the ref, so this is a guard rather than a primary
+    check.
+    """
+    parts = full_name.split(".")
+    if parts and parts[0] == source_model.name:  # C14 self-prefix strip
+        parts = parts[1:]
+    if not parts:
+        return None
+    *hops, leaf = parts
+    current = source_model
+    visited = {current.name}
+    for hop in hops:
+        if not any(j.target_model == hop for j in current.joins):
+            return None
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None or nxt.name in visited:
+            return None
+        visited.add(nxt.name)
+        current = nxt
+    col = current.get_column(leaf)
+    return col.type if col is not None else None
+
+
+def _type_for_dimension(
+    *,
+    scope: Union[ModelScope, StageSchema],
+    full_name: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[DataType]:
+    """Lift ``type`` for a dimension. Local refs read the source column;
+    joined (dotted) refs walk the join chain to the terminal column's
+    type. Returning ``None`` for joined refs (the old behaviour) made
+    ``_query_as_model`` coerce them to ``DOUBLE``, mistyping joined
+    string / temporal dimensions on the persisted virtual model.
+    """
     if not isinstance(scope, ModelScope) or scope.source_model is None:
         return None
     if "." in full_name:
-        return None
+        return _joined_column_type(
+            source_model=scope.source_model, full_name=full_name, bundle=bundle,
+        )
     col = scope.source_model.get_column(full_name)
     return col.type if col is not None else None
 
@@ -992,7 +1032,9 @@ def _declared_measures_from_query(
         fmt, desc = _format_description_for_dimension(
             scope=scope, full_name=full,
         )
-        dim_type = _type_for_dimension(scope=scope, full_name=full)
+        dim_type = _type_for_dimension(
+            scope=scope, full_name=full, bundle=bundle,
+        )
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=flat_name,
