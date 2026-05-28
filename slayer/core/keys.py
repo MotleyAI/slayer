@@ -45,6 +45,9 @@ SCALAR_FUNCTIONS: frozenset[str] = frozenset({
     "abs", "floor", "ceil", "round",
     # String hygiene (was DEV-1378's STRING_HYGIENE_OPS)
     "lower", "upper", "trim", "replace", "substr", "instr", "length", "concat",
+    # Pattern match — ``like(value, pattern)`` emits the SQL ``LIKE`` operator
+    # (sqlglot ``exp.Like``); see SQLGenerator scalar-call rendering.
+    "like",
 })
 
 

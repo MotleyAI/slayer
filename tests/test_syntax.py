@@ -223,6 +223,14 @@ class TestScalarFunctions:
         assert result.name == "nullif"
         assert result.args[0] == AggCall(source=Ref(name="revenue"), agg="max")
 
+    def test_like(self):
+        # ``like(value, pattern)`` is the Mode-B form for the SQL LIKE
+        # operator; it parses as a 2-arg scalar call.
+        result = parse_expr("like(name, '%x%')")
+        assert isinstance(result, ScalarCall)
+        assert result.name == "like"
+        assert result.args == (Ref(name="name"), Literal(value="%x%"))
+
 
 # ---------------------------------------------------------------------------
 # Arithmetic / comparison / boolean / unary
@@ -478,6 +486,19 @@ class TestFilterOperatorNormalization:
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "dense_rank"
+
+    def test_sql_concat_pipe_pipe_normalised(self):
+        # SQL ``||`` concat operator → a ``concat(...)`` ScalarCall (the
+        # normalizer rewrites ``||`` → ``|``, then ``_convert`` desugars the
+        # BitOr to concat). ``|`` binds tighter than ``==`` just as ``||``
+        # binds tighter than ``=`` in SQL.
+        result = parse_filter_expr("status || status = 'foo'")
+        assert isinstance(result, Cmp)
+        assert result.op == "=="
+        assert isinstance(result.left, ScalarCall)
+        assert result.left.name == "concat"
+        assert result.left.args == (Ref(name="status"), Ref(name="status"))
+        assert result.right == Literal(value="foo")
 
     @pytest.mark.xfail(
         strict=True,

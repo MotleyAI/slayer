@@ -3272,11 +3272,12 @@ class SQLGenerator:
                     ):
                         # Boolean predicate shape — accepted.
                         continue
-                    raise NotImplementedError(
-                        f"DEV-1450 stage 7b.11: composite-input transforms "
-                        f"(layer op={layer.op!r} input="
-                        f"{type(inner).__name__}) are deferred to a "
-                        f"follow-up slice. slot id={sid!r}."
+                    raise ValueError(
+                        f"Nesting a transform inside {layer.op!r} "
+                        f"(input={type(inner).__name__}) is not supported. "
+                        f"Compute the inner transform in an earlier stage of "
+                        f"a multi-stage `source_queries` model and reference "
+                        f"its output in this stage."
                     )
 
         # Reachable trees of every slot we'll need to render.
@@ -4420,6 +4421,8 @@ class SQLGenerator:
                     args.append(exp.Literal.number(str(a)))
                 else:
                     args.append(exp.Literal.string(str(a)))
+            if key.name == "like":
+                return exp.Like(this=args[0], expression=args[1]), any_agg
             return exp.func(key.name.upper(), *args), any_agg
         if isinstance(key, LiteralKey):
             v = key.value
@@ -6365,6 +6368,8 @@ class SQLGenerator:
                     args.append(exp.Literal.number(str(a)))
                 else:
                     args.append(exp.Literal.string(str(a)))
+            if key.name == "like":
+                return exp.Like(this=args[0], expression=args[1])
             return exp.func(key.name.upper(), *args)
 
         if isinstance(key, BetweenKey):
@@ -8073,6 +8078,8 @@ class SQLGenerator:
                         bundle=bundle,
                         slot_by_key=slot_by_key,
                     ))
+            if key.name == "like":
+                return exp.Like(this=args[0], expression=args[1])
             return exp.Anonymous(this=key.name.upper(), expressions=args)
         if isinstance(key, BetweenKey):
             col_expr = self._render_value_key_for_filter(

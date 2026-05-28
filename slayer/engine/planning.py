@@ -402,9 +402,12 @@ def lower_sugar_transforms(key: ValueKey) -> ValueKey:
 
 def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
     """``change_pct(x)`` → ``(x - time_shift(x, periods=-1)) /
-    time_shift(x, periods=-1)``.
+    NULLIF(time_shift(x, periods=-1), 0)``.
 
-    Same identity-preservation as ``desugar_change``.
+    The divisor is wrapped in ``NULLIF(..., 0)`` so a zero prior-period
+    value yields NULL instead of a divide-by-zero error / Inf. Same
+    identity-preservation as ``desugar_change`` — numerator and divisor
+    share the one ``shifted`` ValueKey instance.
     """
     if key.op != "change_pct":
         raise ValueError(
@@ -419,7 +422,10 @@ def desugar_change_pct(key: TransformKey) -> ArithmeticKey:
         time_key=key.time_key,
     )
     numerator = ArithmeticKey(op="-", operands=(inner, shifted))
-    return ArithmeticKey(op="/", operands=(numerator, shifted))
+    guarded_divisor = ScalarCallKey(
+        name="nullif", args=(shifted, normalize_scalar(0)),
+    )
+    return ArithmeticKey(op="/", operands=(numerator, guarded_divisor))
 
 
 # ---------------------------------------------------------------------------

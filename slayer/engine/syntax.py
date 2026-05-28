@@ -281,6 +281,11 @@ def _normalize_sql_filter_operators(text: str) -> str:
             part = re.sub(rf"\b{kw}\b", kw.lower(), part, flags=re.IGNORECASE)
         part = re.sub(r"(?<![<>=!])=(?!=)", "==", part)
         part = part.replace("<>", "!=")
+        # SQL ``||`` concat → Python ``|`` (BitOr), reinterpreted as a
+        # ``concat(...)`` ScalarCall in ``_convert``. ``|`` binds tighter
+        # than comparisons in Python just as ``||`` does in SQL, so
+        # ``a || b = 'x'`` and ``a | b == 'x'`` group identically.
+        part = part.replace("||", "|")
         result.append(part)
         if i < len(literals):
             result.append(literals[i])
@@ -442,6 +447,17 @@ def _convert(node: ast.AST, *, agg_map: Dict, original: str) -> ParsedExpr:
 
     if isinstance(node, ast.BinOp):
         op_type = type(node.op)
+        if op_type is ast.BitOr:
+            # SQL ``||`` concat operator (``parse_filter_expr`` normalizes
+            # ``||`` → ``|``). Desugar to the existing ``concat`` scalar
+            # call so binding + per-dialect SQL emission are fully reused.
+            return ScalarCall(
+                name="concat",
+                args=(
+                    _convert(node.left, agg_map=agg_map, original=original),
+                    _convert(node.right, agg_map=agg_map, original=original),
+                ),
+            )
         if op_type not in _BIN_OP_MAP:
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: unsupported "

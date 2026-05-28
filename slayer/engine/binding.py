@@ -1230,6 +1230,11 @@ def _bind_scalar(
                 f"{sorted(SCALAR_FUNCTIONS)}."
             ),
         )
+    if parsed.name == "like" and len(parsed.args) != 2:
+        raise ValueError(
+            f"Scalar function 'like' takes exactly 2 arguments "
+            f"(value, pattern); got {len(parsed.args)}."
+        )
     args = tuple(
         _bind(a, scope=scope, bundle=bundle, in_filter=in_filter, alias_map=alias_map)
         for a in parsed.args

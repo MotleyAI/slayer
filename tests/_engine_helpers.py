@@ -60,6 +60,7 @@ async def _engine_generate(
     *,
     dialect: str = "postgres",
     extra_models: Optional[list] = None,
+    validate: bool = True,
 ) -> str:
     """Build a fresh ``YAMLStorage`` + ``SlayerQueryEngine`` for ``model``,
     run ``query`` with ``dry_run=True``, and return the emitted SQL.
@@ -69,15 +70,19 @@ async def _engine_generate(
     etc.) without storage cross-talk. ``extra_models`` is an optional list
     of additional ``SlayerModel`` instances to register in the same store
     (e.g. join targets sharing ``model.data_source``).
+
+    ``validate=False`` skips save-time DEV-1410 derived-column cycle
+    detection for the few migrated tests that feed intentionally-shaped
+    models the cycle validator would otherwise reject.
     """
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(
             DatasourceConfig(name=model.data_source, type=dialect)
         )
-        await storage.save_model(model)
+        await storage.save_model(model, _validate=validate)
         for extra in extra_models or []:
-            await storage.save_model(extra)
+            await storage.save_model(extra, _validate=validate)
         engine = SlayerQueryEngine(storage=storage)
         response = await engine.execute(query, dry_run=True)
         sql = response.sql
