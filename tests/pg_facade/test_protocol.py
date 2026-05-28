@@ -181,6 +181,19 @@ def test_decode_bind_text_param() -> None:
     assert msg.result_format_codes == [p.FORMAT_BINARY]
 
 
+def test_decode_bind_rejects_invalid_negative_length() -> None:
+    # Only -1 (NULL) is a valid negative length; -2 is a protocol violation.
+    body = (
+        b"\x00" + b"\x00"
+        + struct.pack(">h", 0)
+        + struct.pack(">h", 1)
+        + struct.pack(">i", -2)
+        + struct.pack(">h", 0)
+    )
+    with pytest.raises(ValueError):
+        p.decode_bind(body)
+
+
 def test_decode_bind_null_param() -> None:
     body = (
         b"\x00" + b"\x00"

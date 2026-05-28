@@ -381,12 +381,19 @@ class PgConnection:
         self._writer.write(proto.encode_bind_complete())
 
     def _substitute_params(self, stmt: _PreparedStatement, bind: proto.BindMessage) -> str:
+        resolved = _resolve_param_oids(stmt)
+        n = len(bind.parameter_values)
+        # The client must supply exactly as many parameters as the statement
+        # declares; otherwise a `$N` would be left unbound (or an extra value
+        # silently dropped), which is a protocol error.
+        if n != len(resolved):
+            raise ValueError(
+                f"bind supplied {n} parameter(s) but statement expects {len(resolved)}"
+            )
         if not bind.parameter_values:
             return stmt.sql
-        n = len(bind.parameter_values)
         formats = proto.parse_result_format_codes(bind.parameter_format_codes, n)
-        resolved = _resolve_param_oids(stmt)
-        oids = [resolved[i] if i < len(resolved) else proto.OID_TEXT for i in range(n)]
+        oids = list(resolved)
         literals: List[str] = []
         for raw, fmt, oid in zip(bind.parameter_values, formats, oids):
             if raw is None:

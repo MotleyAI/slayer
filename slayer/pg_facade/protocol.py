@@ -309,6 +309,8 @@ def decode_bind(body: bytes) -> BindMessage:
         length = r.int32()
         if length == -1:
             values.append(None)
+        elif length < -1:
+            raise ValueError(f"invalid parameter length {length}")
         else:
             values.append(r.take(length))
     n_res = r.int16()

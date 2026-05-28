@@ -535,6 +535,21 @@ async def test_invalid_bind_result_format_code_rejected() -> None:
     assert _error_sqlstate(err) == proto.SQLSTATE_FEATURE_NOT_SUPPORTED
 
 
+async def test_bind_parameter_count_mismatch_errors() -> None:
+    # Statement has one placeholder but Bind supplies zero values.
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", "SELECT revenue_sum FROM orders WHERE id = $1", oids=(proto.OID_INT8,))
+        + _bind("", "")  # no values
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == proto.SQLSTATE_FEATURE_NOT_SUPPORTED
+
+
 async def test_extended_execute_blocked_in_failed_transaction() -> None:
     # After an error inside BEGIN, an extended-protocol SELECT must be blocked
     # with 25P02 until ROLLBACK — not executed.
