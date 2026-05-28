@@ -301,13 +301,12 @@ class PgConnection:
         elif type_char == "X":
             raise _Done()
         elif type_char in ("F", "d", "c", "f"):
-            await self._send_error(
+            await self._extended_error(
                 code=proto.SQLSTATE_FEATURE_NOT_SUPPORTED,
                 message=f"message type {type_char!r} is not supported",
             )
-            self._fail_tx()
         else:
-            await self._send_error(
+            await self._extended_error(
                 code=proto.SQLSTATE_FEATURE_NOT_SUPPORTED,
                 message=f"unknown message type {type_char!r}",
             )
