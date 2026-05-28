@@ -49,6 +49,28 @@ async def _engine_with_orders(*extra_models: SlayerModel) -> tuple:
     return engine, tmp
 
 
+async def _expand_stage_as_model(
+    engine: SlayerQueryEngine,
+    stage: SlayerQuery,
+    *,
+    name: str,
+    data_source: str = "ds",
+) -> SlayerModel:
+    """Expand a single ``SlayerQuery`` stage into its virtual ``sql``-mode
+    model via the typed query-backed expansion
+    (``engine._expand_query_backed_model``, the DEV-1452 Stage B replacement
+    for the legacy join-target renderer).
+    """
+    model = SlayerModel(name=name, source_queries=[stage], data_source=data_source)
+    return await engine._expand_query_backed_model(
+        model=model,
+        outer_vars=None,
+        runtime_kwarg=None,
+        dry_run_placeholders=False,
+        _resolving=None,
+    )
+
+
 class TestExecuteByName:
     async def test_missing_model_raises(self) -> None:
         engine, tmp = await _engine_with_orders()
@@ -1420,8 +1442,8 @@ class TestMultiStageMeasureRename:
             sql = loaded.backing_query_sql or ""
             # Inner-stage wrap renames the column to ``rev``; DEV-1452 Stage B's
             # ``build_flat_rename_wrapper`` emits the alias quoted
-            # (``AS "rev"``) — the legacy ``_query_as_model`` emitted it
-            # unquoted (``AS rev``). Both forms satisfy the rename contract.
+            # (``AS "rev"``). The legacy renderer emitted it unquoted
+            # (``AS rev``); both forms satisfy the rename contract.
             import re
             assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', sql), (
                 f"expected inner-stage 'AS rev' rename in SQL:\n{sql}"
@@ -1445,7 +1467,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum"}],  # no name
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine, stage, name="qb_default")
             col_names = [c.name for c in virtual.columns]
             assert "amount_sum" in col_names, (
                 f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
@@ -1464,7 +1486,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "amount_sum"}],
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine, stage, name="qb_collide")
             col_names = [c.name for c in virtual.columns]
             assert col_names.count("amount_sum") == 1, (
                 f"name=canonical must not duplicate the column, got: {col_names}"
@@ -1472,9 +1494,10 @@ class TestMultiStageMeasureRename:
         finally:
             tmp.cleanup()
 
-    async def test_query_as_model_emits_user_alias_unit(self) -> None:
-        """Direct unit test on ``_query_as_model``: the wrap subquery and the
-        virtual model's ``columns`` must use the user-supplied ``name``.
+    async def test_query_backed_expansion_emits_user_alias_unit(self) -> None:
+        """Direct unit test on the query-backed expansion: the wrap subquery
+        and the virtual model's ``columns`` must use the user-supplied
+        ``name``.
         """
         engine, tmp = await _engine_with_orders()
         try:
@@ -1483,7 +1506,7 @@ class TestMultiStageMeasureRename:
                 dimensions=["region"],
                 measures=[{"formula": "amount:sum", "name": "rev"}],
             )
-            virtual = await engine._query_as_model(inner_query=stage)
+            virtual = await _expand_stage_as_model(engine, stage, name="qb_alias")
             col_names = [c.name for c in virtual.columns]
             assert "rev" in col_names, (
                 f"user-supplied 'name' must surface as a virtual column, got: {col_names}"
@@ -1493,7 +1516,7 @@ class TestMultiStageMeasureRename:
                 f"'name', got: {col_names}"
             )
             import re
-            assert re.search(r"\bAS\s+rev\b", virtual.sql), (
+            assert re.search(r'\bAS\s+"?rev"?(?:\s|$)', virtual.sql or ""), (
                 f"wrapped SQL must rename to user alias 'rev':\n{virtual.sql}"
             )
         finally:

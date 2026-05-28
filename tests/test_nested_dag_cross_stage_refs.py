@@ -6,11 +6,21 @@ Bug: when an inner stage projects a multi-hop dotted dim (e.g.
 path, SLayer emits broken SQL referencing a hybrid ``__`` + ``.`` table
 alias that doesn't exist in scope.
 
-Fix: virtual stage models produced by ``_query_as_model`` carry a
-``source_model_origin`` breadcrumb. The four dotted-ref resolution paths
-(``_resolve_dimensions``, ``_resolve_time_dimensions``, cross-model
-measures, ``resolve_filter_columns``) consult a shared
-``resolve_via_stage_origin`` helper when the join-walk fails.
+Fix (typed pipeline / DEV-1450): downstream stages see a FLAT schema —
+an inner stage's ``customers.regions.name`` dim is projected as the flat
+column ``customers__regions__name`` on the wrapping stage, and downstream
+stages reference it by that flat name. The dotted form is rejected
+downstream (``IllegalScopeReferenceError``).
+
+Cross-stage resolution is exercised end-to-end here via ``engine.execute``
+(flat downstream refs). The legacy stage-origin resolver's direct-unit
+tests — which pinned the OLD ancestor-strip resolution of the *dotted*
+downstream form (e.g. ``orders.customers.regions.name`` vs
+``customers.regions.name``) — were dropped in DEV-1484 Stage C: that
+behaviour is intentionally replaced by the flat-only contract, pinned by
+``tests/test_binding.py::TestStageSchemaScope`` (flat resolves; dotted
+rejected), and the helper itself dies with the legacy enrichment stack in
+Stage D.
 
 See ``.spec/DEV-1449.md`` for the full design.
 """
@@ -33,7 +43,6 @@ from slayer.core.models import (
     SourceModelOrigin,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.enrichment import resolve_via_stage_origin
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -602,103 +611,6 @@ class TestCrossStageOrderBy:
 
 
 # ===========================================================================
-# Tests #7, #8 — chained DAG (3-stage): Candidate A at depth 1; Candidate B
-# at depth ≥ 2.
-# ===========================================================================
-class TestChainedDAGCandidates:
-    def test_resolver_candidate_a_at_depth_1(self) -> None:
-        """At s1 (depth 1), Candidate A (ancestor-strip) matches the
-        source-prefixed dotted ref because `_alias_to_short` stripped the
-        immediate source-model prefix `orders` on the inner stage."""
-        # s1 wraps orders. After _query_as_model, s1.columns will have
-        # `customers__regions__name` (orders prefix stripped).
-        # Resolver direct test:
-        s1 = SlayerModel(
-            name="s1",
-            sql="<placeholder>",  # not executed in this unit test
-            data_source="test_ds",
-            columns=[
-                Column(name="customers__regions__name", sql="customers__regions__name", type=DataType.TEXT),
-                Column(name="_count", sql="_count", type=DataType.DOUBLE),
-            ],
-            source_model_origin=SourceModelOrigin(name="orders", data_source="test_ds"),
-        )
-        col = resolve_via_stage_origin(
-            model=s1, parts=["orders", "customers", "regions", "name"]
-        )
-        assert col is not None, "Candidate A should resolve orders.customers.regions.name"
-        assert col.name == "customers__regions__name"
-
-    def test_resolver_candidate_b_at_depth_2_with_source_prefix(self) -> None:
-        """At s2 (depth 2) with source-prefixed form: Candidate A strips
-        the immediate `orders` ancestor and tries `customers__regions__name`,
-        which MISSES on s2 (s2 has the deeper-flattened
-        `orders__customers__regions__name` because `_alias_to_short`
-        only strips the immediate inner-model name `s1` when wrapping).
-        Candidate B (full-flat) matches."""
-        s1_origin = SourceModelOrigin(name="orders", data_source="test_ds")
-        # s2 wraps s1 with a source-prefixed dim on the OUTER query.
-        # The outer's strip_source_model_prefix doesn't strip "orders." because
-        # source_model is "s1". So alias = "s1.orders.customers.regions.name",
-        # _alias_to_short strips "s1." → "orders.customers.regions.name" →
-        # "orders__customers__regions__name". That's s2's flat column name.
-        s2 = SlayerModel(
-            name="s2",
-            sql="<placeholder>",
-            data_source="test_ds",
-            columns=[
-                Column(
-                    name="orders__customers__regions__name",
-                    sql="orders__customers__regions__name",
-                    type=DataType.TEXT,
-                ),
-                Column(name="_count", sql="_count", type=DataType.DOUBLE),
-            ],
-            source_model_origin=SourceModelOrigin(
-                name="s1", data_source="test_ds", parent=s1_origin,
-            ),
-        )
-        # Source-prefixed form: parts[0]="orders" → Candidate A tries
-        # "customers__regions__name" (miss), then Candidate B tries
-        # "orders__customers__regions__name" (match).
-        col = resolve_via_stage_origin(
-            model=s2, parts=["orders", "customers", "regions", "name"]
-        )
-        assert col is not None, "Candidate B should resolve at depth 2"
-        assert col.name == "orders__customers__regions__name", (
-            f"Candidate B should match deeper-flattened name. Got: {col.name}"
-        )
-
-    def test_resolver_candidate_b_at_depth_2_without_source_prefix(self) -> None:
-        """At s2 (depth 2) with non-prefixed form: parts[0] is not in
-        ancestor chain so Candidate A skips. Candidate B's full-flat
-        matches the column s2 actually has when the user uses the
-        non-prefixed dotted form."""
-        s1_origin = SourceModelOrigin(name="orders", data_source="test_ds")
-        # Non-prefixed dim: s2's column is the simple flat form.
-        s2 = SlayerModel(
-            name="s2",
-            sql="<placeholder>",
-            data_source="test_ds",
-            columns=[
-                Column(
-                    name="customers__regions__name",
-                    sql="customers__regions__name",
-                    type=DataType.TEXT,
-                ),
-            ],
-            source_model_origin=SourceModelOrigin(
-                name="s1", data_source="test_ds", parent=s1_origin,
-            ),
-        )
-        col = resolve_via_stage_origin(
-            model=s2, parts=["customers", "regions", "name"]
-        )
-        assert col is not None, "Candidate B should resolve via full-flat"
-        assert col.name == "customers__regions__name"
-
-
-# ===========================================================================
 # Test #9 — short-alias regression: existing flat-name reference still works.
 # ===========================================================================
 class TestShortAliasRegression:
@@ -732,55 +644,9 @@ class TestShortAliasRegression:
 
 
 # ===========================================================================
-# Test #11 — engineered collision: Candidate A wins over Candidate B.
-# ===========================================================================
-class TestCandidatePrecedence:
-    def test_candidate_a_wins_over_b(self) -> None:
-        """When both Candidate A (ancestor-strip) and Candidate B
-        (full-flat) match distinct columns, A wins."""
-        # Construct a virtual stage where:
-        # - origin chain has name "X"
-        # - parts = ["X", "b", "c"]
-        # - Candidate A: strip X → b__c
-        # - Candidate B: full flat → X__b__c
-        # Both columns exist. Resolver returns the Candidate A column.
-        virtual = SlayerModel(
-            name="virtual",
-            sql="<placeholder>",
-            data_source="test_ds",
-            columns=[
-                Column(name="b__c", sql="b__c", type=DataType.TEXT),
-                Column(name="X__b__c", sql="X__b__c", type=DataType.TEXT),
-            ],
-            source_model_origin=SourceModelOrigin(name="X", data_source="test_ds"),
-        )
-        col = resolve_via_stage_origin(
-            model=virtual, parts=["X", "b", "c"]
-        )
-        assert col is not None
-        assert col.name == "b__c", (
-            f"Candidate A (ancestor-strip → b__c) must win over Candidate B "
-            f"(full-flat → X__b__c). Got: {col.name}"
-        )
-
-
-# ===========================================================================
-# Test #12 — non-virtual model: resolver returns None (no regression).
+# Test #12 — non-virtual single-stage multi-hop query: no regression.
 # ===========================================================================
 class TestNonVirtualModel:
-    def test_resolver_returns_none_for_table_backed_model(self) -> None:
-        """Real table-backed model has no `source_model_origin`; the
-        resolver returns None, leaving the existing join-walk to handle
-        resolution as today."""
-        orders = _orders_model()
-        assert orders.source_model_origin is None
-        col = resolve_via_stage_origin(
-            model=orders, parts=["customers", "regions", "name"]
-        )
-        assert col is None, (
-            f"Resolver must return None for non-virtual model. Got: {col}"
-        )
-
     async def test_existing_single_stage_multi_hop_query_unchanged(self) -> None:
         """A single-stage table-backed query with the multi-hop dim
         (which already works today) must continue to work — no
@@ -1248,9 +1114,8 @@ class TestCrossModelInterceptRenameBookkeeping:
 # ===========================================================================
 # Codex review round 2 on PR #137 — refuse two intercepted qfields that
 # canonicalise to the same cross-stage aggregate with different `name`s.
-# Without the guard, the second rename mutates the first call's
-# EnrichedMeasure alias and `user_projection` is left pointing at an
-# orphan.
+# Without the guard, the second rename mutates the first call's projected
+# measure alias and `user_projection` is left pointing at an orphan.
 # ===========================================================================
 class TestCrossModelInterceptDuplicateQfieldGuard:
     async def test_intercepted_unrenamed_works_as_middle_stage_in_three_stage_dag(
@@ -1340,51 +1205,6 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         finally:
             tmp.cleanup()
 
-    def test_intercept_skips_dim_columns_that_look_like_aggregations(
-        self,
-    ) -> None:
-        """Codex review on PR #137 round 9: if the inner stage projects
-        a DIMENSION whose flat name coincidentally matches the
-        canonical-flat shape an aggregation would produce (e.g. a dim
-        literally named with `_sum` suffix), the intercept must NOT
-        re-aggregate it. ``agg_column_names`` records which downstream
-        shorts came from CMMs / measures / transforms / expressions
-        — only those qualify for the intercept's re-aggregation."""
-        # Construct a virtual stage directly with a dim column whose
-        # name has the canonical-flat shape, but the column is NOT in
-        # agg_column_names. The intercept candidate must return None.
-        s1 = SlayerModel(
-            name="s1",
-            sql="<placeholder>",
-            data_source="test_ds",
-            columns=[
-                Column(
-                    name="customers__revenue_sum",
-                    sql="customers__revenue_sum",
-                    type=DataType.TEXT,
-                ),
-            ],
-            source_model_origin=SourceModelOrigin(
-                name="orders",
-                data_source="test_ds",
-                # `agg_column_names` empty — the column above is a dim,
-                # not an aggregation projection.
-                agg_column_names=frozenset(),
-            ),
-        )
-        # Direct check on resolve_via_stage_origin: the dim resolves
-        # (it's a real column).
-        col = resolve_via_stage_origin(
-            model=s1, parts=["customers", "revenue_sum"]
-        )
-        assert col is not None and col.name == "customers__revenue_sum"
-        # But the intercept candidate (which gates on agg_column_names)
-        # must NOT pick it up. We test indirectly via _intercept_candidate_for_cross_model
-        # being unable to be imported as a public symbol; instead we
-        # check that running a cross-stage query that would trigger
-        # the intercept on a dim raises (no agg fallback can succeed).
-        # — covered by the run-by-name end-to-end shape below.
-
     async def test_unrenamed_intercepted_cmm_colon_filter_does_not_get_rewritten_as_where(
         self,
     ) -> None:
@@ -1470,9 +1290,9 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
 
 # ===========================================================================
 # Test #20 dropped — was for Mode A lenient model-filter path on virtual
-# stages, but `_query_as_model` does not propagate inner-model `filters`
-# to the wrapped virtual model, so the lenient path is dead code for
-# virtual stages. The strict path (DSL query filters) is the actual
+# stages, but query-backed expansion does not propagate inner-model
+# `filters` to the wrapped virtual model, so the lenient path is dead code
+# for virtual stages. The strict path (DSL query filters) is the actual
 # integration site for cross-stage dotted refs and is covered by tests
 # in `TestCrossStageFilter` (#5).
 # ===========================================================================
