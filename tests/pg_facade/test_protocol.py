@@ -181,6 +181,17 @@ def test_decode_bind_text_param() -> None:
     assert msg.result_format_codes == [p.FORMAT_BINARY]
 
 
+def test_decode_bind_rejects_negative_counts() -> None:
+    # A negative parameter-count int16 must raise, not decode as an empty list.
+    body = (
+        b"\x00" + b"\x00"
+        + struct.pack(">h", 0)   # n param format codes
+        + struct.pack(">h", -1)  # n params (invalid)
+    )
+    with pytest.raises(ValueError):
+        p.decode_bind(body)
+
+
 def test_decode_bind_rejects_invalid_negative_length() -> None:
     # Only -1 (NULL) is a valid negative length; -2 is a protocol violation.
     body = (

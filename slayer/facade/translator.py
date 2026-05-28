@@ -304,7 +304,7 @@ class _AggCall(BaseModel):
     is_count_star: bool = False  # True only for the literal COUNT(*)
 
 
-def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:
+def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; splitting hides the shape
     """If ``node`` is a SQL aggregate call, classify it; else ``None``.
 
     ``COUNT(*)`` → ``count`` / ``inner_ref=None``. ``COUNT(DISTINCT col)`` →
@@ -797,7 +797,7 @@ def _order_by_name(body: exp.Expression) -> str:
     return body.sql()
 
 
-def _validate_group_by(
+def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; extraction adds indirection
     group: Optional[exp.Group],
     derived: List[str],
 ) -> None:

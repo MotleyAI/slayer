@@ -59,7 +59,7 @@ def datatype_to_oid(dt: Optional[DataType]) -> int:
 # --- text-format output ------------------------------------------------------
 
 
-def value_to_text(value: Any) -> Optional[bytes]:
+def value_to_text(value: Any) -> Optional[bytes]:  # NOSONAR(S3776) — flat per-Python-type dispatch
     """Encode an engine value as Postgres text-format bytes (``None`` → SQL NULL)."""
     if value is None:
         return None

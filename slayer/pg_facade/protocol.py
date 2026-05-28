@@ -262,6 +262,13 @@ class _Reader(BaseModel):
         return b
 
 
+def _nonneg_count(n: int, what: str) -> int:
+    """Reject a negative array-count field (int16) as a protocol violation."""
+    if n < 0:
+        raise ValueError(f"negative {what} count {n}")
+    return n
+
+
 def decode_startup(body: bytes) -> StartupMessage:
     """Decode a startup-message body (after the 4-byte length). Begins with the
     int32 protocol version, then null-terminated key/value pairs, then a final
@@ -292,7 +299,7 @@ def decode_parse(body: bytes) -> ParseMessage:
     r = _Reader(buf=body)
     name = r.cstr()
     query = r.cstr()
-    n = r.int16()
+    n = _nonneg_count(r.int16(), "parameter OID")
     oids = [r.int32() for _ in range(n)]
     return ParseMessage(name=name, query=query, parameter_oids=oids)
 
@@ -301,9 +308,9 @@ def decode_bind(body: bytes) -> BindMessage:
     r = _Reader(buf=body)
     portal = r.cstr()
     statement = r.cstr()
-    n_fmt = r.int16()
+    n_fmt = _nonneg_count(r.int16(), "parameter format code")
     fmt_codes = [r.int16() for _ in range(n_fmt)]
-    n_params = r.int16()
+    n_params = _nonneg_count(r.int16(), "parameter")
     values: List[Optional[bytes]] = []
     for _ in range(n_params):
         length = r.int32()
@@ -313,7 +320,7 @@ def decode_bind(body: bytes) -> BindMessage:
             raise ValueError(f"invalid parameter length {length}")
         else:
             values.append(r.take(length))
-    n_res = r.int16()
+    n_res = _nonneg_count(r.int16(), "result format code")
     res_codes = [r.int16() for _ in range(n_res)]
     return BindMessage(
         portal=portal,

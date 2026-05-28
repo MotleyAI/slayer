@@ -108,7 +108,7 @@ class PgConnection:
             startup = await self._handle_startup()
             if startup is None:
                 return
-            if not await self._authenticate(startup):
+            if not await self._authenticate():
                 return
             if not await self._resolve_datasource(startup.parameters.get("database")):
                 return
@@ -182,7 +182,7 @@ class PgConnection:
 
     # ----- auth -------------------------------------------------------------
 
-    async def _authenticate(self, startup: proto.StartupMessage) -> bool:
+    async def _authenticate(self) -> bool:
         if self._token is None:
             self._writer.write(proto.encode_authentication_ok())
             await self._flush()
@@ -261,7 +261,7 @@ class PgConnection:
                 await self._dispatch_message(type_char, body)
             except _Done:
                 raise
-            except (struct.error, ValueError, IndexError, UnicodeDecodeError) as exc:
+            except (struct.error, ValueError, IndexError) as exc:  # UnicodeDecodeError ⊂ ValueError
                 # Malformed frontend message body — report a protocol violation
                 # but keep the session alive (the client will Sync to recover).
                 await self._send_error(
@@ -424,7 +424,7 @@ class PgConnection:
                 self._fail_tx()
                 return
             self._writer.write(proto.encode_parameter_description(_resolve_param_oids(stmt)))
-            await self._describe_sql(stmt.sql, result_formats=None)
+            self._describe_sql(stmt.sql, result_formats=None)
         else:
             portal = self._portals.get(msg.name)
             if portal is None:
@@ -434,9 +434,9 @@ class PgConnection:
                 )
                 self._fail_tx()
                 return
-            await self._describe_sql(portal.sql, result_formats=portal.result_format_codes)
+            self._describe_sql(portal.sql, result_formats=portal.result_format_codes)
 
-    async def _describe_sql(self, sql: str, *, result_formats: Optional[List[int]]) -> None:
+    def _describe_sql(self, sql: str, *, result_formats: Optional[List[int]]) -> None:
         try:
             result = self._translate(sql)
         except TranslationError:
@@ -524,7 +524,7 @@ class PgConnection:
             return False
 
         if isinstance(result, (ProbeResult, InfoSchemaResult, PgCatalogResult)):
-            await self._emit_row_batch(result.batch, result_formats, send_row_description)
+            self._emit_row_batch(result.batch, result_formats, send_row_description)
             return True
         if isinstance(result, NoOpResult):
             self._apply_tx_command(result.command_tag)
@@ -539,7 +539,7 @@ class PgConnection:
         self._fail_tx()
         return False
 
-    async def _emit_row_batch(
+    def _emit_row_batch(
         self, batch: RowBatch, result_formats: Optional[List[int]], send_row_description: bool,
     ) -> None:
         formats = proto.parse_result_format_codes(result_formats or [], len(batch.columns))

@@ -30,13 +30,13 @@ class _FakeWriter:
     def write(self, data: bytes) -> None:
         self.buffer.extend(data)
 
-    async def drain(self) -> None:
+    async def drain(self) -> None:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return None
 
     def close(self) -> None:
         self.closed = True
 
-    async def wait_closed(self) -> None:
+    async def wait_closed(self) -> None:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return None
 
 
@@ -44,13 +44,13 @@ class _FakeStorage:
     def __init__(self, models_by_ds) -> None:
         self._models_by_ds = models_by_ds
 
-    async def list_datasources(self) -> List[str]:
+    async def list_datasources(self) -> List[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return list(self._models_by_ds)
 
-    async def list_models(self, *, data_source: str) -> List[str]:
+    async def list_models(self, *, data_source: str) -> List[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return [m.name for m in self._models_by_ds.get(data_source, [])]
 
-    async def get_model(self, *, name: str, data_source: str):
+    async def get_model(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
         for m in self._models_by_ds.get(data_source, []):
             if m.name == name:
                 return m
@@ -61,7 +61,7 @@ class _FakeEngine:
     def __init__(self, data) -> None:
         self.data = data
 
-    async def execute(self, *, query=None, data_source=None):
+    async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503) — async to satisfy the awaited interface
         return types.SimpleNamespace(data=self.data)
 
 
@@ -91,7 +91,7 @@ class _CapturingEngine:
         self.data = data
         self.last_query = None
 
-    async def execute(self, *, query=None, data_source=None):
+    async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503) — async to satisfy the awaited interface
         self.last_query = query
         return types.SimpleNamespace(data=self.data)
 
@@ -235,12 +235,12 @@ def _error_sqlstate(body: bytes) -> Optional[str]:
 # --- startup / SSL -----------------------------------------------------------
 
 
-async def test_ssl_request_without_tls_gets_N() -> None:
+async def test_ssl_request_without_tls_gets_n() -> None:
     writer = await _run(_ssl_request() + _startup(user="u", database="jaffle") + _terminate())
     assert writer.buffer[0:1] == b"N"
 
 
-async def test_ssl_request_with_tls_gets_S(monkeypatch) -> None:
+async def test_ssl_request_with_tls_gets_s(monkeypatch) -> None:
     reader = asyncio.StreamReader()
     reader.feed_data(_ssl_request() + _startup(user="u", database="jaffle") + _terminate())
     reader.feed_eof()
@@ -251,7 +251,7 @@ async def test_ssl_request_with_tls_gets_S(monkeypatch) -> None:
     )
     upgraded = []
 
-    async def _fake_upgrade() -> None:
+    async def _fake_upgrade() -> None:  # NOSONAR(S7503) — async to satisfy the awaited interface
         upgraded.append(True)
 
     conn._perform_tls_upgrade = _fake_upgrade  # type: ignore[method-assign]
@@ -582,7 +582,7 @@ async def test_unsupported_message_type_errors_0a000(msg_type: bytes) -> None:
 # --- startup edge cases ------------------------------------------------------
 
 
-async def test_gssenc_request_gets_N() -> None:
+async def test_gssenc_request_gets_n() -> None:
     writer = await _run(_gssenc_request() + _startup(user="u", database="jaffle") + _terminate())
     assert writer.buffer[0:1] == b"N"
 
