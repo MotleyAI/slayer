@@ -7,5 +7,5 @@ Postgres database. Parallel to the Arrow Flight SQL facade
 the shared ``slayer/facade/`` layer.
 
 The client's startup ``database`` parameter scopes a connection to one SLayer
-datasource. See ``docs/integrations/pg_facade.md``.
+datasource. See ``docs/interfaces/pg-facade.md``.
 """

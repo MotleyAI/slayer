@@ -81,7 +81,8 @@ def _start_pg_demo_server(*, token: Optional[str]):
 
     thread = threading.Thread(target=_thread_main, daemon=True)
     thread.start()
-    ready.wait(timeout=10)
+    if not ready.wait(timeout=10) or "port" not in holder:
+        raise RuntimeError("pg facade demo server failed to start within 10s")
     time.sleep(0.1)
     return holder["loop"], thread, "127.0.0.1", holder["port"]
 
@@ -107,7 +108,7 @@ def pg_demo_server_with_token() -> Iterator[Tuple[str, int, str]]:
         thread.join(timeout=5)
 
 
-async def _connect(host: str, port: int, *, database: str = DEMO_DATASOURCE, password: str = "x"):
+async def _connect(host: str, port: int, *, database: str = DEMO_DATASOURCE, password: str = "x"):  # NOSONAR(S2068) — test credential
     return await asyncpg.connect(
         host=host, port=port, user="tester", password=password, database=database,
         timeout=10,
@@ -173,7 +174,7 @@ async def test_pg_namespace(pg_demo_server) -> None:
     conn = await _connect(host, port)
     try:
         rows = await conn.fetch("SELECT * FROM pg_catalog.pg_namespace")
-        assert [r["nspname"] for r in rows] == ["public"]
+        assert {r["nspname"] for r in rows} == {"public", "pg_catalog"}
     finally:
         await conn.close()
 
@@ -342,4 +343,4 @@ async def test_auth_positive(pg_demo_server_with_token) -> None:
 async def test_auth_wrong_password(pg_demo_server_with_token) -> None:
     host, port, _token = pg_demo_server_with_token
     with pytest.raises(asyncpg.InvalidPasswordError):
-        await _connect(host, port, password="wrong")
+        await _connect(host, port, password="wrong")  # NOSONAR(S2068) — test credential

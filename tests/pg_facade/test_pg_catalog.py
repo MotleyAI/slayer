@@ -58,10 +58,14 @@ def test_supported_tables_set() -> None:
     }
 
 
-def test_pg_namespace_one_public_row() -> None:
+def test_pg_namespace_has_public_and_pg_catalog() -> None:
     batch = match_pg_catalog(_parse("SELECT * FROM pg_catalog.pg_namespace"), _catalog())
     assert batch is not None
-    assert [r["nspname"] for r in batch.rows] == ["public"]
+    names = {r["nspname"] for r in batch.rows}
+    # `public` for user models; `pg_catalog` so pg_type.typnamespace=11 resolves.
+    assert names == {"public", "pg_catalog"}
+    by_name = {r["nspname"]: r for r in batch.rows}
+    assert by_name["pg_catalog"]["oid"] == 11
 
 
 def test_pg_class_one_row_per_model_relkind_r() -> None:

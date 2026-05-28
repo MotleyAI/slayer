@@ -18,7 +18,6 @@ import asyncio
 import logging
 import re
 import struct
-from collections import defaultdict
 from typing import Dict, List, Optional
 
 import sqlglot
@@ -59,6 +58,8 @@ logger = logging.getLogger(__name__)
 _BACKEND_PID = 1
 _BACKEND_SECRET = 0
 _PARAM_PLACEHOLDER = re.compile(r"\$(\d+)")
+# The single schema the facade advertises (matches pg_namespace / current_schema).
+PUBLIC_SCHEMA = "public"
 
 
 class _PreparedStatement(BaseModel):
@@ -123,13 +124,19 @@ class PgConnection:
 
     async def _read_startup_frame(self) -> Optional[bytes]:
         """Read a startup-style frame (no type byte). Returns the body (starting
-        with the 4-byte code) or ``None`` on EOF."""
+        with the 4-byte code) or ``None`` on EOF / malformed length."""
         try:
             header = await self._reader.readexactly(4)
         except asyncio.IncompleteReadError:
             return None
         (length,) = struct.unpack(">i", header)
-        return await self._reader.readexactly(length - 4)
+        # A startup frame must carry at least the 4-byte length + 4-byte code.
+        if length < 8:
+            return None
+        try:
+            return await self._reader.readexactly(length - 4)
+        except asyncio.IncompleteReadError:
+            return None
 
     async def _handle_startup(self) -> Optional[proto.StartupMessage]:
         while True:
@@ -228,9 +235,12 @@ class PgConnection:
             model = await self._storage.get_model(name=name, data_source=self._datasource)
             if model is not None:
                 models.append(model)
-        models_by_ds: Dict[str, List[SlayerModel]] = defaultdict(list)
-        models_by_ds[self._datasource] = models
-        return build_catalog(models_by_datasource=dict(models_by_ds))
+        # The Postgres facade advertises a single schema `public` (matching
+        # pg_namespace / current_schema()), so the catalog's schema is named
+        # `public` — this keeps qualified `public.<table>` resolution working.
+        # The real datasource is carried separately (self._datasource) and
+        # passed to the engine as the execution hint.
+        return build_catalog(models_by_datasource={PUBLIC_SCHEMA: models})
 
     async def _send_startup_complete(self) -> None:
         for name, value in parameter_status_defaults():
@@ -247,35 +257,49 @@ class PgConnection:
             if msg is None:
                 return
             type_char, body = msg
-            if type_char == "Q":
-                await self._handle_simple_query(proto.decode_query(body))
-            elif type_char == "P":
-                self._handle_parse(proto.decode_parse(body))
-            elif type_char == "B":
-                await self._handle_bind(proto.decode_bind(body))
-            elif type_char == "D":
-                await self._handle_describe(proto.decode_describe(body))
-            elif type_char == "E":
-                await self._handle_execute(proto.decode_execute(body))
-            elif type_char == "S":
-                await self._handle_sync()
-            elif type_char == "C":
-                self._handle_close(proto.decode_close(body))
-            elif type_char == "H":
-                await self._flush()
-            elif type_char == "X":
-                raise _Done()
-            elif type_char in ("F", "d", "c", "f"):
+            try:
+                await self._dispatch_message(type_char, body)
+            except _Done:
+                raise
+            except (struct.error, ValueError, IndexError, UnicodeDecodeError) as exc:
+                # Malformed frontend message body — report a protocol violation
+                # but keep the session alive (the client will Sync to recover).
                 await self._send_error(
-                    code=proto.SQLSTATE_FEATURE_NOT_SUPPORTED,
-                    message=f"message type {type_char!r} is not supported",
+                    code=proto.SQLSTATE_PROTOCOL_VIOLATION,
+                    message=f"malformed {type_char!r} message: {exc}",
                 )
                 self._fail_tx()
-            else:
-                await self._send_error(
-                    code=proto.SQLSTATE_FEATURE_NOT_SUPPORTED,
-                    message=f"unknown message type {type_char!r}",
-                )
+
+    async def _dispatch_message(self, type_char: str, body: bytes) -> None:
+        if type_char == "Q":
+            await self._handle_simple_query(proto.decode_query(body))
+        elif type_char == "P":
+            self._handle_parse(proto.decode_parse(body))
+        elif type_char == "B":
+            await self._handle_bind(proto.decode_bind(body))
+        elif type_char == "D":
+            await self._handle_describe(proto.decode_describe(body))
+        elif type_char == "E":
+            await self._handle_execute(proto.decode_execute(body))
+        elif type_char == "S":
+            await self._handle_sync()
+        elif type_char == "C":
+            self._handle_close(proto.decode_close(body))
+        elif type_char == "H":
+            await self._flush()
+        elif type_char == "X":
+            raise _Done()
+        elif type_char in ("F", "d", "c", "f"):
+            await self._send_error(
+                code=proto.SQLSTATE_FEATURE_NOT_SUPPORTED,
+                message=f"message type {type_char!r} is not supported",
+            )
+            self._fail_tx()
+        else:
+            await self._send_error(
+                code=proto.SQLSTATE_FEATURE_NOT_SUPPORTED,
+                message=f"unknown message type {type_char!r}",
+            )
 
     async def _read_message(self):
         try:
@@ -284,7 +308,12 @@ class PgConnection:
         except asyncio.IncompleteReadError:
             return None
         (length,) = struct.unpack(">i", header)
-        body = await self._reader.readexactly(length - 4)
+        if length < 4:
+            return None  # malformed frame length — close.
+        try:
+            body = await self._reader.readexactly(length - 4)
+        except asyncio.IncompleteReadError:
+            return None
         return type_byte.decode("ascii"), body
 
     # ----- simple query -----------------------------------------------------
@@ -296,6 +325,7 @@ class PgConnection:
             await self._send_error(
                 code=proto.SQLSTATE_SYNTAX_ERROR, message=f"SQL parse error: {exc}",
             )
+            self._fail_tx()
             await self._send_ready()
             return
         if not statements:
@@ -335,6 +365,8 @@ class PgConnection:
             self._fail_tx()
             return
         try:
+            proto.validate_format_codes(msg.parameter_format_codes)
+            proto.validate_format_codes(msg.result_format_codes)
             substituted = self._substitute_params(stmt, msg)
         except (ValueError, struct.error) as exc:
             await self._send_error(
@@ -420,11 +452,28 @@ class PgConnection:
             )
             self._fail_tx()
             return
+        # Honour the failed-transaction state for the extended path too: only
+        # COMMIT / ROLLBACK / END are accepted until the block ends.
+        if self._tx_state == proto.TX_FAILED and not self._portal_is_tx_end(portal.sql):
+            await self._send_error(
+                code=proto.SQLSTATE_IN_FAILED_SQL_TRANSACTION,
+                message="current transaction is aborted, commands ignored "
+                        "until end of transaction block",
+            )
+            return
         await self._run_statement(
             portal.sql,
             result_formats=portal.result_format_codes,
             send_row_description=False,
         )
+
+    @staticmethod
+    def _portal_is_tx_end(sql: str) -> bool:
+        try:
+            parsed = sqlglot.parse_one(sql, dialect="postgres")
+        except sqlglot.errors.ParseError:
+            return False
+        return _is_tx_end(parsed)
 
     async def _handle_sync(self) -> None:
         await self._send_ready()
@@ -509,7 +558,9 @@ class PgConnection:
         self, result: QueryResult, result_formats: Optional[List[int]], send_row_description: bool,
     ) -> bool:
         try:
-            response = await self._engine.execute(query=result.query)
+            response = await self._engine.execute(
+                query=result.query, data_source=self._datasource,
+            )
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
             await self._send_error(code=proto.SQLSTATE_INTERNAL_ERROR, message=str(exc))
             self._fail_tx()

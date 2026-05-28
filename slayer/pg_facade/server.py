@@ -59,6 +59,7 @@ def _build_tls_context(cert: Optional[str], key: Optional[str]) -> Optional[ssl.
     if cert is None or key is None:
         return None
     ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(certfile=cert, keyfile=key)
     return ctx
 

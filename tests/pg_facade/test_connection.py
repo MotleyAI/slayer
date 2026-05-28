@@ -61,7 +61,7 @@ class _FakeEngine:
     def __init__(self, data) -> None:
         self.data = data
 
-    async def execute(self, *, query=None):
+    async def execute(self, *, query=None, data_source=None):
         return types.SimpleNamespace(data=self.data)
 
 
@@ -91,7 +91,7 @@ class _CapturingEngine:
         self.data = data
         self.last_query = None
 
-    async def execute(self, *, query=None):
+    async def execute(self, *, query=None, data_source=None):
         self.last_query = query
         return types.SimpleNamespace(data=self.data)
 
@@ -446,7 +446,7 @@ async def test_extended_binary_result_format_encodes_binary() -> None:
     length = struct.unpack_from(">i", body, 2)[0]
     assert length == 8
     value = struct.unpack_from(">d", body, 6)[0]
-    assert value == 100.0
+    assert value == 100.0  # NOSONAR(S1244) — exact binary roundtrip of a representable value
 
 
 async def test_extended_text_result_format_encodes_text() -> None:
@@ -503,6 +503,55 @@ async def test_close_statement_then_complete() -> None:
     )
     writer = await _run(inp)
     assert "3" in _types(_messages(writer.buffer))  # CloseComplete
+
+
+async def test_malformed_message_body_is_protocol_violation_not_crash() -> None:
+    # A truncated Parse body must yield a protocol-violation error, not tear
+    # down the session (the subsequent Sync still gets a ReadyForQuery).
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _frame(b"P", b"\xff\xff")  # garbage Parse body (no null terminators)
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == proto.SQLSTATE_PROTOCOL_VIOLATION
+    assert "Z" in _types(msgs)  # session survived to ReadyForQuery
+
+
+async def test_invalid_bind_result_format_code_rejected() -> None:
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _parse("", "SELECT 1")
+        + _bind("", "", result_formats=(7,))  # 7 is neither text(0) nor binary(1)
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    err = next(body for t, body in msgs if t == "E")
+    assert _error_sqlstate(err) == proto.SQLSTATE_FEATURE_NOT_SUPPORTED
+
+
+async def test_extended_execute_blocked_in_failed_transaction() -> None:
+    # After an error inside BEGIN, an extended-protocol SELECT must be blocked
+    # with 25P02 until ROLLBACK — not executed.
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _query("BEGIN")
+        + _query("INSERT INTO orders VALUES (1)")  # fails → tx state E
+        + _parse("", "SELECT 1")
+        + _bind("", "")
+        + _execute("")
+        + _sync()
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    sqlstates = [_error_sqlstate(b) for t, b in msgs if t == "E"]
+    assert proto.SQLSTATE_IN_FAILED_SQL_TRANSACTION in sqlstates
 
 
 @pytest.mark.parametrize("msg_type", [b"F", b"d", b"c", b"f"])

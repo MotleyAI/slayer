@@ -140,12 +140,22 @@ def _serve_pg_namespace(catalog: FacadeCatalog) -> RowBatch:  # noqa: ARG001
         FacadeColumn(name="nspowner", type=DataType.INT),
         FacadeColumn(name="nspacl", type=DataType.TEXT),
     ]
-    rows = [{
-        "oid": PUBLIC_NAMESPACE_OID,
-        "nspname": "public",
-        "nspowner": DEFAULT_OWNER_OID,
-        "nspacl": None,
-    }]
+    rows = [
+        {
+            "oid": PUBLIC_NAMESPACE_OID,
+            "nspname": "public",
+            "nspowner": DEFAULT_OWNER_OID,
+            "nspacl": None,
+        },
+        {
+            # Builtin types live here (pg_type.typnamespace == 11); without
+            # this row a join from pg_type back to pg_namespace dangles.
+            "oid": PG_CATALOG_NAMESPACE_OID,
+            "nspname": "pg_catalog",
+            "nspowner": DEFAULT_OWNER_OID,
+            "nspacl": None,
+        },
+    ]
     return RowBatch(columns=columns, rows=rows)
 
 

@@ -39,9 +39,10 @@ SQLSTATE_UNDEFINED_FUNCTION = "42883"
 SQLSTATE_UNDEFINED_DATABASE = "3D000"
 SQLSTATE_FEATURE_NOT_SUPPORTED = "0A000"
 SQLSTATE_INVALID_AUTHORIZATION = "28000"
-SQLSTATE_INVALID_PASSWORD = "28P01"
+SQLSTATE_INVALID_PASSWORD = "28P01"  # NOSONAR(S2068) — SQLSTATE code, not a credential
 SQLSTATE_READ_ONLY_SQL_TRANSACTION = "25006"
 SQLSTATE_IN_FAILED_SQL_TRANSACTION = "25P02"
+SQLSTATE_PROTOCOL_VIOLATION = "08P01"
 SQLSTATE_INTERNAL_ERROR = "XX000"
 
 # --- startup magic ints ------------------------------------------------------
@@ -362,14 +363,28 @@ def split_messages(buf: bytes) -> List[Tuple[str, bytes]]:
     return out
 
 
+def validate_format_codes(codes: List[int]) -> None:
+    """Reject format codes outside ``{text, binary}`` (protocol violation)."""
+    for c in codes:
+        if c not in (FORMAT_TEXT, FORMAT_BINARY):
+            raise ValueError(f"invalid format code {c!r} (must be 0=text or 1=binary)")
+
+
 def parse_result_format_codes(codes: List[int], column_count: int) -> List[int]:
     """Resolve Bind result-format codes to one entry per result column.
 
     Per the protocol: 0 codes → all text; 1 code → applies to every column;
-    N codes → one per column.
+    N codes → one per column. Any other length, or a code outside ``{0, 1}``,
+    is a protocol violation (raises ``ValueError``).
     """
+    validate_format_codes(codes)
     if not codes:
         return [FORMAT_TEXT] * column_count
     if len(codes) == 1:
         return [codes[0]] * column_count
+    if len(codes) != column_count:
+        raise ValueError(
+            f"result format code count {len(codes)} does not match column "
+            f"count {column_count}"
+        )
     return list(codes)

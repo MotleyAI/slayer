@@ -41,6 +41,16 @@ def test_show_search_path() -> None:
     assert batch.rows[0]["search_path"]
 
 
+def test_show_server_version_is_bare_version_not_full_string() -> None:
+    # SHOW server_version must match ParameterStatus / pg_settings ("14.0"),
+    # NOT the full "PostgreSQL 14.0 (SLayer ...)" version() string.
+    from slayer.pg_facade.identity import PG_SERVER_VERSION
+
+    batch = _probe("SHOW server_version", version_str="PostgreSQL 14.0 (SLayer)")
+    assert batch is not None
+    assert batch.rows == [{"server_version": PG_SERVER_VERSION}]
+
+
 def test_show_unknown_setting_returns_empty() -> None:
     batch = _probe("SHOW some_unknown_setting")
     assert batch is not None

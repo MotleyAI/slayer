@@ -299,8 +299,9 @@ class _AggCall(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     agg: str  # SLayer aggregation name: sum/avg/min/max/count/count_distinct
-    inner_ref: Optional[str]  # dotted column ref, or None for COUNT(*)
-    inner_is_column: bool  # False → COUNT(*) or non-column arg
+    inner_ref: Optional[str] = None  # dotted column ref, or None for COUNT(*)
+    inner_is_column: bool = False  # False → COUNT(*) or non-column arg
+    is_count_star: bool = False  # True only for the literal COUNT(*)
 
 
 def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:
@@ -314,7 +315,7 @@ def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:
     if isinstance(node, exp.Count):
         inner = node.this
         if isinstance(inner, exp.Star):
-            return _AggCall(agg="count", inner_ref=None, inner_is_column=False)
+            return _AggCall(agg="count", inner_is_column=False, is_count_star=True)
         if isinstance(inner, exp.Distinct):
             exprs = inner.expressions
             if len(exprs) == 1 and isinstance(exprs[0], exp.Column):
@@ -323,12 +324,13 @@ def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:
                     inner_ref=_column_to_dotted(exprs[0]),
                     inner_is_column=True,
                 )
-            return _AggCall(agg="count_distinct", inner_ref=None, inner_is_column=False)
+            return _AggCall(agg="count_distinct", inner_is_column=False)
         if isinstance(inner, exp.Column):
             return _AggCall(
                 agg="count", inner_ref=_column_to_dotted(inner), inner_is_column=True,
             )
-        return _AggCall(agg="count", inner_ref=None, inner_is_column=False)
+        # COUNT(<non-column expression>) — not the row-count star.
+        return _AggCall(agg="count", inner_is_column=False)
     for cls, name in _AGG_CLASS_TO_NAME.items():
         if isinstance(node, cls):
             inner = node.this
@@ -342,7 +344,7 @@ def _detect_aggregate(node: exp.Expression) -> Optional[_AggCall]:
 
 def _agg_formula(call: _AggCall) -> str:
     """The SLayer colon-form measure formula for a recognised aggregate."""
-    if call.agg == "count" and call.inner_ref is None:
+    if call.is_count_star:
         return "*:count"
     return f"{call.inner_ref}:{call.agg}"
 
@@ -362,15 +364,10 @@ def _metric_for_aggregate(
     validates column existence + aggregation eligibility. Failures raise
     a clear ``TranslationError`` (DEV-1493 for the measure/expression case).
     """
-    if not call.inner_is_column and call.inner_ref is None and call.agg != "count":
-        raise TranslationError(AGG_OVER_MEASURE_MESSAGE)
-    if not call.inner_is_column and call.agg != "count":
-        raise TranslationError(AGG_OVER_MEASURE_MESSAGE)
-    if not call.inner_is_column and call.agg == "count" and call.inner_ref is None:
-        # COUNT(*) — handled below via the "*:count" formula.
-        pass
-    elif not call.inner_is_column:
-        # COUNT(DISTINCT <expr>) or COUNT(<expr>) over a non-column.
+    # Only the literal COUNT(*) is the row-count star. Any other non-column
+    # argument (COUNT(<expr>), SUM(a+b), COUNT(DISTINCT <expr>)) needs a
+    # multi-stage rewrite — DEV-1493.
+    if not call.is_count_star and not call.inner_is_column:
         raise TranslationError(AGG_OVER_MEASURE_MESSAGE)
     formula = _agg_formula(call)
     metric = metrics_by_formula.get(formula)
@@ -523,7 +520,9 @@ def _resolve_aggregate_projection(
 ) -> _ProjectionItem:
     """Map a SQL aggregate call to the same projection item a bare metric
     name would produce (DEV-1486 decision 21)."""
-    metric = _metric_for_aggregate(call, table, metrics_by_formula)
+    metric = _metric_for_aggregate(
+        call=call, table=table, metrics_by_formula=metrics_by_formula,
+    )
     return _ProjectionItem(
         projected_name=alias_name or metric.name,
         metric=metric,
@@ -731,11 +730,11 @@ def _apply_having(
         lhs, rhs = conj.this, conj.expression
         agg_lhs = _detect_aggregate(lhs)
         agg_rhs = _detect_aggregate(rhs)
-        if agg_lhs is not None and agg_rhs is None:
-            _metric_for_aggregate(agg_lhs, table, metrics_by_formula)
+        if agg_lhs is not None and agg_rhs is None and isinstance(rhs, exp.Literal):
+            _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_formula=metrics_by_formula)
             filters_out.append(f"{_agg_formula(agg_lhs)} {op_sql} {rhs.sql()}")
-        elif agg_rhs is not None and agg_lhs is None:
-            _metric_for_aggregate(agg_rhs, table, metrics_by_formula)
+        elif agg_rhs is not None and agg_lhs is None and isinstance(lhs, exp.Literal):
+            _metric_for_aggregate(call=agg_rhs, table=table, metrics_by_formula=metrics_by_formula)
             flipped = _flip_comparator(op_sql)
             filters_out.append(f"{_agg_formula(agg_rhs)} {flipped} {lhs.sql()}")
         else:
@@ -793,7 +792,7 @@ def _order_by_name(body: exp.Expression) -> str:
     agg = _detect_aggregate(body)
     if agg is not None and agg.inner_is_column:
         return f"{agg.inner_ref}_{agg.agg}"
-    if agg is not None and agg.agg == "count" and agg.inner_ref is None:
+    if agg is not None and agg.is_count_star:
         return "row_count"
     return body.sql()
 

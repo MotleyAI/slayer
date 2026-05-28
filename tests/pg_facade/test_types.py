@@ -99,7 +99,7 @@ def test_binary_int8_roundtrip() -> None:
 def test_binary_float8_roundtrip() -> None:
     encoded = t.value_to_binary(1.5, OID_FLOAT8)
     assert encoded == struct.pack(">d", 1.5)
-    assert t.value_from_binary(encoded, OID_FLOAT8) == 1.5
+    assert t.value_from_binary(encoded, OID_FLOAT8) == 1.5  # NOSONAR(S1244) — exact binary roundtrip
 
 
 def test_binary_bool_roundtrip() -> None:
@@ -139,7 +139,7 @@ def test_binary_none_is_null() -> None:
 
 def test_value_from_text_per_oid() -> None:
     assert t.value_from_text(b"42", OID_INT8) == 42
-    assert t.value_from_text(b"1.5", OID_FLOAT8) == 1.5
+    assert t.value_from_text(b"1.5", OID_FLOAT8) == 1.5  # NOSONAR(S1244) — exact representable value
     assert t.value_from_text(b"t", OID_BOOL) is True
     assert t.value_from_text(b"false", OID_BOOL) is False
     assert t.value_from_text(b"2026-05-27", OID_DATE) == dt.date(2026, 5, 27)

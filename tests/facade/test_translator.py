@@ -366,6 +366,16 @@ def test_aggregate_over_expression_errors_with_followup(dialect) -> None:
     assert AGG_OVER_MEASURE_MESSAGE in str(exc_info.value)
 
 
+def test_count_of_expression_is_not_row_count(dialect) -> None:
+    # COUNT(<expression>) must NOT be mis-mapped to *:count (row count).
+    with pytest.raises(TranslationError) as exc_info:
+        translate(
+            sql="SELECT COUNT(CASE WHEN status = 'x' THEN 1 END) FROM orders",
+            catalog=_catalog(), dialect=dialect,
+        )
+    assert AGG_OVER_MEASURE_MESSAGE in str(exc_info.value)
+
+
 def test_having_aggregate_maps_to_colon_filter(dialect) -> None:
     result = translate(
         sql="SELECT status, SUM(revenue) FROM orders GROUP BY status "

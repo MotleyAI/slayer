@@ -20,13 +20,14 @@ import sqlglot.expressions as exp
 
 from slayer.core.enums import DataType
 from slayer.facade.rows import FacadeColumn, RowBatch
+from slayer.pg_facade.identity import PG_SERVER_VERSION
 
 # Canned values for common SHOW settings. Unknown settings return "".
 _SHOW_DEFAULTS = {
     "search_path": '"$user", public',
     "transaction_isolation": "read committed",
     "standard_conforming_strings": "on",
-    "server_version": None,  # filled from version constant at call time
+    "server_version": PG_SERVER_VERSION,
     "client_encoding": "UTF8",
     "datestyle": "ISO, MDY",
     "timezone": "UTC",
@@ -75,12 +76,11 @@ def match_pg_probe(
 ) -> Optional[RowBatch]:
     """Return a datasource-aware canned ``RowBatch`` for a Postgres probe,
     else ``None`` (caller falls back to the shared probe matcher)."""
-    # SHOW <setting>
+    # SHOW <setting> — `server_version` reports the bare "14.0" (matching
+    # ParameterStatus / pg_settings), NOT the full version() string.
     setting = _show_setting_name(parsed)
     if setting is not None:
         value = _SHOW_DEFAULTS.get(setting.lower(), "")
-        if setting.lower() == "server_version":
-            value = version_str
         return _single(setting, value)
 
     body = _single_projection(parsed)
@@ -104,7 +104,7 @@ def match_pg_probe(
 
 def _first_literal(node: exp.Anonymous, index: int) -> Optional[str]:
     args = node.args.get("expressions") or []
-    if index < len(args) and isinstance(args[index], exp.Literal):
+    if index < len(args) and isinstance(args[index], exp.Literal):  # NOSONAR(S6466) — guarded by index < len(args)
         return str(args[index].this)
     return None
 

@@ -14,8 +14,8 @@ from slayer.pg_facade.server import DEFAULT_PG_PORT, _resolve_host, _resolve_tok
         (None, True, None, "127.0.0.1"),
         (None, True, "tok", "0.0.0.0"),
         (None, False, "tok", "0.0.0.0"),
-        ("1.2.3.4", False, None, "1.2.3.4"),
-        ("1.2.3.4", True, None, "1.2.3.4"),
+        ("1.2.3.4", False, None, "1.2.3.4"),  # NOSONAR(S1313) — test fixture, not a live address
+        ("1.2.3.4", True, None, "1.2.3.4"),  # NOSONAR(S1313) — test fixture, not a live address
     ],
 )
 def test_resolve_host(host_arg, demo, token, expected) -> None:
