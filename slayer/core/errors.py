@@ -257,12 +257,17 @@ class IllegalWindowInFilterError(SlayerError, ValueError):
         ))
 
 
-class AggregationNotAllowedError(SlayerError):
+class AggregationNotAllowedError(SlayerError, ValueError):
     """An aggregation cannot apply to a column.
 
     Covers type-bucket violations (``sum`` on TEXT), primary-key
     restrictions (only ``count`` / ``count_distinct``), and explicit
     ``Column.allowed_aggregations`` whitelist violations.
+
+    Subclasses ``ValueError`` (like the other resolution-time errors in
+    this module) so callers wrapping the engine in ``except ValueError``
+    keep catching aggregation-gating failures — the legacy enrichment
+    pipeline raised a bare ``ValueError`` here.
     """
 
     def __init__(self, column: str, agg: str, reason: str) -> None:
@@ -276,9 +281,14 @@ class AggregationNotAllowedError(SlayerError):
         ))
 
 
-class UnknownFunctionError(SlayerError):
+class UnknownFunctionError(SlayerError, ValueError):
     """A function call in Mode B is not in the ``SCALAR_FUNCTIONS`` allowlist,
     the transform registry, or the model's aggregation set (C12).
+
+    Subclasses ``ValueError`` (like the other binding-time errors here) so
+    the REST ``ValueError -> 400`` mapping and ``except ValueError`` callers
+    keep catching it — the legacy enrichment pipeline raised a bare
+    ``ValueError`` for this case.
     """
 
     _DEFAULT_SUGGESTION = "move the call to a derived Column.sql (Mode A)."
@@ -300,9 +310,12 @@ class UnknownFunctionError(SlayerError):
         ))
 
 
-class MeasureRecursionLimitError(SlayerError):
+class MeasureRecursionLimitError(SlayerError, ValueError):
     """Named-measure expansion exceeded the configurable depth limit
     (default 32; ``SLAYER_MEASURE_EXPANSION_DEPTH``).
+
+    ValueError-derived for REST/caller parity with the other binding-time
+    errors (the legacy pipeline raised a bare ``ValueError``).
     """
 
     def __init__(self, chain: List[str], limit: int = 32) -> None:
@@ -315,8 +328,12 @@ class MeasureRecursionLimitError(SlayerError):
         ))
 
 
-class MeasureCycleError(SlayerError):
-    """Named-measure expansion encountered a cycle."""
+class MeasureCycleError(SlayerError, ValueError):
+    """Named-measure expansion encountered a cycle.
+
+    ValueError-derived for REST/caller parity with the other binding-time
+    errors (the legacy pipeline raised a bare ``ValueError``).
+    """
 
     def __init__(self, chain: List[str]) -> None:
         self.chain = list(chain)
@@ -327,9 +344,12 @@ class MeasureCycleError(SlayerError):
         ))
 
 
-class DuplicateMeasureNameError(SlayerError):
+class DuplicateMeasureNameError(SlayerError, ValueError):
     """Two measures in the same query declare the same explicit ``name``
     (DEV-1443).
+
+    ValueError-derived for REST/caller parity with the other binding-time
+    errors (the legacy pipeline raised a bare ``ValueError``).
     """
 
     def __init__(self, name: str, occurrences: List[str]) -> None:
@@ -342,10 +362,13 @@ class DuplicateMeasureNameError(SlayerError):
         ))
 
 
-class MeasureNameCollidesWithColumnError(SlayerError):
+class MeasureNameCollidesWithColumnError(SlayerError, ValueError):
     """A declared measure ``name`` matches a source column on the model
     (DEV-1443) — the alias-form filter would silently bind to the source
     column instead of the aggregate.
+
+    ValueError-derived for REST/caller parity with the other binding-time
+    errors (the legacy pipeline raised a bare ``ValueError``).
     """
 
     def __init__(self, name: str, model: str) -> None:
@@ -360,9 +383,12 @@ class MeasureNameCollidesWithColumnError(SlayerError):
         ))
 
 
-class CanonicalAliasShadowsColumnError(SlayerError):
+class CanonicalAliasShadowsColumnError(SlayerError, ValueError):
     """A formula's canonical alias (e.g., ``amount_sum`` for ``amount:sum``)
     shadows a source column on the same model (DEV-1443).
+
+    ValueError-derived for REST/caller parity with the other binding-time
+    errors (the legacy pipeline raised a bare ``ValueError``).
     """
 
     def __init__(self, formula: str, canonical: str, model: str) -> None:
