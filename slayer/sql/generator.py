@@ -3550,16 +3550,36 @@ class SQLGenerator:
                     if p not in needed_join_paths:
                         needed_join_paths.append(p)
                 continue
-            if not (isinstance(key, ColumnSqlKey) and not key.path):
+            if not isinstance(key, ColumnSqlKey):
                 continue
+            # A derived (``Column.sql``) dimension. Local refs (``path == ()``)
+            # expand rooted at the source relation; a CROSS-MODEL derived dim
+            # (``B.foo_normalized``, ``path == ("B",)``) expands rooted at the
+            # ``__``-path alias of the owning joined model — mirrors the
+            # ColumnSqlKey arm of ``_raw_time_col_expr_for_planned``. Without
+            # this the render branch falls back to ``_dim_column_expr_from_
+            # planned`` which only looks at the source model and raises
+            # "Column not found".
+            if key.path:
+                owner_model = bundle.get_referenced_model(key.path[-1])
+                if owner_model is None:
+                    continue
+                owner_relation = "__".join(key.path)
+            else:
+                owner_model = source_model
+                owner_relation = source_relation
             expanded_sql = self._expand_derived_column_sql(
-                source_model=source_model,
-                source_relation=source_relation,
+                source_model=owner_model,
+                source_relation=owner_relation,
                 column_name=key.column_name,
                 bundle=bundle,
+                # Cross-model derived dim: the owner is a joined model, so a
+                # further-joined ref inside its sql must carry the full path
+                # prefix (``B`` reaching ``C`` → ``B__C``).
+                is_root=not key.path,
             )
             col = next(
-                (c for c in source_model.columns if c.name == key.column_name),
+                (c for c in owner_model.columns if c.name == key.column_name),
                 None,
             )
             expr = _wrap_cast_for_type(
@@ -3567,6 +3587,10 @@ class SQLGenerator:
                 col.type if col is not None else None,
             )
             derived_expr_by_sid[sid] = expr
+            # Pull the join to the owning model itself (cross-model case) plus
+            # any joins the expanded SQL crosses into the FROM clause.
+            if key.path and key.path not in needed_join_paths:
+                needed_join_paths.append(key.path)
             for p in self._joined_paths_in_sql(
                 sql_expr=expr, source_relation=source_relation,
                 source_model=source_model, bundle=bundle,
@@ -7252,12 +7276,19 @@ class SQLGenerator:
 
     def _expand_derived_column_sql(
         self, *, source_model, source_relation: str, column_name: str, bundle,
+        is_root: bool = True,
     ) -> str:
         """Expand a derived ``Column.sql`` (a ``ColumnSqlKey`` target) into a
         fully-qualified SQL string, recursively inlining references to other
         derived columns on the same model or on joined models (DEV-1333 /
         DEV-1410). Bare identifiers qualify to ``source_relation``; joined
         refs qualify to their ``__``-canonical path alias.
+
+        ``is_root`` is ``False`` when the derived column lives on a JOINED
+        model (a cross-model derived dimension, ``source_relation`` being the
+        ``__``-path alias). A further-joined reference inside that column's
+        sql then resolves to the full path (``B`` reaching ``C`` →
+        ``B__C``), not the bare child alias.
 
         Synchronous: resolves join targets through ``bundle.get_referenced_
         model`` (every model is already loaded — P11). Returns the column's
@@ -7279,6 +7310,7 @@ class SQLGenerator:
             alias_path=source_relation,
             resolve_model=bundle.get_referenced_model,
             dialect=self.dialect,
+            is_root=is_root,
         )
         return expanded if expanded is not None else col.sql
 
