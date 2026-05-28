@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
-from typing import AsyncIterator, Tuple
+from typing import AsyncIterator
 
 import pytest
 
@@ -82,42 +82,53 @@ def test_local_agg_formula_keeps_residual_path_in_args_for_deeper_hop() -> None:
     assert _local_agg_formula(key) == "amount:last(regions.opened_at)"
 
 
-@pytest.fixture
-async def engine_with_seeded_data() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
-    """Real SQLite database with two orders per status, with strictly
-    ordered ``created_at`` so first/last is verifiable.
+def _orders_model(with_amount: bool = False) -> SlayerModel:
+    """Standard orders model joined to customers. ``with_amount`` adds the
+    ``amount`` / ``created_at`` columns for queries that aggregate orders
+    locally; the join-only variant omits them.
+    """
+    columns = [
+        Column(name="id", type=DataType.INT, primary_key=True),
+        Column(name="status", type=DataType.TEXT),
+    ]
+    if with_amount:
+        columns += [
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="created_at", type=DataType.TIMESTAMP),
+        ]
+    columns.append(Column(name="customer_id", type=DataType.INT))
+    return SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="prod",
+        columns=columns,
+        joins=[ModelJoin(
+            target_model="customers",
+            join_pairs=[["customer_id", "id"]],
+        )],
+    )
+
+
+async def _engine_from_sql(
+    *,
+    ddl: list[str],
+    inserts: list[tuple[str, list[tuple]]],
+    models: list[SlayerModel],
+) -> SlayerQueryEngine:
+    """Build a ``SlayerQueryEngine`` over a throwaway SQLite file.
+
+    ``ddl`` statements run verbatim; each ``inserts`` entry is an
+    ``(sql, rows)`` pair fed to ``executemany``; ``models`` are persisted
+    against a ``prod`` SQLite datasource pointing at the seeded file.
     """
     d = tempfile.mkdtemp()
     db_path = os.path.join(d, "t.db")
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders ("
-        "id INTEGER PRIMARY KEY, status TEXT, amount REAL, "
-        "created_at TEXT, customer_id INTEGER)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, "paid", 10.0, "2024-01-01", 1),
-            (2, "paid", 20.0, "2024-01-05", 1),    # last(amount,created_at) for paid = 20
-            (3, "open", 7.0, "2024-01-02", 2),
-            (4, "open", 14.0, "2024-01-08", 3),    # last(amount,created_at) for open = 14
-        ],
-    )
-    cur.execute(
-        "CREATE TABLE customers ("
-        "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
-        "signup_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            (1, "NA", 100.0, "2023-06-01"),
-            (2, "NA", 50.0, "2023-07-01"),    # last(amount,signup_at) for NA = 50
-            (3, "EU", 70.0, "2023-08-01"),    # last(amount,signup_at) for EU = 70
-        ],
-    )
+    for stmt in ddl:
+        cur.execute(stmt)
+    for sql, rows in inserts:
+        cur.executemany(sql, rows)
     con.commit()
     con.close()
 
@@ -125,44 +136,62 @@ async def engine_with_seeded_data() -> AsyncIterator[Tuple[SlayerQueryEngine, st
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
-            name="customers",
-            sql_table="customers",
-            data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="signup_at", type=DataType.TIMESTAMP),
-                # Derived column — used by (d-cross).
-                Column(
-                    name="signup_at_alias",
-                    sql="signup_at",
-                    type=DataType.TIMESTAMP,
-                ),
-            ],
-        )
+    for model in models:
+        await storage.save_model(model)
+    return SlayerQueryEngine(storage=storage)
+
+
+@pytest.fixture
+async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
+    """Real SQLite database with two orders per status, with strictly
+    ordered ``created_at`` so first/last is verifiable.
+
+    ``last(amount, created_at)``: paid → 20, open → 14.
+    ``last(amount, signup_at)``: NA → 50, EU → 70.
+    """
+    yield await _engine_from_sql(
+        ddl=[
+            "CREATE TABLE orders ("
+            "id INTEGER PRIMARY KEY, status TEXT, amount REAL, "
+            "created_at TEXT, customer_id INTEGER)",
+            "CREATE TABLE customers ("
+            "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
+            "signup_at TEXT)",
+        ],
+        inserts=[
+            ("INSERT INTO orders VALUES (?,?,?,?,?)", [
+                (1, "paid", 10.0, "2024-01-01", 1),
+                (2, "paid", 20.0, "2024-01-05", 1),
+                (3, "open", 7.0, "2024-01-02", 2),
+                (4, "open", 14.0, "2024-01-08", 3),
+            ]),
+            ("INSERT INTO customers VALUES (?,?,?,?)", [
+                (1, "NA", 100.0, "2023-06-01"),
+                (2, "NA", 50.0, "2023-07-01"),
+                (3, "EU", 70.0, "2023-08-01"),
+            ]),
+        ],
+        models=[
+            SlayerModel(
+                name="customers",
+                sql_table="customers",
+                data_source="prod",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="region", type=DataType.TEXT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                    Column(name="signup_at", type=DataType.TIMESTAMP),
+                    # Derived column — used by (d-cross).
+                    Column(
+                        name="signup_at_alias",
+                        sql="signup_at",
+                        type=DataType.TIMESTAMP,
+                    ),
+                ],
+            ),
+            _orders_model(with_amount=True),
+        ],
     )
-    await storage.save_model(
-        SlayerModel(
-            name="orders",
-            sql_table="orders",
-            data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
-                Column(name="customer_id", type=DataType.INT),
-            ],
-            joins=[ModelJoin(
-                target_model="customers",
-                join_pairs=[["customer_id", "id"]],
-            )],
-        )
-    )
-    yield SlayerQueryEngine(storage=storage), db_path
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +206,7 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
     ``time_dimensions``. The explicit positional time arg pre-resolved
     into ``spec.time_column`` drives the ranked subquery's ORDER BY.
     """
-    engine, _ = engine_with_seeded_data
+    engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=["status"],
@@ -205,7 +234,7 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
     with explicit time arg; reroot pass must strip the ``customers.``
     prefix from ``key.args`` symmetrically to kwargs.
     """
-    engine, _ = engine_with_seeded_data
+    engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
         dimensions=["customers.region"],
@@ -246,7 +275,7 @@ async def test_local_first_last_over_derived_column_expands_inner_refs(
     and the FROM is the ranked subquery's own alias, SQLite will fail
     with "no such column".
     """
-    engine, _ = engine_with_seeded_data
+    engine = engine_with_seeded_data
     # Add a derived ``net_amount`` column on orders so ``net_amount:last``
     # exercises the ColumnSqlKey aggregate-source path.
     orders = await engine.storage.get_model("orders")
@@ -270,9 +299,7 @@ async def test_local_first_last_over_derived_column_expands_inner_refs(
     assert resp.data, resp.sql
 
 
-async def test_cross_model_first_last_uses_target_default_time_dimension(
-    engine_with_seeded_data,
-) -> None:
+async def test_cross_model_first_last_uses_target_default_time_dimension() -> None:
     """Codex round-2 fix — cross-model ``customers.amount:last`` with NO
     explicit positional time arg falls back to the target model's
     ``default_time_dimension``. Without this fix the rendered SQL
@@ -282,71 +309,42 @@ async def test_cross_model_first_last_uses_target_default_time_dimension(
     Set ``customers.default_time_dimension="signup_at"`` on the fly via
     a fresh storage so the fallback is exercised.
     """
-    d = tempfile.mkdtemp()
-    db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders ("
-        "id INTEGER PRIMARY KEY, status TEXT, amount REAL, "
-        "created_at TEXT, customer_id INTEGER)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?,?,?)",
-        [
-            (1, "paid", 10.0, "2024-01-01", 1),
-            (2, "open", 7.0, "2024-01-02", 2),
+    engine = await _engine_from_sql(
+        ddl=[
+            "CREATE TABLE orders ("
+            "id INTEGER PRIMARY KEY, status TEXT, amount REAL, "
+            "created_at TEXT, customer_id INTEGER)",
+            "CREATE TABLE customers ("
+            "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
+            "signup_at TEXT)",
+        ],
+        inserts=[
+            ("INSERT INTO orders VALUES (?,?,?,?,?)", [
+                (1, "paid", 10.0, "2024-01-01", 1),
+                (2, "open", 7.0, "2024-01-02", 2),
+            ]),
+            ("INSERT INTO customers VALUES (?,?,?,?)", [
+                (1, "NA", 100.0, "2023-06-01"),
+                (2, "NA", 50.0, "2023-07-01"),
+                (3, "EU", 70.0, "2023-08-01"),
+            ]),
+        ],
+        models=[
+            SlayerModel(
+                name="customers",
+                sql_table="customers",
+                data_source="prod",
+                default_time_dimension="signup_at",  # ← the fallback target
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="region", type=DataType.TEXT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                    Column(name="signup_at", type=DataType.TIMESTAMP),
+                ],
+            ),
+            _orders_model(with_amount=True),
         ],
     )
-    cur.execute(
-        "CREATE TABLE customers ("
-        "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
-        "signup_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?)",
-        [
-            (1, "NA", 100.0, "2023-06-01"),
-            (2, "NA", 50.0, "2023-07-01"),
-            (3, "EU", 70.0, "2023-08-01"),
-        ],
-    )
-    con.commit()
-    con.close()
-
-    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="prod", type="sqlite", database=db_path)
-    )
-    await storage.save_model(SlayerModel(
-        name="customers",
-        sql_table="customers",
-        data_source="prod",
-        default_time_dimension="signup_at",  # ← the fallback target
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
-        ],
-    ))
-    await storage.save_model(SlayerModel(
-        name="orders",
-        sql_table="orders",
-        data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="customer_id", type=DataType.INT),
-        ],
-        joins=[ModelJoin(
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-        )],
-    ))
-    engine = SlayerQueryEngine(storage=storage)
 
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -368,45 +366,42 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
     positional time arg NOR a ``target_model.default_time_dimension`` must
     raise a clear ValueError, not silently emit broken SQL.
     """
-    d = tempfile.mkdtemp()
-    db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)")
-    cur.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, region TEXT, amount REAL)")
-    con.commit()
-    con.close()
-
-    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="prod", type="sqlite", database=db_path)
+    engine = await _engine_from_sql(
+        ddl=[
+            "CREATE TABLE orders ("
+            "id INTEGER PRIMARY KEY, customer_id INTEGER, amount REAL)",
+            "CREATE TABLE customers ("
+            "id INTEGER PRIMARY KEY, region TEXT, amount REAL)",
+        ],
+        inserts=[],
+        models=[
+            SlayerModel(
+                name="customers",
+                sql_table="customers",
+                data_source="prod",
+                # default_time_dimension intentionally unset
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="region", type=DataType.TEXT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                ],
+            ),
+            SlayerModel(
+                name="orders",
+                sql_table="orders",
+                data_source="prod",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="customer_id", type=DataType.INT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                ],
+                joins=[ModelJoin(
+                    target_model="customers",
+                    join_pairs=[["customer_id", "id"]],
+                )],
+            ),
+        ],
     )
-    await storage.save_model(SlayerModel(
-        name="customers",
-        sql_table="customers",
-        data_source="prod",
-        # default_time_dimension intentionally unset
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-        ],
-    ))
-    await storage.save_model(SlayerModel(
-        name="orders",
-        sql_table="orders",
-        data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-        ],
-        joins=[ModelJoin(
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-        )],
-    ))
-    engine = SlayerQueryEngine(storage=storage)
 
     with pytest.raises(ValueError, match=r"first/last.*ranking time"):
         await engine.execute(SlayerQuery(
@@ -424,7 +419,7 @@ async def test_d_cross_cross_model_derived_time_arg(
     Removes the ``NotImplementedError`` guard from
     ``_resolve_explicit_time_col`` for cross-model ``ColumnSqlKey``.
     """
-    engine, _ = engine_with_seeded_data
+    engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
         time_dimensions=[TimeDimension(
@@ -451,71 +446,45 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
     With the fix, the filter is pushed inside the ranked subquery, so
     ``_last_rn = 1`` points at the most-recent non-deleted row.
     """
-    d = tempfile.mkdtemp()
-    db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders ("
-        "id INTEGER PRIMARY KEY, status TEXT, customer_id INTEGER)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?)",
-        [(1, "paid", 1), (2, "paid", 2)],
-    )
-    cur.execute(
-        "CREATE TABLE customers ("
-        "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
-        "signup_at TEXT, deleted_at TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?,?)",
-        [
+    engine = await _engine_from_sql(
+        ddl=[
+            "CREATE TABLE orders ("
+            "id INTEGER PRIMARY KEY, status TEXT, customer_id INTEGER)",
+            "CREATE TABLE customers ("
+            "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
+            "signup_at TEXT, deleted_at TEXT)",
+        ],
+        inserts=[
+            ("INSERT INTO orders VALUES (?,?,?)",
+             [(1, "paid", 1), (2, "paid", 2)]),
             # NA: id=1 is older and active; id=2 is newer but soft-deleted.
             # With the filter applied BEFORE ranking, last(amount) = 100.0
             # (the active row). With the buggy post-rank filter, the
             # newer-but-deleted row wins _last_rn = 1 and the outer
             # MAX(CASE WHEN _last_rn = 1 ...) is NULL.
-            (1, "NA", 100.0, "2023-06-01", None),
-            (2, "NA", 999.0, "2023-08-01", "2024-01-01"),
+            ("INSERT INTO customers VALUES (?,?,?,?,?)", [
+                (1, "NA", 100.0, "2023-06-01", None),
+                (2, "NA", 999.0, "2023-08-01", "2024-01-01"),
+            ]),
+        ],
+        models=[
+            SlayerModel(
+                name="customers",
+                sql_table="customers",
+                data_source="prod",
+                default_time_dimension="signup_at",
+                filters=["deleted_at IS NULL"],
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="region", type=DataType.TEXT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                    Column(name="signup_at", type=DataType.TIMESTAMP),
+                    Column(name="deleted_at", type=DataType.TIMESTAMP),
+                ],
+            ),
+            _orders_model(),
         ],
     )
-    con.commit()
-    con.close()
-
-    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="prod", type="sqlite", database=db_path)
-    )
-    await storage.save_model(SlayerModel(
-        name="customers",
-        sql_table="customers",
-        data_source="prod",
-        default_time_dimension="signup_at",
-        filters=["deleted_at IS NULL"],
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
-            Column(name="deleted_at", type=DataType.TIMESTAMP),
-        ],
-    ))
-    await storage.save_model(SlayerModel(
-        name="orders",
-        sql_table="orders",
-        data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="customer_id", type=DataType.INT),
-        ],
-        joins=[ModelJoin(
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-        )],
-    ))
-    engine = SlayerQueryEngine(storage=storage)
 
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -542,78 +511,51 @@ async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
     ``no such column: _last_rn``. With the fix the maps are threaded into
     ``_build_agg`` and ``last`` returns the most-recent ACTIVE row.
     """
-    d = tempfile.mkdtemp()
-    db_path = os.path.join(d, "t.db")
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    cur.execute(
-        "CREATE TABLE orders ("
-        "id INTEGER PRIMARY KEY, status TEXT, customer_id INTEGER)"
-    )
-    cur.executemany(
-        "INSERT INTO orders VALUES (?,?,?)",
-        [(1, "paid", 1)],
-    )
-    cur.execute(
-        "CREATE TABLE customers ("
-        "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
-        "signup_at TEXT, status TEXT)"
-    )
-    cur.executemany(
-        "INSERT INTO customers VALUES (?,?,?,?,?)",
-        [
+    engine = await _engine_from_sql(
+        ddl=[
+            "CREATE TABLE orders ("
+            "id INTEGER PRIMARY KEY, status TEXT, customer_id INTEGER)",
+            "CREATE TABLE customers ("
+            "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
+            "signup_at TEXT, status TEXT)",
+        ],
+        inserts=[
+            ("INSERT INTO orders VALUES (?,?,?)", [(1, "paid", 1)]),
             # NA: the newest row (300.0 @ 2023-09-01) is inactive; the
             # newest ACTIVE row is 100.0 @ 2023-06-01. A Column.filter of
             # status='active' means last(active_amount) = 100.0.
-            (1, "NA", 100.0, "2023-06-01", "active"),
-            (2, "NA", 200.0, "2023-07-01", "inactive"),
-            (3, "NA", 300.0, "2023-09-01", "inactive"),
+            ("INSERT INTO customers VALUES (?,?,?,?,?)", [
+                (1, "NA", 100.0, "2023-06-01", "active"),
+                (2, "NA", 200.0, "2023-07-01", "inactive"),
+                (3, "NA", 300.0, "2023-09-01", "inactive"),
+            ]),
         ],
-    )
-    con.commit()
-    con.close()
-
-    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
-    await storage.save_datasource(
-        DatasourceConfig(name="prod", type="sqlite", database=db_path)
-    )
-    await storage.save_model(SlayerModel(
-        name="customers",
-        sql_table="customers",
-        data_source="prod",
-        default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
-            Column(name="status", type=DataType.TEXT),
-            # Column-level filter: aggregations of active_amount only see
-            # active rows. This sets synth.filter_sql on the cross-model
-            # first/last path.
-            Column(
-                name="active_amount",
-                sql="amount",
-                filter="status = 'active'",
-                type=DataType.DOUBLE,
+        models=[
+            SlayerModel(
+                name="customers",
+                sql_table="customers",
+                data_source="prod",
+                default_time_dimension="signup_at",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="region", type=DataType.TEXT),
+                    Column(name="amount", type=DataType.DOUBLE),
+                    Column(name="signup_at", type=DataType.TIMESTAMP),
+                    Column(name="status", type=DataType.TEXT),
+                    # Column-level filter: aggregations of active_amount only
+                    # see active rows. This sets synth.filter_sql on the
+                    # cross-model first/last path.
+                    Column(
+                        name="active_amount",
+                        sql="amount",
+                        filter="status = 'active'",
+                        type=DataType.DOUBLE,
+                    ),
+                ],
             ),
+            _orders_model(),
         ],
-    ))
-    await storage.save_model(SlayerModel(
-        name="orders",
-        sql_table="orders",
-        data_source="prod",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="customer_id", type=DataType.INT),
-        ],
-        joins=[ModelJoin(
-            target_model="customers",
-            join_pairs=[["customer_id", "id"]],
-        )],
-    ))
-    engine = SlayerQueryEngine(storage=storage)
+    )
 
     resp = await engine.execute(SlayerQuery(
         source_model="orders",
@@ -626,3 +568,86 @@ async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
     # Newest active row is 100.0 (2023-06-01); the newer 200/300 rows are
     # inactive. The filtered ranking must skip them.
     assert by_region["NA"][last_key] == pytest.approx(100.0), resp.sql
+
+
+async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -> None:
+    """Codex fix — a local ``last`` whose explicit time arg is a derived
+    column with a COMPLEX ``Column.sql`` (``date(created_at)``) must qualify
+    the inner bare ``created_at`` to the source relation via
+    ``_expand_derived_column_sql``.
+
+    The query also groups by a joined dimension (``customers.region``), so
+    the ranked subquery's FROM is ``orders LEFT JOIN customers``. Both
+    tables carry a ``created_at`` column, so an UNQUALIFIED inner ref in the
+    ROW_NUMBER ORDER BY is ambiguous and SQLite raises "ambiguous column
+    name: created_at". With the expansion the ref pins to ``orders``.
+    """
+    engine = await _engine_from_sql(
+        ddl=[
+            "CREATE TABLE orders ("
+            "id INTEGER PRIMARY KEY, amount REAL, "
+            "created_at TEXT, customer_id INTEGER)",
+            # customers ALSO has a created_at column → the collision.
+            "CREATE TABLE customers ("
+            "id INTEGER PRIMARY KEY, region TEXT, created_at TEXT)",
+        ],
+        inserts=[
+            ("INSERT INTO orders VALUES (?,?,?,?)", [
+                (1, 10.0, "2024-01-01", 1),
+                (2, 20.0, "2024-01-05", 1),   # newest NA order → last = 20
+                (3, 7.0, "2024-01-02", 2),
+            ]),
+            ("INSERT INTO customers VALUES (?,?,?)", [
+                (1, "NA", "2099-01-01"),  # later than any order, to lose if unqualified
+                (2, "NA", "2099-02-01"),
+            ]),
+        ],
+        models=[
+            SlayerModel(
+                name="customers",
+                sql_table="customers",
+                data_source="prod",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="region", type=DataType.TEXT),
+                    Column(name="created_at", type=DataType.TIMESTAMP),
+                ],
+            ),
+            SlayerModel(
+                name="orders",
+                sql_table="orders",
+                data_source="prod",
+                columns=[
+                    Column(name="id", type=DataType.INT, primary_key=True),
+                    Column(name="amount", type=DataType.DOUBLE),
+                    Column(name="created_at", type=DataType.TIMESTAMP),
+                    Column(name="customer_id", type=DataType.INT),
+                    # Derived COMPLEX time column — bare ``created_at`` inside
+                    # a function call, so it can't be cheaply qualified by
+                    # the bare-identifier shortcut.
+                    Column(
+                        name="created_day",
+                        sql="date(created_at)",
+                        type=DataType.TIMESTAMP,
+                    ),
+                ],
+                joins=[ModelJoin(
+                    target_model="customers",
+                    join_pairs=[["customer_id", "id"]],
+                )],
+            ),
+        ],
+    )
+
+    resp = await engine.execute(SlayerQuery(
+        source_model="orders",
+        dimensions=["customers.region"],  # pulls the join into the ranked subquery
+        measures=[{"formula": "amount:last(created_day)"}],
+    ))
+    assert resp.data, resp.sql
+    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
+    # last(amount) ranked by date(orders.created_at): newest NA order is
+    # id=2 @ 2024-01-05 → 20.0. Picking up customers.created_at instead
+    # would be an ambiguity error, not a wrong number.
+    assert by_region["NA"][last_key] == pytest.approx(20.0), resp.sql

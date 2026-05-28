@@ -3853,6 +3853,7 @@ class SQLGenerator:
         key,
         source_model,
         source_relation: str,
+        bundle=None,
     ) -> Optional[str]:
         """Resolve the explicit positional time arg on a ``first`` / ``last``
         aggregate into a SQL string suitable for ``ORDER BY`` inside the
@@ -3862,11 +3863,13 @@ class SQLGenerator:
         ``amount:last(created_at)``) and derived-column refs
         (``ColumnSqlKey`` — ``amount:last(net_amount_date)`` where
         ``net_amount_date`` has a non-trivial ``Column.sql``). For derived
-        columns the column's ``Column.sql`` is materialised: bare-identifier
-        derived columns are qualified under ``source_relation``; complex
-        expressions are emitted as-is and their inner bare refs resolve
-        against the ranked-subquery's FROM clause (which is the source
-        relation).
+        columns the column's ``Column.sql`` is materialised through
+        ``_expand_derived_column_sql`` (when ``bundle`` is available) so
+        inner bare refs qualify to ``source_relation`` and joined refs to
+        their ``__``-path alias — a complex expression like
+        ``date(created_at)`` can't go ambiguous against a same-named column
+        on a joined table inside the ranked subquery. Without a ``bundle``
+        it falls back to bare-ident qualification / verbatim emit.
 
         Returns ``None`` for non-first/last aggs and when ``key.args`` is
         empty or its first element is neither a ``ColumnKey`` nor a
@@ -3903,13 +3906,22 @@ class SQLGenerator:
                         f"arg of {key.agg!r}) not found on model "
                         f"{source_model.name!r}."
                     )
+                if bundle is not None:
+                    # Qualify inner bare refs against ``source_relation`` (and
+                    # joined refs to their ``__``-path alias) so a complex
+                    # derived time expression can't bind to the wrong table
+                    # inside the ranked subquery's joins — same expansion the
+                    # aggregate-source path uses.
+                    return self._expand_derived_column_sql(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        column_name=a.column_name,
+                        bundle=bundle,
+                    )
+                # No bundle (defensive): bare-ident qualify, else emit verbatim.
                 col_sql = col.sql if col.sql else col.name
                 if col_sql.isidentifier():
                     return f"{source_relation}.{col_sql}"
-                # Complex derived expression — emit as-is. Inner bare refs
-                # resolve against the ranked-subquery's FROM (the source
-                # relation), matching how the legacy enrichment pipeline
-                # treated derived-column ORDER BY targets.
                 return self._parse(col_sql).sql(dialect=self.dialect)
             # Unrecognised positional arg type — leave time_column unset and
             # let _build_ranked_subquery_from_planned fall back to the
@@ -7607,6 +7619,7 @@ class SQLGenerator:
                 key=key,
                 source_model=source_model,
                 source_relation=source_relation,
+                bundle=bundle,
             )
             agg_def = self._resolve_aggregation_def(
                 key=key, source_model=source_model, src_leaf=src_leaf,

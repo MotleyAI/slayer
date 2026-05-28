@@ -1301,7 +1301,7 @@ class TestWrapperAliasShapes:
             data_source="ds",
             source_queries=[SlayerQuery(
                 source_model="orders",
-                dimensions=["customers.name"],
+                dimensions=["customers.name", "customers.signup_at"],
                 measures=[{"formula": "amount:sum"}],
             )],
         )
@@ -1313,8 +1313,20 @@ class TestWrapperAliasShapes:
         engine = SlayerQueryEngine(storage=storage)
         try:
             saved = await engine.save_model(m)
-            col_names = {c.name for c in saved.columns}
-            assert "customers__name" in col_names, col_names
+            by_name = {c.name: c for c in saved.columns}
+            assert "customers__name" in by_name, set(by_name)
+            # DEV-1452 / Codex — a joined (dotted) dimension must persist the
+            # TARGET column's type. Before the fix ``_type_for_dimension``
+            # returned None for dotted refs and ``_query_as_model`` coerced
+            # the slot to DOUBLE, mistyping joined string / temporal dims.
+            assert by_name["customers__name"].type == DataType.TEXT, (
+                f"joined TEXT dim must persist as TEXT, not DOUBLE; "
+                f"got {by_name['customers__name'].type!r}"
+            )
+            assert by_name["customers__signup_at"].type == DataType.TIMESTAMP, (
+                f"joined TIMESTAMP dim must persist as TIMESTAMP; "
+                f"got {by_name['customers__signup_at'].type!r}"
+            )
         finally:
             tmp.cleanup()
 
