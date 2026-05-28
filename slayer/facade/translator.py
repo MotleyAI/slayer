@@ -130,6 +130,13 @@ class QueryResult(TranslatorResult):
     schema_name: str
     projection_types: "List[Optional['DataType']]"
 
+    @property
+    def flight_table(self) -> FacadeTable:
+        """Back-compat alias — this field was ``flight_table`` before the
+        facade extraction (DEV-1486). Kept so ``slayer.flight.translator``
+        callers reading ``result.flight_table`` keep working."""
+        return self.facade_table
+
 
 # --- error types -------------------------------------------------------------
 

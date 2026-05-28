@@ -53,6 +53,36 @@ psql "host=127.0.0.1 port=5145 dbname=jaffle_shop"
 
 Cross-datasource queries are not supported — one connection sees exactly one datasource.
 
+## View your models from a BI dashboard
+
+Any tool with a PostgreSQL connector works. End-to-end with the bundled demo and
+[Metabase](https://www.metabase.com/):
+
+```bash
+# 1. Start SLayer speaking Postgres, with the Jaffle Shop demo preloaded.
+slayer pg-serve --demo                 # listens on 127.0.0.1:5145
+
+# 2. Run Metabase (any BI tool works — Superset, Tableau, Power BI, Grafana, …).
+docker run -d -p 3000:3000 --name metabase metabase/metabase
+```
+
+In Metabase: **Admin → Databases → Add database → PostgreSQL** and fill in:
+
+| Field | Value |
+|---|---|
+| Host | `host.docker.internal` (or your host's IP) |
+| Port | `5145` |
+| Database name | the SLayer **datasource** (e.g. `jaffle_shop`) |
+| Username / Password | anything when no `--token` is set; otherwise the token as the password |
+
+Metabase introspects the schema (via `INFORMATION_SCHEMA` + `pg_catalog`), lists each
+SLayer model as a table under schema `public`, and lets you build questions/dashboards
+against them. Project named metrics (`revenue_sum`) or write `SUM(amount)` /
+`COUNT(*)` — both map to SLayer measures.
+
+> Phase-1 note: BI tools may issue `pg_catalog` queries beyond the six tables the facade
+> implements; if a tool trips on one, that's the set to extend.
+
 ## Authentication
 
 * No token configured → the server accepts unauthenticated requests **only** from a

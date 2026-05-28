@@ -100,6 +100,9 @@ class PgConnection:
         self._catalog: Optional[FacadeCatalog] = None
         self._statements: Dict[str, _PreparedStatement] = {}
         self._portals: Dict[str, _Portal] = {}
+        # Extended protocol: after an error the backend discards every message
+        # until the next Sync, then resumes with ReadyForQuery.
+        self._skip_until_sync = False
 
     # ----- lifecycle --------------------------------------------------------
 
@@ -257,18 +260,26 @@ class PgConnection:
             if msg is None:
                 return
             type_char, body = msg
+            # In skip-until-Sync mode (after an extended-query error) discard
+            # everything until a Sync (or Terminate) resynchronises the stream.
+            if self._skip_until_sync and type_char not in ("S", "X"):
+                continue
             try:
                 await self._dispatch_message(type_char, body)
             except _Done:
                 raise
             except (struct.error, ValueError, IndexError) as exc:  # UnicodeDecodeError ⊂ ValueError
                 # Malformed frontend message body — report a protocol violation
-                # but keep the session alive (the client will Sync to recover).
+                # but keep the session alive.
                 await self._send_error(
                     code=proto.SQLSTATE_PROTOCOL_VIOLATION,
                     message=f"malformed {type_char!r} message: {exc}",
                 )
                 self._fail_tx()
+                if type_char == "Q":
+                    await self._send_ready()  # simple-query error recovery
+                else:
+                    self._skip_until_sync = True  # extended-query error recovery
 
     async def _dispatch_message(self, type_char: str, body: bytes) -> None:
         if type_char == "Q":
@@ -358,22 +369,20 @@ class PgConnection:
     async def _handle_bind(self, msg: proto.BindMessage) -> None:
         stmt = self._statements.get(msg.statement)
         if stmt is None:
-            await self._send_error(
+            await self._extended_error(
                 code=proto.SQLSTATE_INTERNAL_ERROR,
                 message=f"prepared statement {msg.statement!r} does not exist",
             )
-            self._fail_tx()
             return
         try:
             proto.validate_format_codes(msg.parameter_format_codes)
             proto.validate_format_codes(msg.result_format_codes)
             substituted = self._substitute_params(stmt, msg)
         except (ValueError, struct.error) as exc:
-            await self._send_error(
+            await self._extended_error(
                 code=proto.SQLSTATE_FEATURE_NOT_SUPPORTED,
                 message=f"could not bind parameter: {exc}",
             )
-            self._fail_tx()
             return
         self._portals[msg.portal] = _Portal(
             sql=substituted, result_format_codes=list(msg.result_format_codes),
@@ -417,22 +426,20 @@ class PgConnection:
         if msg.kind == "S":
             stmt = self._statements.get(msg.name)
             if stmt is None:
-                await self._send_error(
+                await self._extended_error(
                     code=proto.SQLSTATE_INTERNAL_ERROR,
                     message=f"prepared statement {msg.name!r} does not exist",
                 )
-                self._fail_tx()
                 return
             self._writer.write(proto.encode_parameter_description(_resolve_param_oids(stmt)))
             self._describe_sql(stmt.sql, result_formats=None)
         else:
             portal = self._portals.get(msg.name)
             if portal is None:
-                await self._send_error(
+                await self._extended_error(
                     code=proto.SQLSTATE_INTERNAL_ERROR,
                     message=f"portal {msg.name!r} does not exist",
                 )
-                self._fail_tx()
                 return
             self._describe_sql(portal.sql, result_formats=portal.result_format_codes)
 
@@ -453,26 +460,28 @@ class PgConnection:
     async def _handle_execute(self, msg: proto.ExecuteMessage) -> None:
         portal = self._portals.get(msg.portal)
         if portal is None:
-            await self._send_error(
+            await self._extended_error(
                 code=proto.SQLSTATE_INTERNAL_ERROR,
                 message=f"portal {msg.portal!r} does not exist",
             )
-            self._fail_tx()
             return
         # Honour the failed-transaction state for the extended path too: only
         # COMMIT / ROLLBACK / END are accepted until the block ends.
         if self._tx_state == proto.TX_FAILED and not self._portal_is_tx_end(portal.sql):
-            await self._send_error(
+            await self._extended_error(
                 code=proto.SQLSTATE_IN_FAILED_SQL_TRANSACTION,
                 message="current transaction is aborted, commands ignored "
                         "until end of transaction block",
             )
             return
-        await self._run_statement(
+        ok = await self._run_statement(
             portal.sql,
             result_formats=portal.result_format_codes,
             send_row_description=False,
         )
+        if not ok:
+            # _run_statement already sent the error; resync until Sync.
+            self._skip_until_sync = True
 
     @staticmethod
     def _portal_is_tx_end(sql: str) -> bool:
@@ -483,7 +492,15 @@ class PgConnection:
         return _is_tx_end(parsed)
 
     async def _handle_sync(self) -> None:
+        self._skip_until_sync = False
         await self._send_ready()
+
+    async def _extended_error(self, *, code: str, message: str) -> None:
+        """Emit an error during an extended-query message and enter
+        skip-until-Sync mode (per the PG extended-protocol error rule)."""
+        await self._send_error(code=code, message=message)
+        self._fail_tx()
+        self._skip_until_sync = True
 
     def _handle_close(self, msg: proto.CloseMessage) -> None:
         if msg.kind == "S":

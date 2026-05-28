@@ -550,6 +550,25 @@ async def test_bind_parameter_count_mismatch_errors() -> None:
     assert _error_sqlstate(err) == proto.SQLSTATE_FEATURE_NOT_SUPPORTED
 
 
+async def test_extended_error_skips_until_sync() -> None:
+    # An error on an Execute must put the connection in skip-until-Sync mode:
+    # a second Execute before Sync is discarded (no second error), and Sync
+    # resynchronises with exactly one ReadyForQuery.
+    inp = (
+        _startup(user="u", database="jaffle")
+        + _execute("ghost")        # unknown portal → error, enter skip mode
+        + _execute("ghost2")       # discarded (no error emitted)
+        + _sync()                  # resync → ReadyForQuery
+        + _terminate()
+    )
+    writer = await _run(inp)
+    msgs = _messages(writer.buffer)
+    errors = [b for t, b in msgs if t == "E"]
+    assert len(errors) == 1  # only the first Execute errored; the second was skipped
+    statuses = _ready_statuses(msgs)
+    assert statuses[-1] == proto.TX_IDLE  # Sync emitted ReadyForQuery
+
+
 async def test_extended_execute_blocked_in_failed_transaction() -> None:
     # After an error inside BEGIN, an extended-protocol SELECT must be blocked
     # with 25P02 until ROLLBACK — not executed.
