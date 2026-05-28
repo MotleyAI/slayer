@@ -5364,18 +5364,6 @@ class SQLGenerator:
                     f"for cross-model aggregate on target "
                     f"{target_model_name!r}."
                 )
-        if is_first_or_last:
-            agg_expr, is_agg = self._build_agg(
-                synth,
-                rn_suffix_map={(time_col_sql, synth.aggregation): ""},
-                default_time_col=time_col_sql,
-            )
-        else:
-            agg_expr, is_agg = self._build_agg(synth)
-        if is_agg:
-            agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
-        cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
-
         # WHERE: target-model-filters (qualified bare-identifier refs
         # so ``deleted_at IS NULL`` becomes ``customers.deleted_at IS
         # NULL`` to match the legacy enrichment's filter-column
@@ -5430,21 +5418,23 @@ class SQLGenerator:
                 exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0]
             )
 
-        # Build the CTE Select. FROM is the target table directly OR a
-        # ROW_NUMBER-ranked subquery over it for first/last aggregates.
-        cte_select = exp.Select()
-        for col in cte_select_columns:
-            cte_select = cte_select.select(col)
+        # FROM: target table directly, OR a ROW_NUMBER-ranked subquery for
+        # first/last. Build the ranked subquery FIRST so its rank-column
+        # maps — including the filtered ``_last_rn_fN`` / ``_match_fN``
+        # columns emitted when the measure's source column carries a
+        # ``Column.filter`` — can be threaded into ``_build_agg``. Without
+        # the filtered maps the agg references a bare ``_last_rn`` the
+        # subquery never projects. WHERE is pushed INSIDE so RN is computed
+        # over the filtered row set; otherwise a filtered-out row could win
+        # ``_last_rn = 1`` and the ``MAX(CASE WHEN _last_rn = 1 ...)``
+        # aggregate would return NULL.
         target_from = self._build_from_clause_from_planned(
             source_model=target_model, source_relation=target_relation,
         )
+        ranked_from: Optional[exp.Expression] = None
         if is_first_or_last:
             assert time_col_sql is not None  # narrowed by the guard above
-            # Push WHERE into the ranked subquery so RN is computed over
-            # the filtered row set — otherwise filtered-out rows can win
-            # ``_last_rn = 1`` / ``_first_rn = 1`` and the CASE-WHEN
-            # aggregate returns NULL.
-            ranked_from, _rn, _filtered_rn, _filtered_match = (
+            ranked_from, rn_suffix_map, filtered_rn_map, filtered_match_map = (
                 self._build_ranked_subquery_from_planned(
                     source_relation=target_relation,
                     default_time_col_sql=time_col_sql,
@@ -5456,6 +5446,26 @@ class SQLGenerator:
                     where_clause=combined_where,
                 )
             )
+            agg_expr, is_agg = self._build_agg(
+                synth,
+                rn_suffix_map=rn_suffix_map,
+                default_time_col=time_col_sql,
+                filtered_rn_map=filtered_rn_map,
+                filtered_match_map=filtered_match_map,
+            )
+        else:
+            agg_expr, is_agg = self._build_agg(synth)
+        if is_agg:
+            agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
+        cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
+
+        # Assemble the CTE Select now that every projected column (shared
+        # grain + aggregate) is in ``cte_select_columns``.
+        cte_select = exp.Select()
+        for col in cte_select_columns:
+            cte_select = cte_select.select(col)
+        if is_first_or_last:
+            assert ranked_from is not None
             cte_select = cte_select.from_(ranked_from)
         else:
             cte_select = cte_select.from_(target_from)

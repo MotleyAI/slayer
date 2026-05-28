@@ -528,3 +528,101 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
     # The newer (999.0) row is deleted; ranking should skip it and surface
     # the older active row's amount (100.0). A NULL here is the regression.
     assert by_region["NA"][last_key] == pytest.approx(100.0), resp.sql
+
+
+async def test_cross_model_last_over_column_filter_uses_filtered_rank() -> None:
+    """Codex round-7 fix — a cross-model ``first``/``last`` over a target
+    column carrying a ``Column.filter`` must use the ranked subquery's
+    dedicated ``_last_rn_fN`` / ``_match_fN`` columns.
+
+    The ranked subquery skips the bare ``_last_rn`` for filtered specs and
+    emits ``_last_rn_f0`` + ``_match_f0`` instead. Before the fix
+    ``_render_cross_model_cte`` built the aggregate with the bare
+    ``_last_rn`` (the filtered maps were discarded), so SQLite tripped on
+    ``no such column: _last_rn``. With the fix the maps are threaded into
+    ``_build_agg`` and ``last`` returns the most-recent ACTIVE row.
+    """
+    d = tempfile.mkdtemp()
+    db_path = os.path.join(d, "t.db")
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute(
+        "CREATE TABLE orders ("
+        "id INTEGER PRIMARY KEY, status TEXT, customer_id INTEGER)"
+    )
+    cur.executemany(
+        "INSERT INTO orders VALUES (?,?,?)",
+        [(1, "paid", 1)],
+    )
+    cur.execute(
+        "CREATE TABLE customers ("
+        "id INTEGER PRIMARY KEY, region TEXT, amount REAL, "
+        "signup_at TEXT, status TEXT)"
+    )
+    cur.executemany(
+        "INSERT INTO customers VALUES (?,?,?,?,?)",
+        [
+            # NA: the newest row (300.0 @ 2023-09-01) is inactive; the
+            # newest ACTIVE row is 100.0 @ 2023-06-01. A Column.filter of
+            # status='active' means last(active_amount) = 100.0.
+            (1, "NA", 100.0, "2023-06-01", "active"),
+            (2, "NA", 200.0, "2023-07-01", "inactive"),
+            (3, "NA", 300.0, "2023-09-01", "inactive"),
+        ],
+    )
+    con.commit()
+    con.close()
+
+    storage = YAMLStorage(base_dir=os.path.join(d, "store"))
+    await storage.save_datasource(
+        DatasourceConfig(name="prod", type="sqlite", database=db_path)
+    )
+    await storage.save_model(SlayerModel(
+        name="customers",
+        sql_table="customers",
+        data_source="prod",
+        default_time_dimension="signup_at",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="region", type=DataType.TEXT),
+            Column(name="amount", type=DataType.DOUBLE),
+            Column(name="signup_at", type=DataType.TIMESTAMP),
+            Column(name="status", type=DataType.TEXT),
+            # Column-level filter: aggregations of active_amount only see
+            # active rows. This sets synth.filter_sql on the cross-model
+            # first/last path.
+            Column(
+                name="active_amount",
+                sql="amount",
+                filter="status = 'active'",
+                type=DataType.DOUBLE,
+            ),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="orders",
+        sql_table="orders",
+        data_source="prod",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="status", type=DataType.TEXT),
+            Column(name="customer_id", type=DataType.INT),
+        ],
+        joins=[ModelJoin(
+            target_model="customers",
+            join_pairs=[["customer_id", "id"]],
+        )],
+    ))
+    engine = SlayerQueryEngine(storage=storage)
+
+    resp = await engine.execute(SlayerQuery(
+        source_model="orders",
+        dimensions=["customers.region"],
+        measures=[{"formula": "customers.active_amount:last"}],
+    ))
+    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    assert set(by_region) == {"NA"}, resp.sql
+    last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
+    # Newest active row is 100.0 (2023-06-01); the newer 200/300 rows are
+    # inactive. The filtered ranking must skip them.
+    assert by_region["NA"][last_key] == pytest.approx(100.0), resp.sql
