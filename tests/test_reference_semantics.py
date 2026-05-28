@@ -14,8 +14,9 @@ Mode B — DSL expression: ModelMeasure.formula, SlayerQuery.{measures,
     ``__`` in user input, and bare names that don't resolve to a Column or
     ModelMeasure on the model (strict resolution at enrichment time).
 
-The internal ``__`` carve-out on ``Column.name`` (used by ``_query_as_model``
-to flatten joined-model columns into virtual-model columns) is preserved.
+The internal ``__`` carve-out on ``Column.name`` (used by the query-backed
+virtual-model expansion to flatten joined-model columns into virtual-model
+columns) is preserved.
 """
 
 import pytest
@@ -23,11 +24,8 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.enrichment import enrich_query
 
-
-async def _noop_async(**_kwargs):  # NOSONAR
-    return None
+from tests._engine_helpers import _engine_generate, _where_text
 
 
 def _make_planets_model(*, with_window_column: bool = False) -> SlayerModel:
@@ -167,17 +165,12 @@ class TestSqlModeRuntime:
             measures=[ModelMeasure(formula="amount:sum")],
         )
         # Bug under DEV-1378: this raised "Unknown filter function
-        # 'json_extract'" at enrichment time. Post-fix, it enriches.
-        enriched = await enrich_query(
-            query=query,
-            model=model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
+        # 'json_extract'" at enrichment time. Post-fix, it renders — the
+        # Mode A model filter survives into the emitted WHERE clause.
+        sql = await _engine_generate(query, model)
+        assert "json_extract" in _where_text(sql).lower(), (
+            f"model filter dropped from WHERE clause:\n{sql}"
         )
-        # The model filter is preserved on the enriched query.
-        filter_sqls = [f.sql for f in enriched.filters]
-        assert any("json_extract" in fs.lower() for fs in filter_sqls)
 
     async def test_column_filter_with_lower_enriches(self) -> None:
         model = SlayerModel(
@@ -199,17 +192,12 @@ class TestSqlModeRuntime:
             source_model="m",
             measures=[ModelMeasure(formula="active_amount:sum")],
         )
-        enriched = await enrich_query(
-            query=query,
-            model=model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-        )
-        # The filter goes onto the measure (CASE WHEN wrapper).
-        amt_measure = next(m for m in enriched.measures if m.alias.endswith("active_amount_sum"))
-        assert amt_measure.filter_sql is not None
-        assert "lower" in amt_measure.filter_sql.lower()
+        sql = await _engine_generate(query, model)
+        # The Column.filter goes onto the measure as a CASE WHEN wrapper
+        # inside the aggregate — the lowercase ``lower(...)`` predicate must
+        # appear within the SUM expression.
+        assert "lower" in sql.lower(), f"column filter dropped:\n{sql}"
+        assert "CASE" in sql.upper(), f"column filter not wrapped in CASE:\n{sql}"
 
     async def test_model_filter_with_double_underscore_join_path_enriches(self) -> None:
         # ``customers__regions.name`` is a ``__``-delimited join path —
@@ -231,16 +219,11 @@ class TestSqlModeRuntime:
         )
         # No real join target on this minimal fixture, so the join
         # walker resolves nothing — we just need the filter parse to
-        # not raise.
-        enriched = await enrich_query(
-            query=query,
-            model=model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
+        # not raise and the ``__``-path to survive into the emitted SQL.
+        sql = await _engine_generate(query, model)
+        assert "customers__regions.name" in sql, (
+            f"__-delimited join path dropped from emitted SQL:\n{sql}"
         )
-        filter_sqls = [f.sql for f in enriched.filters]
-        assert any("customers__regions.name" in fs for fs in filter_sqls)
 
 
 class TestSqlModeRejection:
@@ -392,19 +375,13 @@ class TestDslModeRejection:
             filters=["json_extract(data, '$.x') > 5"],
         )
         with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
-            await enrich_query(
-                query=query,
-                model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
+            await _engine_generate(query, model)
 
     async def test_query_filter_rejects_unknown_double_underscore_at_enrichment(self) -> None:
         """``customers__region`` is a typo (no virtual column with that name on
-        the source model). Strict resolution at enrichment catches it. Note:
+        the source model). Strict resolution at bind time catches it. Note:
         ``__`` is NOT rejected at construction because virtual-model columns
-        produced by ``_query_as_model`` legitimately contain ``__`` in their
+        produced by query-backed expansion legitimately contain ``__`` in their
         names (e.g. ``kpis__total_amount_sum``)."""
         model = SlayerModel(
             name="orders",
@@ -418,13 +395,7 @@ class TestDslModeRejection:
             filters=["customers__region = 'EU'"],
         )
         with pytest.raises(Exception, match="(?i)customers__region|unknown|not a Column"):
-            await enrich_query(
-                query=query,
-                model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
+            await _engine_generate(query, model)
 
     def test_query_filter_rejects_raw_over(self) -> None:
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
@@ -451,13 +422,7 @@ class TestDslModeRejection:
             dimensions=["id"],
         )
         with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
-            await enrich_query(
-                query=query,
-                model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
+            await _engine_generate(query, model)
 
 
 # ---------------------------------------------------------------------------
@@ -483,13 +448,7 @@ class TestStrictResolution:
             filters=["unknown_col > 0"],
         )
         with pytest.raises(Exception, match="(?i)unknown_col|not.*column.*measure|undefined|unknown"):
-            await enrich_query(
-                query=query,
-                model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
+            await _engine_generate(query, model)
 
     async def test_unknown_canonical_agg_shaped_typo_raises_at_enrichment(self) -> None:
         """Regression for round-2 review: a name that *looks* like a canonical
@@ -510,13 +469,7 @@ class TestStrictResolution:
                 filters=[f"{typo} > 0"],
             )
             with pytest.raises(Exception, match=f"(?i){typo}|unknown|not a Column"):
-                await enrich_query(
-                    query=query,
-                    model=model,
-                    resolve_dimension_via_joins=_noop_async,
-                    resolve_cross_model_measure=_noop_async,
-                    resolve_join_target=_noop_async,
-                )
+                await _engine_generate(query, model)
 
     async def test_filter_referencing_unjoined_model_raises(self) -> None:
         """DEV-1367: a filter like ``transportation_assets.total_vehicles >= 3``
@@ -542,81 +495,18 @@ class TestStrictResolution:
         )
         with pytest.raises(
             ValueError,
-            match=r"transportation_assets.*not in joins",
+            match=r"no join to 'transportation_assets'|Cannot resolve reference 'transportation_assets",
         ):
-            await enrich_query(
-                query=query,
-                model=households,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
+            await _engine_generate(query, households)
 
-    async def test_filter_referencing_unjoined_model_dropped_when_lenient(self) -> None:
-        """The cross-model-measure rerooting path inherits the outer query's
-        filter list and asks the resolver to drop entries unreachable from
-        the rerooted source via ``drop_unreachable_filters=True``. With that
-        flag, the same unresolved-dotted-path that would raise on the outer
-        path becomes a silent drop — the filter is excluded from the
-        resulting ``EnrichedQuery.filters``.
-        """
-        households = SlayerModel(
-            name="households",
-            sql_table="households",
-            data_source="test",
-            columns=[
-                Column(name="housenum", sql="housenum", type=DataType.INT, primary_key=True),
-            ],
-        )
-        query = SlayerQuery(
-            source_model="households",
-            dimensions=["housenum"],
-            filters=["transportation_assets.total_vehicles >= 3"],
-        )
-        enriched = await enrich_query(
-            query=query,
-            model=households,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-            drop_unreachable_filters=True,
-        )
-        # The unreachable filter is dropped, not left in the SQL.
-        assert all(
-            "transportation_assets" not in f.sql for f in enriched.filters
-        ), f"Expected the unreachable filter to be dropped; got {[f.sql for f in enriched.filters]}"
-
-    async def test_unknown_bare_name_dropped_when_lenient(self) -> None:
-        """Same drop-vs-raise behavior for bare names — an inherited filter
-        ``profit_margin > 0`` against a rerooted source that doesn't define
-        ``profit_margin`` would have silently emitted a raw column reference
-        before this fix; with strict-mode kept on (and ``drop_if_unresolved``
-        controlling raise-vs-drop), the filter is dropped instead.
-        """
-        households = SlayerModel(
-            name="households",
-            sql_table="households",
-            data_source="test",
-            columns=[
-                Column(name="housenum", sql="housenum", type=DataType.INT, primary_key=True),
-            ],
-        )
-        query = SlayerQuery(
-            source_model="households",
-            dimensions=["housenum"],
-            filters=["profit_margin > 0"],
-        )
-        enriched = await enrich_query(
-            query=query,
-            model=households,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-            drop_unreachable_filters=True,
-        )
-        assert all(
-            "profit_margin" not in f.sql for f in enriched.filters
-        ), f"Expected the unresolved bare-name filter to be dropped; got {[f.sql for f in enriched.filters]}"
+    # NOTE (DEV-1484 Stage C): the two former lenient-drop tests
+    # (``test_filter_referencing_unjoined_model_dropped_when_lenient`` and
+    # ``test_unknown_bare_name_dropped_when_lenient``) poked the legacy
+    # ``enrich_query(drop_unreachable_filters=True)`` internal flag, which
+    # has no public surface on the typed pipeline. The equivalent
+    # lenient-drop now lives in ``cross_model_planner`` and is covered by
+    # ``tests/test_cross_model_planner.py::TestReachability::
+    # test_unreachable_branch_drops_and_warns`` and ``test_classify_unreachable``.
 
     async def test_known_filter_name_passes(self) -> None:
         """Control: a filter naming a defined Column enriches without error."""
@@ -635,13 +525,7 @@ class TestStrictResolution:
             filters=["status = 'active'"],
         )
         # Should not raise.
-        await enrich_query(
-            query=query,
-            model=model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-        )
+        await _engine_generate(query, model)
 
 
 # ---------------------------------------------------------------------------
@@ -663,13 +547,7 @@ class TestPredicatePromotionRemoved:
             filters=["rn <= 3"],
         )
         with pytest.raises(Exception) as excinfo:
-            await enrich_query(
-                query=query,
-                model=model,
-                resolve_dimension_via_joins=_noop_async,
-                resolve_cross_model_measure=_noop_async,
-                resolve_join_target=_noop_async,
-            )
+            await _engine_generate(query, model)
         msg = str(excinfo.value).lower()
         assert "window function" in msg or "rank" in msg, (
             f"Expected message to mention 'window function' and/or 'rank' "
@@ -684,14 +562,8 @@ class TestPredicatePromotionRemoved:
             source_model="planets",
             dimensions=["name", "rn"],
         )
-        # Should enrich without error; only filter use is restricted.
-        await enrich_query(
-            query=query,
-            model=model,
-            resolve_dimension_via_joins=_noop_async,
-            resolve_cross_model_measure=_noop_async,
-            resolve_join_target=_noop_async,
-        )
+        # Should render without error; only filter use is restricted.
+        await _engine_generate(query, model)
 
 
 # ---------------------------------------------------------------------------
@@ -700,11 +572,11 @@ class TestPredicatePromotionRemoved:
 
 
 class TestVirtualModelColumnCarveOut:
-    """`_query_as_model` flattens joined-model columns into virtual-model
-    column names like `stores__name`. The Column-level validator must keep
-    accepting `__` so that path keeps working. The user-input dunder check
-    fires at SlayerQuery / ModelMeasure construction, not at Column
-    construction (which is also used internally).
+    """Query-backed virtual-model expansion flattens joined-model columns
+    into virtual-model column names like `stores__name`. The Column-level
+    validator must keep accepting `__` so that path keeps working. The
+    user-input dunder check fires at SlayerQuery / ModelMeasure
+    construction, not at Column construction (which is also used internally).
     """
 
     def test_column_with_double_underscore_name_accepted(self) -> None:

@@ -35,6 +35,7 @@ from slayer.engine.syntax import (
     TransformCall,
     UnaryOp,
     parse_expr,
+    parse_filter_expr,
 )
 
 
@@ -170,6 +171,22 @@ class TestTransforms:
         assert isinstance(result, TransformCall)
         assert result.op == "ntile"
         assert result.kwargs == (("n", Literal(value=Decimal(4))),)
+
+    def test_first_transform(self):
+        # DEV-1484 backfill from test_formula.py::TestFirstTransform —
+        # ``first(...)`` is the FIRST_VALUE window transform (distinct from
+        # the ``:first`` aggregation), parsed as a TransformCall.
+        result = parse_expr("first(revenue:sum)")
+        assert isinstance(result, TransformCall)
+        assert result.op == "first"
+        assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
+
+    def test_last_transform(self):
+        # DEV-1484 backfill from test_formula.py::TestFirstTransform.
+        result = parse_expr("last(revenue:sum)")
+        assert isinstance(result, TransformCall)
+        assert result.op == "last"
+        assert result.input == AggCall(source=Ref(name="revenue"), agg="sum")
 
 
 # ---------------------------------------------------------------------------
@@ -438,3 +455,45 @@ class TestCombinations:
         assert result.op == ">"
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "change"
+
+
+# ---------------------------------------------------------------------------
+# Filter-operator normalization (parse_filter_expr)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterOperatorNormalization:
+    """``parse_filter_expr`` accepts SQL operator spellings (``=`` for
+    equality, ``AND`` / ``IS`` / ``NULL`` ...) on top of the Python DSL."""
+
+    def test_sql_equality_normalised(self):
+        result = parse_filter_expr("status = 'paid'")
+        assert isinstance(result, Cmp)
+        assert result.op == "=="
+        assert result.right == Literal(value="paid")
+
+    def test_transform_no_kwargs_in_filter(self):
+        # The no-kwargs top-N form is unaffected by the operator rewrite.
+        result = parse_filter_expr("dense_rank(revenue:sum) <= 5")
+        assert isinstance(result, Cmp)
+        assert isinstance(result.left, TransformCall)
+        assert result.left.op == "dense_rank"
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "DEV-1492: parse_filter_expr's SQL '='->'==' rewrite mangles a "
+            "transform kwarg inside call parens (n=4 -> n==4), so the kwarg "
+            "lands as a positional Cmp arg instead of kwargs. Auto-promotes "
+            "to PASS when DEV-1492 is fixed."
+        ),
+    )
+    def test_transform_kwarg_preserved_in_filter(self):
+        # ntile(revenue:sum, n=4) <= 1 — the n=4 kwarg must survive the
+        # filter operator-normalization, not be rewritten to ``n == 4``.
+        result = parse_filter_expr("ntile(revenue:sum, n=4) <= 1")
+        assert isinstance(result, Cmp)
+        assert isinstance(result.left, TransformCall)
+        assert result.left.op == "ntile"
+        assert result.left.args == ()
+        assert result.left.kwargs == (("n", Literal(value=Decimal(4))),)

@@ -23,6 +23,7 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
     StarKey,
+    TransformKey,
 )
 from slayer.engine.planning import ValueRegistry
 
@@ -254,3 +255,89 @@ class TestLiterals:
             phase=Phase.ROW,
         )
         assert a == b
+
+
+# ---------------------------------------------------------------------------
+# Parameterized / cross-model key interning (DEV-1484 backfill from the
+# deleted ``test_projection_trim.py::TestCanonicalExpressionKey``).
+# ---------------------------------------------------------------------------
+
+
+class TestParameterizedKeyInterning:
+    def test_cross_model_aggregate_key_different_from_local(self):
+        """``customers.revenue:sum`` and local ``revenue:sum`` intern to
+        different slots — the join path is part of the structural key."""
+        r = ValueRegistry()
+        local = r.intern(
+            key=AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum"),
+            declared_name="revenue_sum",
+            phase=Phase.AGGREGATE,
+        )
+        cross = r.intern(
+            key=AggregateKey(
+                source=ColumnKey(path=("customers",), leaf="revenue"), agg="sum",
+            ),
+            declared_name="cust_rev",
+            phase=Phase.AGGREGATE,
+        )
+        assert local != cross
+        assert len(r.slots) == 2
+
+    def test_ntile_kwargs_with_different_n_intern_separately(self):
+        """``ntile(x:sum, n=3)`` and ``ntile(x:sum, n=4)`` intern to
+        different slots."""
+        r = ValueRegistry()
+        agg = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
+        t3 = r.intern(
+            key=TransformKey(op="ntile", input=agg, kwargs=(("n", Decimal(3)),)),
+            declared_name="r_ntile3",
+            phase=Phase.POST,
+        )
+        t4 = r.intern(
+            key=TransformKey(op="ntile", input=agg, kwargs=(("n", Decimal(4)),)),
+            declared_name="r_ntile4",
+            phase=Phase.POST,
+        )
+        assert t3 != t4
+
+    def test_transform_kwargs_order_independent(self):
+        """``TransformKey.kwargs`` is canonicalised to sorted order by the
+        ``@field_validator``, so the same kwargs in different input order
+        intern to one slot. Uses the real ``time_shift`` op, which accepts
+        both ``granularity`` and ``periods``.
+        """
+        r = ValueRegistry()
+        agg = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
+        ta = r.intern(
+            key=TransformKey(
+                op="time_shift", input=agg,
+                kwargs=(("granularity", "day"), ("periods", Decimal(1))),
+            ),
+            declared_name="ts_a",
+            phase=Phase.POST,
+        )
+        tb = r.intern(
+            key=TransformKey(
+                op="time_shift", input=agg,
+                kwargs=(("periods", Decimal(1)), ("granularity", "day")),
+            ),
+            declared_name="ts_b",
+            phase=Phase.POST,
+        )
+        assert ta == tb
+        assert len(r.slots) == 1
+
+    def test_parameterized_transform_stable_across_repeated_intern(self):
+        """5 repeated intern calls of the same ``TransformKey`` return the
+        same slot id."""
+        r = ValueRegistry()
+        agg = AggregateKey(source=ColumnKey(path=(), leaf="revenue"), agg="sum")
+        ids = {
+            r.intern(
+                key=TransformKey(op="ntile", input=agg, kwargs=(("n", Decimal(3)),)),
+                declared_name="r_ntile",
+                phase=Phase.POST,
+            )
+            for _ in range(5)
+        }
+        assert len(ids) == 1
