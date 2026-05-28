@@ -8,7 +8,7 @@ The original cross-model branch in ``slayer/engine/enrichment.py`` called
 ``CrossModelMeasure.alias`` kept the canonical
 ``<query_model>.<hop_path>.<col>_<agg>`` form. Result: the top-level result
 column key surfaced as the canonical form, and the downstream-stage virtual
-model (built by ``_query_as_model`` via ``_alias_to_short(cm.alias)``)
+model (built by ``the legacy query-backed wrap`` via ``_alias_to_short(cm.alias)``)
 exposed the column as ``<hop_path>__<col>_<agg>`` — so a downstream
 ``x:max`` reference failed with ``Column 'x' not found``.
 
@@ -20,7 +20,7 @@ shape every other multi-hop caller-facing key uses). So
 ``orders.customers.cust_rev`` (one-hop) and
 ``customers.regions.population:sum`` with ``name="region_pop"`` as
 ``orders.customers.regions.region_pop`` (multi-hop). For the downstream-
-stage virtual model column, a special-case in ``_query_as_model``'s cross-
+stage virtual model column, a special-case in ``the legacy query-backed wrap``'s cross-
 model loop short-circuits the ``_alias_to_short`` ``__``-flattening when
 ``cm.name`` is a bare identifier — so stage 2's ``cust_rev:max`` resolves
 against the bare user name rather than a flattened encoding.
@@ -182,7 +182,7 @@ class TestCrossModelRenameSingleStage:
             f"name; got {cm.alias!r}"
         )
         # cm.name is the bare user identifier (used as the downstream
-        # short form via the special-case in _query_as_model).
+        # short form via the special-case in the legacy query-backed wrap).
         assert cm.name == "cust_rev", (
             f"cross-model name must be the bare user identifier; got "
             f"{cm.name!r}"
@@ -192,15 +192,15 @@ class TestCrossModelRenameSingleStage:
             f"cm.user_declared must remain True after rename; got "
             f"{cm.user_declared!r}"
         )
-        # Inner EnrichedMeasure stays canonical — the CTE aggregate
+        # Inner legacy enriched-measure stays canonical — the CTE aggregate
         # expression / format-inference / column-introspection paths
         # depend on the canonical name. Only the OUTER alias is renamed.
         assert cm.measure.name == "revenue_sum", (
-            f"inner EnrichedMeasure.name must stay canonical; got "
+            f"inner legacy enriched-measure.name must stay canonical; got "
             f"{cm.measure.name!r}"
         )
         assert cm.measure.alias == "customers.revenue_sum", (
-            f"inner EnrichedMeasure.alias must stay canonical; got "
+            f"inner legacy enriched-measure.alias must stay canonical; got "
             f"{cm.measure.alias!r}"
         )
 
@@ -334,7 +334,7 @@ class TestCrossModelRenameNestedDAG:
         """Codex review round 3 on PR #136: hidden cross-model measures
         auto-extracted from arithmetic / transform formulas (in
         ``_ensure_measure_from_spec`` / ``_flatten_spec``) must keep
-        ``user_declared=False``. The ``_query_as_model`` cross-model
+        ``user_declared=False``. The ``the legacy query-backed wrap`` cross-model
         short-circuit (which uses bare ``cm.name`` as the downstream
         short) is gated on ``cm.user_declared`` — without that gate, a
         hidden measure's internal placeholder name (e.g. ``__agg0__``)
@@ -364,7 +364,7 @@ class TestCrossModelRenameNestedDAG:
             assert cm.user_declared is False, (
                 f"hidden cross-model measure must remain user_declared=False; "
                 f"got {cm.name!r} user_declared={cm.user_declared!r}. "
-                f"_query_as_model's bare-name short-circuit relies on this "
+                f"the legacy query-backed wrap's bare-name short-circuit relies on this "
                 f"flag to discriminate user-renamed measures from hidden "
                 f"internal placeholders."
             )
@@ -613,7 +613,7 @@ class TestCrossModelRenameCollisionGuards:
         model column for nested-DAG stages) collides with a dim's
         ``__``-flattened short — even though the PUBLIC aliases
         differ — would silently emit two columns with the same alias in
-        the wrapper that ``_query_as_model`` builds.
+        the wrapper that ``the legacy query-backed wrap`` builds.
 
         Setup:
         * dimension ``customers.region_id`` → public alias
@@ -669,7 +669,7 @@ class TestCrossModelRenameCollisionGuards:
         self, orders_customers_engine,
     ) -> None:
         """Codex review round 6 on PR #136: the pre-pass skipped non-
-        ``AggregatedMeasureRef`` query measures, so a renamed cross-
+        ``legacy aggregated-measure node`` query measures, so a renamed cross-
         model measure could collide with an arithmetic / transform
         measure's downstream short name.
 
@@ -677,12 +677,12 @@ class TestCrossModelRenameCollisionGuards:
         * arithmetic measure ``revenue:sum / 100`` (no name) — the
           formula's mangled ``field_name`` is ``"revenue_sum__div__100"``
           (the enrichment loop's mangling: ``" "`` → ``"_"`` then
-          ``"/"`` → ``"_div_"`` then ``":"`` → ``"_"``). ``_query_as_model``
+          ``"/"`` → ``"_div_"`` then ``":"`` → ``"_"``). ``the legacy query-backed wrap``
           emits this as a virtual-model column under ``e.name`` →
           ``revenue_sum__div__100``.
         * cross-model rename ``{"formula": "customers.revenue:sum",
           "name": "revenue_sum__div__100"}`` — user_declared, ``cm.name``
-          is bare so the gated short-circuit in ``_query_as_model``
+          is bare so the gated short-circuit in ``the legacy query-backed wrap``
           uses it directly → ``revenue_sum__div__100``.
 
         Both produce the same virtual-model column name. Downstream
@@ -834,7 +834,7 @@ class TestCrossModelRenameLabelAndType:
         enriched = await engine._enrich(query=query, model=orders)
         cm = enriched.cross_model_measures[0]
         # Enrichment-level pin: the declared type lands on the inner
-        # EnrichedMeasure even with the rename applied to the outer
+        # legacy enriched-measure even with the rename applied to the outer
         # ``cm.alias``/``cm.name``.
         assert cm.measure.type == DataType.INT, (
             f"declared type=INT must propagate to cm.measure.type after "

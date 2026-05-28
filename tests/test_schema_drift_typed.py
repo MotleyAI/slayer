@@ -2,7 +2,7 @@
 Mode-B parser.
 
 Pins the migration of ``slayer/engine/schema_drift.py`` off the legacy
-``parse_formula`` / ``MixedArithmeticField`` FieldSpec walk and onto
+``the legacy formula parser`` / ``legacy mixed-arithmetic node`` field-spec union walk and onto
 ``parse_expr`` + ``walk_parsed_refs`` (the new scope-free typed parser).
 
 ``_measure_formula_refs(formula)`` stays a *best-effort textual* extractor:

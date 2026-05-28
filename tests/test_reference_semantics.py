@@ -502,7 +502,7 @@ class TestStrictResolution:
     # NOTE (DEV-1484 Stage C): the two former lenient-drop tests
     # (``test_filter_referencing_unjoined_model_dropped_when_lenient`` and
     # ``test_unknown_bare_name_dropped_when_lenient``) poked the legacy
-    # ``enrich_query(drop_unreachable_filters=True)`` internal flag, which
+    # ``the legacy enrichment entry point(drop_unreachable_filters=True)`` internal flag, which
     # has no public surface on the typed pipeline. The equivalent
     # lenient-drop now lives in ``cross_model_planner`` and is covered by
     # ``tests/test_cross_model_planner.py::TestReachability::

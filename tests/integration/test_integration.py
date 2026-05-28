@@ -1354,7 +1354,7 @@ async def test_transform_on_cross_model(cross_model_env):
 # Query as model (multistage queries)
 # ---------------------------------------------------------------------------
 
-async def test_query_as_model_count(integration_env):
+async def test_query_backed_model_count(integration_env):
     """A named query can be used as the model for another query via list."""
     engine = integration_env
 
@@ -1376,7 +1376,7 @@ async def test_query_as_model_count(integration_env):
     assert response.data[0]["monthly._count"] == 3
 
 
-async def test_query_as_model_aggregate(integration_env):
+async def test_query_backed_model_aggregate(integration_env):
     """Outer query can aggregate over inner query's computed values."""
     engine = integration_env
 
@@ -1483,7 +1483,7 @@ async def test_sibling_stage_joins_dag(cross_model_env):
     population.
 
     Pre-fix this raises ``ValueError: Model 'kpis' not found`` at
-    enrichment time because ``_query_as_model`` dropped the named_queries
+    enrichment time because ``the legacy query-backed wrap`` dropped the named_queries
     dict when enriching a non-final stage.
     """
     from slayer.core.query import ModelExtension

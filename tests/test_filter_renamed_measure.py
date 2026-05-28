@@ -12,7 +12,7 @@ execution. Expected: filter resolves to the user alias and surfaces as
 Companion tickets surfaced during spec'ing:
 * DEV-1445 — cross-model agg refs in filters with rename (deferred scope).
 * DEV-1446 — transform-wrapped agg refs of a renamed measure produce a
-  duplicate ``EnrichedMeasure`` (pre-existing dedup bug).
+  duplicate ``legacy enriched-measure`` (pre-existing dedup bug).
 """
 
 import pytest
@@ -265,7 +265,7 @@ class TestRemapEdgeCases:
             ("amount:sum", "profit:avg"),
             # Two arithmetic / non-aggregate measures — CodeRabbit + Codex
             # round 4: the duplicate-name check must cover all measure
-            # kinds, not just the local AggregatedMeasureRef rename branch.
+            # kinds, not just the local legacy aggregated-measure node rename branch.
             ("amount:sum / 100", "profit:avg * 2"),
         ],
         ids=["plain_agg", "arithmetic"],

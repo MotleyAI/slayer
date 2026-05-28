@@ -1,7 +1,7 @@
 """DEV-1452 Stage A — AggRenderSpec + ``_build_agg_render_spec_from_planned``.
 
 Decouples ``slayer/sql/generator.py``'s dialect helpers from the legacy
-``EnrichedMeasure``. The new ``AggRenderSpec`` is the frozen Pydantic record
+``legacy enriched-measure``. The new ``AggRenderSpec`` is the frozen Pydantic record
 that ``_build_agg`` / ``_build_formula_agg`` / ``_build_percentile`` /
 ``_build_stat_agg`` / ``_resolve_value_sql`` / ``_resolve_agg_param`` /
 ``_wrap_cast_for_type`` consume.

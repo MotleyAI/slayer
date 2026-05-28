@@ -1,6 +1,6 @@
 """Named-measure expansion eligibility (typed pipeline).
 
-DEV-1484 Stage C backfill: the legacy ``parse_formula(..., named_measures=)``
+DEV-1484 Stage C backfill: the legacy ``the legacy formula parser(..., named_measures=)``
 expander had "don't over-substitute" rules pinned by
 ``test_formula.py::TestNamedMeasureExpansion``. The typed equivalent is
 ``slayer.engine.measure_expansion.expand_model_measures``, which rewrites a

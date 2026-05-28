@@ -876,8 +876,8 @@ class TestProvenance:
     trimmed OUTER projection: a declared dim/measure/transform/expression
     surfaces in the outermost SELECT, while auto-extracted hidden entries
     (order-by aggregates, filter-transform inner args) are trimmed out. The
-    legacy ``user_declared`` flag / ``public_projection_aliases`` helper /
-    ``EnrichedQuery.user_projection`` field are gone; the contract they
+    legacy ``user_declared`` flag / ``the legacy public-projection helper`` helper /
+    ``legacy enriched-query.user_projection`` field are gone; the contract they
     pinned is asserted here directly on the emitted SQL.
     """
 

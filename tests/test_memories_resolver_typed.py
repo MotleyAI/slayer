@@ -1,7 +1,7 @@
 """DEV-1450 stage 7b.14 — memory entity-extraction via the typed Mode-B parser.
 
 Pins the migration of ``slayer/memories/resolver.py`` off the legacy
-``parse_formula`` / ``MixedArithmeticField`` FieldSpec walk and onto
+``the legacy formula parser`` / ``legacy mixed-arithmetic node`` field-spec union walk and onto
 ``parse_expr`` + ``walk_parsed_refs``.
 
 ``_formula_entity_tokens(parsed)`` yields the entity *tokens* a measure
