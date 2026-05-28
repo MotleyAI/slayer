@@ -1417,39 +1417,36 @@ class TestWindowChainReuse:
 # Test 17 (revised), 38, 39, 40, 41 — call-site / contract pins.
 # ===========================================================================
 class TestCallSitesAndContractPins:
-    async def test_get_column_types_uses_outer_render_mode(
+    async def test_get_column_types_does_not_call_legacy_generate(
         self, orders_model: SlayerModel, tmp_path, monkeypatch,
     ) -> None:
-        """``get_column_types`` (query_engine.py:923) must drive the generator
-        in ``outer`` mode. Spy on ``SQLGenerator.generate`` and assert it
-        was called with ``render_mode='outer'``."""
+        """DEV-1452 Stage B — ``get_column_types`` no longer routes through
+        ``SQLGenerator.generate(enriched=...)``. Spy on the legacy entry
+        point; assert it's never invoked. (Pre-Stage-B this test pinned
+        ``render_mode='outer'`` on that call; the typed-pipeline migration
+        deletes the legacy path entirely, so the equivalent contract is
+        "zero legacy generate calls".)
+        """
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
         await storage.save_model(orders_model)
         engine = SlayerQueryEngine(storage=storage)
 
-        # Spy on the generate calls to capture the render_mode used by
-        # get_column_types. We replace the bound method on the class with
-        # a wrapper that records the kwargs.
-        captured: List[dict] = []
+        legacy_calls: List[dict] = []
         original_generate = SQLGenerator.generate
 
         def _wrapper(self, *args, **kwargs):
-            captured.append(dict(kwargs))
+            if "enriched" in kwargs:
+                legacy_calls.append(dict(kwargs))
             return original_generate(self, *args, **kwargs)
 
         monkeypatch.setattr(SQLGenerator, "generate", _wrapper)
 
         await engine.get_column_types(model_name="orders")
 
-        # Must have been called at least once, and at least one of those
-        # calls must explicitly use render_mode="outer". (The probe path
-        # may or may not loop; either way the contract is pinned.)
-        assert captured, "SQLGenerator.generate was not called by get_column_types"
-        outer_calls = [c for c in captured if c.get("render_mode") == "outer"]
-        assert outer_calls, (
-            f"get_column_types must call SQLGenerator.generate with "
-            f"render_mode='outer'. Captured kwargs: {captured}"
+        assert not legacy_calls, (
+            f"get_column_types must NOT call legacy "
+            f"SQLGenerator.generate(enriched=...); captured: {legacy_calls}"
         )
 
     async def test_outer_wrapper_owns_order_limit_offset(

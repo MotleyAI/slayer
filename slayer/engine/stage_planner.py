@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
+from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
 from slayer.core.errors import (
     AmbiguousReferenceError,
     UnknownReferenceError,
@@ -65,6 +67,7 @@ from slayer.engine.cross_model_planner import (
     IsolatedCteCrossModelPlanner,
 )
 from slayer.engine.measure_expansion import expand_model_measures
+from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.engine.planned import (
     BoundExpr as PlannedBoundExpr,
     FilterPhase,
@@ -426,6 +429,9 @@ def plan_query(
                 public_name=dm.public_name,
                 label=dm.label,
                 canonical_alias=dm.canonical_alias,
+                type=dm.type,
+                format=dm.format,
+                description=dm.description,
             )
             for dm in declared_measures
         ]
@@ -487,6 +493,9 @@ def plan_query(
             public_name=dm.public_name,
             label=dm.label,
             canonical_alias=dm.canonical_alias,
+            type=dm.type,
+            format=dm.format,
+            description=dm.description,
         )
         for dm in declared_measures
     ]
@@ -780,6 +789,226 @@ def plan_stages(
 # ---------------------------------------------------------------------------
 
 
+def _format_description_for_dimension(
+    *, scope: Union[ModelScope, StageSchema], full_name: str,
+) -> Tuple[Optional[NumberFormat], Optional[str]]:
+    """Lift ``format`` / ``description`` for a plain dimension off the
+    source ``Column``. Returns ``(None, None)`` when the ref can't be
+    resolved (joined / time-truncated / stage-scoped refs) — those
+    paths surface their metadata through ``response_meta`` instead.
+
+    DEV-1452 Stage B decision #8 — the planner threads these into the
+    public slot so the migrated query-backed virtual model carries the
+    same display contract the legacy enrichment pipeline did.
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None, None
+    if "." in full_name:
+        return None, None
+    col = scope.source_model.get_column(full_name)
+    if col is None:
+        return None, None
+    return col.format, col.description
+
+
+_COUNT_AGGREGATIONS: FrozenSet[str] = frozenset({"count", "count_distinct"})
+_FLOAT_AGGREGATIONS: FrozenSet[str] = frozenset({
+    "avg", "weighted_avg", "median",
+    "stddev_samp", "stddev_pop", "var_samp", "var_pop",
+    "corr", "covar_samp", "covar_pop", "percentile",
+})
+
+
+def _infer_aggregated_type(
+    *,
+    model: SlayerModel,
+    measure_name: Optional[str],
+    aggregation: str,
+) -> Optional[DataType]:
+    """Type for an aggregated measure slot. Mirrors
+    ``_infer_aggregated_format`` (decision #2 of the Stage B plan):
+
+    * ``*:count`` (measure_name=``"*"``) → ``INT``
+    * ``count`` / ``count_distinct`` → ``INT``
+    * ``avg`` / ``weighted_avg`` / ``median`` / parametric / stat aggs →
+      ``DOUBLE``
+    * ``sum`` / ``min`` / ``max`` / ``first`` / ``last`` → inherit from
+      source column type (DOUBLE if absent).
+    """
+    if measure_name == "*":
+        return DataType.INT
+    if aggregation in _COUNT_AGGREGATIONS:
+        return DataType.INT
+    if aggregation in _FLOAT_AGGREGATIONS:
+        return DataType.DOUBLE
+    # sum / min / max / first / last — preserve source column type.
+    if measure_name is None:
+        return None
+    col = model.get_column(measure_name)
+    if col is not None and col.type is not None:
+        return col.type
+    return None
+
+
+def _format_description_for_measure_formula(
+    *, scope: Union[ModelScope, StageSchema], bound,
+) -> Tuple[Optional[NumberFormat], Optional[str]]:
+    """Lift ``format`` / ``description`` for a measure formula. The
+    aggregation-aware format comes from ``_infer_aggregated_format`` when
+    the bound expression is a bare local aggregate; description follows
+    the source ``Column`` (sum / min / max preserve documentation).
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None, None
+    if not isinstance(bound.value_key, AggregateKey):
+        return None, None
+    src = bound.value_key.source
+    if isinstance(src, StarKey):
+        # ``*:count`` — INTEGER format inferred by helper; no description.
+        return (
+            _infer_aggregated_format(
+                model=scope.source_model,
+                measure_name="*",
+                aggregation=bound.value_key.agg,
+            ),
+            None,
+        )
+    if not isinstance(src, (ColumnKey, ColumnSqlKey)):
+        return None, None
+    if getattr(src, "path", ()):  # cross-model — handled by response_meta
+        return None, None
+    bare = getattr(src, "leaf", None) or getattr(src, "column_name", None)
+    if bare is None:
+        return None, None
+    fmt = _infer_aggregated_format(
+        model=scope.source_model,
+        measure_name=bare,
+        aggregation=bound.value_key.agg,
+    )
+    col = scope.source_model.get_column(bare)
+    desc = col.description if col is not None else None
+    return fmt, desc
+
+
+def _type_for_measure_formula(
+    *, scope: Union[ModelScope, StageSchema], bound,
+) -> Optional[DataType]:
+    """Lift ``type`` for a measure-formula slot.
+
+    Mirrors ``_format_description_for_measure_formula`` — sources the
+    type from ``_infer_aggregated_type`` for local aggregates so the
+    migrated query-backed virtual model carries ``*:count → INT``,
+    ``avg → DOUBLE``, ``sum → source column type``. Declared
+    ``ModelMeasure.type`` overrides — that flow runs through
+    ``expand_model_measures`` so the bound key already carries the
+    declared type via the source column lookup.
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    if not isinstance(bound.value_key, AggregateKey):
+        return None
+    src = bound.value_key.source
+    if isinstance(src, StarKey):
+        return _infer_aggregated_type(
+            model=scope.source_model,
+            measure_name="*",
+            aggregation=bound.value_key.agg,
+        )
+    if not isinstance(src, (ColumnKey, ColumnSqlKey)):
+        return None
+    if getattr(src, "path", ()):  # cross-model — handled elsewhere
+        return None
+    bare = getattr(src, "leaf", None) or getattr(src, "column_name", None)
+    if bare is None:
+        return None
+    return _infer_aggregated_type(
+        model=scope.source_model,
+        measure_name=bare,
+        aggregation=bound.value_key.agg,
+    )
+
+
+def _joined_column_type(
+    *, source_model: SlayerModel, full_name: str, bundle: ResolvedSourceBundle,
+) -> Optional[DataType]:
+    """Best-effort type of a dotted (joined) dimension by walking the join
+    chain — mirrors ``binding._resolve_dotted`` (``parts[:-1]`` are join
+    hops matched on ``target_model``, ``parts[-1]`` is the leaf column),
+    but returns ``None`` on any miss instead of raising. The binder has
+    already validated the ref, so this is a guard rather than a primary
+    check.
+    """
+    parts = full_name.split(".")
+    if parts and parts[0] == source_model.name:  # C14 self-prefix strip
+        parts = parts[1:]
+    if not parts:
+        return None
+    *hops, leaf = parts
+    current = source_model
+    visited = {current.name}
+    for hop in hops:
+        if not any(j.target_model == hop for j in current.joins):
+            return None
+        nxt = bundle.get_referenced_model(hop)
+        if nxt is None or nxt.name in visited:
+            return None
+        visited.add(nxt.name)
+        current = nxt
+    col = current.get_column(leaf)
+    return col.type if col is not None else None
+
+
+def _type_for_dimension(
+    *,
+    scope: Union[ModelScope, StageSchema],
+    full_name: str,
+    bundle: ResolvedSourceBundle,
+) -> Optional[DataType]:
+    """Lift ``type`` for a dimension. Local refs read the source column;
+    joined (dotted) refs walk the join chain to the terminal column's
+    type. Returning ``None`` for joined refs (the old behaviour) made
+    ``_query_as_model`` coerce them to ``DOUBLE``, mistyping joined
+    string / temporal dimensions on the persisted virtual model.
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    if "." in full_name:
+        return _joined_column_type(
+            source_model=scope.source_model, full_name=full_name, bundle=bundle,
+        )
+    col = scope.source_model.get_column(full_name)
+    return col.type if col is not None else None
+
+
+def _saved_model_measure_type(
+    *, scope: Union[ModelScope, StageSchema], formula: str,
+) -> Optional[DataType]:
+    """Lift the explicit ``type`` from a saved ``ModelMeasure`` when the
+    query formula is a bare reference to one.
+
+    ``expand_model_measures`` rewrites ``adjusted_total`` to the saved
+    measure's underlying formula AST but doesn't surface the measure's
+    explicit ``type=`` to downstream consumers — so an explicit
+    ``ModelMeasure(formula="amount:sum * 1.0", type=DataType.DOUBLE)``
+    on a reusable named measure would otherwise be lost unless
+    ``_type_for_measure_formula`` happens to infer the same value. This
+    helper rescues it by re-looking-up the saved measure here.
+
+    Only fires when the formula text is itself a bare identifier
+    matching a ``ModelMeasure.name`` on the source model; arithmetic /
+    function-call / colon-suffix formulas always fall through to
+    inference (the saved-measure type only applies when the user
+    references the saved measure by name directly).
+    """
+    if not isinstance(scope, ModelScope) or scope.source_model is None:
+        return None
+    bare = formula.strip()
+    if not bare.isidentifier():
+        return None
+    saved = scope.source_model.get_measure(bare)
+    return saved.type if saved is not None else None
+
+
 def _declared_measures_from_query(
     *,
     query: SlayerQuery,
@@ -800,11 +1029,20 @@ def _declared_measures_from_query(
             bundle=bundle,
         )
         flat_name = _flatten_dotted(full)
+        fmt, desc = _format_description_for_dimension(
+            scope=scope, full_name=full,
+        )
+        dim_type = _type_for_dimension(
+            scope=scope, full_name=full, bundle=bundle,
+        )
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=flat_name,
             public_name=flat_name,
             label=d.label,
+            type=dim_type,
+            format=fmt,
+            description=desc,
         ))
     # Time dimensions follow dimensions in the public projection — matches
     # the legacy ``user_projection`` order (dims, then time dims, then
@@ -818,6 +1056,7 @@ def _declared_measures_from_query(
             declared_name=flat_name,
             public_name=flat_name,
             label=td.label,
+            type=DataType.TIMESTAMP,
         ))
     for m in (query.measures or []):
         formula = m.formula
@@ -844,12 +1083,33 @@ def _declared_measures_from_query(
         canonical = _canonical_alias_for_formula(formula, bound=bound)
         declared_name = explicit_name or canonical
         public_name = explicit_name or canonical
+        fmt, desc = _format_description_for_measure_formula(
+            scope=scope, bound=bound,
+        )
+        # Codex: type-priority chain (highest wins):
+        #   1. ``m.type`` — user-supplied override on the query measure.
+        #   2. Saved ``ModelMeasure.type`` — when the query formula is a
+        #      bare reference to a reusable saved measure on the source
+        #      model, that measure's explicit type wins over inference.
+        #      ``expand_model_measures`` rewrites the AST but drops the
+        #      source measure's type metadata; re-look-up here.
+        #   3. ``_type_for_measure_formula`` — aggregation-aware inference.
+        # Mirrors how the legacy ``EnrichedMeasure.type`` honored an
+        # explicit type before falling back to inference.
+        m_type = (
+            m.type
+            or _saved_model_measure_type(scope=scope, formula=formula)
+            or _type_for_measure_formula(scope=scope, bound=bound)
+        )
         declared.append(DeclaredMeasure(
             bound=bound,
             declared_name=declared_name,
             public_name=public_name,
             label=m.label,
             canonical_alias=canonical if explicit_name else None,
+            type=m_type,
+            format=fmt,
+            description=desc,
         ))
     return declared
 
@@ -1071,6 +1331,8 @@ def _emit_stage_schema(
             type=slot.type,
             label=slot.label,
             hidden=False,
+            format=slot.format,
+            description=slot.description,
         ))
     relation_name = query.name or "(unnamed_stage)"
     return StageSchema(relation_name=relation_name, columns=columns)

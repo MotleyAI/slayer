@@ -406,3 +406,114 @@ def stage_bundle_with_siblings(
     return bundle.model_copy(
         update={"source_model": source_model, "referenced_models": referenced}
     )
+
+
+async def expand_query_backed_models_in_bundle(  # NOSONAR(S3776) — three sequential expansion blocks (source + referenced + stage_source) that mutate the bundle in series. Each block guards on its own condition; splitting forces ``bundle`` to ping-pong through helpers without simplifying anything. The inner recursion guard is the only shared state.
+    *,
+    bundle: ResolvedSourceBundle,
+    outer_vars: Optional[Dict[str, Any]],
+    runtime_kwarg: Optional[Dict[str, Any]],
+    dry_run_placeholders: bool,
+    expander,
+    _resolving: Optional["set[str]"] = None,
+) -> ResolvedSourceBundle:
+    """Expand every query-backed model in the bundle and re-apply any root
+    ``ModelExtension`` overlay (DEV-1452 Stage B decision F).
+
+    Three expansion blocks, mirroring ``_execute_pipeline`` exactly:
+
+    1. Source model — if ``bundle.source_model.source_queries`` is set,
+       expand to ``sql``-mode and re-apply every ``bundle.inline_extensions``
+       overlay (expansion derives columns from the backing query and would
+       otherwise drop the overlay's extra columns).
+    2. Referenced models — every join / cross-model target with
+       ``source_queries`` set expands so the generator renders it as a
+       backing-SQL subquery rather than a bare table.
+    3. Stage source models — a non-root stage whose own source is a stored
+       query-backed model likewise expands to ``sql``-mode before the
+       planner binds it.
+
+    ``expander`` is the callback that performs the actual per-model
+    expansion. ``_execute_pipeline`` and the migrated
+    ``_expand_query_backed_model`` both pass
+    ``self._expand_query_backed_model``; the callback signature is
+    ``async (model, *, outer_vars, runtime_kwarg, dry_run_placeholders,
+    _resolving) -> SlayerModel``.
+
+    Returns a fresh ``ResolvedSourceBundle`` with the expanded models;
+    ``inline_extensions`` is preserved as-is for traceability but the
+    overlay has already been folded into ``source_model``.
+
+    ``_resolving`` is the recursion guard: a set of model names already
+    being expanded in this asyncio task. A query-backed join target that
+    transitively references its parent (or itself) is short-circuited
+    with the cached ``backing_query_sql`` if available, otherwise left
+    unchanged — mirrors the legacy ``_render_query_backed_join_target``
+    contract.
+    """
+    resolving: "set[str]" = set(_resolving) if _resolving is not None else set()
+
+    async def _expand_or_short_circuit(model: SlayerModel) -> SlayerModel:
+        if model.name in resolving:
+            # Re-entry: use cached backing SQL if available, otherwise
+            # return unchanged (the binder / generator will surface a
+            # clear error when no sql_table / sql is set).
+            if model.backing_query_sql:
+                return model.model_copy(
+                    update={"sql": model.backing_query_sql},
+                )
+            return model
+        resolving.add(model.name)
+        try:
+            return await expander(
+                model=model,
+                outer_vars=outer_vars,
+                runtime_kwarg=runtime_kwarg,
+                dry_run_placeholders=dry_run_placeholders,
+                _resolving=resolving,
+            )
+        finally:
+            resolving.discard(model.name)
+
+    # 1. Source model + inline_extensions re-apply.
+    if bundle.source_model is not None and bundle.source_model.source_queries:
+        expanded = await _expand_or_short_circuit(bundle.source_model)
+        for ext in bundle.inline_extensions:
+            expanded = _apply_extension_overlay(expanded, ext)
+        bundle = bundle.model_copy(
+            update={
+                "source_model": expanded,
+                "referenced_models": [expanded]
+                + [
+                    m
+                    for m in bundle.referenced_models
+                    if m.name != expanded.name
+                ],
+            }
+        )
+    source_model = bundle.source_model
+
+    # 2. Referenced models (skip the source model itself — handled above).
+    if source_model is not None and any(
+        rm.name != source_model.name and rm.source_queries
+        for rm in bundle.referenced_models
+    ):
+        expanded_refs: List[SlayerModel] = []
+        for rm in bundle.referenced_models:
+            if rm.name != source_model.name and rm.source_queries:
+                rm = await _expand_or_short_circuit(rm)
+            expanded_refs.append(rm)
+        bundle = bundle.model_copy(update={"referenced_models": expanded_refs})
+
+    # 3. Stage source models.
+    if any(m.source_queries for m in bundle.stage_source_models.values()):
+        expanded_stage_sources: Dict[str, SlayerModel] = {}
+        for nm, sm in bundle.stage_source_models.items():
+            if sm.source_queries:
+                sm = await _expand_or_short_circuit(sm)
+            expanded_stage_sources[nm] = sm
+        bundle = bundle.model_copy(
+            update={"stage_source_models": expanded_stage_sources}
+        )
+
+    return bundle

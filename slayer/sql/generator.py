@@ -19,7 +19,10 @@ from slayer.core.enums import (
     DataType,
     TimeGranularity,
 )
+from pydantic import BaseModel, ConfigDict
+
 from slayer.core.errors import AggregationNotAllowedError
+from slayer.core.models import Aggregation
 from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.column_expansion import (
     _is_trivial_base,
@@ -33,6 +36,105 @@ from slayer.engine.source_bundle import (
 )
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
+from slayer.sql.stage_wrapper import build_flat_rename_wrapper
+
+
+class AggRenderSpec(BaseModel):
+    """DEV-1452 — typed input record for the dialect-aware aggregation
+    helpers (``_build_agg``, ``_build_percentile``, ``_build_stat_agg``,
+    ``_build_formula_agg``, ``_resolve_value_sql``, ``_resolve_agg_param``,
+    ``_build_ranked_subquery_from_planned``).
+
+    Decouples the helpers from ``EnrichedMeasure`` so the legacy enrichment
+    pipeline can be deleted without forking dialect SQL emission. Carries
+    exactly the 11 fields the helpers empirically read; ``EnrichedMeasure``
+    fields outside this set (``agg_args``, ``source_measure_name``,
+    ``distinct``, ``window``, ``user_declared``, ``label``,
+    ``filter_columns``) are deliberately NOT carried — ``count_distinct``
+    dispatches on the agg name, and the positional time arg for
+    ``first`` / ``last`` is pre-resolved into ``time_column`` at spec-build
+    time.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    sql: str | None
+    """Column SQL expression (``Column.sql`` or its bare name); ``None`` for
+    ``*:count`` (renders as ``COUNT(*)``).
+
+    Typed as ``str | None`` (not ``Optional[str]``) deliberately — the
+    field is **required** at construction; the explicit nullable form
+    documents that and dodges Sonar's S8396 false-positive on the
+    Pydantic-v2 ``Optional[X]``-implies-default-None misconception."""
+
+    name: str
+    """Source column name — qualified under ``model_name`` when ``sql`` is
+    None or a bare identifier. Empty for star-source aggregates."""
+
+    model_name: str
+    """Qualifier for unqualified column refs in ``sql`` / ``filter_sql`` /
+    aggregation params — the source relation."""
+
+    aggregation: str
+    """Aggregation name (``sum`` / ``count`` / ``percentile`` / …). Empty
+    string for the non-aggregation bare-column branch."""
+
+    alias: str
+    """Result-column alias used by the filtered first/last ranked-subquery
+    bookkeeping (``filtered_rn_map``, ``filtered_match_map`` lookups)."""
+
+    aggregation_def: Optional[Aggregation] = None
+    """Custom-aggregation definition (formula + params) for aggregations
+    outside the built-in set. ``None`` for built-ins."""
+
+    agg_kwargs: Dict[str, str] = {}
+    """Query-time aggregation parameter overrides (already stringified via
+    ``agg_kwarg_canonical_str`` at spec-build time)."""
+
+    filter_sql: Optional[str] = None
+    """Column-filter predicate (``Column.filter``) wired in at aggregation
+    time; the helpers wrap the aggregate as ``SUM(CASE WHEN <filter> THEN
+    <col> END)``."""
+
+    time_column: Optional[str] = None
+    """Explicit time column for first/last ranking (overrides the query's
+    default). Pre-resolved from ``AggregateKey.args`` for the planner path."""
+
+    type: Optional[DataType] = None
+    """Declared outer-result type — when set, callers wrap the final
+    aggregate expression in ``CAST AS <type>`` via ``_wrap_cast_for_type``."""
+
+    column_type: Optional[DataType] = None
+    """Source column's declared type — wraps the inner (pre-aggregation)
+    expression in CAST when the column.sql is a non-bare expression (e.g.
+    ``json_extract(...)``). Distinct from ``type`` which wraps the outer
+    aggregate."""
+
+
+def _agg_render_spec_from_enriched(em: "EnrichedMeasure") -> AggRenderSpec:
+    """Adapt a legacy ``EnrichedMeasure`` to the typed ``AggRenderSpec`` for
+    the refactored dialect helpers (DEV-1452 Stage A).
+
+    Pure field-mapping shim — drops the fields the helpers don't consume
+    (``agg_args``, ``source_measure_name``, ``distinct``, ``window``,
+    ``user_declared``, ``label``, ``filter_columns``). The legacy
+    ``SQLGenerator.generate(enriched=...)`` path uses this to keep emitting
+    byte-identical SQL through the refactored helpers; the shim is deleted
+    in Stage D along with the rest of the legacy pipeline.
+    """
+    return AggRenderSpec(
+        sql=em.sql,
+        name=em.name,
+        model_name=em.model_name,
+        aggregation=em.aggregation,
+        alias=em.alias,
+        aggregation_def=em.aggregation_def,
+        agg_kwargs=dict(em.agg_kwargs),
+        filter_sql=em.filter_sql,
+        time_column=em.time_column,
+        type=em.type,
+        column_type=em.column_type,
+    )
 
 
 def _wrap_cast_for_type(expr: exp.Expression, dt: Optional[DataType]) -> exp.Expression:
@@ -113,12 +215,15 @@ _STAT_AGG_NAMES: frozenset[str] = frozenset({
 # Subset of _STAT_AGG_NAMES that take two columns (LHS + `other=` kwarg).
 _TWO_ARG_STAT_AGGS: frozenset[str] = frozenset({"corr", "covar_samp", "covar_pop"})
 
-# DEV-1450 stage 7b.13: aggregations the synth-EnrichedMeasure adapter
-# handles via the built-in path (``_build_agg`` -> ``_build_*`` family).
-# Custom user-defined aggregations with ``aggregation_def`` (declared on
-# ``SlayerModel.aggregations``) still defer -- the synth adapter does
-# not yet propagate the model's ``Aggregation`` definition into the
-# ``EnrichedMeasure.aggregation_def`` field. DEV-1452 follow-up.
+# DEV-1450 stage 7b.13: aggregations dispatched through the built-in
+# path (``_build_agg`` -> ``_build_*`` family). A name in this set always
+# resolves to a built-in renderer; a name NOT in the set MUST resolve to
+# a model-level ``Aggregation`` definition (``SlayerModel.aggregations``)
+# or it's a hard error. Model-level overrides for built-in names ARE
+# permitted and get threaded into ``AggRenderSpec.aggregation_def`` so
+# ``_resolve_agg_param`` honours their default params (CodeRabbit
+# fold-in on DEV-1452 PR #144 — the prior "synth adapter doesn't
+# propagate aggregation_def for built-ins" TODO is now done).
 #
 # Name kept as ``_LOCAL_SLICE`` for grep continuity with 7b.8-7b.12
 # call sites and tests; the set is no longer local-only.
@@ -708,7 +813,7 @@ class SQLGenerator:
                     select = select.select(td_expr.as_(td.alias))
                     group_exprs.append(td_expr)
 
-                agg_expr, _ = self._build_agg(measure=cm.measure)
+                agg_expr, _ = self._build_agg(_agg_render_spec_from_enriched(cm.measure))
                 # DEV-1361: cast the cross-model agg result if a result type
                 # was declared on the source ModelMeasure.
                 agg_expr = _wrap_cast_for_type(agg_expr, cm.measure.type)
@@ -818,7 +923,7 @@ class SQLGenerator:
                     group_exprs.append(col_expr)
 
                 agg_expr, _ = self._build_agg(
-                    measure=unfiltered,
+                    _agg_render_spec_from_enriched(unfiltered),
                     rn_suffix_map=rn_suffix_map,
                     default_time_col=enriched.last_agg_time_column,
                 )
@@ -840,7 +945,7 @@ class SQLGenerator:
                     select = select.select(td_expr.as_(td.alias))
                     group_exprs.append(td_expr)
 
-                agg_expr, _ = self._build_agg(measure=unfiltered)
+                agg_expr, _ = self._build_agg(_agg_render_spec_from_enriched(unfiltered))
                 agg_expr = _wrap_cast_for_type(agg_expr, measure.type)
                 select = select.select(agg_expr.as_(measure.alias))
 
@@ -1385,7 +1490,7 @@ class SQLGenerator:
             if skip_isolated and (_has_cross_model_filter(measure) or _is_windowed_measure(measure)):
                 continue  # Will be handled in its own CTE
             agg_expr, is_agg = self._build_agg(
-                measure=measure,
+                _agg_render_spec_from_enriched(measure),
                 rn_suffix_map=rn_suffix_map,
                 default_time_col=enriched.last_agg_time_column,
                 filtered_rn_map=filtered_rn_map,
@@ -2173,30 +2278,30 @@ class SQLGenerator:
             return exp.Column(this=exp.to_identifier(sql), table=exp.to_identifier(model_name))
         return _wrap_cast_for_type(self._parse(sql), type)
 
-    def _resolve_value_sql(self, measure: "EnrichedMeasure") -> str:
-        """Resolve ``measure.sql`` (or ``measure.name``) into a fully-qualified
+    def _resolve_value_sql(self, spec: AggRenderSpec) -> str:
+        """Resolve ``spec.sql`` (or ``spec.name``) into a fully-qualified
         SQL string for the value column. Mirrors what ``_build_agg`` does for
         the standard sum/avg/min/max path so the dialect-aware builders
         (median/percentile/stat-aggs/formula) emit the same qualified
         identifiers.
         """
         return self._resolve_sql(
-            sql=measure.sql,
-            name=measure.name,
-            model_name=measure.model_name,
-            type=measure.column_type,
+            sql=spec.sql,
+            name=spec.name,
+            model_name=spec.model_name,
+            type=spec.column_type,
         ).sql(dialect=self.dialect)
 
     def _resolve_agg_param(
         self,
-        measure: "EnrichedMeasure",
+        spec: AggRenderSpec,
         *,
         name: str,
         agg_name: str,
     ) -> str:
         """Pull a named aggregation parameter, with query-time SQL-injection
         validation and model-level-default fallback. Returns the SQL string
-        with bare identifiers qualified under ``measure.model_name`` (via
+        with bare identifiers qualified under ``spec.model_name`` (via
         ``_resolve_sql``); qualified names and numeric literals pass
         through unchanged. Raises ``ValueError`` if neither source supplies
         the parameter — reused by ``_build_percentile`` (``p=``) and
@@ -2204,11 +2309,11 @@ class SQLGenerator:
         ``weight=`` flow.
         """
         raw: Optional[str] = None
-        if name in measure.agg_kwargs:
-            raw = measure.agg_kwargs[name]
+        if name in spec.agg_kwargs:
+            raw = spec.agg_kwargs[name]
             _validate_agg_param_value(raw, name, agg_name)
-        elif measure.aggregation_def:
-            for param in measure.aggregation_def.params:
+        elif spec.aggregation_def:
+            for param in spec.aggregation_def.params:
                 if param.name == name:
                     raw = param.sql
                     break
@@ -2219,65 +2324,66 @@ class SQLGenerator:
                 f"(e.g., 'measure:{agg_name}({name}=column)')."
             )
         return self._resolve_sql(
-            sql=raw, name=raw, model_name=measure.model_name,
+            sql=raw, name=raw, model_name=spec.model_name,
         ).sql(dialect=self.dialect)
 
     def _build_agg(
         self,
-        measure: EnrichedMeasure,
+        spec: AggRenderSpec,
         rn_suffix_map: Optional[dict[str, str]] = None,
         default_time_col: Optional[str] = None,
         filtered_rn_map: Optional[dict[str, str]] = None,
         filtered_match_map: Optional[dict[str, str]] = None,
     ) -> tuple[exp.Expression, bool]:
-        """Build an aggregation expression from an enriched measure."""
-        agg_name = measure.aggregation
+        """Build an aggregation expression from an AggRenderSpec."""
+        agg_name = spec.aggregation
         if not agg_name:
             # Not an aggregation — raw expression
-            if measure.sql:
+            if spec.sql:
                 return self._resolve_sql(
-                    sql=measure.sql,
-                    name=measure.name,
-                    model_name=measure.model_name,
-                    type=measure.column_type,
+                    sql=spec.sql,
+                    name=spec.name,
+                    model_name=spec.model_name,
+                    type=spec.column_type,
                 ), False
             return exp.Column(
-                this=exp.to_identifier(measure.name),
-                table=exp.to_identifier(measure.model_name),
+                this=exp.to_identifier(spec.name),
+                table=exp.to_identifier(spec.model_name),
             ), False
 
         # --- first/last: MAX(CASE WHEN _rn = 1 THEN col END) ---
         if agg_name in ("first", "last"):
             col_expr = self._resolve_sql(
-                sql=measure.sql,
-                name=measure.name,
-                model_name=measure.model_name,
-                type=measure.column_type,
+                sql=spec.sql,
+                name=spec.name,
+                model_name=spec.model_name,
+                type=spec.column_type,
             )
             col = col_expr.sql(dialect=self.dialect)
             suffix = ""
             if rn_suffix_map and default_time_col:
-                effective_tc = measure.time_column or default_time_col
+                effective_tc = spec.time_column or default_time_col
                 suffix = rn_suffix_map.get(effective_tc, "")
             rn_col = f"_first_rn{suffix}" if agg_name == "first" else f"_last_rn{suffix}"
             # For filtered first/last, use the dedicated ROW_NUMBER column
             # that pushes non-matching rows to the bottom of the ranking.
-            # Look up by alias (unique per enriched measure) so two filtered
-            # measures sharing source/agg but with different filters map to
-            # their own respective rank columns. Use the per-measure match
-            # flag (also projected by the ranked subquery) instead of
-            # re-emitting measure.filter_sql here — the filter can reference
-            # joined-table columns that are not in scope outside the subquery.
-            if measure.filter_sql and filtered_rn_map:
-                filtered_rn = filtered_rn_map.get(measure.alias, rn_col)
+            # Look up by alias (unique per spec) so two filtered specs
+            # sharing source/agg but with different filters map to their
+            # own respective rank columns. Use the per-spec match flag
+            # (also projected by the ranked subquery) instead of
+            # re-emitting spec.filter_sql here — the filter can reference
+            # joined-table columns that are not in scope outside the
+            # subquery.
+            if spec.filter_sql and filtered_rn_map:
+                filtered_rn = filtered_rn_map.get(spec.alias, rn_col)
                 match_col = (
-                    filtered_match_map.get(measure.alias)
+                    filtered_match_map.get(spec.alias)
                     if filtered_match_map
                     else None
                 )
                 # Fall back to the raw filter expression only if no match flag
                 # was projected (legacy callers); accepts the leak risk.
-                filter_clause = f"{match_col} = 1" if match_col else measure.filter_sql
+                filter_clause = f"{match_col} = 1" if match_col else spec.filter_sql
                 case_sql = (
                     f"MAX(CASE WHEN {filtered_rn} = 1 AND {filter_clause} "
                     f"THEN {col} END)"
@@ -2285,7 +2391,7 @@ class SQLGenerator:
             else:
                 # ``col`` is already a fully-qualified SQL expression resolved
                 # via ``_resolve_sql`` earlier in this branch, so we don't need
-                # to re-prefix ``measure.model_name``. (DEV-1333.)
+                # to re-prefix ``spec.model_name``. (DEV-1333.)
                 case_sql = f"MAX(CASE WHEN {rn_col} = 1 THEN {col} END)"
             return self._parse(case_sql), True
 
@@ -2295,39 +2401,39 @@ class SQLGenerator:
             # SQLite/ClickHouse/MySQL) so it gets its own builder rather than
             # going through the BUILTIN_AGGREGATION_FORMULAS path.
             if agg_name == "percentile":
-                return self._build_percentile(measure), True
+                return self._build_percentile(spec), True
             # Statistical aggregates also dispatch to a dedicated builder so
             # the SQLite-UDF / native-function / NotImplementedError split
             # mirrors _build_median.
             if agg_name in _STAT_AGG_NAMES:
-                return self._build_stat_agg(measure), True
-            return self._build_formula_agg(measure, agg_name), True
+                return self._build_stat_agg(spec), True
+            return self._build_formula_agg(spec, agg_name), True
 
         # --- Resolve inner expression ---
-        if agg_name == "count" and measure.sql is None:
+        if agg_name == "count" and spec.sql is None:
             # COUNT(*) — if filtered, use COUNT(CASE WHEN filter THEN 1 END)
-            if measure.filter_sql:
-                case_sql = f"CASE WHEN {measure.filter_sql} THEN 1 END"
+            if spec.filter_sql:
+                case_sql = f"CASE WHEN {spec.filter_sql} THEN 1 END"
                 inner = self._parse(case_sql)
             else:
                 inner = exp.Star()
-        elif measure.sql:
+        elif spec.sql:
             inner = self._resolve_sql(
-                sql=measure.sql,
-                name=measure.name,
-                model_name=measure.model_name,
-                type=measure.column_type,
+                sql=spec.sql,
+                name=spec.name,
+                model_name=spec.model_name,
+                type=spec.column_type,
             )
         else:
             inner = exp.Column(
-                this=exp.to_identifier(measure.name),
-                table=exp.to_identifier(measure.model_name),
+                this=exp.to_identifier(spec.name),
+                table=exp.to_identifier(spec.model_name),
             )
 
-        # --- Apply measure-level filter as CASE WHEN wrapper ---
-        if measure.filter_sql and not (agg_name == "count" and measure.sql is None):
+        # --- Apply spec-level filter as CASE WHEN wrapper ---
+        if spec.filter_sql and not (agg_name == "count" and spec.sql is None):
             inner_sql = inner.sql(dialect=self.dialect)
-            case_sql = f"CASE WHEN {measure.filter_sql} THEN {inner_sql} END"
+            case_sql = f"CASE WHEN {spec.filter_sql} THEN {inner_sql} END"
             inner = self._parse(case_sql)
 
         # --- count_distinct ---
@@ -2350,12 +2456,12 @@ class SQLGenerator:
         agg_class = agg_class_map[agg_func]
         return agg_class(this=inner), True
 
-    def _build_formula_agg(self, measure: EnrichedMeasure, agg_name: str) -> exp.Expression:
+    def _build_formula_agg(self, spec: AggRenderSpec, agg_name: str) -> exp.Expression:
         """Build SQL for formula-based aggregations (weighted_avg, custom)."""
         # Get formula: from aggregation_def or built-in
         formula = None
-        if measure.aggregation_def and measure.aggregation_def.formula:
-            formula = measure.aggregation_def.formula
+        if spec.aggregation_def and spec.aggregation_def.formula:
+            formula = spec.aggregation_def.formula
         elif agg_name in BUILTIN_AGGREGATION_FORMULAS:
             formula = BUILTIN_AGGREGATION_FORMULAS[agg_name]
 
@@ -2367,12 +2473,12 @@ class SQLGenerator:
 
         # Collect param values: query-time overrides > aggregation_def defaults
         param_defaults = {}
-        if measure.aggregation_def:
-            param_defaults = {p.name: p.sql for p in measure.aggregation_def.params}
-        params = {**param_defaults, **measure.agg_kwargs}
+        if spec.aggregation_def:
+            param_defaults = {p.name: p.sql for p in spec.aggregation_def.params}
+        params = {**param_defaults, **spec.agg_kwargs}
 
         # Validate query-time parameter values to prevent SQL injection
-        for pname, pval in measure.agg_kwargs.items():
+        for pname, pval in spec.agg_kwargs.items():
             _validate_agg_param_value(pval, pname, agg_name)
 
         # Validate required params
@@ -2386,22 +2492,22 @@ class SQLGenerator:
                 )
 
         # Resolve {value} and {param_name} via _resolve_sql so bare identifiers
-        # are qualified under measure.model_name (matching the standard
-        # sum/avg/min/max path). When the measure carries a row-level filter,
+        # are qualified under spec.model_name (matching the standard
+        # sum/avg/min/max path). When the spec carries a row-level filter,
         # wrap row-level references (the value AND any column-ref params) in
         # CASE WHEN so non-matching rows contribute NULL to all terms — but
         # leave literal-default params unwrapped, since `(CASE WHEN ... THEN
         # 100 END)` for a constant `scale=100` would turn it into a row
         # expression and break grouped SQL semantics.
-        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
         substituted = formula.replace("{value}", col_expr)
         for param_name, param_val in params.items():
             param_ast = self._resolve_sql(
-                sql=param_val, name=param_val, model_name=measure.model_name,
+                sql=param_val, name=param_val, model_name=spec.model_name,
             )
             param_expr = param_ast.sql(dialect=self.dialect)
-            if measure.filter_sql and not isinstance(param_ast, exp.Literal):
-                param_expr = _wrap_filter(param_expr, measure.filter_sql)
+            if spec.filter_sql and not isinstance(param_ast, exp.Literal):
+                param_expr = _wrap_filter(param_expr, spec.filter_sql)
             substituted = substituted.replace(f"{{{param_name}}}", param_expr)
 
         return self._parse(substituted)
@@ -2422,20 +2528,20 @@ class SQLGenerator:
         # Postgres, DuckDB, and most others: PERCENTILE_CONT
         return self._parse(f"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {inner_sql})")
 
-    def _build_percentile(self, measure: "EnrichedMeasure") -> exp.Expression:
+    def _build_percentile(self, spec: AggRenderSpec) -> exp.Expression:
         """Build a PERCENTILE_CONT(p) aggregation expression (dialect-dependent).
 
-        ``p`` comes from ``measure.agg_kwargs['p']`` (validated against
+        ``p`` comes from ``spec.agg_kwargs['p']`` (validated against
         SQL injection) or from a model-level ``Aggregation`` default.
-        Filter handling mirrors ``_build_formula_agg``: when the measure
+        Filter handling mirrors ``_build_formula_agg``: when the spec
         carries a row-level filter, the value column is wrapped in
         ``CASE WHEN ... END`` so non-matching rows contribute NULL and
         are ignored by the aggregate. Both the value column and ``p``
         flow through ``_resolve_sql`` so bare identifiers are qualified
-        under ``measure.model_name`` and numeric literals pass through
+        under ``spec.model_name`` and numeric literals pass through
         unchanged.
         """
-        p = self._resolve_agg_param(measure, name="p", agg_name="percentile")
+        p = self._resolve_agg_param(spec, name="p", agg_name="percentile")
         # `p` must be a numeric literal in [0, 1]. Without this guard a
         # caller could pass `measure:percentile(p=quantity)` (or a model-
         # level default like `p=pg_sleep(10)` that bypasses
@@ -2463,7 +2569,7 @@ class SQLGenerator:
                 "Use MariaDB or compute the value client-side."
             )
 
-        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
 
         if self.dialect == "sqlite":
             # Provided by the percentile_cont(value, p) UDF registered on connect.
@@ -2476,7 +2582,7 @@ class SQLGenerator:
 
         return self._parse(sql_str)
 
-    def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:
+    def _build_stat_agg(self, spec: AggRenderSpec) -> exp.Expression:
         """Build SQL for the statistical aggregations added in DEV-1317.
 
         Handles ``stddev_samp``, ``stddev_pop``, ``var_samp``, ``var_pop``
@@ -2489,14 +2595,14 @@ class SQLGenerator:
         SQLite) so generator output resolves at runtime.
 
         Both legs flow through ``_resolve_sql`` so bare identifiers are
-        qualified under ``measure.model_name`` (matches the standard
+        qualified under ``spec.model_name`` (matches the standard
         sum/avg/min/max path). Filter handling mirrors
         ``_build_percentile`` / ``_build_formula_agg``: a row-level
         filter wraps the value AND the ``other`` column in
         ``CASE WHEN filter THEN col END`` so non-matching rows
         contribute NULL — which the aggregates skip.
         """
-        agg_name = measure.aggregation
+        agg_name = spec.aggregation
 
         # Resolve the `other=` kwarg before the MySQL guard so that a
         # missing-required-param error takes priority over the
@@ -2506,8 +2612,8 @@ class SQLGenerator:
         other_expr: Optional[str] = None
         if agg_name in _TWO_ARG_STAT_AGGS:
             other_expr = _wrap_filter(
-                self._resolve_agg_param(measure, name="other", agg_name=agg_name),
-                measure.filter_sql,
+                self._resolve_agg_param(spec, name="other", agg_name=agg_name),
+                spec.filter_sql,
             )
 
         if agg_name in _TWO_ARG_STAT_AGGS and self.dialect == "mysql":
@@ -2517,7 +2623,7 @@ class SQLGenerator:
                 f"Use MariaDB or compute the value client-side."
             )
 
-        col_expr = _wrap_filter(self._resolve_value_sql(measure), measure.filter_sql)
+        col_expr = _wrap_filter(self._resolve_value_sql(spec), spec.filter_sql)
 
         if agg_name in _TWO_ARG_STAT_AGGS:
             sql_str = f"{agg_name.upper()}({col_expr}, {other_expr})"
@@ -2591,7 +2697,7 @@ class SQLGenerator:
                     for m in enriched.measures:
                         if m.name == col_name:
                             agg_expr, _ = self._build_agg(
-                                measure=m,
+                                _agg_render_spec_from_enriched(m),
                                 rn_suffix_map=rn_suffix_map,
                                 default_time_col=enriched.last_agg_time_column,
                                 filtered_rn_map=filtered_rn_map,
@@ -2798,6 +2904,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 slots_by_id=slots_by_id,
                 source_model=source_model,
+                bundle=bundle,
             )
             return base_select.sql(dialect=self.dialect, pretty=True)
 
@@ -3603,6 +3710,7 @@ class SQLGenerator:
                         slot=slot,
                         source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                     if any_agg:
                         composite = _wrap_cast_for_type(composite, slot.type)
@@ -3627,14 +3735,15 @@ class SQLGenerator:
                 # propagated into the synthetic EnrichedMeasure's
                 # ``filter_sql`` field so ``_build_agg`` wraps the
                 # aggregate as ``SUM(CASE WHEN <filter> THEN col END)``.
-                synth = self._synthesize_enriched_measure_from_planned(
+                synth = self._build_agg_render_spec_from_planned(
                     slot=slot,
                     key=key,
                     source_model=source_model,
                     source_relation=source_relation,
                     full_alias=full_alias,
+                    bundle=bundle,
                 )
-                agg_expr, is_agg = self._build_agg(measure=synth)
+                agg_expr, is_agg = self._build_agg(synth)
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
                     has_aggregation = True
@@ -3738,14 +3847,96 @@ class SQLGenerator:
             return f"{source_relation}.{source_model.default_time_dimension}"
         return None
 
-    def _build_ranked_subquery_from_planned(
+    def _resolve_explicit_time_col(  # NOSONAR(S3776) — sequential isinstance dispatch over ColumnKey (bare ref → ``__``-joined path alias) and ColumnSqlKey (derived column → bare-ident-qualify vs complex-emit-verbatim). Extracting the per-shape branches would scatter the time-arg resolution contract; each branch is one decision.
+        self,
+        *,
+        key,
+        source_model,
+        source_relation: str,
+        bundle=None,
+    ) -> Optional[str]:
+        """Resolve the explicit positional time arg on a ``first`` / ``last``
+        aggregate into a SQL string suitable for ``ORDER BY`` inside the
+        ranked subquery.
+
+        Handles both bare-column refs (``ColumnKey`` —
+        ``amount:last(created_at)``) and derived-column refs
+        (``ColumnSqlKey`` — ``amount:last(net_amount_date)`` where
+        ``net_amount_date`` has a non-trivial ``Column.sql``). For derived
+        columns the column's ``Column.sql`` is materialised through
+        ``_expand_derived_column_sql`` (when ``bundle`` is available) so
+        inner bare refs qualify to ``source_relation`` and joined refs to
+        their ``__``-path alias — a complex expression like
+        ``date(created_at)`` can't go ambiguous against a same-named column
+        on a joined table inside the ranked subquery. Without a ``bundle``
+        it falls back to bare-ident qualification / verbatim emit.
+
+        Returns ``None`` for non-first/last aggs and when ``key.args`` is
+        empty or its first element is neither a ``ColumnKey`` nor a
+        ``ColumnSqlKey``. Cross-model paths on derived time args
+        (``ColumnSqlKey`` with non-empty ``path``) raise
+        ``NotImplementedError`` rather than silently emitting against the
+        wrong relation alias — that case is tracked alongside bug (c) of
+        the four-bug Stage B package in DEV-1476.
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        if key.agg not in ("first", "last"):
+            return None
+        for a in key.args:
+            if isinstance(a, ColumnKey):
+                relation = "__".join(a.path) if a.path else source_relation
+                return f"{relation}.{a.leaf}"
+            if isinstance(a, ColumnSqlKey):
+                if a.path:
+                    raise NotImplementedError(
+                        f"Cross-model derived time column "
+                        f"(path={a.path!r}, column={a.column_name!r}) on "
+                        f"first/last positional arg is not yet supported "
+                        f"by the ranked-subquery builder; tracked as "
+                        f"DEV-1476."
+                    )
+                col = next(
+                    (c for c in source_model.columns if c.name == a.column_name),
+                    None,
+                )
+                if col is None:
+                    raise ValueError(
+                        f"Derived time column {a.column_name!r} (positional "
+                        f"arg of {key.agg!r}) not found on model "
+                        f"{source_model.name!r}."
+                    )
+                if bundle is not None:
+                    # Qualify inner bare refs against ``source_relation`` (and
+                    # joined refs to their ``__``-path alias) so a complex
+                    # derived time expression can't bind to the wrong table
+                    # inside the ranked subquery's joins — same expansion the
+                    # aggregate-source path uses.
+                    return self._expand_derived_column_sql(
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        column_name=a.column_name,
+                        bundle=bundle,
+                    )
+                # No bundle (defensive): bare-ident qualify, else emit verbatim.
+                col_sql = col.sql if col.sql else col.name
+                if col_sql.isidentifier():
+                    return f"{source_relation}.{col_sql}"
+                return self._parse(col_sql).sql(dialect=self.dialect)
+            # Unrecognised positional arg type — leave time_column unset and
+            # let _build_ranked_subquery_from_planned fall back to the
+            # query's default ranking column.
+            break
+        return None
+
+    def _build_ranked_subquery_from_planned(  # NOSONAR(S3776) — Group 2 already factored the per-spec ROW_NUMBER passes into _build_unfiltered_rn_columns / _build_filtered_rn_columns; what's left is exp.Select / from / joins / where assembly that has to live in one place.
         self,
         *,
         source_relation: str,
         default_time_col_sql: str,
         partition_exprs: List[exp.Expression],
         extra_projections: List[Tuple[str, exp.Expression]],
-        synth_measures: List["EnrichedMeasure"],
+        synth_specs: List[AggRenderSpec],
         from_clause: exp.Expression,
         base_joins: List,
         where_clause: Optional[exp.Expression],
@@ -3775,68 +3966,21 @@ class SQLGenerator:
         for alias, e in extra_projections:
             select_exprs.append(e.copy().as_(alias))
 
-        # Unfiltered first/last → one ROW_NUMBER per distinct effective time
-        # column (stable suffixes: first sorted gets "", then "_2", …).
-        time_col_agg_types: Dict[str, set] = {}
-        for m in synth_measures:
-            if m.aggregation in ("first", "last") and not m.filter_sql:
-                eff = m.time_column or default_time_col_sql
-                time_col_agg_types.setdefault(eff, set()).add(m.aggregation)
-        sorted_tcs = sorted(time_col_agg_types)
-        rn_suffix_map: Dict[str, str] = {
-            tc: ("" if i == 0 else f"_{i + 1}")
-            for i, tc in enumerate(sorted_tcs)
-        }
-        for tc in sorted_tcs:
-            suffix = rn_suffix_map[tc]
-            if "last" in time_col_agg_types[tc]:
-                select_exprs.append(
-                    self._parse(
-                        f"ROW_NUMBER() OVER ({partition_clause} "
-                        f"ORDER BY {tc} DESC)"
-                    ).as_(f"_last_rn{suffix}")
-                )
-            if "first" in time_col_agg_types[tc]:
-                select_exprs.append(
-                    self._parse(
-                        f"ROW_NUMBER() OVER ({partition_clause} "
-                        f"ORDER BY {tc} ASC)"
-                    ).as_(f"_first_rn{suffix}")
-                )
+        unfiltered_exprs, rn_suffix_map = self._build_unfiltered_rn_columns(
+            synth_specs=synth_specs,
+            default_time_col_sql=default_time_col_sql,
+            partition_clause=partition_clause,
+        )
+        select_exprs.extend(unfiltered_exprs)
 
-        # Filtered first/last → dedicated ROW_NUMBER + match-flag columns,
-        # deduped by (filter, time col, agg).
-        filtered_rn_map: Dict[str, str] = {}
-        filtered_match_map: Dict[str, str] = {}
-        seen_filters: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
-        filter_idx = 0
-        for m in synth_measures:
-            if m.aggregation in ("first", "last") and m.filter_sql:
-                eff = m.time_column or default_time_col_sql
-                cache_key = (m.filter_sql, eff, m.aggregation)
-                if cache_key in seen_filters:
-                    rn_alias, match_alias = seen_filters[cache_key]
-                else:
-                    kind = "first" if m.aggregation == "first" else "last"
-                    rn_alias = f"_{kind}_rn_f{filter_idx}"
-                    match_alias = f"_match_f{filter_idx}"
-                    order_dir = "ASC" if m.aggregation == "first" else "DESC"
-                    select_exprs.append(
-                        self._parse(
-                            f"ROW_NUMBER() OVER ({partition_clause} ORDER BY "
-                            f"CASE WHEN {m.filter_sql} THEN 0 ELSE 1 END, "
-                            f"{eff} {order_dir})"
-                        ).as_(rn_alias)
-                    )
-                    select_exprs.append(
-                        self._parse(
-                            f"CASE WHEN {m.filter_sql} THEN 1 ELSE 0 END"
-                        ).as_(match_alias)
-                    )
-                    seen_filters[cache_key] = (rn_alias, match_alias)
-                    filter_idx += 1
-                filtered_rn_map[m.alias] = rn_alias
-                filtered_match_map[m.alias] = match_alias
+        filtered_exprs, filtered_rn_map, filtered_match_map = (
+            self._build_filtered_rn_columns(
+                synth_specs=synth_specs,
+                default_time_col_sql=default_time_col_sql,
+                partition_clause=partition_clause,
+            )
+        )
+        select_exprs.extend(filtered_exprs)
 
         inner = exp.Select()
         for e in select_exprs:
@@ -3851,7 +3995,107 @@ class SQLGenerator:
         )
         return subquery, rn_suffix_map, filtered_rn_map, filtered_match_map
 
-    def _build_first_last_base_select(
+    def _build_unfiltered_rn_columns(
+        self,
+        *,
+        synth_specs: List[AggRenderSpec],
+        default_time_col_sql: str,
+        partition_clause: str,
+    ) -> Tuple[List[exp.Expression], Dict[str, str]]:
+        """One ``ROW_NUMBER`` projection per distinct effective time column
+        for the unfiltered ``first`` / ``last`` specs.
+
+        Each unique effective time column gets a stable suffix in render
+        order (first sorted gets ``""``, then ``"_2"``, ...); the same
+        time column shared by both ``first`` and ``last`` produces two
+        projections (`_first_rn{suffix}` ASC, `_last_rn{suffix}` DESC).
+        Returns ``(rn_select_exprs, rn_suffix_map)``.
+        """
+        time_col_agg_types: Dict[str, set] = {}
+        for m in synth_specs:
+            if m.aggregation in ("first", "last") and not m.filter_sql:
+                eff = m.time_column or default_time_col_sql
+                time_col_agg_types.setdefault(eff, set()).add(m.aggregation)
+        sorted_tcs = sorted(time_col_agg_types)
+        rn_suffix_map: Dict[str, str] = {
+            tc: ("" if i == 0 else f"_{i + 1}")
+            for i, tc in enumerate(sorted_tcs)
+        }
+        rn_exprs: List[exp.Expression] = []
+        for tc in sorted_tcs:
+            suffix = rn_suffix_map[tc]
+            if "last" in time_col_agg_types[tc]:
+                rn_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} "
+                        f"ORDER BY {tc} DESC)"
+                    ).as_(f"_last_rn{suffix}")
+                )
+            if "first" in time_col_agg_types[tc]:
+                rn_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} "
+                        f"ORDER BY {tc} ASC)"
+                    ).as_(f"_first_rn{suffix}")
+                )
+        return rn_exprs, rn_suffix_map
+
+    def _build_filtered_rn_columns(
+        self,
+        *,
+        synth_specs: List[AggRenderSpec],
+        default_time_col_sql: str,
+        partition_clause: str,
+    ) -> Tuple[List[exp.Expression], Dict[str, str], Dict[str, str]]:
+        """One dedicated ``ROW_NUMBER`` + match-flag projection per distinct
+        ``(filter, time, agg)`` triple for the filtered ``first`` / ``last``
+        specs.
+
+        Filtered first/last needs to push non-matching rows past the
+        winners; emits ``ROW_NUMBER() OVER (... ORDER BY CASE WHEN
+        <filter> THEN 0 ELSE 1 END, <time> <dir>)`` alongside a boolean
+        match-flag column so the outer SELECT can ``MAX(CASE WHEN _rn = 1
+        AND _match = 1 THEN col END)``. Triples that repeat across specs
+        share a single (rn, match) pair; per-spec ``alias`` keys map onto
+        those.
+        """
+        filtered_rn_map: Dict[str, str] = {}
+        filtered_match_map: Dict[str, str] = {}
+        seen_filters: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
+        rn_exprs: List[exp.Expression] = []
+        filter_idx = 0
+        for m in synth_specs:
+            if not (m.aggregation in ("first", "last") and m.filter_sql):
+                continue
+            eff = m.time_column or default_time_col_sql
+            cache_key = (m.filter_sql, eff, m.aggregation)
+            cached = seen_filters.get(cache_key)
+            if cached is not None:
+                rn_alias, match_alias = cached
+            else:
+                kind = "first" if m.aggregation == "first" else "last"
+                rn_alias = f"_{kind}_rn_f{filter_idx}"
+                match_alias = f"_match_f{filter_idx}"
+                order_dir = "ASC" if m.aggregation == "first" else "DESC"
+                rn_exprs.append(
+                    self._parse(
+                        f"ROW_NUMBER() OVER ({partition_clause} ORDER BY "
+                        f"CASE WHEN {m.filter_sql} THEN 0 ELSE 1 END, "
+                        f"{eff} {order_dir})"
+                    ).as_(rn_alias)
+                )
+                rn_exprs.append(
+                    self._parse(
+                        f"CASE WHEN {m.filter_sql} THEN 1 ELSE 0 END"
+                    ).as_(match_alias)
+                )
+                seen_filters[cache_key] = (rn_alias, match_alias)
+                filter_idx += 1
+            filtered_rn_map[m.alias] = rn_alias
+            filtered_match_map[m.alias] = match_alias
+        return rn_exprs, filtered_rn_map, filtered_match_map
+
+    def _build_first_last_base_select(  # NOSONAR(S3776) — single conceptual unit: dimension/td/derived-dim classification pass + agg-spec synth + ranked-subquery wrap + outer SELECT/GROUP BY assembly. Splitting forces shared mutable state (partition_exprs / extra_projections / outer_ref_by_sid / synth_by_sid) across helpers without simplifying anything.
         self,
         *,
         planned_query,
@@ -3894,13 +4138,38 @@ class SQLGenerator:
             source_relation=source_relation,
             bundle=bundle,
         )
+        # DEV-1476 bug (b): the raise must gate on whether ANY first/last
+        # aggregate slot lacks an explicit positional time arg. When every
+        # first/last spec carries its own ``key.args`` time column, no
+        # default is needed and the helper should not raise.
         if default_time_col_sql is None:
-            raise ValueError(
-                "first/last aggregation requires a ranking time column "
-                "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-                "model's default_time_dimension); none is resolvable for "
-                f"model {source_model.name!r}."
-            )
+            needs_default = False
+            for sid in base_render_order:
+                slot = slots_by_id[sid]
+                if slot.phase != Phase.AGGREGATE:
+                    continue
+                key = slot.key
+                if not isinstance(key, AggregateKey):
+                    continue
+                if key.agg not in ("first", "last"):
+                    continue
+                # An explicit time arg is the first ColumnKey / ColumnSqlKey
+                # in ``key.args``. If any first/last slot is missing one, we
+                # need the default.
+                has_explicit = any(
+                    isinstance(a, (ColumnKey, ColumnSqlKey))
+                    for a in key.args
+                )
+                if not has_explicit:
+                    needs_default = True
+                    break
+            if needs_default:
+                raise ValueError(
+                    "first/last aggregation requires a ranking time column "
+                    "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
+                    "model's default_time_dimension); none is resolvable for "
+                    f"model {source_model.name!r}."
+                )
 
         # Pass 1: full aliases (in render order, for C13 cycling), ROW-slot
         # classification (partition / subquery projection / outer ref), and
@@ -3987,10 +4256,11 @@ class SQLGenerator:
                 # via ``_render_aggregate_composite_expr`` (reading the
                 # subquery's ``source_relation.*``), matching the normal path.
                 synth_by_sid[sid] = (
-                    self._synthesize_enriched_measure_from_planned(
+                    self._build_agg_render_spec_from_planned(
                         slot=slot, key=slot.key, source_model=source_model,
                         source_relation=source_relation,
                         full_alias=full_alias_by_sid[sid],
+                        bundle=bundle,
                     )
                 )
 
@@ -4013,7 +4283,7 @@ class SQLGenerator:
             default_time_col_sql=default_time_col_sql,
             partition_exprs=partition_exprs,
             extra_projections=extra_projections,
-            synth_measures=list(synth_by_sid.values()),
+            synth_specs=list(synth_by_sid.values()),
             from_clause=from_clause,
             base_joins=base_joins,
             where_clause=where_clause,
@@ -4036,7 +4306,7 @@ class SQLGenerator:
             elif slot.phase == Phase.AGGREGATE:
                 if sid in synth_by_sid:
                     agg_expr, is_agg = self._build_agg(
-                        measure=synth_by_sid[sid],
+                        synth_by_sid[sid],
                         rn_suffix_map=rn_suffix_map,
                         default_time_col=default_time_col_sql,
                         filtered_rn_map=filtered_rn_map,
@@ -4047,6 +4317,7 @@ class SQLGenerator:
                     agg_expr, is_agg = self._render_aggregate_composite_expr(
                         key=slot.key, slot=slot, source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
@@ -4070,6 +4341,7 @@ class SQLGenerator:
         slot,
         source_model,
         source_relation: str,
+        bundle=None,
     ) -> "tuple[exp.Expression, bool]":
         """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
         ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
@@ -4097,11 +4369,12 @@ class SQLGenerator:
                     "AGGREGATE-phase composite is not yet supported; factor it "
                     "into a multi-stage source_queries model."
                 )
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=slot, key=key, source_model=source_model,
                 source_relation=source_relation, full_alias="__op__",
+                bundle=bundle,
             )
-            agg_expr, is_agg = self._build_agg(measure=synth)
+            agg_expr, is_agg = self._build_agg(synth)
             return agg_expr, is_agg
         if isinstance(key, ArithmeticKey):
             operands = []
@@ -4110,6 +4383,7 @@ class SQLGenerator:
                 e, a = self._render_aggregate_composite_expr(
                     key=o, slot=slot, source_model=source_model,
                     source_relation=source_relation,
+                    bundle=bundle,
                 )
                 operands.append(e)
                 any_agg = any_agg or a
@@ -4122,6 +4396,7 @@ class SQLGenerator:
                     e, ag = self._render_aggregate_composite_expr(
                         key=a, slot=slot, source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                     args.append(e)
                     any_agg = any_agg or ag
@@ -4871,7 +5146,7 @@ class SQLGenerator:
         )
         return cte_sql, joinback_pairs, agg_col_alias
 
-    def _render_cross_model_cte(
+    def _render_cross_model_cte(  # NOSONAR(S3776) — single conceptual unit: shared-grain projection + GROUP BY classification + aggregate reroot (source / args / kwargs) + first/last ranked-subquery wrap + target-model-filter qualification + WHERE/HAVING routing. Each block is interdependent state for the same CTE; splitting forces the same cross-cutting state through helpers without simplifying anything.
         self,
         *,
         plan,
@@ -5040,10 +5315,21 @@ class SQLGenerator:
         local_kwargs = tuple(
             (k, _reroot_kwarg(v)) for k, v in agg_slot.key.kwargs
         )
+        # DEV-1476 bug (c): symmetric reroot of positional args. An explicit
+        # time arg ``customers.amount:last(customers.signup_at)`` arrives
+        # here with ``key.args=(ColumnKey(path=("customers",),
+        # leaf="signup_at"),)``. Without rerooting, ``_resolve_explicit_
+        # time_col`` qualifies the time column under the wrong alias inside
+        # the target-rooted CTE. ``_reroot_kwarg`` already does the right
+        # thing for ``ColumnKey`` / ``ColumnSqlKey``; reuse it.
+        local_args = tuple(
+            _reroot_kwarg(a) if isinstance(a, (ColumnKey, ColumnSqlKey)) else a
+            for a in agg_slot.key.args
+        )
         local_agg_key = AggregateKey(
             source=local_source_key,
             agg=agg_slot.key.agg,
-            args=agg_slot.key.args,
+            args=local_args,
             kwargs=local_kwargs,
             column_filter_key=agg_slot.key.column_filter_key,
         )
@@ -5052,32 +5338,51 @@ class SQLGenerator:
         # from the target's Column.filter — the synth helper qualifies
         # bare refs against target_model.
         local_slot = agg_slot.model_copy(update={"key": local_agg_key})
-        synth = self._synthesize_enriched_measure_from_planned(
+        synth = self._build_agg_render_spec_from_planned(
             slot=local_slot,
             key=local_agg_key,
             source_model=target_model,
             source_relation=target_relation,
             full_alias=full_agg_alias,
-        )
-        agg_expr, is_agg = self._build_agg(measure=synth)
-        if is_agg:
-            agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
-        cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
-
-        # Build the CTE Select. FROM is the target table directly.
-        cte_select = exp.Select()
-        for col in cte_select_columns:
-            cte_select = cte_select.select(col)
-        cte_select = cte_select.from_(
-            self._build_from_clause_from_planned(
-                source_model=target_model, source_relation=target_relation,
-            ),
+            bundle=bundle,
         )
 
+        # DEV-1476 bug (c): for first/last aggregates the FROM must be a
+        # ROW_NUMBER-ranked subquery so the ``MAX(CASE WHEN _last_rn = 1
+        # THEN col END)`` expression has a ranking column. The local
+        # first/last path (``_build_first_last_base_select``) wraps via
+        # ``_build_ranked_subquery_from_planned``; mirror that here for
+        # the cross-model CTE.
+        #
+        # Codex round 2: when no explicit positional time arg was
+        # supplied, fall back to the target model's
+        # ``default_time_dimension`` (qualified under the target
+        # relation). If even that is unset, raise the standard
+        # "first/last requires a ranking time column" error rather than
+        # silently emitting an agg_expr that references a non-existent
+        # ``_first_rn`` / ``_last_rn`` column.
+        is_first_or_last = local_agg_key.agg in ("first", "last")
+        time_col_sql: Optional[str] = synth.time_column
+        if is_first_or_last and time_col_sql is None:
+            if target_model.default_time_dimension:
+                time_col_sql = (
+                    f"{target_relation}.{target_model.default_time_dimension}"
+                )
+            else:
+                raise ValueError(
+                    f"first/last aggregation requires a ranking time column "
+                    f"(an explicit positional time arg, or the target "
+                    f"model's default_time_dimension); none is resolvable "
+                    f"for cross-model aggregate on target "
+                    f"{target_model_name!r}."
+                )
         # WHERE: target-model-filters (qualified bare-identifier refs
         # so ``deleted_at IS NULL`` becomes ``customers.deleted_at IS
         # NULL`` to match the legacy enrichment's filter-column
-        # resolution) + host filters routed to WHERE.
+        # resolution) + host filters routed to WHERE. Computed up-front
+        # so the first/last branch can push them INSIDE the ranked
+        # subquery — otherwise rows excluded by a filter could still
+        # win ``_last_rn = 1`` and yield NULL aggregates.
         where_parts: List[exp.Expression] = []
         for filter_text in plan.target_model_filters:
             # DEV-1450 #4b: a target model filter that references a
@@ -5119,10 +5424,65 @@ class SQLGenerator:
         )
         if cte_where is not None:
             where_parts.append(cte_where)
+        combined_where: Optional[exp.Expression] = None
         if where_parts:
-            cte_select = cte_select.where(
-                exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0],
+            combined_where = (
+                exp.and_(*where_parts) if len(where_parts) > 1 else where_parts[0]
             )
+
+        # FROM: target table directly, OR a ROW_NUMBER-ranked subquery for
+        # first/last. Build the ranked subquery FIRST so its rank-column
+        # maps — including the filtered ``_last_rn_fN`` / ``_match_fN``
+        # columns emitted when the measure's source column carries a
+        # ``Column.filter`` — can be threaded into ``_build_agg``. Without
+        # the filtered maps the agg references a bare ``_last_rn`` the
+        # subquery never projects. WHERE is pushed INSIDE so RN is computed
+        # over the filtered row set; otherwise a filtered-out row could win
+        # ``_last_rn = 1`` and the ``MAX(CASE WHEN _last_rn = 1 ...)``
+        # aggregate would return NULL.
+        target_from = self._build_from_clause_from_planned(
+            source_model=target_model, source_relation=target_relation,
+        )
+        ranked_from: Optional[exp.Expression] = None
+        if is_first_or_last:
+            assert time_col_sql is not None  # narrowed by the guard above
+            ranked_from, rn_suffix_map, filtered_rn_map, filtered_match_map = (
+                self._build_ranked_subquery_from_planned(
+                    source_relation=target_relation,
+                    default_time_col_sql=time_col_sql,
+                    partition_exprs=list(cte_group_by),
+                    extra_projections=[],
+                    synth_specs=[synth],
+                    from_clause=target_from,
+                    base_joins=[],
+                    where_clause=combined_where,
+                )
+            )
+            agg_expr, is_agg = self._build_agg(
+                synth,
+                rn_suffix_map=rn_suffix_map,
+                default_time_col=time_col_sql,
+                filtered_rn_map=filtered_rn_map,
+                filtered_match_map=filtered_match_map,
+            )
+        else:
+            agg_expr, is_agg = self._build_agg(synth)
+        if is_agg:
+            agg_expr = _wrap_cast_for_type(agg_expr, agg_slot.type)
+        cte_select_columns.append(agg_expr.copy().as_(full_agg_alias))
+
+        # Assemble the CTE Select now that every projected column (shared
+        # grain + aggregate) is in ``cte_select_columns``.
+        cte_select = exp.Select()
+        for col in cte_select_columns:
+            cte_select = cte_select.select(col)
+        if is_first_or_last:
+            assert ranked_from is not None
+            cte_select = cte_select.from_(ranked_from)
+        else:
+            cte_select = cte_select.from_(target_from)
+            if combined_where is not None:
+                cte_select = cte_select.where(combined_where)
 
         if cte_group_by:
             for gb in cte_group_by:
@@ -5273,14 +5633,15 @@ class SQLGenerator:
                 phase=value_key.phase,
                 type=None,
             )
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=tmp_slot,
                 key=local_agg,
                 source_model=target_model,
                 source_relation=target_relation,
                 full_alias=f"{target_relation}._having_agg",
+                bundle=bundle,
             )
-            expr, _ = self._build_agg(measure=synth)
+            expr, _ = self._build_agg(synth)
             return expr
         if isinstance(value_key, ArithmeticKey):
             op = value_key.op
@@ -6485,14 +6846,15 @@ class SQLGenerator:
                 raise RuntimeError(
                     f"inner aggregate slot {input_sid!r} not found",
                 )
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=inner_slot,
                 key=inner_key,
                 source_model=source_model,
                 source_relation=source_relation,
                 full_alias=input_alias,
+                bundle=bundle,
             )
-            agg_expr, _ = self._build_agg(measure=synth)
+            agg_expr, _ = self._build_agg(synth)
             agg_expr = _wrap_cast_for_type(agg_expr, inner_slot.type)
             shifted_select_parts.append(
                 f'{agg_expr.sql(dialect=self.dialect)} AS "{input_alias}"',
@@ -7114,7 +7476,76 @@ class SQLGenerator:
                 _add_from_sql(self._parse(expanded_text))
         return ordered
 
-    def _synthesize_enriched_measure_from_planned(
+    def _resolve_aggregation_def(
+        self,
+        *,
+        key,
+        source_model,
+        src_leaf: str,
+    ):
+        """Look up the model-level ``Aggregation`` definition for ``key.agg``,
+        if any. Returns the matched ``Aggregation`` or ``None``.
+
+        The lookup runs for built-ins too (a user model is allowed to
+        override default params for a built-in, e.g. supply a default
+        ``weight=`` for ``weighted_avg``), and ``_resolve_agg_param``
+        relies on that override surfacing in
+        ``AggRenderSpec.aggregation_def``. Only when the name is NOT a
+        built-in does a lookup miss raise — an unknown non-built-in is a
+        hard error.
+        """
+        agg_def = next(
+            (a for a in (source_model.aggregations or []) if a.name == key.agg),
+            None,
+        )
+        if agg_def is None and key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
+            raise AggregationNotAllowedError(
+                column=src_leaf,
+                agg=key.agg,
+                reason=(
+                    f"unknown aggregation {key.agg!r} — not a built-in "
+                    f"and not defined in {source_model.name!r}."
+                    f"aggregations."
+                ),
+            )
+        return agg_def
+
+    def _validate_aggregate_kwarg_paths(
+        self,
+        *,
+        key,
+        source,
+        src_leaf: str,
+    ) -> None:
+        """Reject kwarg column refs whose join path disagrees with the
+        aggregate source path.
+
+        A kwarg path that doesn't match the aggregate source path would
+        silently bind the kwarg to a different model (host vs joined
+        target) than the aggregate value column — meaningless SQL
+        semantically. Caller-side cross-model rerooting strips the
+        matching prefix from source AND kwargs before reaching this
+        point; any residual mismatch surfaces here. Both bare-column
+        (``ColumnKey``) and derived-column (``ColumnSqlKey``) kwarg
+        refs go through this gate (CodeRabbit fold-in on PR #144).
+        """
+        from slayer.core.keys import ColumnKey, ColumnSqlKey
+
+        for kname, kval in key.kwargs:
+            if isinstance(kval, (ColumnKey, ColumnSqlKey)) and kval.path != source.path:
+                raise AggregationNotAllowedError(
+                    column=src_leaf,
+                    agg=key.agg,
+                    reason=(
+                        f"kwarg {kname!r} references "
+                        f"{type(kval).__name__} with path {kval.path!r}; "
+                        f"aggregate source path is {source.path!r}. "
+                        f"Cross-model kwargs must share the source's "
+                        f"join path."
+                    ),
+                )
+
+    def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
         self,
         *,
         slot,
@@ -7122,20 +7553,21 @@ class SQLGenerator:
         source_model,
         source_relation: str,
         full_alias: str,
-    ) -> EnrichedMeasure:
-        """Adapter: build an EnrichedMeasure from a planned aggregate
-        slot so ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type``
-        emit dialect-correct SQL without forking the agg-emission
-        codebase.
+        bundle=None,
+    ) -> AggRenderSpec:
+        """Build an ``AggRenderSpec`` from a planned aggregate slot so
+        ``_build_agg`` / ``_resolve_sql`` / ``_wrap_cast_for_type`` emit
+        dialect-correct SQL without forking the agg-emission codebase.
 
-        Mirrors ``enrichment.py:431`` ``sql = column.sql or column.name``
-        so ``COUNT(*)`` (StarKey source) and ``COUNT(col)`` (ColumnKey
-        source with sql=None on a bare column) take their distinct
-        legacy branches inside ``_build_agg``.
+        Replaces the legacy ``_build_agg_render_spec_from_planned``
+        adapter (DEV-1452 Stage A). Mirrors ``enrichment.py:431``
+        ``sql = column.sql or column.name`` so ``COUNT(*)`` (StarKey source)
+        and ``COUNT(col)`` (ColumnKey source with sql=None on a bare column)
+        take their distinct branches inside ``_build_agg``.
         """
         from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey
 
-        # ``slot`` may be ``None`` when this synth is built for a HAVING term
+        # ``slot`` may be ``None`` when this spec is built for a HAVING term
         # whose aggregate isn't a declared projection slot; the result type is
         # then unknown (no outer CAST needed for a comparison operand).
         slot_type = slot.type if slot is not None else None
@@ -7157,7 +7589,7 @@ class SQLGenerator:
                     f"'*:count' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
                 )
-            return EnrichedMeasure(
+            return AggRenderSpec(
                 name="",
                 sql=None,
                 aggregation=key.agg,
@@ -7179,62 +7611,22 @@ class SQLGenerator:
             # ``first`` / ``last`` aggregations rank rows via a ROW_NUMBER
             # subquery (built in ``_build_ranked_subquery_from_planned``) and
             # pick ``rn = 1`` through ``MAX(CASE WHEN _rn = 1 THEN col END)``.
-            # An explicit positional arg (``latest_amount:last(created_at)``)
-            # overrides the query's default ranking time column; bind it to a
-            # qualified SQL string here so ``_build_last_ranked_from`` / the
-            # planned ranked-subquery builder can ORDER BY it.
-            explicit_time_col: Optional[str] = None
-            if key.agg in ("first", "last"):
-                for a in key.args:
-                    if isinstance(a, ColumnKey):
-                        if a.path:
-                            explicit_time_col = (
-                                "__".join(a.path) + f".{a.leaf}"
-                            )
-                        else:
-                            explicit_time_col = f"{source_relation}.{a.leaf}"
-                        break
-            # Aggregations outside the built-in set are custom user-defined
-            # ``Aggregation``s declared on ``SlayerModel.aggregations``; thread
-            # the model's definition into ``EnrichedMeasure.aggregation_def`` so
-            # ``_build_formula_agg`` renders the custom formula. An unknown
-            # name (neither built-in nor defined) is a hard error.
-            agg_def = None
-            if key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
-                agg_def = next(
-                    (a for a in (source_model.aggregations or []) if a.name == key.agg),
-                    None,
-                )
-                if agg_def is None:
-                    raise AggregationNotAllowedError(
-                        column=src_leaf,
-                        agg=key.agg,
-                        reason=(
-                            f"unknown aggregation {key.agg!r} — not a built-in "
-                            f"and not defined in {source_model.name!r}."
-                            f"aggregations."
-                        ),
-                    )
-            # DEV-1450 stage 7b.13: validate kwarg ColumnKey paths against
-            # source.path. A kwarg path that doesn't match the aggregate
-            # source path would silently bind the kwarg to a different
-            # model (host vs joined target) than the aggregate value
-            # column -- meaningless SQL semantically. Caller-side
-            # cross-model rerooting strips the matching prefix from
-            # source AND kwargs before reaching this point; any residual
-            # mismatch surfaces here.
-            for kname, kval in key.kwargs:
-                if isinstance(kval, ColumnKey) and kval.path != source.path:
-                    raise AggregationNotAllowedError(
-                        column=src_leaf,
-                        agg=key.agg,
-                        reason=(
-                            f"kwarg {kname!r} references ColumnKey with "
-                            f"path {kval.path!r}; aggregate source path is "
-                            f"{source.path!r}. Cross-model kwargs must "
-                            f"share the source's join path."
-                        ),
-                    )
+            # An explicit positional arg (``latest_amount:last(created_at)``
+            # or ``…:last(derived_time_col)``) overrides the query's default
+            # ranking time column; the helper handles both bare-column
+            # (``ColumnKey``) and derived-column (``ColumnSqlKey``) args.
+            explicit_time_col = self._resolve_explicit_time_col(
+                key=key,
+                source_model=source_model,
+                source_relation=source_relation,
+                bundle=bundle,
+            )
+            agg_def = self._resolve_aggregation_def(
+                key=key, source_model=source_model, src_leaf=src_leaf,
+            )
+            self._validate_aggregate_kwarg_paths(
+                key=key, source=source, src_leaf=src_leaf,
+            )
             col = next(
                 (c for c in source_model.columns if c.name == src_leaf),
                 None,
@@ -7244,9 +7636,28 @@ class SQLGenerator:
                     f"Aggregate source column {src_leaf!r} not found "
                     f"on model {source_model.name!r}",
                 )
-            sql_text = col.sql if col.sql else col.name
+            # DEV-1452 Stage B — for derived (``ColumnSqlKey``) aggregate
+            # sources, the inner bare refs in ``Column.sql`` must qualify
+            # to ``source_relation`` (legacy enrichment did this pre-CAST
+            # via ``_enrich``'s derived-ref expansion; the typed pipeline
+            # never invoked the expander on aggregate sources, so the
+            # rendered SQL kept bare ``amount`` where it should be
+            # ``orders.amount``).
+            if (
+                isinstance(source, ColumnSqlKey)
+                and col.sql is not None
+                and bundle is not None
+            ):
+                sql_text = self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=col.name,
+                    bundle=bundle,
+                )
+            else:
+                sql_text = col.sql if col.sql else col.name
             # DEV-1450 stage 7b.13: stringify kwargs through the shared
-            # helper. ``EnrichedMeasure.agg_kwargs`` is ``Dict[str, str]``
+            # helper. ``AggRenderSpec.agg_kwargs`` is ``Dict[str, str]``
             # and downstream ``_validate_agg_param_value`` rejects
             # anything not matching ``_SAFE_AGG_PARAM_RE``; the helper
             # emits identifiers / dotted identifiers / numeric literals
@@ -7256,7 +7667,7 @@ class SQLGenerator:
                 k: agg_kwarg_canonical_str(v) for k, v in key.kwargs
             }
             # DEV-1450 stage 7b.12: propagate ``AggregateKey.column_filter_key``
-            # into ``EnrichedMeasure.filter_sql`` so ``_build_agg`` wraps the
+            # into ``AggRenderSpec.filter_sql`` so ``_build_agg`` wraps the
             # aggregate argument as ``SUM(CASE WHEN <filter> THEN col END)``.
             # Legacy ``resolve_filter_columns`` qualifies bare-identifier refs
             # in the filter with the host model name (so ``status = 'paid'``
@@ -7272,7 +7683,7 @@ class SQLGenerator:
                 source_relation=source_relation,
                 source_model=source_model,
             )
-            return EnrichedMeasure(
+            return AggRenderSpec(
                 name=col.name,
                 sql=sql_text,
                 aggregation=key.agg,
@@ -7286,8 +7697,7 @@ class SQLGenerator:
                 time_column=explicit_time_col,
             )
         raise NotImplementedError(
-            f"AggregateKey source {type(source).__name__} not supported "
-            f"in 7b.8."
+            f"AggregateKey source {type(source).__name__} not supported.",
         )
 
     def _build_where_having_from_planned(
@@ -7553,14 +7963,15 @@ class SQLGenerator:
                     f"per-plan CTE, not inline HAVING."
                 )
             slot = (slot_by_key or {}).get(key)
-            synth = self._synthesize_enriched_measure_from_planned(
+            synth = self._build_agg_render_spec_from_planned(
                 slot=slot,
                 key=key,
                 source_model=source_model,
                 source_relation=source_relation,
                 full_alias="__having_ref__",
+                bundle=bundle,
             )
-            agg_expr, _is_agg = self._build_agg(measure=synth)
+            agg_expr, _is_agg = self._build_agg(synth)
             return agg_expr
 
         if isinstance(key, ColumnKey):
@@ -7868,6 +8279,7 @@ class SQLGenerator:
         source_relation: str,
         slots_by_id: dict,
         source_model=None,
+        bundle=None,
     ) -> exp.Select:
         """ORDER BY entries reference slot ids — resolve to the slot's
         public alias and emit ``ORDER BY "source_relation.alias"
@@ -7896,6 +8308,7 @@ class SQLGenerator:
                         slot=slot,
                         source_model=source_model,
                         source_relation=source_relation,
+                        bundle=bundle,
                     )
                     ascending = order_entry.direction == "asc"
                     select = select.order_by(
@@ -8080,48 +8493,15 @@ def _stage_rename_wrapper(*, planned, stage_sql, dialect):
     """Wrap a rendered intermediate-stage SQL so its output columns are the
     flat names downstream stages bound against.
 
-    Derived from the ACTUAL rendered output aliases (``named_selects``), not
-    from a positional column list: ``generate_from_planned`` aliases each
-    public column as ``<source_relation>.<dotted_path_or_canonical>`` (e.g.
-    ``orders.status``, ``orders.customers.region``,
-    ``orders.customers.revenue_sum``). The wrapper strips the
-    ``<source_relation>.`` prefix and ``__``-flattens the remainder to the
-    downstream bind name (``customers__region``, ``customers__revenue_sum``),
-    matching ``StageColumn.name`` exactly. By-name, so robust to the cross-
-    model renderer emitting base columns before cross-model ones (which
-    diverges from ``public_projection`` order); and correct for joined
-    dimensions, whose rendered alias is the dotted path, not ``public_alias``.
+    Thin adapter around :func:`slayer.sql.stage_wrapper.build_flat_rename_wrapper`
+    (DEV-1452 Stage B decision B) — pulls ``source_relation`` and the
+    expected StageSchema column names off the ``PlannedQuery`` and forwards
+    to the shared helper. The migrated ``_expand_query_backed_model`` path
+    calls the helper directly with names derived from the typed plan.
     """
-    inner_alias = "_stage_inner"
-    body = sqlglot.parse_one(stage_sql, dialect=dialect)
-    prefix = f"{planned.source_relation}."
-    select = exp.Select()
-    produced: List[str] = []
-    for out_name in body.named_selects:
-        remainder = out_name[len(prefix):] if out_name.startswith(prefix) else out_name
-        flat = remainder.replace(".", "__")
-        produced.append(flat)
-        src = exp.Column(
-            this=exp.to_identifier(out_name, quoted=True),
-            table=exp.to_identifier(inner_alias),
-        )
-        select = select.select(
-            exp.alias_(src, exp.to_identifier(flat, quoted=True)),
-        )
-    # Fail fast if the rendered stage's output columns don't line up with the
-    # StageSchema the downstream stage bound against — a planner / generator
-    # divergence (e.g. a hidden aux column leaking, or a C13 multi-alias
-    # over-projection) would otherwise surface as a confusing downstream
-    # bind miss rather than here.
-    expected = [c.name for c in planned.stage_schema.columns]
-    if sorted(produced) != sorted(expected):
-        raise ValueError(
-            f"stage {planned.source_relation!r}: rendered output columns "
-            f"{produced!r} do not match the StageSchema {expected!r}.",
-        )
-    return select.from_(
-        exp.Subquery(
-            this=body,
-            alias=exp.TableAlias(this=exp.to_identifier(inner_alias)),
-        ),
+    return build_flat_rename_wrapper(
+        source_relation=planned.source_relation,
+        stage_sql=stage_sql,
+        expected_columns=[c.name for c in planned.stage_schema.columns],
+        dialect=dialect,
     )

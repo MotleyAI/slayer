@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from slayer.core.enums import DataType, JoinType
 from slayer.core.errors import UnreachableFilterDroppedWarning
+from slayer.core.format import NumberFormat
 from slayer.core.keys import Phase, ValueKey
 from slayer.core.models import SlayerModel
 from slayer.core.scope import StageSchema
@@ -103,6 +104,14 @@ class ValueSlot(BaseModel):
     label: Optional[str] = None
     type: Optional[DataType] = None
     expression: Optional[BoundExpr] = None
+    # DEV-1452 Stage B decision #8 — typed format / description propagated
+    # by the planner from the source ``ModelMeasure`` / ``Column`` and
+    # ``_infer_aggregated_format``. Consumed by the migrated
+    # ``_expand_query_backed_model`` (via the public ``StageSchema``) so
+    # query-backed virtual-model columns carry the same display metadata
+    # the legacy enrichment pipeline produced.
+    format: Optional[NumberFormat] = None
+    description: Optional[str] = None
 
     @model_validator(mode="after")
     def _hidden_invariant(self) -> "ValueSlot":

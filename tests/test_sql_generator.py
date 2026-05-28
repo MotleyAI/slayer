@@ -21,7 +21,12 @@ from slayer.engine.enriched import (
 )
 from slayer.engine.enrichment import enrich_query
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.sql.generator import SQLGenerator, _cte_name_from_alias, _validate_agg_param_value
+from slayer.sql.generator import (
+    SQLGenerator,
+    _agg_render_spec_from_enriched,
+    _cte_name_from_alias,
+    _validate_agg_param_value,
+)
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -2227,19 +2232,19 @@ class TestMedianPercentilePerDialect:
     def test_build_percentile_postgres(self) -> None:
         gen = SQLGenerator(dialect="postgres")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.95"})
-        sql = gen._build_percentile(m).sql(dialect="postgres")
+        sql = gen._build_percentile(_agg_render_spec_from_enriched(m)).sql(dialect="postgres")
         assert sql == "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY orders.amount)"
 
     def test_build_percentile_sqlite(self) -> None:
         gen = SQLGenerator(dialect="sqlite")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
-        sql = gen._build_percentile(m).sql(dialect="sqlite")
+        sql = gen._build_percentile(_agg_render_spec_from_enriched(m)).sql(dialect="sqlite")
         assert sql == "PERCENTILE_CONT(orders.amount, 0.5)"
 
     def test_build_percentile_clickhouse_emits_quantile(self) -> None:
         gen = SQLGenerator(dialect="clickhouse")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.75"})
-        sql = gen._build_percentile(m).sql(dialect="clickhouse")
+        sql = gen._build_percentile(_agg_render_spec_from_enriched(m)).sql(dialect="clickhouse")
         # ClickHouse parametric aggregate syntax.
         assert sql == "quantile(0.75)(orders.amount)"
 
@@ -2247,13 +2252,13 @@ class TestMedianPercentilePerDialect:
     def test_build_percentile_clickhouse_param_substitution(self, p: str) -> None:
         gen = SQLGenerator(dialect="clickhouse")
         m = self._measure(agg="percentile", agg_kwargs={"p": p})
-        sql = gen._build_percentile(m).sql(dialect="clickhouse")
+        sql = gen._build_percentile(_agg_render_spec_from_enriched(m)).sql(dialect="clickhouse")
         assert sql == f"quantile({p})(orders.amount)"
 
     def test_build_percentile_duckdb(self) -> None:
         gen = SQLGenerator(dialect="duckdb")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
-        sql = gen._build_percentile(m).sql(dialect="duckdb")
+        sql = gen._build_percentile(_agg_render_spec_from_enriched(m)).sql(dialect="duckdb")
         # sqlglot rewrites the WITHIN GROUP form to DuckDB's QUANTILE_CONT.
         assert "QUANTILE_CONT" in sql
         # Qualified column.
@@ -2263,19 +2268,19 @@ class TestMedianPercentilePerDialect:
         gen = SQLGenerator(dialect="mysql")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.5"})
         with pytest.raises(NotImplementedError, match="MySQL"):
-            gen._build_percentile(m)
+            gen._build_percentile(_agg_render_spec_from_enriched(m))
 
     def test_build_percentile_missing_p_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
         m = self._measure(agg="percentile", agg_kwargs={})
         with pytest.raises(ValueError, match="requires parameter 'p'"):
-            gen._build_percentile(m)
+            gen._build_percentile(_agg_render_spec_from_enriched(m))
 
     def test_build_percentile_unsafe_p_rejected(self) -> None:
         gen = SQLGenerator(dialect="postgres")
         m = self._measure(agg="percentile", agg_kwargs={"p": "0.5); DROP TABLE x; --"})
         with pytest.raises(ValueError, match="Unsafe value"):
-            gen._build_percentile(m)
+            gen._build_percentile(_agg_render_spec_from_enriched(m))
 
     def test_build_percentile_uses_model_level_default_p(self) -> None:
         """Model-level Aggregation(name='percentile', params=[p=...]) supplies the default."""
@@ -2293,7 +2298,7 @@ class TestMedianPercentilePerDialect:
             agg_kwargs={},
             aggregation_def=agg_def,
         )
-        sql = gen._build_percentile(m).sql(dialect="postgres")
+        sql = gen._build_percentile(_agg_render_spec_from_enriched(m)).sql(dialect="postgres")
         assert sql == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)"
 
     def test_build_percentile_query_kwarg_overrides_model_default(self) -> None:
@@ -2312,7 +2317,7 @@ class TestMedianPercentilePerDialect:
             agg_kwargs={"p": "0.25"},
             aggregation_def=agg_def,
         )
-        sql = gen._build_percentile(m).sql(dialect="postgres")
+        sql = gen._build_percentile(_agg_render_spec_from_enriched(m)).sql(dialect="postgres")
         assert sql == "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY orders.amount)"
 
     # --- A2: percentile p must be a numeric literal in [0, 1] -----------
@@ -2333,7 +2338,7 @@ class TestMedianPercentilePerDialect:
             agg_kwargs={"p": "quantity"},
         )
         with pytest.raises(ValueError, match="numeric literal"):
-            gen._build_percentile(m)
+            gen._build_percentile(_agg_render_spec_from_enriched(m))
 
     def test_build_percentile_rejects_p_out_of_range(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -2343,7 +2348,7 @@ class TestMedianPercentilePerDialect:
             agg_kwargs={"p": "1.5"},
         )
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            gen._build_percentile(m)
+            gen._build_percentile(_agg_render_spec_from_enriched(m))
 
     def test_build_percentile_rejects_p_negative(self) -> None:
         gen = SQLGenerator(dialect="postgres")
@@ -2353,7 +2358,7 @@ class TestMedianPercentilePerDialect:
             agg_kwargs={"p": "-0.1"},
         )
         with pytest.raises(ValueError, match=r"\[0, 1\]"):
-            gen._build_percentile(m)
+            gen._build_percentile(_agg_render_spec_from_enriched(m))
 
     def test_build_percentile_rejects_non_literal_p_via_model_default(self) -> None:
         """Model-level defaults bypass `_validate_agg_param_value` (trust
@@ -2373,7 +2378,7 @@ class TestMedianPercentilePerDialect:
             agg_kwargs={}, aggregation_def=agg_def,
         )
         with pytest.raises(ValueError, match="numeric literal"):
-            gen._build_percentile(m)
+            gen._build_percentile(_agg_render_spec_from_enriched(m))
 
 
 class TestStatAggsPerDialect:
@@ -2421,7 +2426,7 @@ class TestStatAggsPerDialect:
     def test_build_stddev_samp(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
         m = self._measure(agg="stddev_samp")
-        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect=dialect)
         assert sql == expected
 
     # --- stddev_pop --------------------------------------------------------
@@ -2438,7 +2443,7 @@ class TestStatAggsPerDialect:
     def test_build_stddev_pop(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
         m = self._measure(agg="stddev_pop")
-        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect=dialect)
         assert sql == expected
 
     # --- var_samp ----------------------------------------------------------
@@ -2463,7 +2468,7 @@ class TestStatAggsPerDialect:
     def test_build_var_samp(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
         m = self._measure(agg="var_samp")
-        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect=dialect)
         assert sql == expected
 
     # --- var_pop -----------------------------------------------------------
@@ -2484,7 +2489,7 @@ class TestStatAggsPerDialect:
     def test_build_var_pop(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
         m = self._measure(agg="var_pop")
-        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect=dialect)
         assert sql == expected
 
     # --- corr (2-arg via `other=` kwarg) ----------------------------------
@@ -2505,7 +2510,7 @@ class TestStatAggsPerDialect:
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
-        sql = gen._build_agg(measure=m)[0].sql(dialect=dialect)
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect=dialect)
         # Both legs go through _resolve_sql, so a bare `quantity` kwarg
         # qualifies under the LHS measure's model_name.
         assert sql == f"{sql_fn}(orders.amount, orders.quantity)"
@@ -2514,7 +2519,7 @@ class TestStatAggsPerDialect:
     def test_build_two_arg_stat_clickhouse(self, agg: str) -> None:
         gen = SQLGenerator(dialect="clickhouse")
         m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
-        sql = gen._build_agg(measure=m)[0].sql(dialect="clickhouse")
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect="clickhouse")
         # ClickHouse casing is its own thing; assert the call shape only.
         assert sql.lower() == f"{agg.lower()}(orders.amount, orders.quantity)"
 
@@ -2525,7 +2530,7 @@ class TestStatAggsPerDialect:
         gen = SQLGenerator(dialect="mysql")
         m = self._measure(agg=agg, agg_kwargs={"other": "quantity"})
         with pytest.raises(NotImplementedError, match="MySQL"):
-            gen._build_agg(measure=m)
+            gen._build_agg(_agg_render_spec_from_enriched(m))
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_mysql_missing_other_prioritises_param_error(
@@ -2539,14 +2544,14 @@ class TestStatAggsPerDialect:
         gen = SQLGenerator(dialect="mysql")
         m = self._measure(agg=agg, agg_kwargs={})
         with pytest.raises(ValueError, match=r"requires parameter 'other'"):
-            gen._build_agg(measure=m)
+            gen._build_agg(_agg_render_spec_from_enriched(m))
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_missing_other_raises(self, agg: str) -> None:
         gen = SQLGenerator(dialect="postgres")
         m = self._measure(agg=agg, agg_kwargs={})
         with pytest.raises(ValueError, match=r"requires parameter 'other'|other="):
-            gen._build_agg(measure=m)
+            gen._build_agg(_agg_render_spec_from_enriched(m))
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_unsafe_other_rejected(self, agg: str) -> None:
@@ -2556,7 +2561,7 @@ class TestStatAggsPerDialect:
             agg_kwargs={"other": "quantity); DROP TABLE x; --"},
         )
         with pytest.raises(ValueError, match="Unsafe value"):
-            gen._build_agg(measure=m)
+            gen._build_agg(_agg_render_spec_from_enriched(m))
 
     # --- filter wrapping ---------------------------------------------------
 
@@ -2571,7 +2576,7 @@ class TestStatAggsPerDialect:
             agg_kwargs={},
             filter_sql="status = 'completed'",
         )
-        sql = gen._build_agg(measure=m)[0].sql(dialect="postgres")
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect="postgres")
         # Filter wraps the qualified column reference.
         assert "CASE WHEN status = 'completed' THEN orders.amount END" in sql
         assert "STDDEV_SAMP" in sql
@@ -2587,7 +2592,7 @@ class TestStatAggsPerDialect:
             agg_kwargs={"other": "quantity"},
             filter_sql="status = 'completed'",
         )
-        sql = gen._build_agg(measure=m)[0].sql(dialect="postgres")
+        sql = gen._build_agg(_agg_render_spec_from_enriched(m))[0].sql(dialect="postgres")
         # Both legs of corr() must be wrapped in CASE WHEN so non-matching
         # rows contribute NULL pairs (which the aggregate skips entirely).
         assert sql.count("CASE WHEN status = 'completed'") == 2

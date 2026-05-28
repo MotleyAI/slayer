@@ -330,7 +330,12 @@ class SqlExprKey(_FrozenKey):
 
 
 _AggregateSource = Union[ColumnKey, ColumnSqlKey, StarKey]
-_AggregateKwargValue = Union[ColumnKey, ColumnSqlKey, Decimal, str, bool, None]
+# Positional and keyword arg values accept the same union — both
+# `last(created_at)` (positional ColumnKey time arg) and
+# `weighted_avg(weight=qty)` (kwarg ColumnKey) bind to identifier columns
+# via `_bind_agg_arg`. Reusing one alias for both keeps the surface tight.
+_AggregateArgValue = Union[ColumnKey, ColumnSqlKey, Decimal, str, bool, None]
+_AggregateKwargValue = _AggregateArgValue
 
 
 def _sort_kwargs_tuple(v):
@@ -361,7 +366,7 @@ class AggregateKey(_FrozenKey):
 
     source: _AggregateSource
     agg: str
-    args: Tuple[Scalar, ...] = ()
+    args: Tuple[_AggregateArgValue, ...] = ()
     kwargs: Tuple[Tuple[str, _AggregateKwargValue], ...] = ()
     column_filter_key: Optional[SqlExprKey] = None
 

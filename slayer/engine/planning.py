@@ -30,6 +30,7 @@ from typing import Dict, FrozenSet, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import DataType
+from slayer.core.format import NumberFormat
 from slayer.core.errors import (
     CanonicalAliasShadowsColumnError,
     DuplicateMeasureNameError,
@@ -74,6 +75,32 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+def _fill_missing_metadata(
+    *,
+    slot: ValueSlot,
+    updates: Dict,
+    label: Optional[str] = None,
+    type: Optional[DataType] = None,
+    format: Optional[NumberFormat] = None,
+    description: Optional[str] = None,
+) -> None:
+    """Populate ``updates`` with each per-field value that is set on the
+    incoming intern call AND missing on the existing slot (DEV-1452 round-2
+    refactor of the previous if-chain to keep
+    :meth:`ValueRegistry._merge_into_existing` under the S3776 complexity
+    cap). Mutates ``updates`` in place; never overrides an already-set
+    field on the slot.
+    """
+    for field_name, new_value in (
+        ("label", label),
+        ("type", type),
+        ("format", format),
+        ("description", description),
+    ):
+        if getattr(slot, field_name) is None and new_value is not None:
+            updates[field_name] = new_value
+
+
 class ValueRegistry:
     """Interns ``ValueKey``s by structural identity into ``ValueSlot``s.
 
@@ -116,6 +143,8 @@ class ValueRegistry:
         label: Optional[str] = None,
         type: Optional[DataType] = None,
         expression: Optional["BoundExpr"] = None,
+        format: Optional[NumberFormat] = None,
+        description: Optional[str] = None,
     ) -> SlotId:
         # Alias-collision validations (P4 / DEV-1443).
         # Exemption: a dimension whose public name IS its own column
@@ -180,6 +209,10 @@ class ValueRegistry:
                 public_name=public_name,
                 declared_name=declared_name,
                 hidden=hidden,
+                label=label,
+                type=type,
+                format=format,
+                description=description,
             )
 
         # Fresh slot. Check declared_name collision against a different key.
@@ -207,6 +240,8 @@ class ValueRegistry:
             label=label,
             type=type,
             expression=expression if expression is not None else BoundExpr(value_key=key),
+            format=format,
+            description=description,
         )
         self._slots[sid] = slot
         self._by_key[key] = sid
@@ -221,6 +256,10 @@ class ValueRegistry:
         public_name: Optional[str],
         declared_name: str,
         hidden: bool,
+        label: Optional[str] = None,
+        type: Optional[DataType] = None,
+        format: Optional[NumberFormat] = None,
+        description: Optional[str] = None,
     ) -> SlotId:
         slot = self._slots[existing_sid]
         updates: Dict = {}
@@ -242,6 +281,18 @@ class ValueRegistry:
         elif not hidden and slot.hidden and public_name is None:
             # Re-intern as non-hidden — promote to public.
             updates["hidden"] = False
+        # Codex: when a hidden slot is promoted to public, carry the
+        # display metadata supplied by the public re-intern. Only fill
+        # missing fields — never overwrite metadata the first intern
+        # already supplied.
+        _fill_missing_metadata(
+            slot=slot,
+            updates=updates,
+            label=label,
+            type=type,
+            format=format,
+            description=description,
+        )
         if updates:
             new_slot = slot.model_copy(update=updates)
             self._slots[existing_sid] = new_slot
@@ -382,6 +433,13 @@ class DeclaredMeasure(BaseModel):
     ``bound`` is the binder's output. ``declared_name`` is the canonical
     or user-supplied name. ``public_name`` is the user-facing alias —
     set when the user supplied an explicit ``name`` on the measure spec.
+
+    DEV-1452 Stage B decisions #2 + #8: ``type``, ``format``, and
+    ``description`` carry typed display + slot metadata from the source
+    ``ModelMeasure`` / ``Column`` so the public slot retains the same
+    contract the legacy enrichment pipeline produced. ``type`` mirrors
+    the legacy ``EnrichedMeasure.type`` (count → INT, avg → DOUBLE,
+    sum/min/max → source column type).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -391,6 +449,9 @@ class DeclaredMeasure(BaseModel):
     public_name: Optional[str] = None
     label: Optional[str] = None
     canonical_alias: Optional[str] = None
+    type: Optional[DataType] = None
+    format: Optional[NumberFormat] = None
+    description: Optional[str] = None
 
 
 class OrderSpec(BaseModel):
@@ -508,6 +569,9 @@ class ProjectionPlanner:
                 canonical_alias=m.canonical_alias,
                 phase=m.bound.phase,
                 label=m.label,
+                type=m.type,
+                format=m.format,
+                description=m.description,
             )
             public_projection.append(sid)
             # Materialise any auxiliary slot-worthy deps of the measure
