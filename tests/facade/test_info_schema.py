@@ -1,21 +1,29 @@
-"""Tests for slayer.flight.info_schema — INFORMATION_SCHEMA.* responses."""
+"""Tests for slayer.facade.info_schema — INFORMATION_SCHEMA.* responses.
+
+The shared builder returns a pyarrow-free ``RowBatch`` (column descriptors +
+row dicts). Each facade renders it into its own wire format.
+"""
 
 from __future__ import annotations
 
-import pyarrow as pa
 import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
-from slayer.flight.catalog import build_catalog
-from slayer.flight.info_schema import (
+from slayer.facade.catalog import build_catalog
+from slayer.facade.info_schema import (
     SUPPORTED_INFO_SCHEMA_TABLES,
     match_info_schema,
 )
+from slayer.facade.rows import RowBatch
 
 
 def _parse(sql: str):
     return sqlglot.parse_one(sql)
+
+
+def _names(batch: RowBatch) -> list[str]:
+    return [c.name for c in batch.columns]
 
 
 def _demo_catalog():
@@ -58,20 +66,14 @@ def test_non_info_schema_select_returns_none() -> None:
 
 
 def test_unknown_info_schema_table_returns_none() -> None:
-    """Unrecognised INFORMATION_SCHEMA.<X> still falls through to the next
-    pipeline step rather than being silently treated as a Flight table."""
     assert match_info_schema(parsed=_parse("SELECT * FROM information_schema.bogus"), catalog=_demo_catalog()) is None
 
 
 def test_foreign_catalog_information_schema_returns_none() -> None:
-    """``other.INFORMATION_SCHEMA.METRICS`` must not silently return SLayer
-    metadata — falling through to the table-resolution path lets it raise
-    the standard ``Unknown catalog`` error."""
     assert match_info_schema(
         parsed=_parse("SELECT * FROM other.INFORMATION_SCHEMA.METRICS"),
         catalog=_demo_catalog(),
     ) is None
-    # The SLayer catalog name itself is still accepted.
     assert match_info_schema(
         parsed=_parse("SELECT * FROM slayer.INFORMATION_SCHEMA.METRICS"),
         catalog=_demo_catalog(),
@@ -79,8 +81,6 @@ def test_foreign_catalog_information_schema_returns_none() -> None:
 
 
 def test_catalog_qualifier_is_case_insensitive() -> None:
-    """The catalog-qualifier match must follow the same case-insensitive
-    rule the schema and table comparisons use."""
     cat = _demo_catalog()
     for sql in [
         "SELECT * FROM SLAYER.INFORMATION_SCHEMA.METRICS",
@@ -91,9 +91,6 @@ def test_catalog_qualifier_is_case_insensitive() -> None:
 
 
 def test_foreign_schema_with_slayer_catalog_returns_none() -> None:
-    """A valid catalog qualifier with a non-INFORMATION_SCHEMA db must still
-    fall through (e.g. ``slayer.public.METRICS``) — the schema match is the
-    one that gates whether we serve canned INFORMATION_SCHEMA bytes."""
     assert match_info_schema(
         parsed=_parse("SELECT * FROM slayer.public.METRICS"),
         catalog=_demo_catalog(),
@@ -102,20 +99,18 @@ def test_foreign_schema_with_slayer_catalog_returns_none() -> None:
 
 def test_metrics_table_shape_and_content() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
-    assert table is not None
-    assert table.schema.names == [
+    batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
+    assert batch is not None
+    assert _names(batch) == [
         "catalog_name", "schema_name", "table_name", "metric_name",
         "description", "data_type", "label",
     ]
-    rows = table.to_pylist()
-    # At least one row per non-hidden model.
+    rows = batch.rows
     by_table = {(r["table_name"], r["metric_name"]) for r in rows}
     assert ("orders", "row_count") in by_table
     assert ("orders", "aov") in by_table
     assert ("orders", "revenue_sum") in by_table
     assert ("customers", "row_count") in by_table
-    # Joined-path metric also surfaces.
     assert any(
         r["table_name"] == "orders" and r["metric_name"] == "customers.row_count"
         for r in rows
@@ -124,13 +119,13 @@ def test_metrics_table_shape_and_content() -> None:
 
 def test_dimensions_table_shape() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM information_schema.dimensions"), catalog=cat)
-    assert table is not None
-    assert table.schema.names == [
+    batch = match_info_schema(parsed=_parse("SELECT * FROM information_schema.dimensions"), catalog=cat)
+    assert batch is not None
+    assert _names(batch) == [
         "catalog_name", "schema_name", "table_name", "dimension_name",
         "description", "data_type", "label", "is_time",
     ]
-    rows = table.to_pylist()
+    rows = batch.rows
     by_name = {(r["table_name"], r["dimension_name"]): r for r in rows}
     assert ("orders", "ordered_at") in by_name
     assert by_name[("orders", "ordered_at")]["is_time"] is True
@@ -140,12 +135,12 @@ def test_dimensions_table_shape() -> None:
 
 def test_tables_table_shape() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.TABLES"), catalog=cat)
-    assert table is not None
-    assert table.schema.names == [
+    batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.TABLES"), catalog=cat)
+    assert batch is not None
+    assert _names(batch) == [
         "table_catalog", "table_schema", "table_name", "table_type",
     ]
-    rows = table.to_pylist()
+    rows = batch.rows
     table_names = {r["table_name"] for r in rows}
     assert table_names == {"orders", "customers"}
     types = {r["table_name"]: r["table_type"] for r in rows}
@@ -154,22 +149,21 @@ def test_tables_table_shape() -> None:
 
 def test_schemata_table() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA"), catalog=cat)
-    assert table is not None
-    assert table.schema.names == ["catalog_name", "schema_name"]
-    rows = table.to_pylist()
-    assert rows == [{"catalog_name": "slayer", "schema_name": "jaffle"}]
+    batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA"), catalog=cat)
+    assert batch is not None
+    assert _names(batch) == ["catalog_name", "schema_name"]
+    assert batch.rows == [{"catalog_name": "slayer", "schema_name": "jaffle"}]
 
 
 def test_columns_table_flattens_metrics_and_dimensions() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.COLUMNS"), catalog=cat)
-    assert table is not None
-    assert table.schema.names == [
+    batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.COLUMNS"), catalog=cat)
+    assert batch is not None
+    assert _names(batch) == [
         "table_catalog", "table_schema", "table_name", "column_name",
         "ordinal_position", "data_type", "is_nullable", "column_kind",
     ]
-    rows = table.to_pylist()
+    rows = batch.rows
     kinds_by_col = {
         (r["table_name"], r["column_name"]): r["column_kind"] for r in rows
     }
@@ -177,7 +171,6 @@ def test_columns_table_flattens_metrics_and_dimensions() -> None:
     assert kinds_by_col[("orders", "ordered_at")] == "DIMENSION"
     assert kinds_by_col[("orders", "row_count")] == "METRIC"
     assert kinds_by_col[("orders", "aov")] == "METRIC"
-    # Ordinal positions are sequential within each (catalog, schema, table).
     for (sch, tbl), ords in _group_ordinals(rows).items():
         assert ords == list(range(1, len(ords) + 1)), f"{(sch, tbl)} ordinals: {ords}"
 
@@ -197,15 +190,15 @@ def test_case_insensitive_information_schema_match() -> None:
         "SELECT * FROM information_schema.metrics",
         "SELECT * FROM Information_Schema.Metrics",
     ]:
-        table = match_info_schema(parsed=_parse(sql), catalog=cat)
-        assert table is not None, f"failed to match: {sql}"
-        assert table.schema.names[0] == "catalog_name"
+        batch = match_info_schema(parsed=_parse(sql), catalog=cat)
+        assert batch is not None, f"failed to match: {sql}"
+        assert _names(batch)[0] == "catalog_name"
 
 
 def test_metric_data_type_renders_as_jdbc_string() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
-    rows = table.to_pylist()
+    batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
+    rows = batch.rows
     aov = next(r for r in rows if r["table_name"] == "orders" and r["metric_name"] == "aov")
     assert aov["data_type"] == "DOUBLE"
     revenue_sum = next(
@@ -222,8 +215,8 @@ def test_metric_data_type_renders_as_jdbc_string() -> None:
 
 def test_dimension_data_type_renders_as_jdbc_string() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.DIMENSIONS"), catalog=cat)
-    rows = table.to_pylist()
+    batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.DIMENSIONS"), catalog=cat)
+    rows = batch.rows
     ordered_at = next(
         r for r in rows
         if r["table_name"] == "orders" and r["dimension_name"] == "ordered_at"
@@ -231,8 +224,9 @@ def test_dimension_data_type_renders_as_jdbc_string() -> None:
     assert ordered_at["data_type"] == "TIMESTAMP"
 
 
-def test_metrics_table_is_pyarrow_table_with_correct_dtypes() -> None:
+def test_metrics_batch_data_type_column_is_text() -> None:
     cat = _demo_catalog()
-    table = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
-    assert isinstance(table, pa.Table)
-    assert table.schema.field("data_type").type == pa.utf8()
+    batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
+    assert isinstance(batch, RowBatch)
+    by_col = {c.name: c.type for c in batch.columns}
+    assert by_col["data_type"] == DataType.TEXT

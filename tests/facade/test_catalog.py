@@ -1,4 +1,4 @@
-"""Tests for slayer.flight.catalog — FlightCatalog construction (DEV-1390 §5)."""
+"""Tests for slayer.facade.catalog — FacadeCatalog construction (DEV-1390 §5)."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ from slayer.core.models import (
     ModelMeasure,
     SlayerModel,
 )
-from slayer.flight.catalog import (
+from slayer.facade.catalog import (
     CATALOG_NAME,
     DEFAULT_BFS_DEPTH,
-    FlightCatalog,
-    FlightTable,
+    FacadeCatalog,
+    FacadeTable,
     build_catalog,
 )
 
@@ -49,7 +49,7 @@ def _model(
     )
 
 
-def _find_table(catalog: FlightCatalog, *, schema: str, table: str) -> FlightTable:
+def _find_table(catalog: FacadeCatalog, *, schema: str, table: str) -> FacadeTable:
     schema_obj = next(s for s in catalog.schemas if s.name == schema)
     return next(t for t in schema_obj.tables if t.name == table)
 

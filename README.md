@@ -31,7 +31,7 @@ SLayer naturally evolves when the agent uses it. For example, if a query require
 
 SLayer compiles queries into the correct SQL for your database, handling joins, aggregations, time-based calculations, and dialect differences. Its DSL is very expressive, [supporting](https://motley-slayer.readthedocs.io/en/latest/examples/04_time/time/) queries like _"month-on-month % increase in total revenue, compared to the previous year"_, [queries-as-models](https://motley-slayer.readthedocs.io/en/latest/examples/06_multistage_queries/multistage_queries/) and much more.
 
-SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), and [Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) (JDBC, BI-tool compatible) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
+SLayer exposes [MCP](https://github.com/MotleyAI/slayer?tab=readme-ov-file#mcp-server), [REST API](https://github.com/MotleyAI/slayer?tab=readme-ov-file#rest-api), [CLI](https://github.com/MotleyAI/slayer?tab=readme-ov-file#cli), [Python](https://github.com/MotleyAI/slayer?tab=readme-ov-file#python-client), [Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) (JDBC, BI-tool compatible), and a [Postgres facade](https://motley-slayer.readthedocs.io/en/latest/interfaces/pg-facade/) (point any BI dashboard's Postgres connector at SLayer) interfaces and [supports](https://motley-slayer.readthedocs.io/en/latest/configuration/datasources/#supported-database-types) most popular databases.
 
 ### Example
 
@@ -169,6 +169,20 @@ curl http://localhost:5143/datasources/my_postgres
 ```
 
 See more in the [docs](https://motley-slayer.readthedocs.io/en/latest/reference/rest-api/).
+
+### BI Dashboards
+
+View your SLayer models from any BI tool — no Java or custom driver needed. Start the Postgres facade and point a dashboard's **PostgreSQL** connector at it:
+
+```bash
+# Start SLayer speaking the Postgres wire protocol (Jaffle Shop demo)
+poetry run slayer pg-serve --demo            # listens on 127.0.0.1:5145
+
+# e.g. Metabase: Add database -> PostgreSQL
+#   host=host.docker.internal  port=5145  database=jaffle_shop  (user/password: anything)
+```
+
+The connection's `database` selects the SLayer datasource; its models appear as tables under schema `public`. There's also an [Arrow Flight SQL](https://motley-slayer.readthedocs.io/en/latest/interfaces/flight-sql/) facade for JDBC clients. See the [Postgres facade docs](https://motley-slayer.readthedocs.io/en/latest/interfaces/pg-facade/) for auth, TLS, and the supported SQL surface.
 
 
 

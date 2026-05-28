@@ -33,6 +33,9 @@ nav:
       - Python Client: reference/python-client.md
       - CLI: reference/cli.md
       - Database Support: database-support.md
+  - Wire Protocols (BI Tools):
+      - Flight SQL: interfaces/flight-sql.md
+      - Postgres Facade: interfaces/pg-facade.md
   - dbt:
       - SLayer vs dbt: dbt/slayer_vs_dbt.md
       - Importing dbt definitions: dbt/dbt_import.md
