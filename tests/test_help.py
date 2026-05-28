@@ -10,9 +10,8 @@ from typing import Any
 
 import pytest
 
-from slayer.core.formula import parse_filter, parse_formula
 from slayer.core.query import SlayerQuery
-from slayer.engine.enrichment import extract_filter_transforms
+from slayer.engine.syntax import parse_expr, parse_filter_expr
 from slayer.help import (
     TOPIC_SUMMARY_LINE,
     available_topic_names,
@@ -186,15 +185,14 @@ def _collect_filter_strings(query_dict: dict) -> list[str]:
 
 
 def test_every_field_formula_parses() -> None:
-    """Every measure formula in every snippet must parse via parse_formula.
+    """Every measure formula in every snippet must parse via ``parse_expr``.
 
     Help-doc snippets sometimes reference saved ModelMeasures by bare name
-    (e.g. ``{"formula": "aov"}``). These names aren't defined in the snippet
-    itself, so we pass a permissive ``named_measures`` that maps the doc-
-    convention name(s) to a stand-in formula. Add new doc-only saved-measure
-    names here if the help corpus grows.
+    (e.g. ``{"formula": "aov"}``). The typed DSL parser accepts bare names
+    as ``Ref`` nodes; resolution against the model's saved-measure registry
+    happens at binding time. The test's original intent is that doc
+    snippets are syntactically valid, so the parser-only check suffices.
     """
-    DOC_SAVED_MEASURES = {"aov": "revenue:sum / *:count"}
     failures: list[str] = []
     for label, body in _all_topic_bodies():
         for offset, snippet in _json_snippets(body):
@@ -208,19 +206,18 @@ def test_every_field_formula_parses() -> None:
                     continue
                 for formula in _collect_field_formulas(q):
                     try:
-                        parse_formula(formula, named_measures=DOC_SAVED_MEASURES)
+                        parse_expr(formula)
                     except Exception as exc:
-                        failures.append(f"{label} @ {offset}: parse_formula({formula!r}) — {exc}")
+                        failures.append(f"{label} @ {offset}: parse_expr({formula!r}) — {exc}")
     assert not failures, "Formulas that failed to parse:\n" + "\n".join(failures)
 
 
 def test_every_filter_string_parses() -> None:
-    """Every filter string must parse through the engine's full filter pipeline.
+    """Every filter string must parse through ``parse_filter_expr``.
 
-    The engine's ``extract_filter_transforms`` pulls inline transforms out
-    first (rewriting e.g. ``"last(change(x)) < 0"`` to ``"ft_0 < 0"`` with an
-    extra hidden field), then the rewritten condition is passed to
-    ``parse_filter``. This mirrors what the engine does at query time.
+    ``parse_filter_expr`` is the typed-pipeline filter parser; it accepts
+    every shape the docs reference (raw predicates, inline transforms like
+    ``last(change(x)) < 0``, string-hygiene calls, etc.).
     """
     failures: list[str] = []
     for label, body in _all_topic_bodies():
@@ -235,8 +232,7 @@ def test_every_filter_string_parses() -> None:
                     continue
                 for filter_str in _collect_filter_strings(q):
                     try:
-                        rewritten, _ = extract_filter_transforms(filter_str)
-                        parse_filter(rewritten)
+                        parse_filter_expr(filter_str)
                     except Exception as exc:
-                        failures.append(f"{label} @ {offset}: parse_filter({filter_str!r}) — {exc}")
+                        failures.append(f"{label} @ {offset}: parse_filter_expr({filter_str!r}) — {exc}")
     assert not failures, "Filter strings that failed to parse:\n" + "\n".join(failures)
