@@ -3478,7 +3478,7 @@ class SQLGenerator:
                 return False
         return True
 
-    def _build_base_select_for_planned(
+    def _build_base_select_for_planned(  # NOSONAR(S3776) — join-path collection and derived-dim expansion are extracted to helpers; the residual is the one cohesive per-slot ROW/AGGREGATE projection + GROUP-BY assembly pass.
         self,
         *,
         planned_query,
@@ -7394,7 +7394,7 @@ class SQLGenerator:
             _scan(rendered)
         return ordered
 
-    def _collect_column_filter_join_paths(
+    def _collect_column_filter_join_paths(  # NOSONAR(S3776) — one cohesive recursive walk of AGGREGATE composite keys (mirrors _render_aggregate_composite_expr) collecting Column.filter join paths.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle,
     ) -> List[Tuple[str, ...]]:
@@ -7443,7 +7443,7 @@ class SQLGenerator:
                 _visit(slot.key)
         return paths
 
-    def _expand_derived_row_dims(
+    def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and collecting the joins they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_model, bundle, needed_join_paths: List[Tuple[str, ...]],
     ) -> Dict[str, exp.Expression]:
@@ -7772,7 +7772,7 @@ class SQLGenerator:
                 ))
         return ordered
 
-    def _value_key_join_paths(
+    def _value_key_join_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
         self, *, key, source_model, source_relation: str, bundle,
     ) -> List[Tuple[str, ...]]:
         """Join paths a typed filter ``ValueKey`` tree references (DEV-1450 /

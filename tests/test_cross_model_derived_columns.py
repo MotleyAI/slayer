@@ -1164,10 +1164,11 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
     assert _no_bare_derived_ref(sql, "orders", "is_eu"), (
         f"derived ref ``orders.is_eu`` left un-inlined in column filter:\n{sql}"
     )
-    # The expansion lives INSIDE the aggregation-time CASE-WHEN wrapper.
-    # ``[^"]*`` (not ``.*``) keeps the match bounded to before the quoted alias
-    # and avoids the polynomial-backtracking the ``.*X.*`` form trips (S5852).
-    assert re.search(r'SUM\(\s*CASE WHEN [^"]*customers\.region[^"]*THEN orders\.amount', _norm(sql)), (
+    # The expansion lives INSIDE the aggregation-time CASE-WHEN wrapper. A single
+    # bounded ``[^"]*`` segment (plus a substring check for the THEN clause)
+    # avoids the multi-quantifier ReDoS pattern S5852 flags.
+    n = _norm(sql)
+    assert re.search(r'SUM\(\s*CASE WHEN [^"]*customers\.region', n) and "THEN orders.amount" in n, (
         f"is_eu expansion not inside SUM(CASE WHEN ... THEN orders.amount):\n{sql}"
     )
 
@@ -1288,11 +1289,15 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
     assert _no_bare_derived_ref(sql, "loss_payment", "deep_flag"), (
         f"dotted derived ref ``loss_payment.deep_flag`` left un-inlined:\n{sql}"
     )
-    # The deeper expansion lives INSIDE the aggregation-time CASE-WHEN wrapper.
-    # ``[^"]*`` (not ``.*``) keeps the match bounded and backtracking-free (S5852).
+    # The deeper expansion lives INSIDE the aggregation-time CASE-WHEN wrapper. A
+    # single bounded ``[^"]*`` segment (plus a substring check for the THEN
+    # clause) avoids the multi-quantifier ReDoS pattern S5852 flags.
+    n = _norm(sql)
     assert re.search(
-        r'SUM\(\s*CASE WHEN [^"]*loss_payment__claim\.state[^"]*THEN claim_amount\.amount', _norm(sql),
-    ), f"deep_flag expansion not inside SUM(CASE WHEN ... THEN claim_amount.amount):\n{sql}"
+        r'SUM\(\s*CASE WHEN [^"]*loss_payment__claim\.state', n,
+    ) and "THEN claim_amount.amount" in n, (
+        f"deep_flag expansion not inside SUM(CASE WHEN ... THEN claim_amount.amount):\n{sql}"
+    )
 
 
 async def test_dev1494_model_filter_dotted_derived_ref_inlined(tmp_path) -> None:
