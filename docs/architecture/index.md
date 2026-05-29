@@ -212,11 +212,24 @@ the kind of multi-path coupling the redesign set out to remove.
      window/OVER transforms, the time_shift self-join CTE, `date_range`
      BETWEEN, and the cross-model shared-grain CTE). See
      [Typed keys](typed-keys.md) and [SQL generation](sql-generation.md).
-   - A `SlayerModel.filters` entry referencing a non-trivial derived column.
-     `_validate_model_filter` no longer rejects it; the generator
-     (`_render_model_filter_sql`) inline-expands the predicate and pulls any
-     join the expansion crosses into the FROM. The windowed-`Column.sql` and
-     same-model `ModelMeasure`-ref rejects remain.
+   - A `SlayerModel.filters` entry, OR a column-level `Column.filter` on an
+     aggregated measure, referencing a non-trivial derived column.
+     `_validate_model_filter` no longer rejects the model-filter form; the
+     generator inline-expands the predicate (the shared
+     `_render_mode_a_predicate`, used by both `_render_model_filter_sql` and the
+     `Column.filter` CASE-WHEN path) and pulls any join the expansion crosses
+     into the FROM. Inlining covers a bare derived ref (`is_eu` →
+     `customers.region`) **and** a dotted ref to a derived column on a joined
+     model (`loss_payment.has_flag` → its `sql`), matching the query-level
+     filter path so no dangling `<alias>.<derived_col>` (a non-physical column)
+     is emitted (DEV-1494). Join discovery for these Mode-A text filters
+     (`_filter_join_paths`) unions the paths of the **un-inlined** predicate
+     (so the dbt placeholder-join idiom — a constant `has_flag sql="1"` whose
+     only purpose is to force the join — keeps its alias) with the paths the
+     **inline-expanded** predicate crosses. The cross-model `_cm_*` CTE
+     target-filter path deliberately does **not** enable dotted-derived inlining
+     (it has no mechanism to add a deeper crossed join — that is DEV-1503). The
+     windowed-`Column.sql` and same-model `ModelMeasure`-ref rejects remain.
 
 5. **P10 is intentionally violated for cross-model parametric aggregates.**
    Result keys for `customers.revenue:percentile(p=0.5)` now carry the kwarg

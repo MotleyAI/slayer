@@ -122,10 +122,10 @@ _XFAIL_FM_ISOLATION = pytest.mark.xfail(
     strict=True,
     reason=(
         "DEV-1503: the typed pipeline has no isolated-CTE handling for "
-        "cross-model-FILTERED local measures (the legacy `_fm_` feature). It "
-        "emits inline CASE WHEN with the filter joins undiscovered (DEV-1494), "
-        "so the SQL is currently broken, and these tests assert the legacy "
-        "`_fm_`/`_base`/ROW_NUMBER structure that the typed shape won't "
+        "cross-model-FILTERED local measures (the legacy `_fm_` feature). The "
+        "filter joins ARE now discovered (DEV-1494), but the measure is not "
+        "isolated — it emits an inline CASE WHEN, and these tests assert the "
+        "legacy `_fm_`/`_base`/ROW_NUMBER structure that the typed shape won't "
         "reproduce. Stage-D blocker: the legacy generate(enriched=) path is "
         "the only working implementation. These assertions will need updating "
         "when the feature is reimplemented (they do not cleanly auto-promote)."
@@ -3283,15 +3283,6 @@ class TestFilteredMeasures:
             extra_models=[customers], validate=False,
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1494: a cross-table ref in a Column.filter doesn't pull the "
-            "LEFT JOIN into the filtered-last ranked subquery, so the emitted "
-            "SQL references customers.status without the join. Auto-promotes "
-            "when join discovery from Column.filter is fixed."
-        ),
-    )
     async def test_filtered_last_with_cross_model_filter_carries_join(
         self, generator: SQLGenerator,
     ) -> None:
@@ -3325,8 +3316,11 @@ class TestFilteredMeasures:
     @pytest.mark.xfail(
         strict=True,
         reason=(
-            "DEV-1494: cross-table ref in Column.filter doesn't pull the join "
-            "into the filtered-last ranked subquery. Auto-promotes when fixed."
+            "DEV-1503: the filter join is now discovered (DEV-1494), but the "
+            "typed pipeline does not isolate a cross-model-FILTERED first/last "
+            "measure into its own `_fm_`/`_last_rn` ranked CTE — this test "
+            "asserts that legacy isolated-CTE structure, which the typed shape "
+            "won't reproduce until the feature is reimplemented."
         ),
     )
     async def test_filtered_last_cross_model_isolates_to_cte_with_ranked_subquery(
@@ -5219,20 +5213,16 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
 class TestMeasureFilterCrossModelJoin:
     """Measure filters referencing cross-model dimensions must trigger the join."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1494: a column-level Column.filter with a cross-table ref "
-            "(here the direct dotted ref 'loss_payment.has_flag = 1') does not "
-            "trigger transitive join discovery on the typed pipeline — the "
-            "CASE-WHEN wrapper emits 'loss_payment.has_flag' but no LEFT JOIN "
-            "to Loss_Payment is added. Same root cause / fix as the derived-ref "
-            "variant DEV-1494 tracks. Auto-promotes when column-level-filter "
-            "join discovery is restored."
-        ),
-    )
     async def test_measure_filter_cross_model_constant_triggers_join(self, generator: SQLGenerator) -> None:
-        """Measure filter 'loss_payment.has_flag = 1' where has_flag sql='1' must JOIN to loss_payment."""
+        """Measure filter 'loss_payment.has_flag = 1' where has_flag sql='1' must JOIN to loss_payment.
+
+        DEV-1494 / dbt placeholder-join idiom: ``has_flag sql="1"`` is a constant
+        whose only purpose is to force the join (the join, not the predicate
+        value, does the filtering). So the join must be KEPT, while the derived
+        ref is INLINED for runnable SQL — matching the query-level path's
+        ``WHERE CAST(1 AS REAL) = 1``. ``loss_payment.has_flag`` is a derived
+        column, not a physical one, so it must not survive in the output.
+        """
 
         loss_payment = SlayerModel(
             name="loss_payment",
@@ -5260,9 +5250,21 @@ class TestMeasureFilterCrossModelJoin:
             measures=[ModelMeasure(formula="loss_amt:sum")],
         )
         sql = await _generate(generator, query, claim_amount, extra_models=[loss_payment])
-        # The JOIN to loss_payment must be present for the filter to work
-        assert "Loss_Payment" in sql, f"Missing JOIN to Loss_Payment: {sql}"
-        assert "JOIN" in sql
+        # The JOIN to loss_payment must be present (it is the filter mechanism).
+        # Parsed-alias assertion so a stray table mention / JOIN keyword in
+        # unrelated SQL can't satisfy it.
+        assert "loss_payment" in _join_aliases(sql), f"Missing JOIN to loss_payment: {sql}"
+        # The derived ref must be inlined — no dangling ``loss_payment.has_flag``
+        # (a derived column, absent from the physical table).
+        sql_no_strings = _re.sub(r"'[^']*'", "''", _re.sub(r'"[^"]*"', '""', sql))
+        assert _re.search(r"\bloss_payment\.has_flag\b", sql_no_strings) is None, (
+            f"derived ref 'loss_payment.has_flag' left un-inlined:\n{sql}"
+        )
+        # The inlined constant must live INSIDE the aggregation-time CASE-WHEN
+        # wrapper (not relocated to WHERE), guarding the column-filter shape.
+        assert _re.search(r"SUM\(\s*CASE WHEN .*THEN claim_amount\.amount", _norm(sql)), (
+            f"column filter not rendered as SUM(CASE WHEN ... THEN col):\n{sql}"
+        )
 
     async def test_left_join_default(self, generator: SQLGenerator) -> None:
         """Default join_type produces LEFT JOIN."""

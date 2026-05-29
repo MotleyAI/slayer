@@ -1126,22 +1126,16 @@ async def test_dev1334_model_level_filter_on_bare_derived_col_with_cross_table_s
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEV-1494: the typed pipeline does not inline a derived cross-table "
-        "ref used in a column-level Column.filter, so the crossed join is not "
-        "pulled into the FROM. Auto-promotes to PASS when DEV-1494 is fixed. "
-        "(Query-level filters already work; the dimension case was fixed in "
-        "DEV-1484.)"
-    ),
-)
 async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_join(
     tmp_path,
 ) -> None:
     """A column-level ``filter=`` attribute that references a bare-named
     local derived column whose sql crosses a join — must trigger join
-    discovery via the ``m.filter_columns`` path.
+    discovery via the ``m.filter_columns`` path (DEV-1494).
+
+    Strengthened beyond join-presence: the derived ref must also be INLINED
+    into the aggregation-time CASE-WHEN wrapper, so no bare ``orders.is_eu``
+    (a derived column, not a physical one) survives in the emitted SQL.
     """
     storage = await _orders_customers_storage(tmp_path)
     orders = await _save_orders_with_is_eu(
@@ -1165,6 +1159,319 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
     assert "customers" in _join_aliases(sql), (
         f"customers join not discovered from column-level filter=:\n{sql}"
     )
+    # The derived ref is inlined to its cross-table sql; ``orders.is_eu`` is
+    # not a physical column and must not leak into the CASE-WHEN wrapper.
+    assert _no_bare_derived_ref(sql, "orders", "is_eu"), (
+        f"derived ref ``orders.is_eu`` left un-inlined in column filter:\n{sql}"
+    )
+    # The expansion lives INSIDE the aggregation-time CASE-WHEN wrapper.
+    assert re.search(r"SUM\(\s*CASE WHEN .*customers\.region.* THEN orders\.amount", _norm(sql)), (
+        f"is_eu expansion not inside SUM(CASE WHEN ... THEN orders.amount):\n{sql}"
+    )
+
+
+async def test_dev1494_column_filter_dotted_base_ref_adds_join(tmp_path) -> None:
+    """Column-level ``filter=`` with a DIRECT dotted ref to a *base* column on
+    a joined model (``loss_payment.status``) must pull the join in, and the
+    ref stays a valid qualified column reference (no inlining needed).
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="loss_payment", data_source="test", sql_table="Loss_Payment",
+        columns=[
+            Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+        ],
+    ))
+    claim_amount = SlayerModel(
+        name="claim_amount", data_source="test", sql_table="Claim_Amount",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="loss_amt", sql="amount", filter="loss_payment.status = 'paid'", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+    )
+    await storage.save_model(claim_amount)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="claim_amount",
+        measures=[ModelMeasure(formula="loss_amt:sum", name="amt")],
+    )
+    sql = await _gen_sql(engine, query, claim_amount)
+    assert "loss_payment" in _join_aliases(sql), (
+        f"loss_payment join not discovered from dotted-base column filter:\n{sql}"
+    )
+    # status is a real (base) column on loss_payment — the qualified ref stays.
+    assert "loss_payment.status" in sql, f"qualified base ref dropped:\n{sql}"
+
+
+async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
+    tmp_path,
+) -> None:
+    """Column-level ``filter=`` with a dotted ref to a *derived* column on a
+    joined model, whose own sql crosses a FURTHER join. The deeper join must
+    be discovered (``loss_payment__claim``) AND the derived ref inlined — no
+    dangling ``loss_payment.deep_flag`` (not a physical column).
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="claim", data_source="test", sql_table="Claim",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="state", sql="state", type=DataType.TEXT),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="loss_payment", data_source="test", sql_table="Loss_Payment",
+        columns=[
+            Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="claim_id", sql="claim_id", type=DataType.DOUBLE),
+            # Derived column on the joined model whose sql reaches a further join.
+            Column(name="deep_flag", sql="CASE WHEN claim.state = 'open' THEN 1 ELSE 0 END", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="claim", join_pairs=[["claim_id", "id"]])],
+    ))
+    claim_amount = SlayerModel(
+        name="claim_amount", data_source="test", sql_table="Claim_Amount",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="deep_amt", sql="amount", filter="loss_payment.deep_flag = 1", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+    )
+    await storage.save_model(claim_amount)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="claim_amount",
+        measures=[ModelMeasure(formula="deep_amt:sum", name="amt")],
+    )
+    sql = await _gen_sql(engine, query, claim_amount)
+    aliases = _join_aliases(sql)
+    assert "loss_payment" in aliases, f"intermediate loss_payment join missing: {aliases}\nSQL:\n{sql}"
+    assert "loss_payment__claim" in aliases, f"deeper claim join missing: {aliases}\nSQL:\n{sql}"
+    # deep_flag is derived — must be inlined, not emitted as a dangling ref.
+    assert _no_bare_derived_ref(sql, "loss_payment", "deep_flag"), (
+        f"dotted derived ref ``loss_payment.deep_flag`` left un-inlined:\n{sql}"
+    )
+    # The deeper expansion lives INSIDE the aggregation-time CASE-WHEN wrapper.
+    assert re.search(
+        r"SUM\(\s*CASE WHEN .*loss_payment__claim\.state.* THEN claim_amount\.amount", _norm(sql),
+    ), f"deep_flag expansion not inside SUM(CASE WHEN ... THEN claim_amount.amount):\n{sql}"
+
+
+async def test_dev1494_model_filter_dotted_derived_ref_inlined(tmp_path) -> None:
+    """Apply-everywhere: a ``SlayerModel.filters`` entry with a dotted ref to a
+    *derived* column on a joined model (the dbt placeholder-join idiom,
+    ``has_flag sql="1"``) must keep the join AND inline the ref — matching the
+    query-level path's ``WHERE (1) = 1`` (no dangling ``loss_payment.has_flag``).
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="loss_payment", data_source="test", sql_table="Loss_Payment",
+        columns=[
+            Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="has_flag", sql="1", type=DataType.DOUBLE),
+        ],
+    ))
+    claim_amount = SlayerModel(
+        name="claim_amount", data_source="test", sql_table="Claim_Amount",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]], join_type="inner")],
+        filters=["loss_payment.has_flag = 1"],
+    )
+    await storage.save_model(claim_amount)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="claim_amount",
+        measures=[ModelMeasure(formula="amount:sum", name="amt")],
+    )
+    sql = await _gen_sql(engine, query, claim_amount)
+    assert "loss_payment" in _join_aliases(sql), (
+        f"placeholder join not kept for model-filter has_flag idiom:\n{sql}"
+    )
+    assert _no_bare_derived_ref(sql, "loss_payment", "has_flag"), (
+        f"derived ref ``loss_payment.has_flag`` left un-inlined in model filter:\n{sql}"
+    )
+    # The predicate inlines to a constant comparison in the WHERE clause
+    # (matching the query-level path's ``WHERE (1) = 1`` / ``CAST(1 AS …) = 1``).
+    assert re.search(r"WHERE\b.*=\s*1\b", _norm(sql)), (
+        f"model filter did not inline to a constant WHERE comparison:\n{sql}"
+    )
+
+
+async def test_dev1494_column_filter_does_not_disturb_sibling_unfiltered_measure(
+    tmp_path,
+) -> None:
+    """The join a column-level filter pulls into the BASE FROM must not change
+    a sibling UNfiltered measure's value, for a many:1 (PK-side) join. Pins
+    that base-FROM join insertion is deliberate and cardinality-safe here;
+    one-to-many isolation remains DEV-1503 (tracked separately, still xfail).
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="loss_payment", data_source="test", sql_table="Loss_Payment",
+        columns=[
+            Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+        ],
+    ))
+    claim_amount = SlayerModel(
+        name="claim_amount", data_source="test", sql_table="Claim_Amount",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="total_amt", sql="amount", type=DataType.DOUBLE),
+            Column(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+    )
+    await storage.save_model(claim_amount)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="claim_amount",
+        measures=[
+            ModelMeasure(formula="total_amt:sum", name="total"),
+            ModelMeasure(formula="paid_amt:sum", name="paid"),
+        ],
+    )
+    sql = await _gen_sql(engine, query, claim_amount)
+    # The unfiltered measure is a plain SUM over the base column, unguarded by
+    # any CASE-WHEN — adding the LEFT JOIN for the filtered sibling must not
+    # wrap it in the filter predicate.
+    assert re.search(r"SUM\(\s*claim_amount\.amount\s*\)", sql), (
+        f"unfiltered measure no longer a plain SUM(amount):\n{sql}"
+    )
+    assert "loss_payment" in _join_aliases(sql), f"filtered-measure join missing:\n{sql}"
+
+
+async def test_dev1494_column_filter_exists_subquery_ref_not_scanned_for_joins(
+    tmp_path,
+) -> None:
+    """Documenting test (DEV-1494 / C7): join discovery is root-scope-only by
+    design. A correlated ref inside an ``EXISTS (...)`` subquery in a
+    ``Column.filter`` is NOT scanned for outer joins — so no join is pulled in
+    for the inner-scope alias. Pins the current (intentional) limitation.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="loss_payment", data_source="test", sql_table="Loss_Payment",
+        columns=[
+            Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+        ],
+    ))
+    claim_amount = SlayerModel(
+        name="claim_amount", data_source="test", sql_table="Claim_Amount",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            # Inner-scope ``loss_payment`` ref lives inside a subquery; it must
+            # not pull an outer LEFT JOIN loss_payment into the base FROM.
+            Column(
+                name="exists_amt", sql="amount",
+                filter="EXISTS (SELECT 1 FROM Loss_Payment AS loss_payment WHERE loss_payment.status = 'paid')",
+                type=DataType.DOUBLE,
+            ),
+        ],
+        joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+    )
+    await storage.save_model(claim_amount)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="claim_amount",
+        measures=[ModelMeasure(formula="exists_amt:sum", name="amt")],
+    )
+    sql = await _gen_sql(engine, query, claim_amount)
+    # No OUTER join to loss_payment is added from the inner-scope ref.
+    assert "loss_payment" not in _join_aliases(sql), (
+        f"inner-scope EXISTS ref wrongly pulled an outer join:\n{sql}"
+    )
+
+
+async def test_dev1494_column_filter_constant_placeholder_join_kept_sqlite(
+    tmp_path,
+) -> None:
+    """SQLite coverage of the dbt placeholder-join idiom at the COLUMN level:
+    ``filter="loss_payment.has_flag = 1"`` (has_flag derived ``sql="1"``) keeps
+    the join and inlines the ref to a constant inside the CASE-WHEN wrapper.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="loss_payment", data_source="test", sql_table="Loss_Payment",
+        columns=[
+            Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="has_flag", sql="1", type=DataType.DOUBLE),
+        ],
+    ))
+    claim_amount = SlayerModel(
+        name="claim_amount", data_source="test", sql_table="Claim_Amount",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]], join_type="inner")],
+    )
+    await storage.save_model(claim_amount)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="claim_amount",
+        measures=[ModelMeasure(formula="loss_amt:sum", name="amt")],
+    )
+    sql = await _gen_sql(engine, query, claim_amount)
+    assert "loss_payment" in _join_aliases(sql), f"placeholder join not kept:\n{sql}"
+    assert _no_bare_derived_ref(sql, "loss_payment", "has_flag"), (
+        f"derived ref ``loss_payment.has_flag`` left un-inlined:\n{sql}"
+    )
+    # Inlined constant lives inside the aggregation-time CASE-WHEN wrapper.
+    assert re.search(r"SUM\(\s*CASE WHEN .*THEN claim_amount\.amount", _norm(sql)), (
+        f"column filter not rendered as SUM(CASE WHEN ... THEN col):\n{sql}"
+    )
+
+
+async def test_dev1494_column_filter_multihop_dotted_input_adds_all_joins(
+    tmp_path,
+) -> None:
+    """A column-level ``filter=`` whose ref is a canonical ``__``-delimited
+    MULTI-HOP alias to a base column (``loss_payment__claim.state``) — both the
+    intermediate (``loss_payment``) and full (``loss_payment__claim``) joins
+    must be pulled in, and the qualified base ref stays valid.
+    """
+    storage = YAMLStorage(base_dir=str(tmp_path))
+    await storage.save_model(SlayerModel(
+        name="claim", data_source="test", sql_table="Claim",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="state", sql="state", type=DataType.TEXT),
+        ],
+    ))
+    await storage.save_model(SlayerModel(
+        name="loss_payment", data_source="test", sql_table="Loss_Payment",
+        columns=[
+            Column(name="id", sql="Claim_Amount_Identifier", type=DataType.DOUBLE, primary_key=True),
+            Column(name="claim_id", sql="claim_id", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="claim", join_pairs=[["claim_id", "id"]])],
+    ))
+    claim_amount = SlayerModel(
+        name="claim_amount", data_source="test", sql_table="Claim_Amount",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="amt", sql="amount", filter="loss_payment__claim.state = 'open'", type=DataType.DOUBLE),
+        ],
+        joins=[ModelJoin(target_model="loss_payment", join_pairs=[["id", "Claim_Amount_Identifier"]])],
+    )
+    await storage.save_model(claim_amount)
+    engine = SlayerQueryEngine(storage=storage)
+    query = SlayerQuery(
+        source_model="claim_amount",
+        measures=[ModelMeasure(formula="amt:sum", name="a")],
+    )
+    sql = await _gen_sql(engine, query, claim_amount)
+    aliases = _join_aliases(sql)
+    assert "loss_payment" in aliases, f"intermediate join missing: {aliases}\nSQL:\n{sql}"
+    assert "loss_payment__claim" in aliases, f"multi-hop join missing: {aliases}\nSQL:\n{sql}"
+    assert "loss_payment__claim.state" in sql, f"qualified multi-hop base ref dropped:\n{sql}"
 
 
 async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) -> None:

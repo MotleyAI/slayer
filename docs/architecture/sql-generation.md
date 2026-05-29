@@ -92,6 +92,33 @@ forward-path CTE renders (FROM bare target, grouped at the forward dims).
 `SUM(CASE WHEN <filter> THEN <col> END)`. See
 [Cross-model aggregates](cross-model-aggregates.md).
 
+## Mode-A filter inlining and join discovery (DEV-1494)
+
+A column-level `Column.filter` on an aggregated measure becomes a CASE-WHEN
+wrapper (`SUM(CASE WHEN <filter> THEN <col> END)`), and a `SlayerModel.filters`
+entry becomes a WHERE term. Both are Mode-A SQL and share one renderer,
+`_render_mode_a_predicate`, which inline-expands references to derived columns —
+bare (`is_eu` → its `CASE WHEN customers.region …`) or dotted to a derived
+column on a joined model (`loss_payment.has_flag` → its `sql`) — so the emitted
+predicate is runnable and never references a non-physical `<alias>.<derived_col>`.
+A predicate with only base refs takes the cheap qualify path
+(`_qualify_mode_a_sql_filter` regex for model filters, `_qualify_column_filter_sql`
+AST for column filters), byte-identical to before. On sqlglot parse failure the
+predicate falls through to the qualify path unchanged.
+
+Join discovery for these text filters (`_filter_join_paths`) is the **union** of
+the join paths in the **un-inlined** predicate and those in the **inline-expanded**
+predicate. Both are needed: the dbt placeholder-join idiom — a constant derived
+column such as `has_flag sql="1"` whose only purpose is to force the (inner)
+join — keeps its alias only in the un-inlined form (it inlines to the constant
+`(1)`), while a derived ref's *crossed* joins (`is_eu` → `customers`;
+`loss_payment.deep_flag` → `loss_payment__claim`) appear only after expansion.
+Discovery for column filters is restricted to **local** aggregate sources
+(empty `AggregateKey.path`); cross-model aggregate filter joins belong in the
+`_cm_*` CTE, and the cross-model target-filter path keeps dotted-derived
+inlining off (no deeper-join mechanism — DEV-1503). Discovery is root-scope-only,
+so a correlated ref inside an `EXISTS (...)` subquery does not pull an outer join.
+
 ## Result-key contract (P10)
 
 The generator preserves the result keys byte-for-byte: `orders.revenue_sum`,
