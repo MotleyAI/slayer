@@ -113,10 +113,13 @@ column such as `has_flag sql="1"` whose only purpose is to force the (inner)
 join — keeps its alias only in the un-inlined form (it inlines to the constant
 `(1)`), while a derived ref's *crossed* joins (`is_eu` → `customers`;
 `loss_payment.deep_flag` → `loss_payment__claim`) appear only after expansion.
-Discovery for column filters is restricted to **local** aggregate sources
-(empty `AggregateKey.path`); cross-model aggregate filter joins belong in the
-`_cm_*` CTE, and the cross-model target-filter path keeps dotted-derived
-inlining off (no deeper-join mechanism — DEV-1503). Discovery is root-scope-only,
+Discovery for column filters in the base SELECT is restricted to **local**
+aggregate sources (empty `AggregateKey.path`); a cross-model aggregate's filter
+joins are discovered inside its `_cm_*` CTE instead — `_render_cross_model_cte`
+collects the join paths of the target measure's `Column.filter` and the
+target-model filters and adds them to the CTE's own FROM. Because each `_cm_*`
+CTE is an isolated per-(target, grain) computation, adding the join resolves the
+filter's refs without affecting sibling measures. Discovery is root-scope-only,
 so a correlated ref inside an `EXISTS (...)` subquery does not pull an outer join.
 
 ## Result-key contract (P10)

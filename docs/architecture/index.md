@@ -226,10 +226,12 @@ the kind of multi-path coupling the redesign set out to remove.
      (`_filter_join_paths`) unions the paths of the **un-inlined** predicate
      (so the dbt placeholder-join idiom — a constant `has_flag sql="1"` whose
      only purpose is to force the join — keeps its alias) with the paths the
-     **inline-expanded** predicate crosses. The cross-model `_cm_*` CTE
-     target-filter path deliberately does **not** enable dotted-derived inlining
-     (it has no mechanism to add a deeper crossed join — that is DEV-1503). The
-     windowed-`Column.sql` and same-model `ModelMeasure`-ref rejects remain.
+     **inline-expanded** predicate crosses. The cross-model `_cm_*` CTE discovers
+     its OWN filter joins too — the target measure's `Column.filter` and the
+     target-model filters — and adds them to the CTE's FROM (each `_cm_*` CTE is
+     an isolated per-(target, grain) computation, so the join resolves the
+     filter's refs without affecting sibling measures). The windowed-`Column.sql`
+     and same-model `ModelMeasure`-ref rejects remain.
 
 5. **P10 is intentionally violated for cross-model parametric aggregates.**
    Result keys for `customers.revenue:percentile(p=0.5)` now carry the kwarg
