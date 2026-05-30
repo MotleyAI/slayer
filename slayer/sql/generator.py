@@ -27,6 +27,7 @@ from slayer.core.refs import agg_kwarg_canonical_str
 from slayer.engine.column_expansion import (
     _is_trivial_base,
     _root_scope_column_ids,
+    _walk_path_to_target_sync,
     expand_derived_refs_sync,
 )
 from slayer.engine.enriched import EnrichedMeasure, EnrichedQuery, public_projection_aliases
@@ -34,7 +35,6 @@ from slayer.engine.source_bundle import (
     stage_bundle_with_siblings,
     synthetic_model_from_stage_schema,
 )
-from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.sqlite_dialect import rewrite_sqlite_json_extract
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 
@@ -3478,7 +3478,7 @@ class SQLGenerator:
                 return False
         return True
 
-    def _build_base_select_for_planned(
+    def _build_base_select_for_planned(  # NOSONAR(S3776) — join-path collection and derived-dim expansion are extracted to helpers; the residual is the one cohesive per-slot ROW/AGGREGATE projection + GROUP-BY assembly pass.
         self,
         *,
         planned_query,
@@ -3522,82 +3522,14 @@ class SQLGenerator:
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
         )
-        # Pre-expand local derived (ColumnSqlKey) ROW dimensions: inline
-        # sibling/joined derived refs (DEV-1333 / DEV-1410) and pull any
-        # joins their SQL crosses into the FROM.
-        derived_expr_by_sid: Dict[str, exp.Expression] = {}
-        for sid in base_render_order:
-            slot = slots_by_id.get(sid)
-            if slot is None or slot.phase != Phase.ROW:
-                continue
-            key = slot.key
-            # DEV-1450 #4a: a derived (ColumnSqlKey) TIME dimension expands the
-            # same way; pull any joins its SQL crosses into the FROM so the
-            # DATE_TRUNC over the expanded expression resolves. The render
-            # branch re-derives the (un-cached) raw expr and wraps DATE_TRUNC.
-            if isinstance(key, TimeTruncKey) and isinstance(
-                key.column, ColumnSqlKey,
-            ):
-                raw = self._raw_time_col_expr_for_planned(
-                    time_column=key.column,
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    bundle=bundle,
-                )
-                for p in self._joined_paths_in_sql(
-                    sql_expr=raw, source_relation=source_relation,
-                    source_model=source_model, bundle=bundle,
-                ):
-                    if p not in needed_join_paths:
-                        needed_join_paths.append(p)
-                continue
-            if not isinstance(key, ColumnSqlKey):
-                continue
-            # A derived (``Column.sql``) dimension. Local refs (``path == ()``)
-            # expand rooted at the source relation; a CROSS-MODEL derived dim
-            # (``B.foo_normalized``, ``path == ("B",)``) expands rooted at the
-            # ``__``-path alias of the owning joined model — mirrors the
-            # ColumnSqlKey arm of ``_raw_time_col_expr_for_planned``. Without
-            # this the render branch falls back to ``_dim_column_expr_from_
-            # planned`` which only looks at the source model and raises
-            # "Column not found".
-            if key.path:
-                owner_model = bundle.get_referenced_model(key.path[-1])
-                if owner_model is None:
-                    continue
-                owner_relation = "__".join(key.path)
-            else:
-                owner_model = source_model
-                owner_relation = source_relation
-            expanded_sql = self._expand_derived_column_sql(
-                source_model=owner_model,
-                source_relation=owner_relation,
-                column_name=key.column_name,
-                bundle=bundle,
-                # Cross-model derived dim: the owner is a joined model, so a
-                # further-joined ref inside its sql must carry the full path
-                # prefix (``B`` reaching ``C`` → ``B__C``).
-                is_root=not key.path,
-            )
-            col = next(
-                (c for c in owner_model.columns if c.name == key.column_name),
-                None,
-            )
-            expr = _wrap_cast_for_type(
-                self._parse(expanded_sql),
-                col.type if col is not None else None,
-            )
-            derived_expr_by_sid[sid] = expr
-            # Pull the join to the owning model itself (cross-model case) plus
-            # any joins the expanded SQL crosses into the FROM clause.
-            if key.path and key.path not in needed_join_paths:
-                needed_join_paths.append(key.path)
-            for p in self._joined_paths_in_sql(
-                sql_expr=expr, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
-                if p not in needed_join_paths:
-                    needed_join_paths.append(p)
+        # Pre-expand derived (ColumnSqlKey) ROW + TIME dimensions: inline
+        # sibling/joined derived refs (DEV-1333 / DEV-1410) and pull any joins
+        # their SQL crosses into the FROM (appended to ``needed_join_paths``).
+        derived_expr_by_sid = self._expand_derived_row_dims(
+            base_render_order=base_render_order, slots_by_id=slots_by_id,
+            source_relation=source_relation, source_model=source_model,
+            bundle=bundle, needed_join_paths=needed_join_paths,
+        )
         # WHERE-phase filters referencing joined columns (direct, derived, or
         # Mode-A ``__`` paths) pull their joins into the FROM too. Filters
         # routed to a cross-model ``_cm_*`` CTE (``skip_filter_ids``) are
@@ -3608,6 +3540,17 @@ class SQLGenerator:
             planned_query=planned_query, source_model=source_model,
             source_relation=source_relation, bundle=bundle,
             skip_filter_ids=skip_filter_ids,
+        ):
+            if p not in needed_join_paths:
+                needed_join_paths.append(p)
+        # DEV-1494: a ``Column.filter`` on an aggregated measure becomes a
+        # CASE-WHEN wrapper; pull any join its predicate crosses (directly, or via
+        # a derived ref) into the FROM — including filtered aggregates nested in
+        # composite (arithmetic / scalar-call) AGGREGATE-phase keys.
+        for p in self._collect_column_filter_join_paths(
+            base_render_order=base_render_order, slots_by_id=slots_by_id,
+            source_relation=source_relation, source_model=source_model,
+            bundle=bundle,
         ):
             if p not in needed_join_paths:
                 needed_join_paths.append(p)
@@ -5410,29 +5353,45 @@ class SQLGenerator:
         # so the first/last branch can push them INSIDE the ranked
         # subquery — otherwise rows excluded by a filter could still
         # win ``_last_rn = 1`` and yield NULL aggregates.
+        # DEV-1494: join paths the CTE's own filters cross — the target measure's
+        # ``Column.filter`` and the target-model filters. Each ``_cm_*`` CTE is an
+        # isolated per-(target, grain) computation, so adding these joins to ITS
+        # FROM affects only this measure (not siblings) — it resolves the filter's
+        # refs without the cross-measure cardinality concern DEV-1503 owns.
+        cte_join_paths: List[Tuple[str, ...]] = []
+
+        def _add_cte_join_paths(sql_text: Optional[str]) -> None:
+            if not sql_text:
+                return
+            for p in self._filter_join_paths(
+                sql=sql_text, source_relation=target_relation,
+                source_model=target_model, bundle=bundle,
+            ):
+                if p not in cte_join_paths:
+                    cte_join_paths.append(p)
+
+        if local_agg_key.column_filter_key is not None:
+            _add_cte_join_paths(local_agg_key.column_filter_key.canonical_sql)
+
         where_parts: List[exp.Expression] = []
         for filter_text in plan.target_model_filters:
-            # DEV-1450 #4b: a target model filter that references a
-            # non-trivial derived column must be inline-expanded (it would
-            # otherwise emit ``target.derived_col`` — a non-existent column);
-            # base-only filters keep the AST bare-ref qualification.
-            cols = parse_sql_predicate(filter_text).columns
-            if any(
-                self._is_nontrivial_derived(target_model, c) for c in cols
-            ):
-                qualified = self._render_model_filter_sql(
-                    sql=filter_text,
-                    columns=cols,
-                    source_model=target_model,
-                    source_relation=target_relation,
-                    bundle=bundle,
-                )
-            else:
-                qualified = self._qualify_column_filter_sql(
-                    canonical_sql=filter_text,
+            # DEV-1450 #4b / DEV-1494: a target model filter referencing a
+            # non-trivial derived column on the target (bare OR a dotted ref to a
+            # derived column on a joined model) is inline-expanded; base-only
+            # filters keep the AST bare-ref qualification. The crossed join is
+            # pulled into this CTE's FROM via ``cte_join_paths``.
+            _add_cte_join_paths(filter_text)
+            qualified = self._render_mode_a_predicate(
+                sql=filter_text,
+                source_model=target_model,
+                source_relation=target_relation,
+                bundle=bundle,
+                qualify_fallback=lambda s: self._qualify_column_filter_sql(
+                    canonical_sql=s,
                     source_relation=target_relation,
                     source_model=target_model,
-                )
+                ),
+            )
             if not qualified:
                 continue
             try:
@@ -5467,9 +5426,16 @@ class SQLGenerator:
         # over the filtered row set; otherwise a filtered-out row could win
         # ``_last_rn = 1`` and the ``MAX(CASE WHEN _last_rn = 1 ...)``
         # aggregate would return NULL.
-        target_from = self._build_from_clause_from_planned(
-            source_model=target_model, source_relation=target_relation,
-        )
+        if cte_join_paths:
+            target_from, cte_base_joins = self._build_from_and_joins(
+                source_model=target_model, source_relation=target_relation,
+                joined_paths=cte_join_paths, bundle=bundle,
+            )
+        else:
+            target_from = self._build_from_clause_from_planned(
+                source_model=target_model, source_relation=target_relation,
+            )
+            cte_base_joins = []
         ranked_from: Optional[exp.Expression] = None
         if is_first_or_last:
             assert time_col_sql is not None  # narrowed by the guard above
@@ -5481,7 +5447,7 @@ class SQLGenerator:
                     extra_projections=[],
                     synth_specs=[synth],
                     from_clause=target_from,
-                    base_joins=[],
+                    base_joins=cte_base_joins,
                     where_clause=combined_where,
                 )
             )
@@ -5508,6 +5474,10 @@ class SQLGenerator:
             cte_select = cte_select.from_(ranked_from)
         else:
             cte_select = cte_select.from_(target_from)
+            for join_expr, on_expr, join_type in cte_base_joins:
+                cte_select = cte_select.join(
+                    join_expr, on=on_expr, join_type=join_type,
+                )
             if combined_where is not None:
                 cte_select = cte_select.where(combined_where)
 
@@ -7227,6 +7197,355 @@ class SQLGenerator:
                 col.set("table", exp.to_identifier(source_relation))
         return ast.sql(dialect=self.dialect)
 
+    def _column_ref_is_derived(
+        self, *, col: exp.Column, source_model, source_relation: str, bundle,
+        include_dotted: bool,
+    ) -> bool:
+        """True iff a single ``exp.Column`` ref resolves to a non-trivial DERIVED
+        column — bare on ``source_model``, or (when ``include_dotted``) a dotted
+        ``__``-path alias resolving through ``bundle`` to a derived column on a
+        joined model. Dotted resolution starts from ``source_relation`` (the
+        alias the rest of the Mode-A path uses), not ``source_model.name``.
+        """
+        if col.args.get("db") or col.args.get("catalog"):
+            return False
+        ident = col.this
+        if not isinstance(ident, exp.Identifier):
+            return False
+        tbl = col.args.get("table")
+        if tbl is None:
+            return self._is_nontrivial_derived(source_model, ident.name)
+        if not include_dotted:
+            return False
+        target, _ = _walk_path_to_target_sync(
+            source_model=source_model,
+            source_alias=source_relation,
+            table_alias=tbl.name,
+            resolve_model=bundle.get_referenced_model,
+            is_root=True,
+        )
+        return target is not None and self._is_nontrivial_derived(target, ident.name)
+
+    def _predicate_references_derived(
+        self, *, parsed: exp.Expression, source_model, source_relation: str,
+        bundle, include_dotted: bool,
+    ) -> bool:
+        """True iff the parsed Mode-A predicate references a non-trivial DERIVED
+        column (see :meth:`_column_ref_is_derived`). Drives whether the predicate
+        must be inline-expanded (vs. cheaply qualified). DEV-1494.
+        """
+        return any(
+            self._column_ref_is_derived(
+                col=col, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+                include_dotted=include_dotted,
+            )
+            for col in parsed.find_all(exp.Column)
+        )
+
+    def _render_mode_a_predicate(
+        self,
+        *,
+        sql: Optional[str],
+        source_model,
+        source_relation: str,
+        bundle,
+        qualify_fallback,
+        include_dotted_derived: bool = True,
+    ) -> Optional[str]:
+        """Render a Mode-A predicate (``Column.filter`` / ``SlayerModel.filters``)
+        with DERIVED refs inline-expanded and base refs qualified — the shared
+        core for the column-filter and model-filter render paths (DEV-1494).
+
+        If the predicate references a non-trivial derived column (bare, or — when
+        ``include_dotted_derived`` — a dotted ref to a derived column on a joined
+        model), it is inline-expanded via ``expand_derived_refs_sync`` so the
+        crossed joins resolve and no dangling ``<alias>.<derived_col>`` (a
+        non-physical column) survives — mirroring the query-level filter path.
+        Otherwise ``qualify_fallback(sql)`` does the cheap bare-ref qualification,
+        preserving each caller's exact non-derived output (regex for model
+        filters, AST for column filters). On sqlglot parse failure the predicate
+        falls through to ``qualify_fallback`` unchanged, so a dialect-specific
+        fragment never raises earlier than today. ``include_dotted_derived`` is
+        ``False`` for the cross-model ``_cm_*`` CTE target-filter path, which has
+        no mechanism to add a deeper join an expansion would cross (DEV-1503).
+        """
+        if not sql:
+            return None
+        if bundle is not None:
+            try:
+                parsed = self._parse_predicate(sql)
+            except Exception:
+                parsed = None
+            if parsed is not None and self._predicate_references_derived(
+                parsed=parsed, source_model=source_model,
+                source_relation=source_relation, bundle=bundle,
+                include_dotted=include_dotted_derived,
+            ):
+                root = self._expand_degenerate_derived_root(
+                    parsed=parsed, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                    include_dotted_derived=include_dotted_derived,
+                )
+                if root is not None:
+                    return root
+                expanded = expand_derived_refs_sync(
+                    sql=sql,
+                    model=source_model,
+                    alias_path=source_relation,
+                    resolve_model=bundle.get_referenced_model,
+                    dialect=self.dialect,
+                )
+                if expanded is not None:
+                    return expanded
+        return qualify_fallback(sql)
+
+    def _expand_degenerate_derived_root(
+        self, *, parsed: exp.Expression, source_model, source_relation: str,
+        bundle, include_dotted_derived: bool,
+    ) -> Optional[str]:
+        """When the whole predicate IS a single derived-column ref
+        (``filter="is_eu"`` / ``filter="loss_payment.has_flag"``), expand it
+        directly — ``expand_derived_refs_sync`` rewrites refs via in-place
+        ``col.replace``, a no-op on the AST root. A dotted root is walked to its
+        target model + canonical ``__`` alias and expanded with ``is_root=False``
+        so further-joined refs prefix correctly. Returns the expanded SQL, or
+        ``None`` when ``parsed`` is not such a derived single-column root.
+        """
+        if not isinstance(parsed, exp.Column) or (
+            parsed.args.get("db") or parsed.args.get("catalog")
+        ):
+            return None
+        tbl = parsed.args.get("table")
+        if tbl is None:
+            if self._is_nontrivial_derived(source_model, parsed.name):
+                return self._expand_derived_column_sql(
+                    source_model=source_model,
+                    source_relation=source_relation,
+                    column_name=parsed.name,
+                    bundle=bundle,
+                )
+            return None
+        if not include_dotted_derived:
+            return None
+        target, canonical = _walk_path_to_target_sync(
+            source_model=source_model,
+            source_alias=source_relation,
+            table_alias=tbl.name,
+            resolve_model=bundle.get_referenced_model,
+            is_root=True,
+        )
+        if (
+            target is not None
+            and canonical is not None
+            and self._is_nontrivial_derived(target, parsed.name)
+        ):
+            return self._expand_derived_column_sql(
+                source_model=target,
+                source_relation=canonical,
+                column_name=parsed.name,
+                bundle=bundle,
+                is_root=False,
+            )
+        return None
+
+    def _filter_join_paths(
+        self, *, sql: Optional[str], source_relation: str, source_model, bundle,
+    ) -> List[Tuple[str, ...]]:
+        """Join paths a Mode-A filter (``Column.filter`` / ``SlayerModel.filters``)
+        needs (DEV-1494).
+
+        Scans BOTH the un-inlined predicate — so a placeholder dotted ref
+        (``loss_payment.has_flag``, the dbt join-trigger idiom) keeps its alias
+        even when it inlines to a constant — AND the inline-expanded predicate —
+        so a bare/dotted DERIVED ref surfaces the joins its expansion crosses
+        (``is_eu`` → ``customers``; ``loss_payment.deep_flag`` →
+        ``loss_payment__claim``). The union is required because inlining drops the
+        placeholder alias while the raw form can't see a derived expansion's
+        crossed joins. Each parse is tolerant — an unparseable side yields no
+        paths rather than raising earlier than today.
+        """
+        if not sql:
+            return []
+        seen: set = set()
+        ordered: List[Tuple[str, ...]] = []
+
+        def _scan(text: Optional[str]) -> None:
+            if not text:
+                return
+            try:
+                parsed = self._parse_predicate(text)
+            except Exception:
+                return
+            for p in self._joined_paths_in_sql(
+                sql_expr=parsed, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            ):
+                if p not in seen:
+                    seen.add(p)
+                    ordered.append(p)
+
+        _scan(sql)
+        rendered = self._render_mode_a_predicate(
+            sql=sql, source_model=source_model, source_relation=source_relation,
+            bundle=bundle, qualify_fallback=lambda s: s,
+        )
+        if rendered is not None and rendered != sql:
+            _scan(rendered)
+        return ordered
+
+    def _collect_column_filter_join_paths(  # NOSONAR(S3776) — one cohesive recursive walk of AGGREGATE composite keys (mirrors _render_aggregate_composite_expr) collecting Column.filter join paths.
+        self, *, base_render_order, slots_by_id, source_relation: str,
+        source_model, bundle,
+    ) -> List[Tuple[str, ...]]:
+        """Join paths needed by aggregation-time ``Column.filter`` CASE-WHEN
+        wrappers on LOCAL aggregate slots (DEV-1494).
+
+        Recurses into AGGREGATE-phase composite keys (``ArithmeticKey`` /
+        ``ScalarCallKey``) so a filtered aggregate nested inside e.g.
+        ``a:sum + b:sum`` — rendered by ``_render_aggregate_composite_expr`` —
+        discovers its crossed join exactly like a top-level aggregate. Cross-model
+        aggregate sources (non-empty ``source.path``) are excluded: their filter
+        joins belong in the per-plan ``_cm_*`` CTE (DEV-1503).
+        """
+        from slayer.core.keys import (
+            AggregateKey,
+            ArithmeticKey,
+            Phase,
+            ScalarCallKey,
+        )
+
+        paths: List[Tuple[str, ...]] = []
+
+        def _visit(key) -> None:
+            if isinstance(key, AggregateKey):
+                if getattr(key.source, "path", ()):
+                    return
+                cfk = key.column_filter_key
+                if cfk is None or not cfk.canonical_sql:
+                    return
+                for p in self._filter_join_paths(
+                    sql=cfk.canonical_sql, source_relation=source_relation,
+                    source_model=source_model, bundle=bundle,
+                ):
+                    if p not in paths:
+                        paths.append(p)
+            elif isinstance(key, ArithmeticKey):
+                for operand in key.operands:
+                    _visit(operand)
+            elif isinstance(key, ScalarCallKey):
+                for arg in key.args:
+                    _visit(arg)
+
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is not None and slot.phase == Phase.AGGREGATE:
+                _visit(slot.key)
+        return paths
+
+    def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and collecting the joins they cross.
+        self, *, base_render_order, slots_by_id, source_relation: str,
+        source_model, bundle, needed_join_paths: List[Tuple[str, ...]],
+    ) -> Dict[str, exp.Expression]:
+        """Pre-expand derived (``ColumnSqlKey``) ROW dimensions and derived TIME
+        dimensions for the base SELECT: inline sibling/joined derived refs
+        (DEV-1333 / DEV-1410), append any joins their SQL crosses to
+        ``needed_join_paths`` (in place), and return the expanded-expr-by-slot-id
+        map the render branch reads from. Extracted from
+        ``_build_base_select_for_planned``.
+        """
+        from slayer.core.keys import ColumnSqlKey, Phase, TimeTruncKey
+
+        def _add(path: Tuple[str, ...]) -> None:
+            if path and path not in needed_join_paths:
+                needed_join_paths.append(path)
+
+        derived_expr_by_sid: Dict[str, exp.Expression] = {}
+        for sid in base_render_order:
+            slot = slots_by_id.get(sid)
+            if slot is None or slot.phase != Phase.ROW:
+                continue
+            key = slot.key
+            # DEV-1450 #4a: a derived (ColumnSqlKey) TIME dimension expands the
+            # same way; pull any joins its SQL crosses into the FROM so the
+            # DATE_TRUNC over the expanded expression resolves.
+            if isinstance(key, TimeTruncKey) and isinstance(key.column, ColumnSqlKey):
+                raw = self._raw_time_col_expr_for_planned(
+                    time_column=key.column, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                )
+                for p in self._joined_paths_in_sql(
+                    sql_expr=raw, source_relation=source_relation,
+                    source_model=source_model, bundle=bundle,
+                ):
+                    _add(p)
+                continue
+            if not isinstance(key, ColumnSqlKey):
+                continue
+            # Local refs (``path == ()``) expand rooted at the source relation; a
+            # CROSS-MODEL derived dim (``B.foo``, ``path == ("B",)``) expands
+            # rooted at the ``__``-path alias of the owning joined model, with
+            # ``is_root=False`` so a further-joined ref carries the full prefix
+            # (``B`` reaching ``C`` → ``B__C``).
+            if key.path:
+                owner_model = bundle.get_referenced_model(key.path[-1])
+                if owner_model is None:
+                    continue
+                owner_relation = "__".join(key.path)
+            else:
+                owner_model = source_model
+                owner_relation = source_relation
+            expanded_sql = self._expand_derived_column_sql(
+                source_model=owner_model, source_relation=owner_relation,
+                column_name=key.column_name, bundle=bundle, is_root=not key.path,
+            )
+            col = next(
+                (c for c in owner_model.columns if c.name == key.column_name), None,
+            )
+            expr = _wrap_cast_for_type(
+                self._parse(expanded_sql), col.type if col is not None else None,
+            )
+            derived_expr_by_sid[sid] = expr
+            _add(key.path)  # the join to the owning model itself (cross-model)
+            for p in self._joined_paths_in_sql(
+                sql_expr=expr, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            ):
+                _add(p)
+        return derived_expr_by_sid
+
+    def _expand_column_filter_sql(
+        self,
+        *,
+        canonical_sql: Optional[str],
+        source_relation: str,
+        source_model,
+        bundle=None,
+    ) -> Optional[str]:
+        """Render a ``Column.filter`` Mode-A predicate for the aggregation-time
+        CASE-WHEN wrapper (``SUM(CASE WHEN <filter> THEN col END)``). Inlines
+        derived refs (bare or dotted-to-joined-derived) so the crossed joins
+        resolve; otherwise qualifies bare refs. DEV-1494; see
+        ``_render_mode_a_predicate``.
+        """
+        if bundle is None:
+            return self._qualify_column_filter_sql(
+                canonical_sql=canonical_sql,
+                source_relation=source_relation,
+                source_model=source_model,
+            )
+        return self._render_mode_a_predicate(
+            sql=canonical_sql,
+            source_model=source_model,
+            source_relation=source_relation,
+            bundle=bundle,
+            qualify_fallback=lambda s: self._qualify_column_filter_sql(
+                canonical_sql=s,
+                source_relation=source_relation,
+                source_model=source_model,
+            ),
+        )
+
     def _build_from_clause_from_planned(
         self,
         *,
@@ -7420,98 +7739,113 @@ class SQLGenerator:
         * Mode-A ``SlayerModel.filters`` text with a ``__`` join path
           (``customers__regions.name = 'EU'``) — parsed and scanned.
         """
-        from slayer.core.keys import (
-            ArithmeticKey,
-            BetweenKey,
-            ColumnKey,
-            ColumnSqlKey,
-            InKey,
-            Phase,
-            ScalarCallKey,
-        )
+        from slayer.core.keys import Phase
 
         seen: set = set()
         ordered: List[Tuple[str, ...]] = []
 
-        def _add_path(path: Tuple[str, ...]) -> None:
-            for i in range(1, len(path) + 1):
-                prefix = tuple(path[:i])
-                if prefix and prefix not in seen:
-                    seen.add(prefix)
-                    ordered.append(prefix)
-
-        def _add_from_sql(parsed: exp.Expression) -> None:
-            for p in self._joined_paths_in_sql(
-                sql_expr=parsed, source_relation=source_relation,
-                source_model=source_model, bundle=bundle,
-            ):
+        def _merge(paths: List[Tuple[str, ...]]) -> None:
+            for p in paths:
                 if p not in seen:
                     seen.add(p)
                     ordered.append(p)
-
-        def _walk(key) -> None:
-            if isinstance(key, ColumnKey):
-                if key.path:
-                    _add_path(key.path)
-            elif isinstance(key, ColumnSqlKey) and not key.path:
-                expanded = self._expand_derived_column_sql(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    column_name=key.column_name,
-                    bundle=bundle,
-                )
-                _add_from_sql(self._parse(expanded))
-            elif isinstance(key, ColumnSqlKey) and key.path:
-                # Joined derived-column ref — pull the join walk to the column's
-                # owning model into the FROM, plus any further cross-joins the
-                # column's own ``sql`` references (expanded under the column's
-                # ``__``-path alias, then scanned from the host's perspective).
-                _add_path(key.path)
-                joined_model = bundle.get_referenced_model(key.path[-1])
-                if joined_model is not None:
-                    expanded = self._expand_derived_column_sql(
-                        source_model=joined_model,
-                        source_relation="__".join(key.path),
-                        column_name=key.column_name,
-                        bundle=bundle,
-                    )
-                    _add_from_sql(self._parse(expanded))
-            elif isinstance(key, ArithmeticKey):
-                for o in key.operands:
-                    _walk(o)
-            elif isinstance(key, ScalarCallKey):
-                for a in key.args:
-                    _walk(a)
-            elif isinstance(key, BetweenKey):
-                _walk(key.column)
-                _walk(key.low)
-                _walk(key.high)
-            elif isinstance(key, InKey):
-                # DEV-1475: an IN filter on a joined column must still
-                # pull the join into the FROM. Only the LHS column can
-                # carry a join path; literal RHS values never do.
-                _walk(key.column)
 
         skip = skip_filter_ids or set()
         for fp in planned_query.filters_by_phase:
             if fp.phase != Phase.ROW or fp.id in skip:
                 continue
             if fp.expression is not None:
-                _walk(fp.expression.value_key)
+                _merge(self._value_key_join_paths(
+                    key=fp.expression.value_key, source_model=source_model,
+                    source_relation=source_relation, bundle=bundle,
+                ))
             elif fp.text is not None:
-                # DEV-1450 #4b: expand the model-filter text first so a bare
-                # derived-column reference (e.g. ``is_eu`` whose sql crosses a
-                # join to ``customers``) surfaces the join its expansion
-                # introduces, pulling the LEFT JOIN into the FROM.
-                expanded_text = self._render_model_filter_sql(
-                    sql=fp.text,
-                    columns=fp.text_columns,
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    bundle=bundle,
-                )
-                _add_from_sql(self._parse(expanded_text))
+                # DEV-1450 #4b / DEV-1494: discover joins from BOTH the
+                # un-inlined text (a placeholder dotted ref like
+                # ``loss_payment.has_flag`` keeps its alias even when it inlines
+                # to a constant) AND the inline-expanded text (a bare/dotted
+                # DERIVED ref like ``is_eu`` surfaces the join its expansion
+                # crosses). See ``_filter_join_paths``.
+                _merge(self._filter_join_paths(
+                    sql=fp.text, source_relation=source_relation,
+                    source_model=source_model, bundle=bundle,
+                ))
         return ordered
+
+    def _value_key_join_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
+        self, *, key, source_model, source_relation: str, bundle,
+    ) -> List[Tuple[str, ...]]:
+        """Join paths a typed filter ``ValueKey`` tree references (DEV-1450 /
+        DEV-1475): a direct ``ColumnKey.path``; a derived ``ColumnSqlKey``
+        (local or joined — expanded then scanned for the joins its ``sql``
+        crosses); and recursively through ``ArithmeticKey`` / ``ScalarCallKey`` /
+        ``BetweenKey`` / ``InKey`` operands. Extracted from
+        ``_collect_filter_join_paths``; ``_joined_paths_in_sql`` already emits
+        path prefixes, and ``ColumnKey.path`` prefixes are expanded here.
+        """
+        from slayer.core.keys import (
+            ArithmeticKey,
+            BetweenKey,
+            ColumnKey,
+            ColumnSqlKey,
+            InKey,
+            ScalarCallKey,
+        )
+
+        out: List[Tuple[str, ...]] = []
+
+        def _add(path: Tuple[str, ...]) -> None:
+            for i in range(1, len(path) + 1):
+                prefix = tuple(path[:i])
+                if prefix and prefix not in out:
+                    out.append(prefix)
+
+        def _scan(parsed: exp.Expression) -> None:
+            for p in self._joined_paths_in_sql(
+                sql_expr=parsed, source_relation=source_relation,
+                source_model=source_model, bundle=bundle,
+            ):
+                if p not in out:
+                    out.append(p)
+
+        def _derived_paths(*, model, relation, column_name) -> None:
+            _scan(self._parse(self._expand_derived_column_sql(
+                source_model=model, source_relation=relation,
+                column_name=column_name, bundle=bundle,
+            )))
+
+        def _walk(k) -> None:
+            if isinstance(k, ColumnKey):
+                _add(k.path)
+            elif isinstance(k, ColumnSqlKey):
+                # Joined derived ref also pulls the walk to its owning model.
+                _add(k.path)
+                model = (
+                    bundle.get_referenced_model(k.path[-1]) if k.path
+                    else source_model
+                )
+                if model is not None:
+                    _derived_paths(
+                        model=model,
+                        relation="__".join(k.path) if k.path else source_relation,
+                        column_name=k.column_name,
+                    )
+            elif isinstance(k, ArithmeticKey):
+                for o in k.operands:
+                    _walk(o)
+            elif isinstance(k, ScalarCallKey):
+                for a in k.args:
+                    _walk(a)
+            elif isinstance(k, BetweenKey):
+                _walk(k.column)
+                _walk(k.low)
+                _walk(k.high)
+            elif isinstance(k, InKey):
+                # DEV-1475: only the LHS column of an IN can carry a join path.
+                _walk(k.column)
+
+        _walk(key)
+        return out
 
     def _resolve_aggregation_def(
         self,
@@ -7711,7 +8045,7 @@ class SQLGenerator:
             # becomes ``orders.status = 'paid'``); mirror that here on the
             # parsed AST so dialect-independent wiring works in the new
             # pipeline.
-            filter_sql = self._qualify_column_filter_sql(
+            filter_sql = self._expand_column_filter_sql(
                 canonical_sql=(
                     key.column_filter_key.canonical_sql
                     if key.column_filter_key is not None
@@ -7719,6 +8053,7 @@ class SQLGenerator:
                 ),
                 source_relation=source_relation,
                 source_model=source_model,
+                bundle=bundle,
             )
             return AggRenderSpec(
                 name=col.name,
@@ -7908,48 +8243,28 @@ class SQLGenerator:
         source_relation: str,
         bundle,
     ) -> str:
-        """Render a ``SlayerModel.filters`` Mode-A SQL predicate (DEV-1450 #4b).
+        """Render a ``SlayerModel.filters`` Mode-A SQL predicate (DEV-1450 #4b /
+        DEV-1494).
 
-        If any name in ``columns`` is a non-trivial DERIVED column on
-        ``source_model``, the whole predicate is inline-expanded via
-        ``expand_derived_refs_sync`` (AST-based — it also qualifies bare base
-        refs and resolves sibling / joined derived refs). Otherwise the
-        base-only path (``_qualify_mode_a_sql_filter``) is used unchanged.
+        Inlines references to non-trivial derived columns — bare on
+        ``source_model`` or dotted-to-a-derived-column-on-a-joined-model — so the
+        crossed joins resolve; otherwise qualifies bare base refs via the regex
+        path (``_qualify_mode_a_sql_filter``), byte-identical to legacy. Thin
+        wrapper over ``_render_mode_a_predicate``.
         """
-        if any(
-            self._is_nontrivial_derived(source_model, c) for c in columns
-        ):
-            # Degenerate case: the whole predicate IS a single bare derived
-            # column (``filters=["is_eu"]``). It parses to a root ``exp.Column``,
-            # and ``expand_derived_refs_sync`` rewrites refs in place via
-            # ``col.replace`` — which is a no-op on the AST root. Expand the
-            # column directly so the bare boolean derived filter still inlines.
-            parsed_ast = self._parse(sql)
-            if (
-                isinstance(parsed_ast, exp.Column)
-                and parsed_ast.args.get("table") is None
-                and self._is_nontrivial_derived(source_model, parsed_ast.name)
-            ):
-                return self._expand_derived_column_sql(
-                    source_model=source_model,
-                    source_relation=source_relation,
-                    column_name=parsed_ast.name,
-                    bundle=bundle,
-                )
-            expanded = expand_derived_refs_sync(
-                sql=sql,
-                model=source_model,
-                alias_path=source_relation,
-                resolve_model=bundle.get_referenced_model,
-                dialect=self.dialect,
-            )
-            return expanded if expanded is not None else sql
-        return self._qualify_mode_a_sql_filter(
+        rendered = self._render_mode_a_predicate(
             sql=sql,
-            columns=columns,
             source_model=source_model,
             source_relation=source_relation,
+            bundle=bundle,
+            qualify_fallback=lambda s: self._qualify_mode_a_sql_filter(
+                sql=s,
+                columns=columns,
+                source_model=source_model,
+                source_relation=source_relation,
+            ),
         )
+        return rendered if rendered is not None else sql
 
     def _render_value_key_for_filter(
         self,
