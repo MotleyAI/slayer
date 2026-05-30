@@ -34,33 +34,20 @@ from slayer.storage.yaml_storage import YAMLStorage
 # --- Schema bump -----------------------------------------------------------
 
 
-def test_current_slayer_model_version_is_v4() -> None:
-    """The bump itself: storage writes v4, period."""
-    assert mig.CURRENT_VERSIONS["SlayerModel"] == 6
-
-
-def test_slayer_model_default_version_is_v4() -> None:
-    """A freshly-constructed SlayerModel carries the bumped version."""
-    m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-    assert m.version == 6
-
-
-def test_slayer_model_dump_writes_v4() -> None:
-    m = SlayerModel(name="orders", sql_table="orders", data_source="ds")
-    assert m.model_dump(mode="json", exclude_none=True)["version"] == 6
-
-
-# --- Pure dict converter ----------------------------------------------------
-
-
-def test_v3_to_v4_converter_passes_through_when_data_source_set() -> None:
-    out = mig.migrate("SlayerModel", {
+def test_v3_to_v4_step_passes_through_when_data_source_set() -> None:
+    """The v3→v4 step migrator in isolation. Pre-DEV-1480 this test went
+    through ``mig.migrate(...)`` and asserted the orchestrator's output
+    landed at the then-current version (v6). DEV-1480 bumps CURRENT_VERSIONS
+    to v7, so we narrow the assertion to just the v3→v4 leg and let
+    test_v7_migration.py own the "current version" assertion.
+    """
+    step = mig._REGISTRY[("SlayerModel", 3)]
+    out = step({
         "version": 3,
         "name": "orders",
         "sql_table": "orders",
         "data_source": "warehouse",
     })
-    assert out["version"] == 6
     assert out["data_source"] == "warehouse"
 
 
@@ -133,7 +120,6 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     loaded = await storage.get_model("orders", data_source="warehouse")
     assert loaded is not None
     assert loaded.data_source == "warehouse"
-    assert loaded.version == 6
 
     # Old flat file is gone; new namespaced file exists.
     assert not os.path.exists(os.path.join(legacy_models_dir, "orders.yaml"))
@@ -290,7 +276,6 @@ async def test_sqlite_legacy_schema_migrates_to_composite_pk(tmp_path) -> None:
     loaded = await storage.get_model("orders", data_source="warehouse")
     assert loaded is not None
     assert loaded.data_source == "warehouse"
-    assert loaded.version == 6
 
     # New schema: composite PK on (data_source, name).
     with sqlite3.connect(db_path) as conn:

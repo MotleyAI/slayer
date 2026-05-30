@@ -899,17 +899,18 @@ class TestV4ToV5DictMigration:
     in storage backends and is covered separately in test_storage_type_refinement.py.
     """
 
-    def test_current_version_is_5(self) -> None:
-        assert mig.CURRENT_VERSIONS["SlayerModel"] == 6
-
     def test_string_renames_to_text(self) -> None:
-        d = mig.migrate("SlayerModel", {
+        """v4→v5 leg in isolation. Pre-DEV-1480 went through
+        ``mig.migrate(...)`` and pinned the orchestrator's then-current
+        target (v6). DEV-1480 bumps CURRENT_VERSIONS so we now pin only
+        the v4→v5 step's contract."""
+        step = mig._REGISTRY[("SlayerModel", 4)]
+        d = step({
             "version": 4,
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "title", "sql": "title", "type": "string"}],
         })
         assert d["columns"][0]["type"] == "TEXT"
-        assert d["version"] == 6
 
     def test_number_renames_to_double(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -985,6 +986,10 @@ class TestV4ToV5DictMigration:
         assert inner["columns"][0]["type"] == "DOUBLE"
 
     def test_pydantic_load_round_trips(self) -> None:
+        """A v4 dict walks through the migration chain. Pre-DEV-1480 pinned
+        ``m.version == 6``; post-bump the orchestrator walks to v7. We only
+        pin the v4→v5 leg's contribution (the type renames) since that's
+        what this test owns."""
         m = SlayerModel.model_validate({
             "version": 4,
             "name": "items", "sql_table": "items", "data_source": "ds",
@@ -994,17 +999,21 @@ class TestV4ToV5DictMigration:
                 {"name": "ts", "sql": "ts", "type": "time"},
             ],
         })
-        assert m.version == 6
         assert m.columns[0].type.name == "TEXT"
         assert m.columns[1].type.name == "DOUBLE"
         assert m.columns[2].type.name == "TIMESTAMP"
 
-    def test_v5_dict_passes_through_unchanged(self) -> None:
-        """Already-v5 dicts skip the migrator (no field touched)."""
-        d = mig.migrate("SlayerModel", {
+    def test_v5_dict_passes_through_v4_to_v5_step_unchanged(self) -> None:
+        """The v4→v5 step migrator is a no-op for already-v5 input. Pin the
+        step directly so DEV-1480's CURRENT_VERSIONS bump doesn't cascade
+        through this assertion."""
+        step = mig._REGISTRY[("SlayerModel", 4)]
+        # The orchestrator calls the step only when input version < 5, so
+        # the step itself is never invoked for v5 input in production. We
+        # call it directly to pin its no-op-on-already-v5 contract.
+        d = step({
             "version": 5,
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "amount", "sql": "amount", "type": "DOUBLE"}],
         })
         assert d["columns"][0]["type"] == "DOUBLE"
-        assert d["version"] == 6

@@ -60,7 +60,7 @@ claude mcp list
 
 The recommended approach is to drop a datasource YAML file into your storage folder. This keeps credentials out of the agent conversation and lets you use environment variable references.
 
-Create a file at `slayer_data/datasources/mydb.yaml`:
+Create a file in the `datasources/` subdirectory of your [storage path](../configuration/storage.md) (e.g. `~/.local/share/slayer/datasources/mydb.yaml`):
 
 ```yaml
 name: mydb

@@ -24,6 +24,7 @@ import yaml
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
+from slayer.storage import migrations as mig
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -284,10 +285,12 @@ class TestYamlStorageRefinementOnLoad:
         self, storage_with_v4_model
     ) -> None:
         await storage_with_v4_model["storage"].get_model("items", data_source="live")
-        # Re-read raw YAML; should be v5 with refined types.
+        # Re-read raw YAML; the storage layer writes back at CURRENT_VERSIONS,
+        # whatever that currently is. Pre-DEV-1480 this was hard-coded to 6;
+        # post-bump it's whatever migrations.py declares.
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
-        assert raw["version"] == 6
+        assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
         assert types_by_name["id"] == "INT"
         assert types_by_name["qty"] == "INT"
@@ -435,7 +438,7 @@ class TestCliMigrateTypes:
         _run_storage(args)
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
-        assert raw["version"] == 6
+        assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
         assert types_by_name["id"] == "INT"
         assert types_by_name["qty"] == "INT"

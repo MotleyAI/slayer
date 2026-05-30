@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 from functools import lru_cache
 from typing import List, Optional
 
@@ -24,6 +25,19 @@ SLAYER_EMBEDDING_MODEL_ENV = "SLAYER_EMBEDDING_MODEL"
 
 
 _log = logging.getLogger(__name__)
+
+
+# litellm's GLOBAL_LOGGING_WORKER enqueues an async_success_handler coroutine
+# after every aembedding call. Under run_sync (notebook / CLI) each call gets a
+# fresh event loop that is torn down before the worker drains its queue, so
+# litellm's next call nils _queue on loop-change detection and GC surfaces the
+# orphans as RuntimeWarnings. The work is litellm-internal telemetry with no
+# off-switch — filter the one warning at the import-time boundary.
+warnings.filterwarnings(
+    "ignore",
+    message=r"coroutine 'Logging\.async_success_handler' was never awaited",
+    category=RuntimeWarning,
+)
 
 
 def current_model() -> str:

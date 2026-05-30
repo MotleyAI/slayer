@@ -214,12 +214,16 @@ class JoinSyncStorage(StorageBackend):
         model_name: str,
         column_name: str,
         sampled: Optional[str],
+        sampled_values: Optional[List[str]],
+        distinct_count: Optional[int],
     ) -> None:
         return await self._inner.update_column_sampled(
             data_source=data_source,
             model_name=model_name,
             column_name=column_name,
             sampled=sampled,
+            sampled_values=sampled_values,
+            distinct_count=distinct_count,
         )
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:

@@ -7205,9 +7205,10 @@ docs = ["mkdocs-material"]
 embedding-search = ["litellm", "numpy"]
 flight = ["pyarrow"]
 mysql = ["aiomysql", "pymysql"]
+pg-facade = []
 postgres = ["asyncpg", "psycopg2-binary"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "77b9f8a31246fc84fbc747f476d2a0a61d2949c7d7e25455523d44cfda7597cc"
+content-hash = "312de7d50d47c0b4be641d5bda4469965a546be00ff454ea1b262a4e9bebde76"

@@ -1,22 +1,17 @@
-"""Type-mapping tables for the Flight SQL facade (DEV-1390 §5.3).
+"""Arrow type-mapping for the Flight SQL facade (DEV-1390 §5.3).
 
-Three concentric type systems converge here:
+The pyarrow-bound half of the facade type system. The pyarrow-free half
+(``SUPPORTED_DATATYPES`` + ``datatype_to_jdbc``) lives in
+``slayer.facade.datatypes`` and is re-exported here for backward compat.
 
-* SLayer's ``DataType`` (``slayer.core.enums``) — six canonical values:
-  ``TEXT``, ``INT``, ``DOUBLE``, ``BOOLEAN``, ``DATE``, ``TIMESTAMP``.
+* SLayer's ``DataType`` (``slayer.core.enums``) — six canonical values.
 * Apache Arrow ``DataType`` — the wire encoding the Flight SQL gRPC
   server emits to clients.
-* JDBC type-name strings — what `INFORMATION_SCHEMA.{COLUMNS,METRICS,
-  DIMENSIONS}.data_type` rows display, matching what the dbt-SL JDBC
-  driver renders for BI tools.
 
-The forward direction (``DataType → Arrow`` and ``DataType → JDBC``) is
-total over the six supported values. The reverse direction
-(``Arrow → DataType``) collapses Arrow's much wider type space onto
-the six SLayer types: any signed-integer width → ``INT``, any float /
-decimal → ``DOUBLE``, any timestamp unit → ``TIMESTAMP``, etc.
-``arrow_to_datatype`` returns ``None`` for genuinely unmappable Arrow
-types (e.g. ``list_``, ``struct_``); callers decide how to handle.
+The forward direction (``DataType → Arrow``) is total over the six
+supported values. The reverse (``Arrow → DataType``) collapses Arrow's
+wider type space onto the six SLayer types; ``arrow_to_datatype``
+returns ``None`` for genuinely unmappable Arrow types.
 """
 
 from __future__ import annotations
@@ -26,6 +21,8 @@ from typing import Optional
 import pyarrow as pa
 
 from slayer.core.enums import DataType
+from slayer.facade.datatypes import SUPPORTED_DATATYPES, datatype_to_jdbc
+from slayer.facade.rows import RowBatch
 
 _DATATYPE_TO_ARROW: dict[DataType, pa.DataType] = {
     DataType.TEXT: pa.utf8(),
@@ -36,24 +33,10 @@ _DATATYPE_TO_ARROW: dict[DataType, pa.DataType] = {
     DataType.TIMESTAMP: pa.timestamp("us"),
 }
 
-_DATATYPE_TO_JDBC: dict[DataType, str] = {
-    DataType.TEXT: "VARCHAR",
-    DataType.INT: "BIGINT",
-    DataType.DOUBLE: "DOUBLE",
-    DataType.BOOLEAN: "BOOLEAN",
-    DataType.DATE: "DATE",
-    DataType.TIMESTAMP: "TIMESTAMP",
-}
-
 
 def datatype_to_arrow(dt: DataType) -> pa.DataType:
     """Return the canonical Arrow type for a SLayer ``DataType``."""
     return _DATATYPE_TO_ARROW[dt]
-
-
-def datatype_to_jdbc(dt: DataType) -> str:
-    """Return the JDBC type-name string for a SLayer ``DataType``."""
-    return _DATATYPE_TO_JDBC[dt]
 
 
 def arrow_to_datatype(at: pa.DataType) -> Optional[DataType]:
@@ -80,4 +63,22 @@ def arrow_to_datatype(at: pa.DataType) -> Optional[DataType]:
     return None
 
 
-SUPPORTED_DATATYPES: tuple[DataType, ...] = tuple(_DATATYPE_TO_ARROW.keys())
+def row_batch_to_arrow(batch: RowBatch) -> pa.Table:
+    """Convert a facade-neutral ``RowBatch`` into a ``pyarrow.Table``.
+
+    The conversion boundary between the shared (pyarrow-free) facade layer
+    and the Flight facade's Arrow wire format.
+    """
+    fields = [
+        pa.field(col.name, datatype_to_arrow(col.type)) for col in batch.columns
+    ]
+    return pa.Table.from_pylist(batch.rows, schema=pa.schema(fields))
+
+
+__all__ = [
+    "SUPPORTED_DATATYPES",
+    "arrow_to_datatype",
+    "datatype_to_arrow",
+    "datatype_to_jdbc",
+    "row_batch_to_arrow",
+]
