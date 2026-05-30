@@ -568,19 +568,39 @@ def normalize_query(
     return NormalizationResult(query=query, warnings=all_warnings)
 
 
-def normalize_model(model: SlayerModel) -> NormalizationResult:
+def normalize_model(
+    model: SlayerModel,
+    *,
+    custom_agg_names: Optional[frozenset[str]] = None,
+) -> NormalizationResult:
     """Apply slack rules to a ``SlayerModel`` before persistence.
 
     Mode-A rewrites (``DOT_PATH_IN_SQL``) target ``Column.sql``,
     ``Column.filter``, and ``SlayerModel.filters``. Mode-B rewrites
     (``FUNC_STYLE_AGG``) target ``ModelMeasure.formula``. The rewrite
     semantics match ``normalize_query``.
+
+    ``custom_agg_names`` lets the caller supply the full reachable
+    aggregation set (model's own aggregations PLUS any defined on joined
+    models the caller has resolved through storage) so a funcstyle measure
+    over a joined-model custom aggregation gets rewritten — mirrors
+    ``normalize_query``'s param. Sharp edges:
+
+    * ``custom_agg_names=None`` (default) → fall back to the model's own
+      ``aggregations`` (backward-compatible; matches the pre-DEV-1500
+      behaviour for direct callers and tests that don't resolve joins).
+    * ``custom_agg_names=frozenset()`` → empty set is honoured AS-IS: the
+      model's-own fallback is suppressed. Pass an explicit empty frozenset
+      only when you want builtins-only recognition.
     """
     all_warnings: List[NormalizationWarning] = []
 
     # FUNC_STYLE_AGG on ModelMeasure.formula entries.
     if model.measures:
-        custom_names = frozenset(a.name for a in (model.aggregations or []))
+        if custom_agg_names is not None:
+            custom_names = custom_agg_names
+        else:
+            custom_names = frozenset(a.name for a in (model.aggregations or []))
         new_measures = []
         for i, mm in enumerate(model.measures):
             formula = mm.formula

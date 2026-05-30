@@ -69,6 +69,45 @@ class ResolvedSourceBundle(BaseModel):
                 return m
         return None
 
+    def reachable_aggregation_names(
+        self, *, start: SlayerModel,
+    ) -> Optional[frozenset[str]]:
+        """Custom aggregation names reachable from ``start`` via the join
+        graph, resolved against this bundle's pre-loaded
+        ``referenced_models``. Sync mirror of
+        ``enrichment._collect_reachable_agg_names`` — used by the slack
+        FUNC_STYLE_AGG normalizer so a custom aggregation defined on a
+        joined model (e.g. ``rolling_avg(customers.score)``) is recognised
+        and rewritten to colon form.
+
+        BFS, visited-guarded by model name, unbounded depth. Join targets
+        absent from ``referenced_models`` are skipped (best-effort, matches
+        the rest of the bundle). Returns ``None`` when nothing reachable
+        carries any custom aggregation; the contract is "None when empty",
+        not an empty frozenset.
+
+        Scoping is per call: a stage normalises against its own source
+        model, so a stage only sees aggregations reachable from the model
+        it actually queries — not the union across every sibling stage.
+        """
+        names: set[str] = set()
+        visited: set[str] = set()
+        queue: list[SlayerModel] = [start]
+        while queue:
+            current = queue.pop(0)
+            if current.name in visited:
+                continue
+            visited.add(current.name)
+            if current.aggregations:
+                names.update(a.name for a in current.aggregations)
+            for join in current.joins:
+                if join.target_model in visited:
+                    continue
+                nxt = self.get_referenced_model(join.target_model)
+                if nxt is not None:
+                    queue.append(nxt)
+        return frozenset(names) if names else None
+
 
 # Anything accepted as ``SlayerQuery.source_model``.
 SourceSpec = Union[str, SlayerModel, ModelExtension, Dict[str, Any]]

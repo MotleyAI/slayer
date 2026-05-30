@@ -4139,14 +4139,6 @@ class TestDimensionAggregation:
 class TestCrossModelCustomAggFuncStyle:
     """Function-style syntax with custom aggregations from joined models."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1500: slack FUNC_STYLE_AGG normalization doesn't recognize "
-            "custom aggregations on joined models, so rolling_avg(customers.score) "
-            "reaches Mode-B unrewritten. Auto-promotes when supported."
-        ),
-    )
     async def test_funcstyle_custom_agg_on_joined_model(self, generator: SQLGenerator) -> None:
         """rolling_avg(customers.score) should rewrite and generate SQL."""
 
@@ -4198,13 +4190,6 @@ class TestReachableAggDiscoveryUnbounded:
     ``custom_agg_names`` and the function-style rewrite failed.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1500: slack FUNC_STYLE_AGG normalization doesn't recognize "
-            "custom aggregations on joined models. Auto-promotes when supported."
-        ),
-    )
     async def test_funcstyle_custom_agg_at_four_hops(self, generator: SQLGenerator) -> None:
 
         a = SlayerModel(

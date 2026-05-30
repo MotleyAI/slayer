@@ -33,7 +33,7 @@ from slayer.engine.enriched import (
     EnrichedMeasure,
     EnrichedQuery,
 )
-from slayer.engine.enrichment import enrich_query
+from slayer.engine.enrichment import _collect_reachable_agg_names, enrich_query
 from slayer.engine.normalization import normalize_model, normalize_query
 from slayer.engine.path_resolution import NoJoinError as _NoJoinError
 from slayer.engine.path_resolution import walk_join_chain
@@ -582,8 +582,12 @@ class SlayerQueryEngine:
         else:
             model = bundle.source_model
         custom_aggs: Optional[frozenset[str]] = None
-        if model is not None and model.aggregations:
-            custom_aggs = frozenset(a.name for a in model.aggregations)
+        if model is not None:
+            # DEV-1500: scoped per-stage BFS over the pre-resolved bundle,
+            # so funcstyle calls over joined-model custom aggregations
+            # (``rolling_avg(customers.score)`` where ``rolling_avg`` lives
+            # on ``customers``) are recognised by the slack rewrite.
+            custom_aggs = bundle.reachable_aggregation_names(start=model)
         norm = normalize_query(query, model=model, custom_agg_names=custom_aggs)
         out = norm.query if norm.query is not None else query
         return out, list(norm.warnings)
@@ -1586,8 +1590,43 @@ class SlayerQueryEngine:
         incoming model so persisted formulas land in canonical form. The
         legacy in-tree rewriters still fire during enrichment for callers
         that load and re-execute persisted models.
+
+        DEV-1500 — when the model has any measures to normalise, do a
+        best-effort storage walk of the join graph so the FUNC_STYLE_AGG
+        rewrite recognises custom aggregations defined on joined models.
+        Failures (missing target, ``AmbiguousModelError``, any storage
+        hiccup) are swallowed; the walk degrades to the model's own
+        aggregations.
         """
-        norm_model = normalize_model(model)
+        custom_aggs: Optional[frozenset[str]] = None
+        if model.measures:
+            async def _resolve_join_target_for_save(
+                target_model_name: str, named_queries,  # noqa: ARG001
+            ):
+                if not self.storage:
+                    return None
+                try:
+                    if model.data_source:
+                        target = await self.storage.get_model(
+                            target_model_name, data_source=model.data_source,
+                        )
+                    else:
+                        target = await self.storage.get_model(target_model_name)
+                except Exception:  # noqa: BLE001 — best-effort; AmbiguousModelError + misc
+                    return None
+                if target is None:
+                    return None
+                return (None, target)
+
+            try:
+                custom_aggs = await _collect_reachable_agg_names(
+                    model=model,
+                    resolve_join_target=_resolve_join_target_for_save,
+                    named_queries={},
+                )
+            except Exception:  # noqa: BLE001 — never let the walk abort a save
+                custom_aggs = None
+        norm_model = normalize_model(model, custom_agg_names=custom_aggs)
         if norm_model.model is not None:
             model = norm_model.model
         # Capture the *previous* data_source for this name so we can clean
