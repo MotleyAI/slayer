@@ -5202,6 +5202,55 @@ class TestDev1501HiddenFirstLastRender:
                 f"through the ScalarCallKey recursion.\nHAVING:\n{having_sql}"
             )
 
+    async def test_composite_only_first_last_triggers_ranked_subquery(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A query whose ONLY first/last reference is INSIDE a composite
+        aggregate (no direct first/last sibling) must still trigger the
+        ranked-subquery wrap. Without composite-aware detection in
+        ``_has_first_last_aggregate``, the query takes the regular base
+        path and the composite render emits ``MAX(CASE WHEN _last_rn=1
+        …)`` referencing a column the bare FROM never projects. Codex
+        review of DEV-1501 PR #159 round 4.
+        """
+        m = _orders_two_ts_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                # ONLY composite — no direct first/last sibling.
+                measures=[ModelMeasure(
+                    formula="revenue:last(created_at) + revenue:last(updated_at)",
+                    name="diff",
+                )],
+                dimensions=[ColumnRef(name="status")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Ranked subquery must be built with BOTH time-column rn cols.
+            assert "_last_rn" in sql and "_last_rn_2" in sql, (
+                f"Ranked subquery not built (composite-only first/last "
+                f"didn't trigger _has_first_last_aggregate):\n{sql}"
+            )
+            # Both composite operands must reference distinct rn columns.
+            diff_match = _re.search(
+                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?\+\s*"
+                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?"
+                r'AS "orders\.diff"',
+                sql,
+            )
+            assert diff_match is not None, (
+                f"composite ``diff`` projection not found:\n{sql}"
+            )
+            left_rn, right_rn = diff_match.group(1), diff_match.group(2)
+            assert {left_rn, right_rn} == {"_last_rn", "_last_rn_2"}, (
+                f"Composite operands collapsed: left={left_rn!r}, "
+                f"right={right_rn!r}\nSQL:\n{sql}"
+            )
+
     async def test_composite_first_last_in_projection_uses_correct_suffixes(
         self, generator: SQLGenerator
     ) -> None:

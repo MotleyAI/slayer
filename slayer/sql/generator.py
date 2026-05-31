@@ -148,7 +148,7 @@ class FirstLastRenderState(BaseModel):
     threaded through ``_build_where_having_from_planned`` instead."""
 
 
-def _iter_first_last_leaves(key) -> "list":
+def _iter_first_last_leaves(key) -> "list":  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type recursion contract for surfacing first/last AggregateKey leaves. Extracting per-type helpers would scatter the contract.
     """DEV-1501 (Codex round 3): walk a composite ValueKey for first /
     last ``AggregateKey`` leaves.
 
@@ -196,7 +196,6 @@ def _iter_first_last_leaves(key) -> "list":
             return
         if isinstance(k, InKey):
             _walk(k.column)
-            return
         # LiteralKey / ColumnKey / TimeTruncKey / TransformKey / etc.:
         # not a first/last operand carrier; stop recursing.
 
@@ -3964,11 +3963,18 @@ class SQLGenerator:
         self, *, base_render_order: List[str], slots_by_id: Dict[str, Any],
     ) -> bool:
         """True if any LOCAL ``first`` / ``last`` AGGREGATE slot appears in
-        the base render order.
+        the base render order — directly as an ``AggregateKey`` slot OR
+        as an operand inside a composite (``ArithmeticKey`` /
+        ``ScalarCallKey``) aggregate slot.
 
-        Cross-model first/last (non-empty ``source.path``) is excluded — it
-        is not rendered by the ranked-subquery path (each cross-model
-        aggregate has its own CTE).
+        Cross-model first/last (non-empty ``source.path``) is excluded —
+        it is not rendered by the ranked-subquery path (each cross-model
+        aggregate has its own CTE). DEV-1501 (Codex round 4): composite-
+        only first/last (e.g. ``last(created_at) + last(updated_at)``
+        with no direct sibling) must still trigger the ranked-subquery
+        path; without composite-aware detection the composite render
+        would emit ``MAX(CASE WHEN _last_rn = 1 …)`` referencing a
+        column the bare-FROM never projects.
         """
         from slayer.core.keys import AggregateKey, Phase
 
@@ -3982,6 +3988,12 @@ class SQLGenerator:
                 and key.agg in ("first", "last")
                 and not getattr(key.source, "path", ())
             ):
+                return True
+            # Composite slot (no direct AggregateKey): walk for first/
+            # last AggregateKey leaves. The composite render needs the
+            # ranked subquery so each operand's ``_first_rn`` /
+            # ``_last_rn{suffix}`` column exists.
+            if not isinstance(key, AggregateKey) and _iter_first_last_leaves(key):
                 return True
         return False
 
