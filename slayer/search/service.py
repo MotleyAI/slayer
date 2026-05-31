@@ -1,9 +1,14 @@
 """SearchService — three-channel + RRF orchestrator (DEV-1375 / DEV-1386).
 
-* **Channel 1** — entity-overlap BM25 over memories
+* **Channel 1** — entity-overlap BM25 with implicit self-references
   (``slayer.memories.ranker.bm25_rank``). Skipped when neither
-  ``entities`` nor ``query`` is supplied. Contributes only to the memory
-  ranking.
+  ``entities`` nor ``query`` is supplied. Contributes to BOTH the
+  memory ranking AND the entity ranking (DEV-1513): every doc is
+  treated as carrying an implicit reference to itself, so a memory
+  ``M``'s effective tag list is ``M.entities ∪ {memory:<M.id>}`` (a
+  ``memory:<id>`` ref surfaces the named memory at the top of the
+  memory ranking) and a user-supplied canonical entity ref surfaces
+  the named entity at the top of the entity ranking.
 * **Channel 2** — tantivy full-text. Skipped when ``question`` is
   empty. Runs as TWO kind-filtered queries per call (DEV-1414): one
   with ``kind_filter="memory"`` for the memory ranking, one with
@@ -17,10 +22,10 @@
   the memory ranking, non-memory rows feed the entity ranking. Each
   partition is ranked in full.
 
-Memory rankings from every active channel are fused via RRF
-(``k = 60``). Entity rankings from channels 2 and 3 are fused the same
-way. Channel 1 does not contribute to entity ranking (it operates on
-memory entity tags, not on entity docs).
+Memory and entity rankings from every active channel are fused via RRF
+(``k = 60``). Channel 1's entity ranking is the surviving canonical
+inputs in supplied order (DEV-1513); channels 2 and 3 contribute fuzzy
+hits.
 
 Per-bucket invariance (DEV-1414): because each channel produces a full
 per-kind ranking — never truncated by a shared candidate-pool budget —
@@ -416,6 +421,29 @@ def _rank_embedding_kind(
     return [rows[idx].canonical_id for idx, _score in pairs]
 
 
+def _resolve_entity_hit_kind_text(
+    *,
+    canonical: str,
+    corpus: Optional[Corpus],
+    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
+) -> Optional[Tuple[str, str]]:
+    """DEV-1513: resolve one canonical's ``(kind, text)`` for an entity
+    hit. Prefers the corpus (channels 2/3 already built it); falls back
+    to the channel-1 ``named_kind_text`` lookup (used on pure-named
+    calls with no corpus). Returns ``None`` when neither source carries
+    the canonical."""
+    if corpus is not None:
+        kind = corpus.canonical_to_kind.get(canonical)
+        text = corpus.canonical_to_text.get(canonical)
+        if kind is not None and text is not None:
+            return kind, text
+    if named_kind_text is not None:
+        pair = named_kind_text.get(canonical)
+        if pair is not None:
+            return pair
+    return None
+
+
 def _fuse_entity_hits(
     *,
     rankings: List[List[str]],
@@ -423,10 +451,10 @@ def _fuse_entity_hits(
     named_kind_text: Optional[Dict[str, Tuple[str, str]]],
     max_entities: int,
 ) -> List[EntityHit]:
-    """RRF-fuse the entity rankings and look text/kind up from the corpus
-    map, falling back to ``named_kind_text`` (filled by channel 1) when
-    the corpus doesn't carry the canonical (e.g. pure-named call with
-    no corpus build, DEV-1513). Returns at most ``max_entities`` hits."""
+    """RRF-fuse the entity rankings and look text/kind up via
+    ``_resolve_entity_hit_kind_text`` (corpus first, then channel-1
+    named-entity fallback, DEV-1513). Returns at most ``max_entities``
+    hits."""
     non_empty = [r for r in rankings if r]
     fused = rrf_fuse(rankings=non_empty, k=_RRF_K) if non_empty else {}
     fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
@@ -434,17 +462,14 @@ def _fuse_entity_hits(
     for canonical, score in fused_sorted:
         if len(out) >= max_entities:
             break
-        kind: Optional[str] = None
-        text: Optional[str] = None
-        if corpus is not None:
-            kind = corpus.canonical_to_kind.get(canonical)
-            text = corpus.canonical_to_text.get(canonical)
-        if (kind is None or text is None) and named_kind_text is not None:
-            pair = named_kind_text.get(canonical)
-            if pair is not None:
-                kind, text = pair
-        if kind is None or text is None:
+        resolved = _resolve_entity_hit_kind_text(
+            canonical=canonical,
+            corpus=corpus,
+            named_kind_text=named_kind_text,
+        )
+        if resolved is None:
             continue
+        kind, text = resolved
         out.append(EntityHit(
             id=canonical, kind=kind, score=score, text=text,
         ))
@@ -500,6 +525,56 @@ def _augment_with_self_refs(memories: List[Memory]) -> List[Memory]:
     return out
 
 
+async def _lookup_bare_datasource_canonical(
+    *, ds: str, storage: StorageBackend,
+) -> LookupResult:
+    """DEV-1513: bare ``<ds>`` branch of ``_lookup_named_entity``.
+    Re-verifies the datasource still exists (it may have been deleted
+    between resolve and lookup) before rendering."""
+    known = await storage.list_datasources()
+    if ds not in known:
+        return LookupMissing()
+    identities = await storage._list_all_model_identities()
+    models: List[SlayerModel] = []
+    for ident_ds, name in identities:
+        if ident_ds != ds:
+            continue
+        m = await storage.get_model(name, data_source=ident_ds)
+        if m is not None:
+            models.append(m)
+    pair = render_datasource_pair(name=ds, models=models)
+    return LookupFound(kind=pair.kind, text=pair.text)
+
+
+async def _lookup_model_or_leaf_canonical(
+    *,
+    canonical: str,
+    ds: str,
+    model_name: str,
+    leaf: Optional[str],
+    storage: StorageBackend,
+) -> LookupResult:
+    """DEV-1513: ``<ds>.<model>`` and ``<ds>.<model>.<leaf>`` branches of
+    ``_lookup_named_entity``. Returns ``Hidden`` for hidden model /
+    hidden column, ``Missing`` for "no such entity" (race between resolve
+    and lookup)."""
+    model = await storage.get_model(model_name, data_source=ds)
+    if model is None:
+        return LookupMissing()
+    if model.hidden:
+        return LookupHidden(reason="hidden model")
+    for re in collect_model_entity_pairs(model=model):
+        if re.canonical_id == canonical:
+            return LookupFound(kind=re.kind, text=re.text)
+    # Not in the visible set. For a leaf canonical, distinguish "exists
+    # on model but is hidden" from "doesn't exist on model at all".
+    if leaf is not None:
+        for column in model.columns:
+            if column.name == leaf and column.hidden:
+                return LookupHidden(reason="hidden column")
+    return LookupMissing()
+
+
 async def _lookup_named_entity(
     *,
     canonical: str,
@@ -511,8 +586,9 @@ async def _lookup_named_entity(
 
     Reuses ``corpus.canonical_to_*`` when the canonical is already in the
     in-memory corpus (channel 2/3 active) — no re-render, no risk of
-    corpus / live-storage drift mid-call. Otherwise direct-renders via
-    the unified ``collect_model_entity_pairs`` / ``render_datasource_pair``
+    corpus / live-storage drift mid-call. Otherwise dispatches to the
+    bare-datasource or model/leaf helper, which direct-render via the
+    unified ``render_datasource_pair`` / ``collect_model_entity_pairs``
     helpers in ``slayer.search.render``.
 
     Returns ``LookupHidden`` when the resolved canonical lives behind a
@@ -524,50 +600,19 @@ async def _lookup_named_entity(
         text = corpus.canonical_to_text.get(canonical)
         if kind is not None and text is not None:
             return LookupFound(kind=kind, text=text)
-
     segments = canonical.split(".")
     if len(segments) == 1:
-        # Bare datasource — re-verify membership before rendering.
-        ds = segments[0]
-        known = await storage.list_datasources()
-        if ds not in known:
-            return LookupMissing()
-        identities = await storage._list_all_model_identities()
-        models: List[SlayerModel] = []
-        for ident_ds, name in identities:
-            if ident_ds != ds:
-                continue
-            m = await storage.get_model(name, data_source=ident_ds)
-            if m is not None:
-                models.append(m)
-        pair = render_datasource_pair(name=ds, models=models)
-        return LookupFound(kind=pair.kind, text=pair.text)
-
+        return await _lookup_bare_datasource_canonical(
+            ds=segments[0], storage=storage,
+        )
     if len(segments) >= 2:
-        ds, model_name = segments[0], segments[1]
-        model = await storage.get_model(model_name, data_source=ds)
-        if model is None:
-            return LookupMissing()
-        if model.hidden:
-            return LookupHidden(reason="hidden model")
-        leaf = segments[2] if len(segments) >= 3 else None
-        pairs = collect_model_entity_pairs(model=model)
-        if leaf is None:
-            for re in pairs:
-                if re.canonical_id == canonical:
-                    return LookupFound(kind=re.kind, text=re.text)
-            return LookupMissing()
-        # Leaf form: detect "exists on model but is hidden" distinctly from
-        # "doesn't exist on model at all".
-        for re in pairs:
-            if re.canonical_id == canonical:
-                return LookupFound(kind=re.kind, text=re.text)
-        # Not in the visible set — check if it's a hidden column.
-        for column in model.columns:
-            if column.name == leaf and column.hidden:
-                return LookupHidden(reason="hidden column")
-        return LookupMissing()
-
+        return await _lookup_model_or_leaf_canonical(
+            canonical=canonical,
+            ds=segments[0],
+            model_name=segments[1],
+            leaf=segments[2] if len(segments) >= 3 else None,
+            storage=storage,
+        )
     return LookupMissing()
 
 

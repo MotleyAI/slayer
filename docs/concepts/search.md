@@ -37,12 +37,22 @@ every doc is conceptually tagged with an implicit reference to itself.
 
 Concretely:
 
-```python
-search(entities=["mydb.orders.amount"], max_memories=0)
-# -> SearchResponse(entities=[EntityHit(id="mydb.orders.amount", kind="column", ...)])
+```json
+{
+  "call": {"entities": ["mydb.orders.amount"], "max_memories": 0},
+  "response": {
+    "entities": [{"id": "mydb.orders.amount", "kind": "column"}]
+  }
+}
+```
 
-search(entities=["memory:42"], max_entities=0)
-# -> SearchResponse(memories=[MemoryHit(id="42", matched_entities=["memory:42"], ...)])
+```json
+{
+  "call": {"entities": ["memory:42"], "max_entities": 0},
+  "response": {
+    "memories": [{"id": "42", "matched_entities": ["memory:42"]}]
+  }
+}
 ```
 
 Filter rules for the new entity surfacing:
@@ -177,16 +187,21 @@ All four surfaces accept an optional `datasource: Optional[str] = None`
 argument. When set, every channel pre-filters its corpus to that one
 datasource:
 
-- **Entity hits** (channels 2 and 3) include only docs whose
+- **Entity hits** (channels 1, 2, and 3) include only docs whose
   `canonical_id` is rooted at the requested datasource — exact name
   match (`<ds>`) or strict dotted-path descendant (`<ds>.<model>`,
   `<ds>.<model>.<leaf>`). Character-prefix matches do NOT qualify, so
   `datasource="prod"` excludes a sibling datasource named `prod_v2`.
+  Channel 1 (DEV-1513) drops a user-supplied `entities=` ref that
+  isn't rooted at the requested datasource with a warning rather than
+  silently surfacing it.
 - **Memory hits** (channels 1, 2, 3, and the recency fallback) include
   only memories whose `entities` list has at least one entry rooted at
   the requested datasource. A memory that references both `prod.*` and
   `staging.*` surfaces from each datasource when each is filtered
-  independently; an untagged memory drops out under any filter.
+  independently; an untagged memory drops out under any filter. A
+  user-supplied `entities=["memory:<id>"]` ref whose memory was
+  filtered out emits a symmetric warning.
 - BM25 and tantivy IDF statistics reflect the filtered subset only —
   pre-filter, not post-filter. The embedding cosine corpus (channel 3)
   is filtered before the numpy matrix is built, so cosine scores are
@@ -206,7 +221,7 @@ prefix match is unambiguous.
 
 | `entities`/`query` | `question` | Result |
 |---|---|---|
-| set | set | All eligible channels run. Memories RRF-fused (channels 1 + 2 + 3); entities RRF-fused (channels 2 + 3). Channel 3 is skipped with a warning when the `embedding_search` extra is missing. Query-bearing memories partitioned out to `example_queries`. |
+| set | set | All eligible channels run. Memories RRF-fused (channels 1 + 2 + 3); entities RRF-fused (channels 1 + 2 + 3, DEV-1513). Channel 3 is skipped with a warning when the `embedding_search` extra is missing. Query-bearing memories partitioned out to `example_queries`. |
 | set | unset/empty | Channel 1 only. Memories partitioned by `query` presence; entity hits = the named refs themselves (DEV-1513). |
 | unset/empty | set | Channels 2 and 3 (when eligible). Memories RRF-fused; entities RRF-fused. |
 | unset/empty | unset/empty | Recency fallback: newest `max_memories` learning-only memories + newest `max_example_queries` query-bearing memories, with a warning. |
