@@ -66,6 +66,86 @@ def _extract_src_body(sql: str) -> str:
 _SQLGLOT_TYPEERROR_DIALECTS = {"bigquery"}
 
 
+def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
+    """Return each ORDER BY term from the OUTERMOST SELECT as
+    ``(expression_sql, direction)`` pairs where direction is ``"asc"`` or
+    ``"desc"``. Used by tests that assert two ORDER BY terms aren't
+    byte-identical AND that the direction wasn't lost in the outer wrap.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    if not isinstance(tree, sqlglot.exp.Select):
+        return []
+    order = tree.args.get("order")
+    if order is None:
+        return []
+    out: list[tuple[str, str]] = []
+    for ordered in order.expressions:
+        direction = "desc" if ordered.args.get("desc") else "asc"
+        out.append((ordered.this.sql(dialect=dialect), direction))
+    return out
+
+
+def _projection_rn_by_alias(sql: str, dialect: str = "postgres") -> dict[str, str]:
+    """For the OUTERMOST SELECT, walk projections and return
+    ``{alias: rn_column_name}`` for every projection whose body is a
+    ``MAX(CASE WHEN <_first_rn|_last_rn[suffix]> = 1 THEN …)`` aggregate
+    (wrapped in optional ``CAST(...)``). The alias is the ``AS …`` body;
+    the rn column is the identifier referenced in the CASE WHEN.
+
+    Lets tests cleanly assert e.g. that two projections reference
+    DIFFERENT ``_last_rn{suffix}`` columns without writing a SQL regex
+    that can drift across multiple aggregates.
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    if not isinstance(tree, sqlglot.exp.Select):
+        return {}
+    out: dict[str, str] = {}
+    for proj in tree.expressions:
+        # Outer alias is the AS body.
+        alias = proj.alias
+        if not alias:
+            continue
+        body = proj.this if isinstance(proj, sqlglot.exp.Alias) else proj
+        # Unwrap one CAST layer if present.
+        if isinstance(body, sqlglot.exp.Cast):
+            body = body.this
+        if not isinstance(body, sqlglot.exp.Max):
+            continue
+        inner = body.this
+        if not isinstance(inner, sqlglot.exp.Case):
+            continue
+        # First WHEN's condition is the rn = 1 check.
+        ifs = inner.args.get("ifs") or []
+        if not ifs:
+            continue
+        cond = ifs[0].args.get("this")
+        if cond is None:
+            continue
+        # cond is an EQ between a column and a literal 1.
+        if not isinstance(cond, sqlglot.exp.EQ):
+            continue
+        left = cond.args.get("this")
+        if not isinstance(left, sqlglot.exp.Column):
+            continue
+        out[alias] = left.name
+    return out
+
+
+def _outer_from_node(sql: str, dialect: str = "postgres"):
+    """Return the OUTERMOST SELECT's FROM source node (a sqlglot
+    ``Table`` for a flat SELECT, a ``Subquery`` for an outer-wrap shape).
+    sqlglot uses ``from_`` as the arg key and stores the single source at
+    ``.this``, not in ``.expressions`` (which is empty for a single FROM).
+    """
+    tree = sqlglot.parse_one(sql, dialect=dialect)
+    if not isinstance(tree, sqlglot.exp.Select):
+        return None
+    fc = tree.args.get("from_")
+    if fc is None:
+        return None
+    return fc.this
+
+
 def _assert_valid_sql(sql: str, dialect: str = "postgres"):
     """Assert generated SQL is structurally valid (parses, no nested WITH)."""
     try:
@@ -2148,6 +2228,83 @@ class TestMultiDialectGeneration:
         )
         with pytest.raises(NotImplementedError, match="MySQL"):
             await _generate(generator=gen, query=query, model=orders_model)
+
+    @pytest.mark.parametrize(
+        "dialect",
+        ["postgres", "sqlite", "duckdb", "mysql", "clickhouse"],
+    )
+    async def test_dev1501_two_last_diff_time_cols_multi_dialect(
+        self, dialect: str,
+    ) -> None:
+        """DEV-1501 cross-dialect: ``ORDER BY revenue:last(created_at) DESC,
+        revenue:last(updated_at) ASC`` must materialise two distinct
+        ranked aggregates per Tier-1 dialect, with dotted quoted aliases
+        rendered correctly in the outer ORDER BY (no qualified-identifier
+        misparse).
+        """
+        m = SlayerModel(
+            name="orders", sql_table="public.orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        gen = SQLGenerator(dialect=dialect)
+        query = SlayerQuery(
+            source_model="orders",
+            measures=["*:count"],
+            dimensions=[ColumnRef(name="status")],
+            order=[
+                OrderItem(column="revenue:last(created_at)", direction="desc"),
+                OrderItem(column="revenue:last(updated_at)", direction="asc"),
+            ],
+        )
+        sql = await _generate(generator=gen, query=query, model=m)
+        _assert_valid_sql(sql, dialect=dialect)
+        # Two distinct rank columns per effective time column, both
+        # dialect-independent (no dialect rewrites ROW_NUMBER alias).
+        assert "_last_rn" in sql
+        assert "_last_rn_2" in sql
+        assert "revenue_last_created_at" in sql, (
+            f"Materialised created_at alias missing on {dialect}:\n{sql}"
+        )
+        assert "revenue_last_updated_at" in sql, (
+            f"Materialised updated_at alias missing on {dialect}:\n{sql}"
+        )
+        # The OUTER ORDER BY must reference each materialised alias as a
+        # SINGLE dotted-identifier column (the dotted body lives inside
+        # one quoted identifier; it must NOT decompose into a qualified
+        # ``"orders"."revenue_last_created_at"`` two-part name). Filter
+        # to Column terms because some dialects (MySQL) emit a synthetic
+        # ``CASE WHEN x IS NULL`` term to emulate NULLS LAST — those are
+        # NULL-ordering wrappers, not separate references.
+        tree = sqlglot.parse_one(sql, dialect=dialect)
+        assert isinstance(tree, sqlglot.exp.Select)
+        order = tree.args.get("order")
+        assert order is not None, f"No outer ORDER BY on {dialect}:\n{sql}"
+        order_cols = []
+        for ordered in order.expressions:
+            inner = ordered.this
+            if not isinstance(inner, sqlglot.exp.Column):
+                continue
+            # ``table`` is the qualified-prefix slot. For a single dotted
+            # identifier (``"orders.revenue_last_created_at"``) it must be
+            # absent / empty.
+            tbl = inner.args.get("table")
+            assert tbl is None or not tbl.name, (
+                f"{dialect}: ORDER BY decomposes the dotted alias into a "
+                f"qualified two-part name (table={tbl!r}):\n{sql}"
+            )
+            order_cols.append(inner.name)  # the identifier body
+        assert set(order_cols) == {
+            "orders.revenue_last_created_at",
+            "orders.revenue_last_updated_at",
+        }, (
+            f"{dialect}: outer ORDER BY columns wrong: {order_cols!r}\n{sql}"
+        )
 
 
 class TestSqliteJsonExtractInGenerator:
@@ -4361,17 +4518,16 @@ class TestParameterizedAggCanonicalDistinct:
     collapsed to the same alias and sorted by the same value.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1501: parametric last() with different explicit time columns "
-            "collapse into one ranked aggregate in ORDER BY (time-column arg "
-            "dropped). Auto-promotes when supported."
-        ),
-    )
     async def test_order_by_two_last_with_different_time_cols(
         self, generator: SQLGenerator
     ) -> None:
+        """DEV-1501: two ORDER BY entries `revenue:last(created_at)` and
+        `revenue:last(updated_at)` must produce DISTINCT ranked aggregates
+        (one ROW_NUMBER per effective time column) and not collapse to a
+        single bare ``_last_rn``. The hidden materialised aggregates must
+        be trimmed from the public projection (the result keys stay
+        ``orders.status`` + ``orders._count``).
+        """
 
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
@@ -4396,13 +4552,50 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
                     OrderItem(column="revenue:last(updated_at)", direction="asc"),
                 ],
             )
-            sql = (await engine.execute(query, dry_run=True)).sql
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
             _assert_valid_sql(sql, dialect=generator.dialect)
-            # The two last() measures order by different time columns and must
-            # not collapse into one — both time columns surface in the emitted
-            # SQL (distinct ranked subqueries) and the query stays valid.
-            assert "created_at" in sql
-            assert "updated_at" in sql
+            # The ranked subquery must carry two DISTINCT ROW_NUMBER columns,
+            # one per effective time column.
+            assert "_last_rn" in sql
+            assert "_last_rn_2" in sql
+            assert (
+                _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
+                is not None
+            ), f"created_at rank ORDER BY missing:\n{sql}"
+            assert (
+                _re.search(r"ORDER BY\s+orders\.updated_at\s+DESC", sql)
+                is not None
+            ), f"updated_at rank ORDER BY missing:\n{sql}"
+            # The two outer ORDER BY EXPRESSIONS must NOT be byte-identical
+            # (the bug renders them identically; the fix gives each its own
+            # distinct ``_last_rn{suffix}``). Directions are independently
+            # asserted to remain DESC then ASC.
+            order_terms = _outer_order_terms(sql)
+            assert len(order_terms) == 2, f"Expected 2 ORDER BY terms in outer:\n{sql}"
+            exprs = [t[0] for t in order_terms]
+            dirs = [t[1] for t in order_terms]
+            assert exprs[0] != exprs[1], (
+                f"Two ORDER BY expressions collapsed to identical SQL:\n{sql}"
+            )
+            assert dirs == ["desc", "asc"], (
+                f"ORDER BY directions wrong (expected [desc, asc]): {dirs}\n{sql}"
+            )
+            # Hidden materialised aggregates must be TRIMMED from the public
+            # projection — the result keys are dim + count only.
+            assert set(res.columns) == {"orders.status", "orders._count"}, (
+                f"Hidden first/last aliases leaked into result columns: "
+                f"{res.columns!r}\nSQL:\n{sql}"
+            )
+            # Response-meta invariant: the hidden materialised aliases must not
+            # appear under attributes.dimensions or attributes.measures either.
+            attr_keys = (
+                set(res.attributes.dimensions.keys())
+                | set(res.attributes.measures.keys())
+            )
+            assert not any(
+                "revenue_last" in k for k in attr_keys
+            ), f"Hidden materialised alias surfaced in response attributes: {attr_keys!r}"
 
     async def test_fields_two_percentiles_with_different_p(
         self, generator: SQLGenerator
@@ -4473,6 +4666,803 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
             query = SlayerQuery(source_model="orders", measures=["*:count"])
             sql = (await engine.execute(query, dry_run=True)).sql
             assert '"orders._count"' in sql
+
+
+def _orders_two_ts_model(*, default_td: "str | None" = None) -> SlayerModel:
+    """DEV-1501 fixture-style helper — an ``orders`` model with TWO timestamp
+    columns so first/last with different explicit time args can be exercised.
+    ``default_td`` optionally sets ``default_time_dimension`` to test the
+    "no explicit arg, fall back to default" path.
+    """
+    return SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        default_time_dimension=default_td,
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        ],
+    )
+
+
+class TestDev1501HiddenFirstLastRender:
+    """DEV-1501 — hidden first/last aggregates in ORDER BY / HAVING must
+    trigger the ranked subquery, get their per-time-column ROW_NUMBER
+    suffix threaded correctly, and be trimmed from the public projection
+    by an outer wrap when materialised. See ``docs/architecture/planning.md``
+    (hidden-slot materialise + outer trim).
+    """
+
+    async def test_order_by_first_and_last_different_time_cols(
+        self, generator: SQLGenerator
+    ) -> None:
+        """ASC ``first(created_at)`` + DESC ``last(updated_at)`` produce
+        distinct rank columns and distinct outer ORDER BY terms.
+        """
+        m = _orders_two_ts_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[
+                    OrderItem(column="revenue:first(created_at)", direction="asc"),
+                    OrderItem(column="revenue:last(updated_at)", direction="desc"),
+                ],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "_first_rn" in sql
+            assert "_last_rn" in sql
+            assert "orders.created_at" in sql
+            assert "orders.updated_at" in sql
+            terms = _outer_order_terms(sql)
+            exprs = [t[0] for t in terms]
+            dirs = [t[1] for t in terms]
+            assert len(terms) == 2 and exprs[0] != exprs[1], (
+                f"Two ORDER BY expressions collapsed:\n{sql}"
+            )
+            assert dirs == ["asc", "desc"], (
+                f"first→ASC / last→DESC directions lost: {dirs}\n{sql}"
+            )
+            # The first(created_at) rank window must order created_at ASC;
+            # the last(updated_at) rank window must order updated_at DESC.
+            assert _re.search(
+                r"ROW_NUMBER\(\)\s+OVER\s*\([^)]*ORDER BY\s+orders\.created_at\s+ASC", sql
+            ), f"first(created_at) rank not ASC:\n{sql}"
+            assert _re.search(
+                r"ROW_NUMBER\(\)\s+OVER\s*\([^)]*ORDER BY\s+orders\.updated_at\s+DESC", sql
+            ), f"last(updated_at) rank not DESC:\n{sql}"
+
+    async def test_order_by_first_and_last_same_time_col(
+        self, generator: SQLGenerator
+    ) -> None:
+        """``first(created_at)`` ASC + ``last(created_at)`` DESC share the
+        same suffix bucket (same effective time column) but produce TWO
+        rank columns (one ASC for first, one DESC for last).
+        """
+        m = _orders_two_ts_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[
+                    OrderItem(column="revenue:first(created_at)", direction="asc"),
+                    OrderItem(column="revenue:last(created_at)", direction="desc"),
+                ],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Same time col → single suffix bucket (``""``) carrying both
+            # first and last rn columns; no ``_2`` suffix should appear.
+            assert "_first_rn" in sql and "_last_rn" in sql
+            assert "_last_rn_2" not in sql and "_first_rn_2" not in sql
+            terms = _outer_order_terms(sql)
+            exprs = [t[0] for t in terms]
+            assert len(terms) == 2 and exprs[0] != exprs[1], (
+                f"first/last ORDER BY expressions collapsed:\n{sql}"
+            )
+
+    async def test_order_by_last_with_explicit_time_no_default_time_dim(
+        self, generator: SQLGenerator
+    ) -> None:
+        """Model has no ``default_time_dimension`` and the query has no
+        temporal dimension; one ``ORDER BY revenue:last(created_at) DESC``
+        must still build the ranked subquery ordered by ``created_at``.
+        Regression for the order-by-only + no-default case.
+        """
+        m = _orders_two_ts_model()  # no default_td
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[
+                    OrderItem(column="revenue:last(created_at)", direction="desc"),
+                ],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "_last_rn" in sql
+            assert (
+                _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
+                is not None
+            ), f"created_at rank ORDER BY missing:\n{sql}"
+
+    async def test_order_by_last_inherits_default_time_dim(
+        self, generator: SQLGenerator
+    ) -> None:
+        """``ORDER BY revenue:last DESC`` (no explicit time arg) inherits
+        ``default_time_dimension`` for the rank ordering.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="revenue:last", direction="desc")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "_last_rn" in sql
+            assert (
+                _re.search(r"ORDER BY\s+orders\.created_at\s+DESC", sql)
+                is not None
+            ), f"default created_at rank ORDER BY missing:\n{sql}"
+
+    async def test_projected_and_order_only_first_last_mixed(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A PROJECTED ``last(created_at)`` (alias ``latest_cr``) and an
+        ORDER-BY-only ``last(updated_at)`` coexist — both rank columns
+        exist, the projected alias surfaces in result keys, the order-only
+        materialised alias is trimmed from result keys.
+        """
+        m = _orders_two_ts_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=[
+                    ModelMeasure(formula="revenue:last(created_at)", name="latest_cr"),
+                ],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="revenue:last(updated_at)", direction="desc")],
+            )
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Two distinct rank columns (one per effective time column).
+            assert "_last_rn" in sql and "_last_rn_2" in sql
+            # Result keys = projection only: status + projected last alias.
+            assert set(res.columns) == {"orders.status", "orders.latest_cr"}, (
+                f"Result columns mismatch: {res.columns!r}\nSQL:\n{sql}"
+            )
+            # The PROJECTED last(created_at) uses one suffix (the first
+            # bucket, created_at sorted first → ``""``) and the order-only
+            # last(updated_at) uses the OTHER suffix (``"_2"``). The two
+            # MUST be distinct or DEV-1501 isn't actually fixed. Inspect
+            # the inner (base) SELECT — the outer wrap is the trim layer,
+            # and the rn-based aggregates live in the inner.
+            tree = sqlglot.parse_one(sql, dialect="postgres")
+            inner_from = _outer_from_node(sql)
+            assert isinstance(inner_from, sqlglot.exp.Subquery), (
+                f"Expected outer-wrap subquery:\n{sql}"
+            )
+            inner_sql = inner_from.this.sql(dialect="postgres")
+            inner_rn = _projection_rn_by_alias(inner_sql)
+            assert "orders.latest_cr" in inner_rn, (
+                f"Projected latest_cr aggregate not found in inner SELECT:\n"
+                f"{inner_sql}"
+            )
+            assert "orders.revenue_last_updated_at" in inner_rn, (
+                f"Hidden order-only updated_at aggregate not found in inner:\n"
+                f"{inner_sql}"
+            )
+            assert inner_rn["orders.latest_cr"] != inner_rn["orders.revenue_last_updated_at"], (
+                f"Projected and order-only last() both bound to the same rank "
+                f"column ({inner_rn['orders.latest_cr']!r}) — distinct "
+                f"time cols collapsed.\nSQL:\n{sql}"
+            )
+            _ = tree  # keep tree variable for IDEs; assertion uses helper
+
+    async def test_filter_only_last_with_having(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A HAVING filter referencing a non-projected ``last(created_at)``
+        must build the ranked subquery and emit a HAVING term that resolves
+        ``_last_rn`` correctly. Regression for the hidden-filter-aggregate
+        path.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=["revenue:last(created_at) > 100"],
+            )
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Ranked subquery must exist — the HAVING reference cannot dangle.
+            assert "_last_rn" in sql
+            assert _re.search(
+                r"ROW_NUMBER\(\)\s+OVER\s*\([^)]*ORDER BY\s+orders\.created_at\s+DESC", sql
+            ), f"created_at rank window missing:\n{sql}"
+            # The HAVING clause must render the rank-based aggregate (not a
+            # bare-aggregate fallback that would have nothing to reference).
+            having_match = _re.search(r"HAVING(.*)$", sql, _re.DOTALL | _re.IGNORECASE)
+            assert having_match is not None, f"HAVING missing:\n{sql}"
+            having_sql = having_match.group(1)
+            assert _re.search(
+                r"MAX\(CASE WHEN _last_rn\s*=\s*1\s+THEN", having_sql
+            ), f"HAVING does not reference the rank-based aggregate:\n{having_sql}"
+            # Hidden materialised alias must not surface in result keys.
+            assert set(res.columns) == {"orders.status", "orders._count"}, (
+                f"Hidden filter aggregate leaked: {res.columns!r}\nSQL:\n{sql}"
+            )
+
+    async def test_filter_only_last_two_time_cols(
+        self, generator: SQLGenerator
+    ) -> None:
+        """HAVING references TWO last() aggregates over different time
+        columns — both rank columns exist, the HAVING terms resolve to
+        distinct ``_last_rn{suffix}`` columns.
+        """
+        m = _orders_two_ts_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=[
+                    "revenue:last(created_at) > 100 and revenue:last(updated_at) < 50"
+                ],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "_last_rn" in sql and "_last_rn_2" in sql
+            # The outer wrap fires (hidden materialised aggregates exist
+            # for the filter refs), so HAVING lives in the INNER base
+            # SELECT — pull the inner SQL and look at HAVING there. Both
+            # rn columns must be referenced (one per filter operand) so
+            # distinct time cols don't collapse.
+            outer_from = _outer_from_node(sql)
+            assert isinstance(outer_from, sqlglot.exp.Subquery)
+            inner_sql = outer_from.this.sql(dialect="postgres")
+            having_match = _re.search(
+                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
+            )
+            assert having_match is not None, (
+                f"HAVING missing in inner:\n{inner_sql}"
+            )
+            having_sql = having_match.group(1)
+            having_max_rns = _re.findall(
+                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)\s*=\s*1\s+THEN",
+                having_sql,
+            )
+            assert sorted(having_max_rns) == ["_last_rn", "_last_rn_2"], (
+                f"HAVING aggregate rn-suffix routing wrong. Found: "
+                f"{having_max_rns!r}\nHAVING:\n{having_sql}"
+            )
+
+    async def test_filter_and_order_last_different_time_cols(
+        self, generator: SQLGenerator
+    ) -> None:
+        """HAVING uses ``last(created_at)``, ORDER BY uses
+        ``last(updated_at)`` — each must resolve to its own distinct
+        ``_last_rn{suffix}``. Combined-surface regression (Codex MED 8).
+        """
+        m = _orders_two_ts_model()
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=["revenue:last(created_at) > 100"],
+                order=[OrderItem(column="revenue:last(updated_at)", direction="desc")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "_last_rn" in sql and "_last_rn_2" in sql
+            # HAVING lives in the INNER base SELECT (alongside its GROUP
+            # BY); outer wrap carries ORDER BY referencing the
+            # materialised alias.
+            inner = _outer_from_node(sql).this  # type: ignore[union-attr]
+            inner_sql = inner.sql(dialect="postgres")
+            having_match = _re.search(
+                r"HAVING(.*?)(ORDER BY|$)", inner_sql, _re.DOTALL | _re.IGNORECASE,
+            )
+            assert having_match is not None, f"HAVING missing in inner:\n{inner_sql}"
+            having_sql = having_match.group(1)
+            having_uses_first = _re.search(
+                r"\b_last_rn\b", having_sql
+            ) is not None
+            having_uses_second = "_last_rn_2" in having_sql
+            assert having_uses_first and not having_uses_second, (
+                f"HAVING did not reference the first-bucket _last_rn:\n"
+                f"{having_sql}"
+            )
+            # Outer ORDER BY references the materialised alias for the
+            # updated_at first/last (the second bucket).
+            terms = _outer_order_terms(sql)
+            assert len(terms) == 1, terms
+            assert "revenue_last_updated_at" in terms[0][0], (
+                f"Outer ORDER BY did not reference the updated_at "
+                f"materialised alias:\n{terms}"
+            )
+
+    async def test_projected_two_last_different_time_cols_no_default(
+        self, generator: SQLGenerator
+    ) -> None:
+        """Two PROJECTED ``last(created_at)`` / ``last(updated_at)`` on a
+        model with NO ``default_time_dimension`` must resolve to DISTINCT
+        suffixes. Regression test for the ``_build_agg`` suffix-guard
+        bug (currently silently collapses to ``_last_rn`` because
+        ``default_time_col`` is None even though every spec carries an
+        explicit time arg).
+        """
+        m = _orders_two_ts_model()  # no default_td
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=[
+                    ModelMeasure(formula="revenue:last(created_at)", name="lc"),
+                    ModelMeasure(formula="revenue:last(updated_at)", name="lu"),
+                ],
+                dimensions=[ColumnRef(name="status")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Both rank columns must exist (and they do today)…
+            assert "_last_rn" in sql and "_last_rn_2" in sql
+            # …but each projected aggregate must reference its OWN suffix.
+            # Today both collapse to ``_last_rn`` (the suffix guard skips
+            # when default_time_col is None) — Change 4 fixes this. Parse
+            # the SQL and inspect each aliased projection's MAX(CASE WHEN
+            # …) so the assertion can't drift across aggregates.
+            rn_by_alias = _projection_rn_by_alias(sql)
+            assert "orders.lc" in rn_by_alias, (
+                f"lc projection missing or not rn-based:\n{sql}"
+            )
+            assert "orders.lu" in rn_by_alias, (
+                f"lu projection missing or not rn-based:\n{sql}"
+            )
+            assert rn_by_alias["orders.lc"] != rn_by_alias["orders.lu"], (
+                f"lc and lu reference the same rank column "
+                f"({rn_by_alias['orders.lc']!r}) — distinct-time-col specs collapsed.\n"
+                f"SQL:\n{sql}"
+            )
+
+
+class TestDev1501BroadTriggerAndGuards:
+    """DEV-1501 — broad-trigger materialise+trim behaviour and the guards
+    Codex flagged: the wrap is conditional, hidden ROW order targets must
+    not be materialised (cardinality preserved), composite hidden order is
+    explicitly NotImplementedError, dim-only-dedup grain is preserved.
+    """
+
+    async def test_outer_wrap_only_when_hidden_present(
+        self, generator: SQLGenerator
+    ) -> None:
+        """When no hidden materialised aggregates exist, the no-transform
+        path stays flat — no outer trim wrapper. ORDER BY references the
+        projected alias inline at the same SELECT level.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="revenue:sum", name="rev")],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="rev", direction="desc")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # No hidden materialised aggregates → top-level FROM is a bare
+            # Table (no outer wrap Subquery wrapper).
+            assert isinstance(_outer_from_node(sql), sqlglot.exp.Table), (
+                f"Outer wrap added even though no hidden aggregates exist:\n{sql}"
+            )
+
+    async def test_order_by_hidden_simple_aggregate_materialized(
+        self, generator: SQLGenerator
+    ) -> None:
+        """Broad-trigger regression: a NON-first/last hidden order aggregate
+        (``ORDER BY revenue:sum DESC`` with no projected ``revenue:sum``)
+        also goes through materialise+trim — outer wrap projects only the
+        public columns, outer ORDER BY references the materialised
+        ``"orders.revenue_sum"`` alias, and the hidden alias is absent
+        from result keys and response metadata.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="revenue:sum", direction="desc")],
+            )
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Outer wrap present: top-level FROM is a Subquery wrapper.
+            assert isinstance(_outer_from_node(sql), sqlglot.exp.Subquery), (
+                f"Expected outer-wrap subquery FROM:\n{sql}"
+            )
+            # Public projection trimmed to dim + count.
+            assert set(res.columns) == {"orders.status", "orders._count"}, (
+                f"Hidden revenue_sum leaked into result columns: "
+                f"{res.columns!r}\nSQL:\n{sql}"
+            )
+            # Outer ORDER BY references the materialised alias EXACTLY as
+            # the full dotted form ``"orders.revenue_sum"`` (quoted dotted
+            # alias body, not qualified ``"orders"."revenue_sum"``).
+            terms = _outer_order_terms(sql)
+            assert len(terms) == 1, terms
+            order_expr, order_dir = terms[0]
+            assert order_dir == "desc"
+            assert (
+                '"orders.revenue_sum"' in order_expr
+                or order_expr == "orders.revenue_sum"
+            ), (
+                f"Outer ORDER BY does not reference the dotted materialised "
+                f"alias 'orders.revenue_sum':\n{order_expr}\nSQL:\n{sql}"
+            )
+            # Response-meta invariant: hidden alias not in attributes.
+            attr_keys = (
+                set(res.attributes.dimensions.keys())
+                | set(res.attributes.measures.keys())
+            )
+            assert not any("revenue_sum" in k for k in attr_keys), (
+                f"Hidden revenue_sum surfaced in response attributes: "
+                f"{attr_keys!r}"
+            )
+
+    async def test_dim_only_dedup_with_hidden_order_first_last(
+        self, generator: SQLGenerator
+    ) -> None:
+        """Dim-only query (no measures, dim auto-dedup) with a hidden
+        first/last in ORDER BY. The dim-only-dedup GROUP BY must contain
+        ONLY the dimension(s) — the aggregate-only narrowing of Change 2
+        prevents the hidden first/last from leaking extra GROUP BY entries.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="revenue:last(created_at)", direction="desc")],
+            )
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "_last_rn" in sql
+            # Public projection trimmed to dim only.
+            assert set(res.columns) == {"orders.status"}, (
+                f"Hidden first/last alias leaked into dim-only result: "
+                f"{res.columns!r}\nSQL:\n{sql}"
+            )
+            tree = sqlglot.parse_one(sql, dialect="postgres")
+            # Every Select that has a GROUP BY must group by exactly ONE
+            # expression (the status dim). The inner ranked subquery has no
+            # GROUP BY; the base SELECT groups by status; the outer wrap
+            # has no GROUP BY.
+            group_counts = [
+                len(sel.args["group"].expressions)
+                for sel in tree.find_all(sqlglot.exp.Select)
+                if sel.args.get("group")
+            ]
+            assert group_counts, f"No GROUP BY found:\n{sql}"
+            assert all(c == 1 for c in group_counts), (
+                f"GROUP BY contains more than the dim — extra row deps "
+                f"materialised. Counts: {group_counts}\nSQL:\n{sql}"
+            )
+
+    async def test_hidden_row_order_target_raises_nyi(
+        self, generator: SQLGenerator
+    ) -> None:
+        """ORDER BY a non-projected ROW column (e.g. ``customer_id``) is
+        not a supported shape and must raise NotImplementedError — both
+        today and after Change 2. Guards against broad ``include_order=
+        True`` accidentally materialising hidden row slots and silently
+        changing GROUP BY grain.
+        """
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="customer_id", direction="asc")],
+            )
+            with pytest.raises(NotImplementedError):
+                await engine.execute(query, dry_run=True)
+
+    async def test_hidden_simple_aggregate_in_having(
+        self, generator: SQLGenerator
+    ) -> None:
+        """``filters=["revenue:sum > 100"]`` with no projected
+        ``revenue:sum`` (plain non-first/last). Broad materialise+trim
+        applies to filter-side too: hidden ``revenue:sum`` materialised
+        in base, HAVING references it (inline or by alias), absent from
+        result keys and response metadata.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=["revenue:sum > 100"],
+            )
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Result keys must NOT carry the hidden revenue_sum alias.
+            assert set(res.columns) == {"orders.status", "orders._count"}, (
+                f"Hidden revenue_sum leaked into result columns: "
+                f"{res.columns!r}\nSQL:\n{sql}"
+            )
+            attr_keys = (
+                set(res.attributes.dimensions.keys())
+                | set(res.attributes.measures.keys())
+            )
+            assert not any("revenue_sum" in k for k in attr_keys), (
+                f"Hidden revenue_sum surfaced in response attributes: "
+                f"{attr_keys!r}"
+            )
+            assert "HAVING" in sql.upper(), f"HAVING missing:\n{sql}"
+
+    async def test_order_by_with_limit_offset_on_outer_wrap(
+        self, generator: SQLGenerator
+    ) -> None:
+        """When the outer wrap fires (hidden order/filter aggregate
+        materialised), ORDER BY / LIMIT / OFFSET MUST live on the OUTER
+        SELECT — the inner base SELECT must NOT carry them, else the
+        pagination is applied at the wrong level and may slice rows
+        before the materialised aggregate values are visible.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[OrderItem(column="revenue:last(created_at)", direction="desc")],
+                limit=5,
+                offset=2,
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            tree = sqlglot.parse_one(sql, dialect="postgres")
+            assert isinstance(tree, sqlglot.exp.Select)
+            assert tree.args.get("order") is not None, (
+                f"Outer ORDER BY missing:\n{sql}"
+            )
+            assert tree.args.get("limit") is not None, (
+                f"Outer LIMIT missing:\n{sql}"
+            )
+            assert tree.args.get("offset") is not None, (
+                f"Outer OFFSET missing:\n{sql}"
+            )
+            # Inner base SELECT (inside the outer-wrap Subquery) must NOT
+            # carry ORDER BY / LIMIT / OFFSET — those are owned by the
+            # outer wrap.
+            outer_from = _outer_from_node(sql)
+            assert isinstance(outer_from, sqlglot.exp.Subquery), (
+                f"Expected outer-wrap Subquery FROM:\n{sql}"
+            )
+            inner = outer_from.this
+            assert isinstance(inner, sqlglot.exp.Select), (
+                f"Outer-wrap subquery body is not a Select:\n{sql}"
+            )
+            assert inner.args.get("order") is None, (
+                f"Inner base SELECT still carries ORDER BY:\n{sql}"
+            )
+            assert inner.args.get("limit") is None, (
+                f"Inner base SELECT still carries LIMIT:\n{sql}"
+            )
+            assert inner.args.get("offset") is None, (
+                f"Inner base SELECT still carries OFFSET:\n{sql}"
+            )
+
+    async def test_c13_duplicate_aliases_with_outer_wrap(
+        self, generator: SQLGenerator
+    ) -> None:
+        """DEV-1450 C13 — two declared measures with the same structural
+        key but different ``name``s intern to ONE slot carrying TWO
+        ``public_aliases``. Under the new outer trim wrap, BOTH aliases
+        must appear in the outer projection (mirroring the transform
+        path's ``outer_alias_index``).
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                # Same key (revenue:sum), two different names → one interned
+                # slot with two public_aliases.
+                measures=[
+                    ModelMeasure(formula="revenue:sum", name="rev_a"),
+                    ModelMeasure(formula="revenue:sum", name="rev_b"),
+                ],
+                dimensions=[ColumnRef(name="status")],
+                # Force an outer wrap by adding a hidden order aggregate.
+                order=[OrderItem(column="revenue:last(created_at)", direction="desc")],
+            )
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Both C13 aliases must be in the public projection — the outer
+            # wrap must not collapse them to one.
+            assert "orders.rev_a" in res.columns, (
+                f"C13 alias 'orders.rev_a' missing from outer projection: "
+                f"{res.columns!r}\nSQL:\n{sql}"
+            )
+            assert "orders.rev_b" in res.columns, (
+                f"C13 alias 'orders.rev_b' missing from outer projection: "
+                f"{res.columns!r}\nSQL:\n{sql}"
+            )
+            assert set(res.columns) == {"orders.status", "orders.rev_a", "orders.rev_b"}, (
+                f"Unexpected projection: {res.columns!r}\nSQL:\n{sql}"
+            )
+
+    async def test_composite_filter_materialises_aggregate_leaves(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A composite HAVING filter (``revenue:sum - cost:sum > 0``) with
+        neither operand projected: each AggregateKey leaf must be
+        materialised in the base SELECT (composites recurse into operands
+        per ``_iter_slot_deps``), HAVING references them (inline or by
+        alias), the composite expression itself is inlined. The hidden
+        leaf aliases are trimmed from result keys; no row leaves leak
+        into GROUP BY.
+        """
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            default_time_dimension="created_at",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+                Column(name="cost", sql="cost", type=DataType.DOUBLE),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=["revenue:sum - cost:sum > 0"],
+            )
+            res = await engine.execute(query, dry_run=True)
+            sql = res.sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Result keys = projection only — hidden operand aggregates trimmed.
+            assert set(res.columns) == {"orders.status", "orders._count"}, (
+                f"Hidden composite operands leaked into result columns: "
+                f"{res.columns!r}\nSQL:\n{sql}"
+            )
+            # HAVING present, references both operand aggregates (inline or by
+            # materialised alias). Either SUM(orders.amount) or
+            # "orders.revenue_sum" / "orders.cost_sum" — the test asserts
+            # both source columns are reachable from HAVING.
+            having_match = _re.search(r"HAVING(.*)$", sql, _re.DOTALL | _re.IGNORECASE)
+            assert having_match is not None, f"HAVING missing:\n{sql}"
+            having_sql = having_match.group(1)
+            assert (
+                "amount" in having_sql or "revenue_sum" in having_sql
+            ), f"HAVING does not reference revenue operand:\n{having_sql}"
+            assert (
+                "cost" in having_sql
+            ), f"HAVING does not reference cost operand:\n{having_sql}"
+            # GROUP BY must NOT contain extra row-leaf columns — only status.
+            tree = sqlglot.parse_one(sql, dialect="postgres")
+            group_counts = [
+                len(sel.args["group"].expressions)
+                for sel in tree.find_all(sqlglot.exp.Select)
+                if sel.args.get("group")
+            ]
+            assert group_counts and all(c == 1 for c in group_counts), (
+                f"GROUP BY contains extras (row leaves leaked). Counts: "
+                f"{group_counts}\nSQL:\n{sql}"
+            )
+
+    async def test_hidden_composite_order_rejected_at_input_validation(
+        self, generator: SQLGenerator
+    ) -> None:
+        """Composite-aggregate ORDER BY (an operator over aggregates) is
+        REJECTED at ``OrderItem`` input validation — the string syntax
+        ``"revenue:sum - cost:sum"`` becomes an invalid identifier and
+        Pydantic raises ``ValidationError`` before the query reaches the
+        planner. So hidden composite order is structurally unreachable
+        in the no-transform path, and Change 3 needs no explicit raise.
+        """
+        from pydantic import ValidationError as PydanticValidationError
+
+        with pytest.raises(PydanticValidationError):
+            OrderItem(column="revenue:sum - cost:sum", direction="desc")
 
 
 class TestMultiHopCrossModelMeasure:

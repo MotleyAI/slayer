@@ -54,6 +54,7 @@ from slayer.core.keys import (
     column_path,
     normalize_scalar,
 )
+from slayer.core.refs import agg_kwarg_canonical_str, canonical_agg_name
 from slayer.engine.binding import BoundExpr, BoundFilter
 from slayer.engine.planned import SlotId, ValueSlot
 
@@ -644,12 +645,38 @@ def _canonical_name(key: ValueKey) -> str:
         # DATE_TRUNC, not in the alias.
         return _canonical_name(key.column)
     if isinstance(key, AggregateKey):
+        # DEV-1501: include args/kwargs so parametric aggregates over the
+        # same value column (``revenue:last(created_at)`` vs
+        # ``revenue:last(updated_at)``, ``revenue:percentile(p=0.5)`` vs
+        # ``revenue:percentile(p=0.95)``) get DISTINCT declared names —
+        # mirrors the cross-model parametric P10 exception. Without this,
+        # two hidden parametric aggregates collide on a single base-CTE
+        # alias when materialised.
         if isinstance(key.source, StarKey):
-            return f"_{key.agg}"
-        leaf = getattr(key.source, "leaf", None) or getattr(key.source, "column_name", None)
-        if leaf is None:
-            return f"_agg_{key.agg}"
-        return f"{leaf}_{key.agg}"
+            measure_name = "*"
+        else:
+            leaf = getattr(key.source, "leaf", None) or getattr(
+                key.source, "column_name", None,
+            )
+            if leaf is None:
+                return f"_agg_{key.agg}"
+            measure_name = leaf
+        agg_args = (
+            [agg_kwarg_canonical_str(a) for a in key.args]
+            if key.args
+            else None
+        )
+        agg_kwargs = (
+            {k: agg_kwarg_canonical_str(v) for k, v in key.kwargs}
+            if key.kwargs
+            else None
+        )
+        return canonical_agg_name(
+            measure_name=measure_name,
+            aggregation_name=key.agg,
+            agg_args=agg_args,
+            agg_kwargs=agg_kwargs,
+        )
     if isinstance(key, TransformKey):
         return f"_{key.op}_inner"
     if isinstance(key, ArithmeticKey):

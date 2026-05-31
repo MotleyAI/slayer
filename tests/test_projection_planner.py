@@ -244,3 +244,134 @@ class TestPlanFilters:
         assert plan.registry.find_by_key(order_expr) is None
         # LiteralKey NOT slotted.
         assert plan.registry.find_by_key(LiteralKey(value=Decimal(1))) is None
+
+
+class TestDev1501CanonicalNameWithAggArgs:
+    """DEV-1501 — hidden parametric AggregateKey slots must get distinct
+    ``declared_name`` values so the SQL generator can materialise them as
+    base-CTE columns without alias collision. Mirrors the cross-model
+    parametric P10 exception (``canonical_agg_name`` from
+    ``slayer.core.refs``).
+    """
+
+    def test_two_last_with_different_time_args_distinct_names(self):
+        """Two hidden ``revenue:last(created_at)`` and
+        ``revenue:last(updated_at)`` slots produce distinct ``declared_name``
+        values — today both collide to ``revenue_last``.
+        """
+        k_cr = AggregateKey(
+            source=ColumnKey(path=(), leaf="revenue"),
+            agg="last",
+            args=(ColumnKey(path=(), leaf="created_at"),),
+        )
+        k_up = AggregateKey(
+            source=ColumnKey(path=(), leaf="revenue"),
+            agg="last",
+            args=(ColumnKey(path=(), leaf="updated_at"),),
+        )
+        planner = ProjectionPlanner()
+        plan = planner.plan(
+            measures=[
+                DeclaredMeasure(
+                    bound=BoundExpr(value_key=_status()),
+                    declared_name="status",
+                    public_name="status",
+                ),
+            ],
+            filters=[],
+            order=[
+                OrderSpec(bound=BoundExpr(value_key=k_cr), direction="desc"),
+                OrderSpec(bound=BoundExpr(value_key=k_up), direction="asc"),
+            ],
+        )
+        sid_cr = plan.registry.find_by_key(k_cr)
+        sid_up = plan.registry.find_by_key(k_up)
+        assert sid_cr is not None and sid_up is not None
+        slot_cr = plan.registry.get(sid_cr)
+        slot_up = plan.registry.get(sid_up)
+        assert slot_cr.declared_name != slot_up.declared_name, (
+            f"Hidden parametric last() slots collided on declared_name: "
+            f"both {slot_cr.declared_name!r}"
+        )
+        # Exact canonical form — mirrors the cross-model parametric naming
+        # convention (``revenue_percentile_p_0_5``).
+        assert slot_cr.declared_name == "revenue_last_created_at", (
+            f"Unexpected canonical name: {slot_cr.declared_name!r}"
+        )
+        assert slot_up.declared_name == "revenue_last_updated_at", (
+            f"Unexpected canonical name: {slot_up.declared_name!r}"
+        )
+
+    def test_two_percentiles_with_different_kwargs_distinct_names(self):
+        """``revenue:percentile(p=0.5)`` vs ``revenue:percentile(p=0.95)``
+        as hidden order/filter slots must produce distinct ``declared_name``
+        values mirroring the cross-model parametric exception.
+        """
+        k_p50 = AggregateKey(
+            source=ColumnKey(path=(), leaf="revenue"),
+            agg="percentile",
+            kwargs=(("p", Decimal("0.5")),),
+        )
+        k_p95 = AggregateKey(
+            source=ColumnKey(path=(), leaf="revenue"),
+            agg="percentile",
+            kwargs=(("p", Decimal("0.95")),),
+        )
+        planner = ProjectionPlanner()
+        plan = planner.plan(
+            measures=[
+                DeclaredMeasure(
+                    bound=BoundExpr(value_key=_status()),
+                    declared_name="status",
+                    public_name="status",
+                ),
+            ],
+            filters=[],
+            order=[
+                OrderSpec(bound=BoundExpr(value_key=k_p50), direction="desc"),
+                OrderSpec(bound=BoundExpr(value_key=k_p95), direction="desc"),
+            ],
+        )
+        sid_p50 = plan.registry.find_by_key(k_p50)
+        sid_p95 = plan.registry.find_by_key(k_p95)
+        assert sid_p50 is not None and sid_p95 is not None
+        slot_p50 = plan.registry.get(sid_p50)
+        slot_p95 = plan.registry.get(sid_p95)
+        assert slot_p50.declared_name != slot_p95.declared_name, (
+            f"Hidden parametric percentile slots collided on declared_name: "
+            f"both {slot_p50.declared_name!r}"
+        )
+        assert slot_p50.declared_name == "revenue_percentile_p_0_5", (
+            f"Unexpected canonical name: {slot_p50.declared_name!r}"
+        )
+        assert slot_p95.declared_name == "revenue_percentile_p_0_95", (
+            f"Unexpected canonical name: {slot_p95.declared_name!r}"
+        )
+
+    def test_plain_sum_unchanged(self):
+        """Non-parametric aggregates keep the canonical
+        ``<leaf>_<agg>`` form (no spurious suffix). Regression guard for
+        the canonical-name change.
+        """
+        agg = _amount_sum()  # AggregateKey(amount, sum, args=(), kwargs=())
+        planner = ProjectionPlanner()
+        plan = planner.plan(
+            measures=[
+                DeclaredMeasure(
+                    bound=BoundExpr(value_key=_status()),
+                    declared_name="status",
+                    public_name="status",
+                ),
+            ],
+            filters=[],
+            order=[
+                OrderSpec(bound=BoundExpr(value_key=agg), direction="desc"),
+            ],
+        )
+        sid = plan.registry.find_by_key(agg)
+        assert sid is not None
+        slot = plan.registry.get(sid)
+        assert slot.declared_name == "amount_sum", (
+            f"Plain agg canonical name changed unexpectedly: "
+            f"{slot.declared_name!r}"
+        )
