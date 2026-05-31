@@ -646,6 +646,56 @@ class TestExtractEntitiesFromQuery:
         with pytest.raises(EntityResolutionError):
             await extract_entities_from_query(q, storage=storage)
 
+    async def test_funcstyle_joined_custom_agg_extracts_joined_column(
+        self,
+    ) -> None:
+        # DEV-1500: a funcstyle custom aggregation defined on a joined
+        # model (``rolling_avg(customers.score)`` where ``rolling_avg`` lives
+        # on ``customers``) must be recognised by the quiet FUNC_STYLE_AGG
+        # rewrite the resolver uses for entity extraction, so the joined
+        # column (``customers.score``) ends up tagged. The fix walks the
+        # source model's reachable join graph for custom aggregation names.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            s = YAMLStorage(base_dir=tmpdir)
+            await s.save_datasource(
+                DatasourceConfig(name="dev1500", type="postgres", host="x")
+            )
+            await s.save_model(SlayerModel(
+                name="customers",
+                data_source="dev1500",
+                sql_table="customers",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                    Column(name="score", sql="score", type=DataType.DOUBLE),
+                ],
+                aggregations=[
+                    Aggregation(name="rolling_avg", formula="AVG({value})"),
+                ],
+            ))
+            await s.save_model(SlayerModel(
+                name="orders",
+                data_source="dev1500",
+                sql_table="orders",
+                columns=[
+                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+                    Column(name="customer_id", sql="customer_id", type=DataType.INT),
+                ],
+                joins=[
+                    ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                ],
+            ))
+            q = SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(formula="rolling_avg(customers.score)")],
+            )
+            result = await extract_entities_from_query(q, storage=s)
+            # The funcstyle was rewritten to colon form via the joined-agg
+            # walk, so the joined column surfaces as an entity instead of
+            # falling into the unknown-function whole-formula fallback.
+            assert "dev1500.customers.score" in result.canonical_forms, (
+                result.canonical_forms
+            )
+
 
 class TestResolveEntityAmbiguousModel:
     async def test_ambiguous_model_propagates_when_no_priority(
