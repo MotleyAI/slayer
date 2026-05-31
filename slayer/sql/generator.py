@@ -113,11 +113,12 @@ class AggRenderSpec(BaseModel):
 
 class FirstLastRenderState(BaseModel):
     """DEV-1501 — bundle of maps produced by
-    ``_build_first_last_base_select`` that the HAVING render path needs
-    to thread into ``_build_agg`` so a HAVING aggregate references the
-    same ``_first_rn`` / ``_last_rn{suffix}`` column the base SELECT
-    projects (instead of bare ``_last_rn``, which collapses distinct
-    time-column specs).
+    ``_build_first_last_base_select`` (host base) or
+    ``_render_cross_model_cte`` (cross-model CTE) that the HAVING render
+    path needs to thread into ``_build_agg`` so a HAVING aggregate
+    references the same ``_first_rn`` / ``_last_rn{suffix}`` column the
+    SELECT projects (instead of bare ``_last_rn``, which collapses
+    distinct time-column specs).
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -136,6 +137,15 @@ class FirstLastRenderState(BaseModel):
 
     filtered_match_map: Dict[str, str] = {}
     """Per-spec-alias → match-flag column for filtered first/last."""
+
+    agg_synth_alias: Optional[str] = None
+    """DEV-1501 Group A.3 — only set for the cross-model CTE single-agg
+    case. The cross-model CTE projects exactly one aggregate; if HAVING
+    references the same key, ``_render_filter_value_key_in_target_scope``
+    must rebuild the synth with THIS alias so the ``filtered_rn_map`` /
+    ``filtered_match_map`` lookups (keyed by the synth alias) hit. Host-
+    base callers leave this ``None`` and rely on ``aliases_by_slot_id``
+    threaded through ``_build_where_having_from_planned`` instead."""
 
 
 def _agg_render_spec_from_enriched(em: "EnrichedMeasure") -> AggRenderSpec:
@@ -2791,7 +2801,7 @@ class SQLGenerator:
     # so silent parity drift is impossible.
     # ======================================================================
 
-    def generate_from_planned(
+    def generate_from_planned(  # NOSONAR(S3776) — top-level dispatch over cross-model / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
         self,
         planned_query,
         *,
@@ -2912,6 +2922,7 @@ class SQLGenerator:
             source_model=source_model,
             bundle=bundle,
             first_last_state=first_last_state,
+            aliases_by_slot_id=aliases_by_slot_id,
         )
 
         # ``where_consumed`` is True for the first/last ranked-subquery path:
@@ -3357,7 +3368,7 @@ class SQLGenerator:
                 )
 
     @staticmethod
-    def _collect_base_aux_slot_ids(
+    def _collect_base_aux_slot_ids(  # NOSONAR(S3776) — recursive ValueKey walker (nested ``_collect_from``) over the closed key union plus three top-level passes (transform layers / phase-gated filter deps / order deps). Each pass is one decision; extracting them would scatter the slot-dep contract.
         *,
         planned_query,
         slot_id_by_key: Dict[Any, str],
@@ -3467,13 +3478,25 @@ class SQLGenerator:
                     if key.time_key is not None:
                         _collect_from(key.time_key)
 
-        # Filter deps for both AGGREGATE-phase (HAVING) and POST-phase
-        # filters: a hidden ``revenue:last(...) > 100`` HAVING aggregate
-        # needs the same ranked-subquery materialisation as the ORDER BY
-        # path, so its AggregateKey must reach ``base_render_order``
-        # alongside the projected and order-only ones (DEV-1501).
+        # Filter deps for AGGREGATE-phase (HAVING) and POST-phase filters
+        # (the latter only in the transform path, where
+        # ``_render_post_phase_filter_conditions`` actually applies them).
+        # A hidden ``revenue:last(...) > 100`` HAVING aggregate needs the
+        # same ranked-subquery materialisation as the ORDER BY path, so
+        # its AggregateKey must reach ``base_render_order`` alongside the
+        # projected and order-only ones (DEV-1501). POST-phase walk is
+        # gated on the presence of transforms — POST filters reference
+        # ``TransformKey`` and so are planner-unreachable in no-transform
+        # queries; walking them anyway would silently materialise their
+        # operands without applying the filter (CodeRabbit DEV-1501 PR
+        # #159 Group B).
+        has_transforms = bool(planned_query.transform_layers)
         for fp in planned_query.filters_by_phase:
-            if fp.phase not in (Phase.AGGREGATE, Phase.POST):
+            if fp.phase == Phase.AGGREGATE:
+                pass  # walk
+            elif fp.phase == Phase.POST and has_transforms:
+                pass  # walk
+            else:
                 continue
             if fp.expression is not None:
                 _collect_from(fp.expression.value_key)
@@ -4737,6 +4760,7 @@ class SQLGenerator:
                 bundle=bundle,
                 skip_filter_ids=routed_ids,
                 first_last_state=base_first_last_state,
+                aliases_by_slot_id=aliases_by_slot_id,
             )
             if base_where is not None:
                 base_select = base_select.where(base_where)
@@ -5645,12 +5669,30 @@ class SQLGenerator:
             for gb in cte_group_by:
                 cte_select = cte_select.group_by(gb)
 
+        # DEV-1501 Group A.3: routed HAVING for cross-model first/last
+        # must use the SAME rn-based aggregate the CTE projects. Build a
+        # ``FirstLastRenderState`` carrying the rn maps + the single
+        # projected aggregate's full alias so HAVING's synth rebuild
+        # binds to the right ``_first_rn`` / ``_last_rn{suffix}`` /
+        # ``_last_rn_fN`` column (instead of a placeholder alias whose
+        # ``filtered_rn_map`` lookup misses and silently degrades to
+        # bare ``_last_rn`` + raw ``filter_sql``).
+        cm_first_last_state: Optional[FirstLastRenderState] = None
+        if is_first_or_last:
+            cm_first_last_state = FirstLastRenderState(
+                rn_suffix_map=dict(rn_suffix_map),
+                default_time_col_sql=time_col_sql,
+                filtered_rn_map=dict(filtered_rn_map),
+                filtered_match_map=dict(filtered_match_map),
+                agg_synth_alias=full_agg_alias,
+            )
         cte_having = self._collect_routed_filters(
             planned_query=planned_query,
             filter_ids=plan.having_filter_ids,
             target_relation=target_relation,
             target_model=target_model,
             bundle=bundle,
+            first_last_state=cm_first_last_state,
         )
         if cte_having is not None:
             cte_select = cte_select.having(cte_having)
@@ -5666,6 +5708,7 @@ class SQLGenerator:
         target_relation: str,
         target_model,
         bundle,
+        first_last_state: Optional[FirstLastRenderState] = None,
     ) -> Optional[exp.Expression]:
         """Build a conjunction of bound filter predicates by ID.
 
@@ -5693,6 +5736,7 @@ class SQLGenerator:
                 target_model=target_model,
                 planned_query=planned_query,
                 bundle=bundle,
+                first_last_state=first_last_state,
             )
             if ast is not None:
                 parts.append(ast)
@@ -5708,6 +5752,7 @@ class SQLGenerator:
         target_model,
         planned_query,
         bundle,
+        first_last_state: Optional[FirstLastRenderState] = None,
     ) -> Optional[exp.Expression]:
         """Render a bound filter's value key as SQL with bare column
         refs qualified against the cross-model CTE's local scope.
@@ -5790,15 +5835,48 @@ class SQLGenerator:
                 phase=value_key.phase,
                 type=None,
             )
+            # DEV-1501 Group A.3: when the CTE projects a first/last
+            # aggregate, the projected spec's alias is the key for
+            # ``filtered_rn_map`` / ``filtered_match_map``. Reusing the
+            # SAME alias here lets ``_build_agg``'s lookup hit, binding
+            # the HAVING aggregate to the dedicated ``_last_rn_fN`` (and
+            # match-flag) instead of bare ``_last_rn`` + raw filter_sql.
+            having_full_alias = (
+                first_last_state.agg_synth_alias
+                if first_last_state is not None and first_last_state.agg_synth_alias
+                else f"{target_relation}._having_agg"
+            )
             synth = self._build_agg_render_spec_from_planned(
                 slot=tmp_slot,
                 key=local_agg,
                 source_model=target_model,
                 source_relation=target_relation,
-                full_alias=f"{target_relation}._having_agg",
+                full_alias=having_full_alias,
                 bundle=bundle,
             )
-            expr, _ = self._build_agg(synth)
+            # Thread the cross-model CTE's rn maps so the HAVING
+            # aggregate uses the same ``_first_rn`` / ``_last_rn{suffix}``
+            # / ``_last_rn_fN`` column the CTE SELECT projects.
+            rn_suffix_map = (
+                first_last_state.rn_suffix_map if first_last_state else None
+            )
+            default_time_col = (
+                first_last_state.default_time_col_sql
+                if first_last_state else None
+            )
+            filtered_rn_map = (
+                first_last_state.filtered_rn_map if first_last_state else None
+            )
+            filtered_match_map = (
+                first_last_state.filtered_match_map if first_last_state else None
+            )
+            expr, _ = self._build_agg(
+                synth,
+                rn_suffix_map=rn_suffix_map,
+                default_time_col=default_time_col,
+                filtered_rn_map=filtered_rn_map,
+                filtered_match_map=filtered_match_map,
+            )
             return expr
         if isinstance(value_key, ArithmeticKey):
             op = value_key.op
@@ -5809,6 +5887,7 @@ class SQLGenerator:
                     target_model=target_model,
                     planned_query=planned_query,
                     bundle=bundle,
+                    first_last_state=first_last_state,
                 )
                 for op_key in value_key.operands
             ]
@@ -5825,6 +5904,7 @@ class SQLGenerator:
                 target_model=target_model,
                 planned_query=planned_query,
                 bundle=bundle,
+                first_last_state=first_last_state,
             )
             value_exprs = [
                 self._literal_key_to_exp(lit) for lit in value_key.values
@@ -7876,6 +7956,7 @@ class SQLGenerator:
         bundle,
         skip_filter_ids: Optional[Set[str]] = None,
         first_last_state: Optional[FirstLastRenderState] = None,
+        aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
     ):
         from slayer.core.keys import Phase
 
@@ -7938,7 +8019,12 @@ class SQLGenerator:
                 # BetweenKey) — render through the value-key walker.
                 # DEV-1501: thread ``first_last_state`` so HAVING
                 # aggregates reference the same ``_first_rn`` /
-                # ``_last_rn{suffix}`` columns the base SELECT projects.
+                # ``_last_rn{suffix}`` columns the base SELECT projects,
+                # AND thread ``aliases_by_slot_id`` so the synth's
+                # ``full_alias`` matches the materialised spec's alias —
+                # required for ``filtered_rn_map`` / ``filtered_match_map``
+                # lookups (which are keyed by the full alias the
+                # ranked-subquery builder used).
                 rendered = self._render_value_key_for_filter(
                     key=fp.expression.value_key,
                     source_relation=source_relation,
@@ -7946,6 +8032,7 @@ class SQLGenerator:
                     bundle=bundle,
                     slot_by_key=slot_by_key,
                     first_last_state=first_last_state,
+                    aliases_by_slot_id=aliases_by_slot_id,
                 )
                 # Match the legacy DSL parser, which wraps top-level
                 # boolean expressions in parens — legacy WHERE for a
@@ -8086,7 +8173,7 @@ class SQLGenerator:
             source_relation=source_relation,
         )
 
-    def _render_value_key_for_filter(
+    def _render_value_key_for_filter(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed filter-ValueKey union. Each branch carries the per-type filter-render contract (local vs joined column qualification, derived-column expansion, aggregate-with-rn-state synth, etc.); extracting per-branch helpers would scatter the contract.
         self,
         *,
         key,
@@ -8095,6 +8182,7 @@ class SQLGenerator:
         bundle,
         slot_by_key: Optional[Dict[Any, Any]] = None,
         first_last_state: Optional[FirstLastRenderState] = None,
+        aliases_by_slot_id: Optional[Dict[str, List[str]]] = None,
     ) -> exp.Expression:
         """Render a ValueKey tree to sqlglot for WHERE / HAVING rendering.
 
@@ -8136,12 +8224,26 @@ class SQLGenerator:
                     f"per-plan CTE, not inline HAVING."
                 )
             slot = (slot_by_key or {}).get(key)
+            # DEV-1501 Group A.2: when the slot was materialised in the
+            # base SELECT, ``_build_filtered_rn_columns`` keyed its
+            # ``filtered_rn_map`` / ``filtered_match_map`` by the FULL
+            # ALIAS the materialised spec used. The HAVING synth must
+            # reuse the same alias — bare placeholder ``__having_ref__``
+            # would miss the lookup and fall back to the unfiltered
+            # ``_last_rn`` + raw ``filter_sql``.
+            having_full_alias = "__having_ref__"
+            if (
+                aliases_by_slot_id is not None
+                and slot is not None
+                and aliases_by_slot_id.get(slot.id)
+            ):
+                having_full_alias = aliases_by_slot_id[slot.id][0]
             synth = self._build_agg_render_spec_from_planned(
                 slot=slot,
                 key=key,
                 source_model=source_model,
                 source_relation=source_relation,
-                full_alias="__having_ref__",
+                full_alias=having_full_alias,
                 bundle=bundle,
             )
             # DEV-1501: thread the rn suffix maps from the base SELECT
@@ -8254,6 +8356,7 @@ class SQLGenerator:
                     bundle=bundle,
                     slot_by_key=slot_by_key,
                     first_last_state=first_last_state,
+                    aliases_by_slot_id=aliases_by_slot_id,
                 )
                 for o in key.operands
             ]
@@ -8543,7 +8646,7 @@ class SQLGenerator:
             aliases_by_slot_id=aliases_by_slot_id,
         ).sql(dialect=self.dialect, pretty=True)
 
-    def _apply_order_limit_from_planned(
+    def _apply_order_limit_from_planned(  # NOSONAR(S3776) — per-order-entry slot-kind dispatch (hidden materialised aggregate vs hidden NYI vs declared public alias) plus LIMIT/OFFSET tail. Each branch is the per-kind resolution contract; extracting helpers would scatter the alias-lookup chain.
         self,
         *,
         select: exp.Select,

@@ -5007,7 +5007,7 @@ class TestDev1501HiddenFirstLastRender:
             inner = _outer_from_node(sql).this  # type: ignore[union-attr]
             inner_sql = inner.sql(dialect="postgres")
             having_match = _re.search(
-                r"HAVING(.*?)(ORDER BY|$)", inner_sql, _re.DOTALL | _re.IGNORECASE,
+                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
             )
             assert having_match is not None, f"HAVING missing in inner:\n{inner_sql}"
             having_sql = having_match.group(1)
@@ -5072,6 +5072,154 @@ class TestDev1501HiddenFirstLastRender:
                 f"lc and lu reference the same rank column "
                 f"({rn_by_alias['orders.lc']!r}) — distinct-time-col specs collapsed.\n"
                 f"SQL:\n{sql}"
+            )
+
+
+    async def test_filtered_first_last_in_having_uses_filtered_rn(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A FILTERED ``last(time_col)`` (``Column.filter`` set) referenced
+        from HAVING must render with the dedicated filtered rank column
+        (``_last_rn_f0``) and the match-flag column (``_match_f0``) —
+        NOT the unfiltered ``_last_rn``. Without this, the HAVING term
+        ranks the wrong row (or references a column out of scope).
+        Codex review of DEV-1501 PR #159 (Group A).
+        """
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                # The FILTERED measure: only "paid" rows participate in the
+                # ranking-and-pick.
+                Column(
+                    name="paid_amount", sql="amount",
+                    filter="status = 'paid'", type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=["paid_amount:last(created_at) > 100"],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # The ranked subquery must include the filtered rn column and
+            # the match-flag column (filtered-first/last machinery).
+            assert "_last_rn_f0" in sql, (
+                f"Filtered rank column _last_rn_f0 missing:\n{sql}"
+            )
+            assert "_match_f0" in sql, (
+                f"Filter match-flag column _match_f0 missing:\n{sql}"
+            )
+            # HAVING must reference the FILTERED rank column, not bare
+            # ``_last_rn``. Inner SELECT carries HAVING (outer wrap holds
+            # ORDER BY only; this query has no ORDER BY but the materialise
+            # +trim wrap fires for the hidden filter aggregate too).
+            outer_from = _outer_from_node(sql)
+            inner_sql = (
+                outer_from.this.sql(dialect="postgres")
+                if isinstance(outer_from, sqlglot.exp.Subquery)
+                else sql
+            )
+            having_match = _re.search(
+                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
+            )
+            assert having_match is not None, (
+                f"HAVING missing:\n{inner_sql}"
+            )
+            having_sql = having_match.group(1)
+            assert "_last_rn_f0" in having_sql, (
+                f"HAVING does not reference the filtered _last_rn_f0; falls back to "
+                f"unfiltered _last_rn (wrong row ranking). HAVING:\n{having_sql}"
+            )
+
+    async def test_cross_model_filtered_last_in_having(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A FILTERED cross-model ``last()`` (``Column.filter`` set on the
+        joined model's column) referenced from HAVING must, inside the
+        cross-model CTE, bind the HAVING aggregate to the dedicated
+        filtered rank column (``_last_rn_f0``) — same rn the CTE's SELECT
+        projects. Without ranked-state threading, the routed HAVING
+        re-emits ``_build_agg(synth)`` with no filtered_rn_map and binds
+        to bare ``_last_rn`` (wrong row). CodeRabbit review of DEV-1501
+        PR #159 (Group A.3).
+        """
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="signed_up_at", sql="signed_up_at", type=DataType.TIMESTAMP),
+                Column(name="active", sql="active", type=DataType.BOOLEAN),
+                # FILTERED column — only active customers' rows participate
+                # in the ranking-and-pick.
+                Column(
+                    name="active_score", sql="score",
+                    filter="active = 1", type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(
+                target_model="customers",
+                join_pairs=[["customer_id", "id"]],
+            )],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(customers)
+            await storage.save_model(orders)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=["customers.active_score:last(customers.signed_up_at) > 50"],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # The cross-model CTE must build a ranked subquery WITH the
+            # FILTERED rn column (``_last_rn_f0``) and the match flag,
+            # AND its HAVING must reference the FILTERED rn — not bare
+            # ``_last_rn``.
+            assert "_last_rn_f0" in sql, (
+                f"Cross-model filtered rank column _last_rn_f0 missing:\n{sql}"
+            )
+            assert "_match_f0" in sql, (
+                f"Cross-model filter match-flag column _match_f0 missing:\n{sql}"
+            )
+            # HAVING in the cross-model CTE must use the FILTERED rn-gated
+            # form. Bare ``_last_rn`` in HAVING would rank against unfiltered
+            # rows — wrong winner.
+            having_match = _re.search(
+                r"HAVING(.*?)(?:\)\s*$|\Z)", sql, _re.DOTALL | _re.IGNORECASE,
+            )
+            assert having_match is not None, (
+                f"Cross-model HAVING missing:\n{sql}"
+            )
+            having_sql = having_match.group(1)
+            assert "_last_rn_f0" in having_sql, (
+                f"Cross-model HAVING does not reference filtered _last_rn_f0; "
+                f"falls back to unfiltered _last_rn (wrong row ranking).\n"
+                f"HAVING:\n{having_sql}\nSQL:\n{sql}"
             )
 
 
@@ -5449,7 +5597,7 @@ class TestDev1501BroadTriggerAndGuards:
                 f"{group_counts}\nSQL:\n{sql}"
             )
 
-    async def test_hidden_composite_order_rejected_at_input_validation(
+    def test_hidden_composite_order_rejected_at_input_validation(
         self, generator: SQLGenerator
     ) -> None:
         """Composite-aggregate ORDER BY (an operator over aggregates) is

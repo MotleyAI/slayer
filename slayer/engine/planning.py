@@ -628,7 +628,7 @@ class ProjectionPlanner:
         )
 
 
-def _canonical_name(key: ValueKey) -> str:
+def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type canonical-name contract. Extracting per-type helpers would scatter the contract.
     """Best-effort canonical name for a hidden slot.
 
     Mirrors the public-alias canonical form used by the engine
