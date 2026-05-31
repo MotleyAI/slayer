@@ -1,9 +1,14 @@
 """SearchService — three-channel + RRF orchestrator (DEV-1375 / DEV-1386).
 
-* **Channel 1** — entity-overlap BM25 over memories
+* **Channel 1** — entity-overlap BM25 with implicit self-references
   (``slayer.memories.ranker.bm25_rank``). Skipped when neither
-  ``entities`` nor ``query`` is supplied. Contributes only to the memory
-  ranking.
+  ``entities`` nor ``query`` is supplied. Contributes to BOTH the
+  memory ranking AND the entity ranking (DEV-1513): every doc is
+  treated as carrying an implicit reference to itself, so a memory
+  ``M``'s effective tag list is ``M.entities ∪ {memory:<M.id>}`` (a
+  ``memory:<id>`` ref surfaces the named memory at the top of the
+  memory ranking) and a user-supplied canonical entity ref surfaces
+  the named entity at the top of the entity ranking.
 * **Channel 2** — tantivy full-text. Skipped when ``question`` is
   empty. Runs as TWO kind-filtered queries per call (DEV-1414): one
   with ``kind_filter="memory"`` for the memory ranking, one with
@@ -17,10 +22,10 @@
   the memory ranking, non-memory rows feed the entity ranking. Each
   partition is ranked in full.
 
-Memory rankings from every active channel are fused via RRF
-(``k = 60``). Entity rankings from channels 2 and 3 are fused the same
-way. Channel 1 does not contribute to entity ranking (it operates on
-memory entity tags, not on entity docs).
+Memory and entity rankings from every active channel are fused via RRF
+(``k = 60``). Channel 1's entity ranking is the surviving canonical
+inputs in supplied order (DEV-1513); channels 2 and 3 contribute fuzzy
+hits.
 
 Per-bucket invariance (DEV-1414): because each channel produces a full
 per-kind ranking — never truncated by a shared candidate-pool budget —
@@ -59,6 +64,10 @@ from slayer.search.index import (
     IndexHit,
     build_in_memory_corpus,
     search_index,
+)
+from slayer.search.render import (
+    collect_model_entity_pairs,
+    render_datasource_pair,
 )
 from slayer.search.rrf import rrf_fuse
 from slayer.storage.base import StorageBackend
@@ -103,13 +112,49 @@ class ExampleQueryHit(BaseModel):
 class EntityHit(BaseModel):
     """An entity result. ``id`` is the canonical entity string
     (``"<ds>"``, ``"<ds>.<model>"``, or ``"<ds>.<model>.<leaf>"``).
-    ``score`` is the RRF-fused score across channels 2 and 3 (or the
-    single-channel raw score when only one channel contributed)."""
+    ``score`` is the RRF-fused score across channels 1, 2, and 3 (or the
+    single-channel raw score when only one channel contributed).
+
+    DEV-1513: channel 1 contributes named-entity surfacing via the
+    implicit self-reference model — each entity is conceptually tagged
+    with itself, so a user-supplied ref in ``entities=`` ranks at the
+    top of the entities bucket alongside any fuzzy hits."""
 
     id: str
     kind: str  # "datasource" | "model" | "column" | "measure" | "aggregation"
     score: float
     text: str
+
+
+# ---------------------------------------------------------------------------
+# Lookup result for named-entity surfacing (DEV-1513)
+# ---------------------------------------------------------------------------
+
+
+class LookupFound(BaseModel):
+    """``_lookup_named_entity`` succeeded; carries ``(kind, text)``."""
+
+    kind: str
+    text: str
+
+
+class LookupHidden(BaseModel):
+    """The canonical resolved but is gated by a ``hidden`` flag (on the
+    model or on the column). ``reason`` is a short human-readable hint
+    used to compose the caller-facing warning."""
+
+    reason: str
+
+
+class LookupMissing(BaseModel):
+    """The canonical resolved at ``_resolve_inputs`` time but the
+    underlying datasource / model / leaf is no longer present at lookup
+    time (race between resolve and lookup, or the entity was deleted)."""
+
+    pass
+
+
+LookupResult = Union[LookupFound, LookupHidden, LookupMissing]
 
 
 class SearchResponse(BaseModel):
@@ -182,11 +227,19 @@ def _build_memory_hit(
 
     DEV-1428: ``matched_entities`` is computed against the LIVE
     canonical set when ``valid_canonicals`` is supplied, so stale tags
-    do not surface to the agent."""
+    do not surface to the agent.
+
+    DEV-1513: every memory has an implicit ``memory:<self_id>``
+    self-reference; it appears in ``matched_entities`` only when the
+    user explicitly named that ref (so the surfaced memory honestly
+    shows the reason it was returned)."""
     if valid_canonicals is not None:
         live_entities = [e for e in mem.entities if e in valid_canonicals]
     else:
         live_entities = list(mem.entities)
+    self_ref = f"{_MEMORY_PREFIX}{memory_id}"
+    if self_ref not in live_entities:
+        live_entities.append(self_ref)
     wanted_set = set(canonical_input_entities)
     matched = sorted(wanted_set & set(live_entities)) if wanted_set else []
     text = (
@@ -368,16 +421,40 @@ def _rank_embedding_kind(
     return [rows[idx].canonical_id for idx, _score in pairs]
 
 
+def _resolve_entity_hit_kind_text(
+    *,
+    canonical: str,
+    corpus: Optional[Corpus],
+    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
+) -> Optional[Tuple[str, str]]:
+    """DEV-1513: resolve one canonical's ``(kind, text)`` for an entity
+    hit. Prefers the corpus (channels 2/3 already built it); falls back
+    to the channel-1 ``named_kind_text`` lookup (used on pure-named
+    calls with no corpus). Returns ``None`` when neither source carries
+    the canonical."""
+    if corpus is not None:
+        kind = corpus.canonical_to_kind.get(canonical)
+        text = corpus.canonical_to_text.get(canonical)
+        if kind is not None and text is not None:
+            return kind, text
+    if named_kind_text is not None:
+        pair = named_kind_text.get(canonical)
+        if pair is not None:
+            return pair
+    return None
+
+
 def _fuse_entity_hits(
     *,
     rankings: List[List[str]],
     corpus: Optional[Corpus],
+    named_kind_text: Optional[Dict[str, Tuple[str, str]]],
     max_entities: int,
 ) -> List[EntityHit]:
-    """RRF-fuse the entity rankings and look text/kind up from the corpus
-    map. Returns at most ``max_entities`` hits."""
-    if corpus is None:
-        return []
+    """RRF-fuse the entity rankings and look text/kind up via
+    ``_resolve_entity_hit_kind_text`` (corpus first, then channel-1
+    named-entity fallback, DEV-1513). Returns at most ``max_entities``
+    hits."""
     non_empty = [r for r in rankings if r]
     fused = rrf_fuse(rankings=non_empty, k=_RRF_K) if non_empty else {}
     fused_sorted = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
@@ -385,14 +462,158 @@ def _fuse_entity_hits(
     for canonical, score in fused_sorted:
         if len(out) >= max_entities:
             break
-        kind = corpus.canonical_to_kind.get(canonical)
-        text = corpus.canonical_to_text.get(canonical)
-        if kind is None or text is None:
+        resolved = _resolve_entity_hit_kind_text(
+            canonical=canonical,
+            corpus=corpus,
+            named_kind_text=named_kind_text,
+        )
+        if resolved is None:
             continue
+        kind, text = resolved
         out.append(EntityHit(
             id=canonical, kind=kind, score=score, text=text,
         ))
     return out
+
+
+# ---------------------------------------------------------------------------
+# DEV-1513: implicit-self-reference helpers
+# ---------------------------------------------------------------------------
+
+
+def _memory_id_off_datasource_warnings(
+    *,
+    canonical_input_entities: List[str],
+    live_memory_ids: Set[str],
+    datasource: Optional[str],
+) -> List[str]:
+    """DEV-1513: emit one warning per user-supplied ``memory:<id>`` ref
+    whose memory was dropped by the datasource pre-filter (the memory
+    has no entities rooted at ``datasource``). Mirrors the entity-side
+    off-ds drop on the memory side.
+
+    No-op when ``datasource`` is None (nothing was filtered out)."""
+    if datasource is None:
+        return []
+    out: List[str] = []
+    for canonical in canonical_input_entities:
+        if not canonical.startswith(_MEMORY_PREFIX):
+            continue
+        memory_id = canonical[len(_MEMORY_PREFIX):]
+        if memory_id and memory_id not in live_memory_ids:
+            out.append(
+                f"{canonical} is not rooted at datasource "
+                f"{datasource!r}; dropped."
+            )
+    return out
+
+
+def _augment_with_self_refs(memories: List[Memory]) -> List[Memory]:
+    """Return shallow copies of ``memories`` with each memory's
+    ``entities`` augmented by ``memory:<self_id>`` (the implicit
+    self-reference, DEV-1513). Idempotent: if the synthetic ref is
+    already present, the copy is identical."""
+    out: List[Memory] = []
+    for m in memories:
+        self_ref = f"{_MEMORY_PREFIX}{m.id}"
+        if self_ref in m.entities:
+            out.append(m)
+        else:
+            out.append(m.model_copy(
+                update={"entities": [self_ref, *m.entities]},
+            ))
+    return out
+
+
+async def _lookup_bare_datasource_canonical(
+    *, ds: str, storage: StorageBackend,
+) -> LookupResult:
+    """DEV-1513: bare ``<ds>`` branch of ``_lookup_named_entity``.
+    Re-verifies the datasource still exists (it may have been deleted
+    between resolve and lookup) before rendering."""
+    known = await storage.list_datasources()
+    if ds not in known:
+        return LookupMissing()
+    identities = await storage._list_all_model_identities()
+    models: List[SlayerModel] = []
+    for ident_ds, name in identities:
+        if ident_ds != ds:
+            continue
+        m = await storage.get_model(name, data_source=ident_ds)
+        if m is not None:
+            models.append(m)
+    pair = render_datasource_pair(name=ds, models=models)
+    return LookupFound(kind=pair.kind, text=pair.text)
+
+
+async def _lookup_model_or_leaf_canonical(
+    *,
+    canonical: str,
+    ds: str,
+    model_name: str,
+    leaf: Optional[str],
+    storage: StorageBackend,
+) -> LookupResult:
+    """DEV-1513: ``<ds>.<model>`` and ``<ds>.<model>.<leaf>`` branches of
+    ``_lookup_named_entity``. Returns ``Hidden`` for hidden model /
+    hidden column, ``Missing`` for "no such entity" (race between resolve
+    and lookup)."""
+    model = await storage.get_model(model_name, data_source=ds)
+    if model is None:
+        return LookupMissing()
+    if model.hidden:
+        return LookupHidden(reason="hidden model")
+    for re in collect_model_entity_pairs(model=model):
+        if re.canonical_id == canonical:
+            return LookupFound(kind=re.kind, text=re.text)
+    # Not in the visible set. For a leaf canonical, distinguish "exists
+    # on model but is hidden" from "doesn't exist on model at all".
+    if leaf is not None:
+        for column in model.columns:
+            if column.name == leaf and column.hidden:
+                return LookupHidden(reason="hidden column")
+    return LookupMissing()
+
+
+async def _lookup_named_entity(
+    *,
+    canonical: str,
+    storage: StorageBackend,
+    corpus: Optional[Corpus],
+) -> LookupResult:
+    """Resolve a canonical id to its ``(kind, text)`` pair for channel-1
+    named-entity surfacing (DEV-1513).
+
+    Reuses ``corpus.canonical_to_*`` when the canonical is already in the
+    in-memory corpus (channel 2/3 active) — no re-render, no risk of
+    corpus / live-storage drift mid-call. Otherwise dispatches to the
+    bare-datasource or model/leaf helper, which direct-render via the
+    unified ``render_datasource_pair`` / ``collect_model_entity_pairs``
+    helpers in ``slayer.search.render``.
+
+    Returns ``LookupHidden`` when the resolved canonical lives behind a
+    ``hidden`` flag (model or column), and ``LookupMissing`` when the
+    canonical resolved at ``_resolve_inputs`` time but is no longer
+    present at lookup time (race between resolve and lookup)."""
+    if corpus is not None:
+        kind = corpus.canonical_to_kind.get(canonical)
+        text = corpus.canonical_to_text.get(canonical)
+        if kind is not None and text is not None:
+            return LookupFound(kind=kind, text=text)
+    segments = canonical.split(".")
+    if len(segments) == 1:
+        return await _lookup_bare_datasource_canonical(
+            ds=segments[0], storage=storage,
+        )
+    if len(segments) >= 2:
+        return await _lookup_model_or_leaf_canonical(
+            canonical=canonical,
+            ds=segments[0],
+            model_name=segments[1],
+            leaf=segments[2] if len(segments) >= 3 else None,
+            storage=storage,
+        )
+    return LookupMissing()
 
 
 class SearchService:
@@ -494,6 +715,26 @@ class SearchService:
             channel_1_active=channel_1_active,
             valid_canonicals=valid_canonicals,
         )
+        # DEV-1513: detect named ``memory:<id>`` refs whose memory was
+        # filtered out by the datasource pre-filter — emit a warning
+        # symmetric with the entity-side off-ds drop.
+        warnings = _dedup(
+            warnings + _memory_id_off_datasource_warnings(
+                canonical_input_entities=canonical_input_entities,
+                live_memory_ids={m.id for m in all_memories},
+                datasource=datasource,
+            )
+        )
+        (
+            channel_1_entity_ranking,
+            named_kind_text,
+            entity_surfacing_warnings,
+        ) = await self._build_channel_1_entity_ranking(
+            canonical_input_entities=canonical_input_entities,
+            datasource=datasource,
+            corpus=corpus,
+        )
+        warnings = _dedup(warnings + entity_surfacing_warnings)
         (
             channel_2_memory_ranking,
             channel_2_entity_ranking,
@@ -552,15 +793,28 @@ class SearchService:
         )
         # DEV-1428: stale Memory.query warnings — surface example_queries
         # whose attached query references entities that no longer resolve.
+        # DEV-1513: ALSO emit the warning for any explicitly-named
+        # ``memory:<id>`` ref whose memory carries a stale query, even
+        # when ``max_example_queries`` suppressed the hit — the user
+        # explicitly asked for that memory.
         warnings = _dedup(
             warnings + await self._stale_query_warnings(
                 example_query_hits=example_query_hits,
                 memory_by_id=memory_by_id,
+            ) + await self._stale_query_warnings_for_named_memory_refs(
+                canonical_input_entities=canonical_input_entities,
+                all_memories=all_memories,
+                already_warned_ids={h.id for h in example_query_hits},
             )
         )
         entity_hits = _fuse_entity_hits(
-            rankings=[channel_2_entity_ranking, channel_3_entity_ranking],
+            rankings=[
+                channel_1_entity_ranking,
+                channel_2_entity_ranking,
+                channel_3_entity_ranking,
+            ],
             corpus=corpus,
+            named_kind_text=named_kind_text,
             max_entities=max_entities,
         )
         return SearchResponse(
@@ -702,7 +956,14 @@ class SearchService:
 
         DEV-1428: each memory's ``entities`` list is pre-filtered
         against ``valid_canonicals`` so stale tags neither contribute
-        to BM25 scoring nor surface as ``matched_entities``."""
+        to BM25 scoring nor surface as ``matched_entities``.
+
+        DEV-1513: AFTER the stale-tag filter, each memory's effective
+        tag list is augmented with the synthetic ``memory:<self_id>``
+        ref so a user-supplied ``memory:<id>`` ref surfaces the named
+        memory at the top of the BM25 ranking. Augmentation runs after
+        the filter so the self-ref cannot be stripped even if
+        ``valid_canonicals`` ever drifted."""
         channel_1_memory_ranking: List[str] = []
         memory_by_id: dict[str, Memory] = {}
         if channel_1_active and canonical_input_entities:
@@ -713,19 +974,76 @@ class SearchService:
                 if valid_canonicals is not None
                 else all_memories
             )
+            augmented_memories = _augment_with_self_refs(filtered_memories)
             ranked = bm25_rank(
-                memories=filtered_memories,
+                memories=augmented_memories,
                 query_entities=canonical_input_entities,
             )
             # Use the original memory rows (with stored entity lists) for
             # the returned mapping so callers see the un-filtered shape;
-            # only the ranking input was filtered.
+            # only the ranking input was filtered + augmented.
             originals_by_id = {m.id: m for m in all_memories}
             for memory, _score in ranked:
                 original = originals_by_id.get(memory.id, memory)
                 memory_by_id[memory.id] = original
                 channel_1_memory_ranking.append(memory.id)
         return channel_1_memory_ranking, memory_by_id
+
+    async def _build_channel_1_entity_ranking(
+        self,
+        *,
+        canonical_input_entities: List[str],
+        datasource: Optional[str],
+        corpus: Optional[Corpus],
+    ) -> Tuple[List[str], Dict[str, Tuple[str, str]], List[str]]:
+        """DEV-1513: produce channel-1's contribution to the entity
+        ranking by surfacing each user-named canonical ref as itself.
+
+        Returns ``(entity_ranking, named_kind_text, warnings)``:
+
+        * ``entity_ranking`` — surviving canonicals in user-supplied
+          order; this is the channel-1 input to ``_fuse_entity_hits``.
+        * ``named_kind_text`` — ``{canonical: (kind, text)}`` lookup
+          consumed by ``_fuse_entity_hits`` as a fallback when the corpus
+          doesn't carry the canonical (pure-named call with no corpus,
+          or hidden-from-corpus refs).
+        * ``warnings`` — drop reasons per filter (off-datasource,
+          hidden, missing).
+        """
+        entity_ranking: List[str] = []
+        named_kind_text: Dict[str, Tuple[str, str]] = {}
+        warnings: List[str] = []
+        for canonical in canonical_input_entities:
+            if canonical.startswith(_MEMORY_PREFIX):
+                # memory:<id> refs participate in the memory ranking only.
+                continue
+            if datasource is not None and not canonical_id_rooted_at(
+                canonical_id=canonical, datasource=datasource,
+            ):
+                warnings.append(
+                    f"entity {canonical!r} is not rooted at datasource "
+                    f"{datasource!r}; dropped from entities bucket."
+                )
+                continue
+            result = await _lookup_named_entity(
+                canonical=canonical, storage=self._storage, corpus=corpus,
+            )
+            if isinstance(result, LookupHidden):
+                warnings.append(
+                    f"entity {canonical!r} is on a hidden "
+                    f"{result.reason.removeprefix('hidden ')}; "
+                    f"dropped from entities bucket."
+                )
+                continue
+            if isinstance(result, LookupMissing):
+                warnings.append(
+                    f"entity {canonical!r} resolved but is no longer "
+                    f"present in storage; dropped from entities bucket."
+                )
+                continue
+            entity_ranking.append(canonical)
+            named_kind_text[canonical] = (result.kind, result.text)
+        return entity_ranking, named_kind_text, warnings
 
     def _run_channel_2(
         self,
@@ -984,6 +1302,40 @@ class SearchService:
             except (EntityResolutionError, AmbiguousModelError) as exc:
                 out.append(
                     f"example_query {_MEMORY_PREFIX}{hit.id}: attached "
+                    f"query has stale references ({exc}); re-save to clean."
+                )
+        return out
+
+    async def _stale_query_warnings_for_named_memory_refs(
+        self,
+        *,
+        canonical_input_entities: List[str],
+        all_memories: List[Memory],
+        already_warned_ids: Set[str],
+    ) -> List[str]:
+        """DEV-1513: emit the stale-query warning for any explicitly-named
+        ``memory:<id>`` ref pointing at a query-bearing memory with
+        stale refs, regardless of whether the example_queries cap
+        suppressed the hit. The user explicitly named the memory; they
+        deserve to know the attached query is broken."""
+        memories_by_id = {m.id: m for m in all_memories}
+        out: List[str] = []
+        for canonical in canonical_input_entities:
+            if not canonical.startswith(_MEMORY_PREFIX):
+                continue
+            memory_id = canonical[len(_MEMORY_PREFIX):]
+            if not memory_id or memory_id in already_warned_ids:
+                continue
+            mem = memories_by_id.get(memory_id)
+            if mem is None or mem.query is None:
+                continue
+            try:
+                await extract_entities_from_query(
+                    query=mem.query, storage=self._storage,
+                )
+            except (EntityResolutionError, AmbiguousModelError) as exc:
+                out.append(
+                    f"example_query {_MEMORY_PREFIX}{memory_id}: attached "
                     f"query has stale references ({exc}); re-save to clean."
                 )
         return out

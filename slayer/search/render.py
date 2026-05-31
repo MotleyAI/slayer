@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from typing import List
 
+from pydantic import BaseModel
+
 from slayer.core.models import (
     Aggregation,
     Column,
@@ -35,6 +37,20 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.memories.models import Memory
+
+
+class RenderedEntity(BaseModel):
+    """One (canonical_id, kind, text) triple produced by the unified
+    dispatch (DEV-1513). Carries the indexed text + the entity-kind tag
+    every caller needs (corpus build, embedding refresh, named-entity
+    surfacing). Single source of truth for "what counts as an indexable
+    entity" — filter rules (hidden model -> empty list, hidden column
+    skipped, unnamed measure skipped) live in ``collect_model_entity_pairs``
+    and ``render_datasource_pair`` only."""
+
+    canonical_id: str
+    kind: str
+    text: str
 
 
 def _named_children_csv(items: List[tuple[str, str]]) -> str:
@@ -61,6 +77,19 @@ def render_datasource_text(*, name: str, models: List[SlayerModel]) -> str:
             )
         )
     return "\n".join(lines)
+
+
+def render_datasource_pair(
+    *, name: str, models: List[SlayerModel],
+) -> RenderedEntity:
+    """Unified dispatch (DEV-1513) for the datasource doc. Used by both
+    the tantivy corpus builder and the embedding refresh path so the
+    visibility filter is applied in exactly one place."""
+    return RenderedEntity(
+        canonical_id=name,
+        kind="datasource",
+        text=render_datasource_text(name=name, models=models),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -226,3 +255,58 @@ def render_memory_text_for_embedding(*, memory: Memory) -> str:
     zero embedding cost per deleted entity.
     """
     return memory.learning
+
+
+# ---------------------------------------------------------------------------
+# Unified entity-pair dispatch (DEV-1513)
+# ---------------------------------------------------------------------------
+
+
+def collect_model_entity_pairs(*, model: SlayerModel) -> List[RenderedEntity]:
+    """Walk a model's subtree (model + visible columns + named measures
+    + custom aggregations) into the unified ``RenderedEntity`` shape.
+
+    Filter rules (single source of truth):
+
+    * Hidden model -> returns ``[]``.
+    * Hidden column skipped.
+    * ``ModelMeasure`` whose ``name is None`` skipped (defensive: the
+      Pydantic validator already rejects unnamed measures, but the skip
+      keeps the helper aligned with the documented filter set).
+
+    Used by the tantivy corpus build, the embedding refresh path, and
+    the new named-entity surfacing path. The leaf ``render_*_text``
+    helpers are still the single source of truth for *what* each kind's
+    text looks like; this helper is the single source of truth for
+    *which* entities exist and at which canonical id."""
+    if model.hidden:
+        return []
+    qualifier = f"{model.data_source}.{model.name}"
+    out: List[RenderedEntity] = [RenderedEntity(
+        canonical_id=qualifier,
+        kind="model",
+        text=render_model_text(model=model),
+    )]
+    for column in model.columns:
+        if column.hidden:
+            continue
+        out.append(RenderedEntity(
+            canonical_id=f"{qualifier}.{column.name}",
+            kind="column",
+            text=render_column_text(model=model, column=column),
+        ))
+    for measure in model.measures:
+        if measure.name is None:
+            continue
+        out.append(RenderedEntity(
+            canonical_id=f"{qualifier}.{measure.name}",
+            kind="measure",
+            text=render_measure_text(model=model, measure=measure),
+        ))
+    for aggregation in model.aggregations:
+        out.append(RenderedEntity(
+            canonical_id=f"{qualifier}.{aggregation.name}",
+            kind="aggregation",
+            text=render_aggregation_text(model=model, aggregation=aggregation),
+        ))
+    return out
