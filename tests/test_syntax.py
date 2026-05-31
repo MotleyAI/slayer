@@ -500,21 +500,202 @@ class TestFilterOperatorNormalization:
         assert result.left.args == (Ref(name="status"), Ref(name="status"))
         assert result.right == Literal(value="foo")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "DEV-1492: parse_filter_expr's SQL '='->'==' rewrite mangles a "
-            "transform kwarg inside call parens (n=4 -> n==4), so the kwarg "
-            "lands as a positional Cmp arg instead of kwargs. Auto-promotes "
-            "to PASS when DEV-1492 is fixed."
-        ),
-    )
     def test_transform_kwarg_preserved_in_filter(self):
-        # ntile(revenue:sum, n=4) <= 1 — the n=4 kwarg must survive the
-        # filter operator-normalization, not be rewritten to ``n == 4``.
+        # DEV-1492: ntile(revenue:sum, n=4) <= 1 — the n=4 kwarg must
+        # survive the SQL operator-normalization (the previous '=' -> '=='
+        # rewrite mangled kwargs inside call parens).
         result = parse_filter_expr("ntile(revenue:sum, n=4) <= 1")
         assert isinstance(result, Cmp)
         assert isinstance(result.left, TransformCall)
         assert result.left.op == "ntile"
         assert result.left.args == ()
         assert result.left.kwargs == (("n", Literal(value=Decimal(4))),)
+
+    def test_rank_partition_by_kwarg_preserved_in_filter(self):
+        # DEV-1492: rank(revenue:sum, partition_by=region) <= 1 — kwarg
+        # survives the operator rewrite; binder turns partition_by into a
+        # column ref (covered by SQL-gen tests).
+        result = parse_filter_expr("rank(revenue:sum, partition_by=region) <= 1")
+        assert isinstance(result, Cmp)
+        assert result.op == "<="
+        assert isinstance(result.left, TransformCall)
+        assert result.left.op == "rank"
+        assert result.left.args == ()
+        assert result.left.kwargs == (("partition_by", Ref(name="region")),)
+        assert result.right == Literal(value=Decimal(1))
+
+    def test_rank_partition_by_list_kwarg_preserved_in_filter(self):
+        # DEV-1492: list-form partition_by kwarg survives. _convert_kwarg_value
+        # converts the list to a tuple of Refs.
+        result = parse_filter_expr(
+            "rank(revenue:sum, partition_by=[region, channel]) <= 1"
+        )
+        assert isinstance(result, Cmp)
+        assert isinstance(result.left, TransformCall)
+        assert result.left.op == "rank"
+        assert result.left.kwargs == (
+            ("partition_by", (Ref(name="region"), Ref(name="channel"))),
+        )
+
+    def test_grouping_paren_equality_still_rewritten(self):
+        # DEV-1492 regression guard: a `=` inside a *grouping* paren (not a
+        # call) must still be rewritten to `==`. The kwarg-preservation rule
+        # keys off CALL-paren classification, not bare paren depth.
+        result = parse_filter_expr("(status = 'x' or amount = 5)")
+        assert isinstance(result, BoolOp)
+        assert result.op == "or"
+        assert len(result.operands) == 2
+        left, right = result.operands
+        assert isinstance(left, Cmp) and left.op == "=="
+        assert left.left == Ref(name="status") and left.right == Literal(value="x")
+        assert isinstance(right, Cmp) and right.op == "=="
+        assert right.left == Ref(name="amount")
+        assert right.right == Literal(value=Decimal(5))
+
+    def test_mixed_transform_kwarg_and_top_level_equality(self):
+        # DEV-1492: a transform kwarg `=` inside a call and a SQL equality
+        # `=` at top level must be classified independently in the same
+        # expression. Proves the scanner is selective, not global.
+        result = parse_filter_expr(
+            "ntile(revenue:sum, n=4) <= 1 and status = 'paid'"
+        )
+        assert isinstance(result, BoolOp)
+        assert result.op == "and"
+        assert len(result.operands) == 2
+        left, right = result.operands
+        assert isinstance(left, Cmp) and left.op == "<="
+        assert isinstance(left.left, TransformCall)
+        assert left.left.op == "ntile"
+        assert left.left.kwargs == (("n", Literal(value=Decimal(4))),)
+        assert isinstance(right, Cmp) and right.op == "=="
+        assert right.left == Ref(name="status")
+        assert right.right == Literal(value="paid")
+
+    def test_equality_inside_string_literal_untouched(self):
+        # DEV-1492 literal-awareness: the `=` inside the string literal
+        # `'a=b'` must not be touched by the scanner; only the outer SQL
+        # equality is rewritten.
+        result = parse_filter_expr("status = 'a=b'")
+        assert isinstance(result, Cmp)
+        assert result.op == "=="
+        assert result.left == Ref(name="status")
+        assert result.right == Literal(value="a=b")
+
+    def test_comparison_inside_scalar_call_preserved(self):
+        # DEV-1492: the SCALAR_FUNCTIONS narrowing keeps the historical
+        # behavior of `coalesce(status = 'paid', False)` — the `=` inside
+        # a scalar call is a SQL comparison, not a kwarg (scalars reject
+        # kwargs per architecture). Without the narrowing, the kwarg-
+        # preservation rule would re-read `status='paid'` as a kwarg and
+        # the binder would reject it.
+        result = parse_filter_expr("coalesce(status = 'paid', False)")
+        assert isinstance(result, ScalarCall)
+        assert result.name == "coalesce"
+        assert len(result.args) == 2
+        first, second = result.args
+        assert isinstance(first, Cmp)
+        assert first.op == "=="
+        assert first.left == Ref(name="status")
+        assert first.right == Literal(value="paid")
+        assert second == Literal(value=False)
+
+    def test_colon_agg_kwarg_preserved_in_filter(self):
+        # DEV-1492: parametric aggregation kwarg (e.g. percentile(p=...))
+        # is the same failure mode as transform kwargs — the colon-agg
+        # callee `percentile` is not a SCALAR_FUNCTION, so the scanner
+        # preserves `p=0.5` as a kwarg on the AggCall.
+        result = parse_filter_expr("revenue:percentile(p=0.5) > 100")
+        assert isinstance(result, Cmp)
+        assert result.op == ">"
+        assert isinstance(result.left, AggCall)
+        assert result.left.source == Ref(name="revenue")
+        assert result.left.agg == "percentile"
+        assert result.left.args == ()
+        assert result.left.kwargs == (
+            ("p", Literal(value=Decimal("0.5"))),
+        )
+        assert result.right == Literal(value=Decimal(100))
+
+    def test_transform_kwarg_with_whitespace_around_equals_preserved(self):
+        # DEV-1492 (Codex review): the scanner skips whitespace when
+        # checking the `IDENT = value` shape, so a spaced kwarg still
+        # parses as a kwarg, not a positional comparison.
+        result = parse_filter_expr("ntile(revenue:sum, n = 4) <= 1")
+        assert isinstance(result, Cmp)
+        assert isinstance(result.left, TransformCall)
+        assert result.left.op == "ntile"
+        assert result.left.args == ()
+        assert result.left.kwargs == (("n", Literal(value=Decimal(4))),)
+
+    def test_not_paren_is_grouping_not_call(self):
+        # DEV-1492 (Codex review): the lowercased keyword `not` is not an
+        # identifier, so the `(` after it must classify as GROUPING (not
+        # CALL). The `=` inside is therefore a SQL comparison and gets
+        # rewritten to `==`. Python's `not(x)` is UnaryOp(Not, x), not a
+        # function call.
+        result = parse_filter_expr("not(status = 'paid')")
+        assert isinstance(result, UnaryOp)
+        assert result.op == "not"
+        assert isinstance(result.operand, Cmp)
+        assert result.operand.op == "=="
+        assert result.operand.left == Ref(name="status")
+        assert result.operand.right == Literal(value="paid")
+
+    def test_nested_scalar_in_transform_with_kwarg(self):
+        # DEV-1492 (Codex review): innermost-paren tracking across nested
+        # calls. Outer transform `rank` has a kwarg `partition_by=region`
+        # which must be preserved; inner scalar `coalesce(status = 'paid',
+        # 0)` has a `=` which must be rewritten (SCALAR_FUNCTIONS
+        # narrowing). Exercises the per-frame (kind, callee) stack.
+        result = parse_filter_expr(
+            "rank(coalesce(status = 'paid', 0), partition_by=region) <= 1"
+        )
+        assert isinstance(result, Cmp)
+        assert result.op == "<="
+        assert isinstance(result.left, TransformCall)
+        assert result.left.op == "rank"
+        # Transform kwarg preserved.
+        assert result.left.kwargs == (("partition_by", Ref(name="region")),)
+        # Transform input is the inner coalesce ScalarCall with a Cmp arg.
+        inner = result.left.input
+        assert isinstance(inner, ScalarCall)
+        assert inner.name == "coalesce"
+        assert len(inner.args) == 2
+        cmp_arg, zero = inner.args
+        assert isinstance(cmp_arg, Cmp) and cmp_arg.op == "=="
+        assert cmp_arg.left == Ref(name="status")
+        assert cmp_arg.right == Literal(value="paid")
+        assert zero == Literal(value=Decimal(0))
+
+    def test_string_literal_with_parens_commas_equals_does_not_corrupt_stack(self):
+        # DEV-1492 (Codex review): a string literal containing `)`, `,`,
+        # and `=` must not perturb the scanner's paren-kind stack or
+        # previous-token tracking. Both the kwarg `n=4` and the top-level
+        # `status = '),='` must be classified correctly.
+        result = parse_filter_expr(
+            "ntile(revenue:sum, n=4) <= 1 and status = '),='"
+        )
+        assert isinstance(result, BoolOp)
+        assert result.op == "and"
+        left, right = result.operands
+        assert isinstance(left, Cmp) and left.op == "<="
+        assert isinstance(left.left, TransformCall)
+        assert left.left.op == "ntile"
+        assert left.left.kwargs == (("n", Literal(value=Decimal(4))),)
+        assert isinstance(right, Cmp) and right.op == "=="
+        assert right.left == Ref(name="status")
+        assert right.right == Literal(value="),=")
+
+    def test_comparison_inside_ifnull_scalar_call_preserved(self):
+        # DEV-1492 (Codex review): the SCALAR_FUNCTIONS narrowing must
+        # apply to every scalar in the allowlist, not just `coalesce`.
+        # `ifnull` (also a null-handling scalar) gets the same treatment.
+        result = parse_filter_expr("ifnull(status = 'paid', False)")
+        assert isinstance(result, ScalarCall)
+        assert result.name == "ifnull"
+        assert len(result.args) == 2
+        first, second = result.args
+        assert isinstance(first, Cmp) and first.op == "=="
+        assert first.left == Ref(name="status")
+        assert first.right == Literal(value="paid")
+        assert second == Literal(value=False)

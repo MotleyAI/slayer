@@ -49,7 +49,7 @@ from __future__ import annotations
 import ast
 import re
 from decimal import Decimal
-from typing import Any, Dict, Iterator, List, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -166,6 +166,24 @@ _COLON_AGG_RE = re.compile(
     # No (args) consumption — Python's AST handles that.
 )
 
+_FILTER_KEYWORDS = frozenset({"and", "or", "not", "in", "is"})
+_SCAN_TOKEN_RE = re.compile(
+    r"(?P<ws>\s+)"
+    r"|(?P<string>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
+    r"|(?P<ident>[A-Za-z_]\w*)"
+    r"|(?P<number>\d+(?:\.\d*)?|\.\d+)"
+    r"|(?P<op_eq2>==|<=|>=|!=)"
+    r"|(?P<op_eq>=)"
+    r"|(?P<lparen>\()"
+    r"|(?P<rparen>\))"
+    r"|(?P<lbrack>\[)"
+    r"|(?P<rbrack>\])"
+    r"|(?P<comma>,)"
+    r"|(?P<other>.)",
+    re.DOTALL,
+)
+
+
 _BIN_OP_MAP: Dict[type, str] = {
     ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
     ast.Mod: "%", ast.Pow: "**", ast.FloorDiv: "//",
@@ -279,7 +297,6 @@ def _normalize_sql_filter_operators(text: str) -> str:
         part = re.sub(r"\bNULL\b", "None", part, flags=re.IGNORECASE)
         for kw in ("IS", "NOT", "AND", "OR", "IN"):
             part = re.sub(rf"\b{kw}\b", kw.lower(), part, flags=re.IGNORECASE)
-        part = re.sub(r"(?<![<>=!])=(?!=)", "==", part)
         part = part.replace("<>", "!=")
         # SQL ``||`` concat → Python ``|`` (BitOr), reinterpreted as a
         # ``concat(...)`` ScalarCall in ``_convert``. ``|`` binds tighter
@@ -289,7 +306,127 @@ def _normalize_sql_filter_operators(text: str) -> str:
         result.append(part)
         if i < len(literals):
             result.append(literals[i])
-    return "".join(result)
+    # DEV-1492: the `=` → `==` rewrite runs on the rejoined string with a
+    # call-paren-aware scanner that leaves keyword-argument `=` alone
+    # inside non-scalar calls (transforms / parametric aggregations). Run
+    # last so the scanner sees lowercased keywords and the post-`<>` /
+    # post-`||` text — only its own pass can touch literal-spanning
+    # paren context correctly.
+    return _rewrite_comparison_equals("".join(result))
+
+
+def _rewrite_comparison_equals(text: str) -> str:
+    """Rewrite SQL-style ``=`` to Python ``==`` except where Python would
+    treat the ``=`` as a keyword argument inside a non-scalar call.
+
+    Per the architecture (``docs/architecture/parsing.md`` — scalars
+    reject kwargs, only ``AggCall`` / ``TransformCall`` carry kwargs),
+    a lone ``=`` is preserved (kwarg) iff:
+
+    1. the innermost open paren is a CALL paren (the preceding
+       significant token is a bare identifier, ``)``, or ``]``;
+       otherwise GROUPING). Lowercase Python keywords
+       (``and`` / ``or`` / ``not`` / ``in`` / ``is``) do not classify
+       a following ``(`` as a call paren — they introduce a grouping
+       paren (``not(...)``, ``x in (...)``).
+    2. the callee of that innermost call is NOT in
+       :data:`SCALAR_FUNCTIONS` — scalars never accept kwargs, so a
+       ``=`` inside them is the user's SQL comparison
+       (``coalesce(status = 'paid', False)``).
+    3. the ``=`` is immediately preceded (skipping whitespace) by an
+       identifier preceded (skipping whitespace) by the call's ``(``
+       or by a ``,`` at that paren depth — Python's
+       keyword-argument grammar.
+
+    Compound operators (``==``, ``<=``, ``>=``, ``!=``) are emitted
+    verbatim by the tokenizer so their ``=`` is never touched. String
+    literals are tokenized as a unit (Python single/double-quoted with
+    backslash escapes) and pass through without perturbing the paren
+    stack or the previous-significant-token history.
+    """
+    out: List[str] = []
+    # Each frame: (is_call, callee). ``callee`` is the identifier text
+    # preceding the call's ``(``, or ``None`` (e.g. a callable expression
+    # like ``f()(x=1)`` where the prior token is ``)``).
+    stack: List[Tuple[bool, Optional[str]]] = []
+    # Trailing window of the last 2 significant tokens (oldest-first).
+    # Categories: NAME (bare identifier), KW (lowercase Python keyword),
+    # LPAREN, COMMA, OTHER (everything else; string literals don't enter
+    # the history).
+    hist: List[Tuple[str, str]] = []
+
+    def _push(kind: str, text: str) -> None:
+        hist.append((kind, text))
+        if len(hist) > 2:
+            del hist[0]
+
+    for m in _SCAN_TOKEN_RE.finditer(text):
+        if m.group("ws") is not None:
+            out.append(m.group(0))
+            continue
+        if m.group("string") is not None:
+            out.append(m.group(0))
+            continue
+        ident = m.group("ident")
+        if ident is not None:
+            out.append(ident)
+            _push("KW" if ident in _FILTER_KEYWORDS else "NAME", ident)
+            continue
+        if m.group("number") is not None:
+            out.append(m.group(0))
+            _push("OTHER", m.group(0))
+            continue
+        if m.group("op_eq2") is not None:
+            out.append(m.group(0))
+            _push("OTHER", m.group(0))
+            continue
+        if m.group("op_eq") is not None:
+            prev_kind = hist[-1][0] if hist else None
+            prev_prev_kind = hist[-2][0] if len(hist) >= 2 else None
+            top = stack[-1] if stack else None
+            is_kwarg = (
+                top is not None
+                and top[0]  # call paren
+                and (top[1] is None or top[1] not in SCALAR_FUNCTIONS)
+                and prev_kind == "NAME"
+                and prev_prev_kind in ("LPAREN", "COMMA")
+            )
+            out.append("=" if is_kwarg else "==")
+            _push("OTHER", "=")
+            continue
+        if m.group("lparen") is not None:
+            prev_kind = hist[-1][0] if hist else None
+            prev_text = hist[-1][1] if hist else ""
+            is_call = prev_kind == "NAME" or prev_text in (")", "]")
+            callee = hist[-1][1] if (is_call and prev_kind == "NAME") else None
+            stack.append((is_call, callee))
+            out.append("(")
+            _push("LPAREN", "(")
+            continue
+        if m.group("rparen") is not None:
+            if stack:
+                stack.pop()
+            out.append(")")
+            _push("OTHER", ")")
+            continue
+        if m.group("lbrack") is not None:
+            out.append("[")
+            _push("OTHER", "[")
+            continue
+        if m.group("rbrack") is not None:
+            out.append("]")
+            _push("OTHER", "]")
+            continue
+        if m.group("comma") is not None:
+            out.append(",")
+            _push("COMMA", ",")
+            continue
+        # Any other single char (``:``, ``.``, ``+``, ``-``, ``*``, ``/``,
+        # ``%``, ``<``, ``>``, ``!``, ``|``, ``{``, ``}``, ...).
+        out.append(m.group(0))
+        _push("OTHER", m.group(0))
+
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
