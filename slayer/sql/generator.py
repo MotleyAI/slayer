@@ -5744,7 +5744,7 @@ class SQLGenerator:
             return None
         return exp.and_(*parts) if len(parts) > 1 else parts[0]
 
-    def _render_filter_value_key_in_target_scope(
+    def _render_filter_value_key_in_target_scope(  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union with per-type cross-model target-scope rules (joined-column qualification, derived-column expansion, rn-state aware aggregate synth). Each branch carries the per-type cross-model render contract; extracting helpers would scatter the contract.
         self,
         *,
         value_key,
@@ -8376,6 +8376,7 @@ class SQLGenerator:
                         bundle=bundle,
                         slot_by_key=slot_by_key,
                         first_last_state=first_last_state,
+                        aliases_by_slot_id=aliases_by_slot_id,
                     ))
             if key.name == "like":
                 return exp.Like(this=args[0], expression=args[1])
@@ -8388,6 +8389,7 @@ class SQLGenerator:
                 bundle=bundle,
                 slot_by_key=slot_by_key,
                 first_last_state=first_last_state,
+                aliases_by_slot_id=aliases_by_slot_id,
             )
             low_expr = self._render_value_key_for_filter(
                 key=key.low,
@@ -8396,6 +8398,7 @@ class SQLGenerator:
                 bundle=bundle,
                 slot_by_key=slot_by_key,
                 first_last_state=first_last_state,
+                aliases_by_slot_id=aliases_by_slot_id,
             )
             high_expr = self._render_value_key_for_filter(
                 key=key.high,
@@ -8404,6 +8407,7 @@ class SQLGenerator:
                 bundle=bundle,
                 slot_by_key=slot_by_key,
                 first_last_state=first_last_state,
+                aliases_by_slot_id=aliases_by_slot_id,
             )
             return exp.Between(this=col_expr, low=low_expr, high=high_expr)
         if isinstance(key, InKey):
@@ -8418,6 +8422,7 @@ class SQLGenerator:
                 bundle=bundle,
                 slot_by_key=slot_by_key,
                 first_last_state=first_last_state,
+                aliases_by_slot_id=aliases_by_slot_id,
             )
             value_exprs = [
                 self._scalar_to_sqlglot(lit.value) for lit in key.values

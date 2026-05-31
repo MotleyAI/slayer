@@ -5143,6 +5143,65 @@ class TestDev1501HiddenFirstLastRender:
                 f"unfiltered _last_rn (wrong row ranking). HAVING:\n{having_sql}"
             )
 
+    async def test_filtered_first_last_in_nested_having_uses_filtered_rn(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A FILTERED ``last(time_col)`` nested inside a scalar-function
+        call (``coalesce(agg, 0)``) on a HAVING expression must still
+        bind to the FILTERED rank column. Regression for the
+        ``_render_value_key_for_filter`` recursive call sites
+        (``ScalarCallKey`` / ``BetweenKey`` / ``InKey``) that previously
+        dropped ``aliases_by_slot_id`` through the recursion (Codex
+        review of DEV-1501 PR #159 round 2).
+        """
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(
+                    name="paid_amount", sql="amount",
+                    filter="status = 'paid'", type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            # ``coalesce(agg, 0)`` wraps the AggregateKey in a
+            # ScalarCallKey — exercises the recursion branch that
+            # previously dropped ``aliases_by_slot_id``.
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                filters=["coalesce(paid_amount:last(created_at), 0) > 0"],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            outer_from = _outer_from_node(sql)
+            inner_sql = (
+                outer_from.this.sql(dialect="postgres")
+                if isinstance(outer_from, sqlglot.exp.Subquery)
+                else sql
+            )
+            having_match = _re.search(
+                r"HAVING(.*)$", inner_sql, _re.DOTALL | _re.IGNORECASE,
+            )
+            assert having_match is not None, (
+                f"HAVING missing in inner:\n{inner_sql}"
+            )
+            having_sql = having_match.group(1)
+            assert "_last_rn_f0" in having_sql, (
+                f"Nested-HAVING (ScalarCallKey wrap) did not reference "
+                f"filtered _last_rn_f0; aliases_by_slot_id dropped "
+                f"through the ScalarCallKey recursion.\nHAVING:\n{having_sql}"
+            )
+
     async def test_cross_model_filtered_last_in_having(
         self, generator: SQLGenerator
     ) -> None:
