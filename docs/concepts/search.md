@@ -20,13 +20,37 @@ supplied.
 
 ## The three retrieval channels
 
-### Channel 1 — entity-overlap BM25 over memories
+### Channel 1 — entity-overlap BM25 with implicit self-references
 
 Inputs are resolved to canonical entity strings (`<ds>`, `<ds>.<model>`,
 or `<ds>.<model>.<leaf>` — see
 [memories.md](memories.md#the-canonical-entity-form)) and scored against
 each memory's stored entity tags via `BM25Plus`. Memories with zero
 overlap are excluded.
+
+**Implicit self-references (DEV-1513).** Channel 1 contributes to BOTH
+the memory ranking AND the entity ranking via a single unifying model:
+every doc is conceptually tagged with an implicit reference to itself.
+
+- A memory `M` is treated as having effective tags `M.entities ∪ {memory:<M.id>}`, so an `entities=["memory:<id>"]` ref surfaces the named memory itself at the top of the memory BM25 ranking.
+- An entity `E` is treated as having a single tag `{<canonical_of_E>}`, so an `entities=["<ds>.<model>.<col>"]` ref surfaces the named entity at the top of the entities bucket.
+
+Concretely:
+
+```python
+search(entities=["mydb.orders.amount"], max_memories=0)
+# -> SearchResponse(entities=[EntityHit(id="mydb.orders.amount", kind="column", ...)])
+
+search(entities=["memory:42"], max_entities=0)
+# -> SearchResponse(memories=[MemoryHit(id="42", matched_entities=["memory:42"], ...)])
+```
+
+Filter rules for the new entity surfacing:
+
+- `memory:<id>` refs participate in the memory ranking only — they never appear in the entities bucket.
+- Refs not rooted at `datasource` (when set) drop with a warning `entity '<X>' is not rooted at datasource '<ds>'; dropped from entities bucket.` The memory side fires the symmetric `memory:<id> is not rooted at datasource '<ds>'; dropped.` when the named memory has no entities rooted at the requested datasource.
+- Refs on a hidden model or hidden column drop from the entities bucket with `entity '<X>' is on a hidden model/column; dropped from entities bucket.` BM25 over original memory tags is unaffected — memories tagged with that canonical still surface.
+- An explicitly-named `memory:<id>` whose attached `Memory.query` has stale references emits the standard stale-query warning regardless of `max_example_queries` (the user explicitly asked for that memory; they deserve to know the query is broken).
 
 Activated when `entities` and/or `query` is supplied to `search`.
 
@@ -108,9 +132,9 @@ Memory rankings from every active channel are fused via RRF (`k = 60`):
 score(d) = Σ_r 1 / (k + rank_r(d))
 ```
 
-Entity rankings from channels 2 and 3 are RRF-fused the same way.
-Channel 1 contributes to the memory ranking only (it operates on
-memory entity tags, not on entity docs).
+Entity rankings from channels 1, 2, and 3 are RRF-fused the same way.
+Channel 1's entity ranking is the user-supplied canonical refs in
+supplied order (DEV-1513); channels 2 and 3 contribute fuzzy hits.
 
 ### Per-bucket ranking invariance (DEV-1414)
 
@@ -183,7 +207,7 @@ prefix match is unambiguous.
 | `entities`/`query` | `question` | Result |
 |---|---|---|
 | set | set | All eligible channels run. Memories RRF-fused (channels 1 + 2 + 3); entities RRF-fused (channels 2 + 3). Channel 3 is skipped with a warning when the `embedding_search` extra is missing. Query-bearing memories partitioned out to `example_queries`. |
-| set | unset/empty | Channel 1 only. Memories partitioned by `query` presence; no entity hits. |
+| set | unset/empty | Channel 1 only. Memories partitioned by `query` presence; entity hits = the named refs themselves (DEV-1513). |
 | unset/empty | set | Channels 2 and 3 (when eligible). Memories RRF-fused; entities RRF-fused. |
 | unset/empty | unset/empty | Recency fallback: newest `max_memories` learning-only memories + newest `max_example_queries` query-bearing memories, with a warning. |
 
