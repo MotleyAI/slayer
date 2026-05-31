@@ -1309,12 +1309,41 @@ def _first_dropped_cause(
     return None
 
 
+def _reachable_agg_names_from_state(
+    *, start: SlayerModel, state: "_CascadeState",
+) -> Set[str]:
+    """Sync BFS over ``state.models_by_name`` collecting custom aggregation
+    names reachable from ``start`` via the join graph. DEV-1500 — lets the
+    measure-cascade rule recognise function-style references to custom
+    aggregations defined on joined models (``rolling_avg(customers.score)``
+    where ``rolling_avg`` lives on the joined ``customers``). Visited-guarded,
+    unbounded depth; absent targets are skipped (best-effort).
+    """
+    names: Set[str] = set()
+    visited: Set[str] = set()
+    queue: List[SlayerModel] = [start]
+    while queue:
+        current = queue.pop(0)
+        if current.name in visited:
+            continue
+        visited.add(current.name)
+        if current.aggregations:
+            names.update(a.name for a in current.aggregations)
+        for join in current.joins:
+            if join.target_model in visited:
+                continue
+            nxt = state.models_by_name.get(join.target_model)
+            if nxt is not None:
+                queue.append(nxt)
+    return names
+
+
 def _cascade_measures(*, model: SlayerModel, state: _CascadeState) -> bool:
     """Rule 2: ``ModelMeasure.formula`` referencing a dropped column or
     dropped measure."""
     changed = False
     dropped_set = state.dropped_measures.get(model.name, set())
-    custom_agg_names = {a.name for a in (model.aggregations or [])}
+    custom_agg_names = _reachable_agg_names_from_state(start=model, state=state)
     for measure in model.measures:
         if measure.name is None or measure.name in dropped_set:
             continue

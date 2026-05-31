@@ -12,7 +12,7 @@ extension point.
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.source_bundle import ResolvedSourceBundle
 
@@ -25,6 +25,31 @@ def _model(name: str, ds: str = "prod") -> SlayerModel:
         columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="value", type=DataType.DOUBLE),
+        ],
+    )
+
+
+def _model_with(
+    name: str,
+    *,
+    aggs: list[str] | None = None,
+    joins: list[str] | None = None,
+    ds: str = "prod",
+) -> SlayerModel:
+    return SlayerModel(
+        name=name,
+        data_source=ds,
+        sql_table=name,
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="value", type=DataType.DOUBLE),
+        ],
+        aggregations=[
+            Aggregation(name=a, formula="AVG({value})") for a in (aggs or [])
+        ],
+        joins=[
+            ModelJoin(target_model=t, join_pairs=[["id", "id"]])
+            for t in (joins or [])
         ],
     )
 
@@ -137,3 +162,108 @@ class TestAnchorlessReadiness:
         b = ResolvedSourceBundle()
         assert b.source_model is None
         assert b.referenced_models == []
+
+
+# ---------------------------------------------------------------------------
+# DEV-1500 — reachable_aggregation_names (sync join-graph BFS)
+# ---------------------------------------------------------------------------
+
+
+class TestReachableAggregationNames:
+    """Sync mirror of enrichment._collect_reachable_agg_names over a bundle.
+
+    Powers the FUNC_STYLE_AGG slack rewrite so a custom aggregation defined on
+    a *joined* model (``rolling_avg(customers.score)``) is recognised and
+    rewritten to colon form. Scoping is per start model: a stage only sees
+    aggregations reachable from its own source model's join graph.
+    """
+
+    def test_own_aggs_only(self):
+        m = _model_with("orders", aggs=["rolling_avg"])
+        b = ResolvedSourceBundle(source_model=m, referenced_models=[m])
+        assert b.reachable_aggregation_names(start=m) == frozenset({"rolling_avg"})
+
+    def test_no_own_but_joined_has(self):
+        orders = _model_with("orders", joins=["customers"])
+        customers = _model_with("customers", aggs=["rolling_avg"])
+        b = ResolvedSourceBundle(
+            source_model=orders, referenced_models=[orders, customers]
+        )
+        assert b.reachable_aggregation_names(start=orders) == frozenset(
+            {"rolling_avg"}
+        )
+
+    def test_four_hops(self):
+        a = _model_with("a", joins=["b"])
+        b_ = _model_with("b", joins=["c"])
+        c = _model_with("c", joins=["d"])
+        d = _model_with("d", joins=["e"])
+        e = _model_with("e", aggs=["deep_agg"])
+        bundle = ResolvedSourceBundle(
+            source_model=a, referenced_models=[a, b_, c, d, e]
+        )
+        assert bundle.reachable_aggregation_names(start=a) == frozenset(
+            {"deep_agg"}
+        )
+
+    def test_cycle_terminates(self):
+        a = _model_with("a", aggs=["agg_a"], joins=["b"])
+        b_ = _model_with("b", joins=["a"])
+        bundle = ResolvedSourceBundle(
+            source_model=a, referenced_models=[a, b_]
+        )
+        # Must terminate (visited guard) and collect a's own aggregation.
+        assert bundle.reachable_aggregation_names(start=a) == frozenset(
+            {"agg_a"}
+        )
+
+    def test_none_when_no_aggs_anywhere(self):
+        orders = _model_with("orders", joins=["customers"])
+        customers = _model_with("customers")
+        b = ResolvedSourceBundle(
+            source_model=orders, referenced_models=[orders, customers]
+        )
+        assert b.reachable_aggregation_names(start=orders) is None
+
+    def test_scoping_excludes_unreachable_model(self):
+        # Two models that do NOT join each other both live in
+        # referenced_models. A scoped walk from M1 must NOT pick up M2's
+        # aggregation (this pins scoped-per-stage vs union-of-all).
+        m1 = _model_with("m1", aggs=["agg_one"])
+        m2 = _model_with("m2", aggs=["agg_two"])
+        b = ResolvedSourceBundle(
+            source_model=m1, referenced_models=[m1, m2]
+        )
+        assert b.reachable_aggregation_names(start=m1) == frozenset(
+            {"agg_one"}
+        )
+
+    def test_absent_join_target_skipped(self):
+        # Join points at a target not present in referenced_models — the
+        # walk is best-effort and skips it without error, returning the
+        # source model's own aggregations.
+        orders = _model_with("orders", aggs=["rolling_avg"], joins=["missing"])
+        b = ResolvedSourceBundle(source_model=orders, referenced_models=[orders])
+        assert b.reachable_aggregation_names(start=orders) == frozenset(
+            {"rolling_avg"}
+        )
+
+    def test_absent_join_target_with_no_own_aggs_returns_none(self):
+        # Skip-absent + empty-collection: a missing join target must not
+        # synthesise an empty frozenset() — the contract is `None` when
+        # nothing is reachable.
+        orders = _model_with("orders", joins=["missing"])
+        b = ResolvedSourceBundle(source_model=orders, referenced_models=[orders])
+        assert b.reachable_aggregation_names(start=orders) is None
+
+    def test_aggs_from_multiple_hops_unioned(self):
+        orders = _model_with("orders", aggs=["a0"], joins=["customers"])
+        customers = _model_with("customers", aggs=["a1"], joins=["regions"])
+        regions = _model_with("regions", aggs=["a2"])
+        b = ResolvedSourceBundle(
+            source_model=orders,
+            referenced_models=[orders, customers, regions],
+        )
+        assert b.reachable_aggregation_names(start=orders) == frozenset(
+            {"a0", "a1", "a2"}
+        )
