@@ -563,6 +563,48 @@ def _orders_joining_customers() -> SlayerModel:
     })
 
 
+def _chain_model(
+    name: str,
+    *,
+    joins: list[str] | None = None,
+    aggs: list[str] | None = None,
+    extra_cols: list[Column] | None = None,
+) -> SlayerModel:
+    """Build one node of a linear chain a->b->c->... — used by the 4-hop
+    save and query tests to set up an unbounded BFS scenario.
+    """
+    cols = [
+        Column(name="id", type=DataType.INT, primary_key=True),
+    ] + list(extra_cols or [])
+    return SlayerModel(
+        name=name,
+        data_source="prod",
+        sql_table=name,
+        columns=cols,
+        aggregations=[
+            Aggregation(name=a, formula="AVG({value})")
+            for a in (aggs or [])
+        ],
+        joins=[
+            ModelJoin(target_model=t, join_pairs=[["id", "id"]])
+            for t in (joins or [])
+        ],
+    )
+
+
+async def _save_4hop_chain(storage) -> None:
+    """Save the a->b->c->d->e chain shared by the 4-hop tests; ``e`` carries
+    ``rolling_avg`` and a ``score`` column.
+    """
+    await storage.save_model(_chain_model(
+        "e", aggs=["rolling_avg"],
+        extra_cols=[Column(name="score", type=DataType.DOUBLE)],
+    ))
+    await storage.save_model(_chain_model("d", joins=["e"]))
+    await storage.save_model(_chain_model("c", joins=["d"]))
+    await storage.save_model(_chain_model("b", joins=["c"]))
+
+
 async def _engine_with_prod():
     """A fresh engine over an in-memory-SQLite YAML store. Returns
     ``(engine, storage)``; caller owns the TemporaryDirectory lifetime.
@@ -730,32 +772,7 @@ class TestJoinedCustomAggFuncStyle:
         # `rolling_avg(b.c.d.e.score)` is rewritten at save time.
         engine, storage, td = await _engine_with_prod()
         try:
-            def _chain_model(name, *, joins=None, aggs=None, extra_cols=None):
-                cols = [
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                ] + list(extra_cols or [])
-                return SlayerModel(
-                    name=name,
-                    data_source="prod",
-                    sql_table=name,
-                    columns=cols,
-                    aggregations=[
-                        Aggregation(name=a, formula="AVG({value})")
-                        for a in (aggs or [])
-                    ],
-                    joins=[
-                        ModelJoin(target_model=t, join_pairs=[["id", "id"]])
-                        for t in (joins or [])
-                    ],
-                )
-
-            await storage.save_model(_chain_model(
-                "e", aggs=["rolling_avg"],
-                extra_cols=[Column(name="score", type=DataType.DOUBLE)],
-            ))
-            await storage.save_model(_chain_model("d", joins=["e"]))
-            await storage.save_model(_chain_model("c", joins=["d"]))
-            await storage.save_model(_chain_model("b", joins=["c"]))
+            await _save_4hop_chain(storage)
             a = _chain_model("a", joins=["b"]).model_copy(update={
                 "measures": [
                     ModelMeasure(
@@ -800,32 +817,7 @@ class TestJoinedCustomAggFuncStyle:
         # warning whose normalized form is the colon-syntax canonical.
         engine, storage, td = await _engine_with_prod()
         try:
-            def _chain_model(name, *, joins=None, aggs=None, extra_cols=None):
-                cols = [
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                ] + list(extra_cols or [])
-                return SlayerModel(
-                    name=name,
-                    data_source="prod",
-                    sql_table=name,
-                    columns=cols,
-                    aggregations=[
-                        Aggregation(name=a, formula="AVG({value})")
-                        for a in (aggs or [])
-                    ],
-                    joins=[
-                        ModelJoin(target_model=t, join_pairs=[["id", "id"]])
-                        for t in (joins or [])
-                    ],
-                )
-
-            await storage.save_model(_chain_model(
-                "e", aggs=["rolling_avg"],
-                extra_cols=[Column(name="score", type=DataType.DOUBLE)],
-            ))
-            await storage.save_model(_chain_model("d", joins=["e"]))
-            await storage.save_model(_chain_model("c", joins=["d"]))
-            await storage.save_model(_chain_model("b", joins=["c"]))
+            await _save_4hop_chain(storage)
             await storage.save_model(_chain_model("a", joins=["b"]))
             q = SlayerQuery(
                 source_model="a",
