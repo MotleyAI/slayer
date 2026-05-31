@@ -568,6 +568,88 @@ def normalize_query(
     return NormalizationResult(query=query, warnings=all_warnings)
 
 
+def _normalize_model_measures(
+    model: SlayerModel, *, custom_agg_names: Optional[frozenset[str]],
+) -> Tuple[SlayerModel, List[NormalizationWarning]]:
+    """FUNC_STYLE_AGG over ``model.measures`` (Mode-B). See
+    :func:`normalize_model` for the ``custom_agg_names`` contract.
+    """
+    if not model.measures:
+        return model, []
+    if custom_agg_names is not None:
+        custom_names = custom_agg_names
+    else:
+        custom_names = frozenset(a.name for a in (model.aggregations or []))
+    warnings: List[NormalizationWarning] = []
+    new_measures = []
+    for i, mm in enumerate(model.measures):
+        formula = mm.formula
+        rewritten, ws = _apply_func_style_agg(
+            formula,
+            location=f"measures[{i}].formula",
+            custom_agg_names=custom_names,
+        )
+        warnings.extend(ws)
+        if rewritten != formula:
+            mm = mm.model_copy(update={"formula": rewritten})
+        new_measures.append(mm)
+    return model.model_copy(update={"measures": new_measures}), warnings
+
+
+def _normalize_column_dot_paths(
+    model: SlayerModel,
+) -> Tuple[SlayerModel, List[NormalizationWarning]]:
+    """DOT_PATH_IN_SQL over ``Column.sql`` / ``Column.filter`` (Mode-A)."""
+    warnings: List[NormalizationWarning] = []
+    new_columns = []
+    changed = False
+    for i, c in enumerate(model.columns):
+        updates: dict = {}
+        if c.sql is not None:
+            rewritten_sql, ws = _apply_dot_path_in_sql(
+                c.sql, location=f"columns[{i}].sql", model=model,
+            )
+            warnings.extend(ws)
+            if rewritten_sql != c.sql:
+                updates["sql"] = rewritten_sql
+        if c.filter is not None:
+            rewritten_filter, ws = _apply_dot_path_in_sql(
+                c.filter, location=f"columns[{i}].filter", model=model,
+            )
+            warnings.extend(ws)
+            if rewritten_filter != c.filter:
+                updates["filter"] = rewritten_filter
+        if updates:
+            c = c.model_copy(update=updates)
+            changed = True
+        new_columns.append(c)
+    if changed:
+        model = model.model_copy(update={"columns": new_columns})
+    return model, warnings
+
+
+def _normalize_model_filter_dot_paths(
+    model: SlayerModel,
+) -> Tuple[SlayerModel, List[NormalizationWarning]]:
+    """DOT_PATH_IN_SQL over ``SlayerModel.filters`` (Mode-A)."""
+    if not model.filters:
+        return model, []
+    warnings: List[NormalizationWarning] = []
+    new_filters = []
+    changed = False
+    for i, f in enumerate(model.filters):
+        rewritten, ws = _apply_dot_path_in_sql(
+            f, location=f"filters[{i}]", model=model,
+        )
+        warnings.extend(ws)
+        if rewritten != f:
+            changed = True
+        new_filters.append(rewritten if rewritten is not None else f)
+    if changed:
+        model = model.model_copy(update={"filters": new_filters})
+    return model, warnings
+
+
 def normalize_model(
     model: SlayerModel,
     *,
@@ -594,66 +676,13 @@ def normalize_model(
       only when you want builtins-only recognition.
     """
     all_warnings: List[NormalizationWarning] = []
-
-    # FUNC_STYLE_AGG on ModelMeasure.formula entries.
-    if model.measures:
-        if custom_agg_names is not None:
-            custom_names = custom_agg_names
-        else:
-            custom_names = frozenset(a.name for a in (model.aggregations or []))
-        new_measures = []
-        for i, mm in enumerate(model.measures):
-            formula = mm.formula
-            rewritten, ws = _apply_func_style_agg(
-                formula,
-                location=f"measures[{i}].formula",
-                custom_agg_names=custom_names,
-            )
-            all_warnings.extend(ws)
-            if rewritten != formula:
-                mm = mm.model_copy(update={"formula": rewritten})
-            new_measures.append(mm)
-        model = model.model_copy(update={"measures": new_measures})
-
-    # DOT_PATH_IN_SQL (Mode-A only): Column.sql, Column.filter, SlayerModel.filters.
+    model, ws = _normalize_model_measures(
+        model, custom_agg_names=custom_agg_names,
+    )
+    all_warnings.extend(ws)
     if model.joins:
-        new_columns = []
-        column_changed = False
-        for i, c in enumerate(model.columns):
-            updates: dict = {}
-            if c.sql is not None:
-                rewritten_sql, ws = _apply_dot_path_in_sql(
-                    c.sql, location=f"columns[{i}].sql", model=model,
-                )
-                all_warnings.extend(ws)
-                if rewritten_sql != c.sql:
-                    updates["sql"] = rewritten_sql
-            if c.filter is not None:
-                rewritten_filter, ws = _apply_dot_path_in_sql(
-                    c.filter, location=f"columns[{i}].filter", model=model,
-                )
-                all_warnings.extend(ws)
-                if rewritten_filter != c.filter:
-                    updates["filter"] = rewritten_filter
-            if updates:
-                c = c.model_copy(update=updates)
-                column_changed = True
-            new_columns.append(c)
-        if column_changed:
-            model = model.model_copy(update={"columns": new_columns})
-
-        if model.filters:
-            new_filters = []
-            filters_changed = False
-            for i, f in enumerate(model.filters):
-                rewritten, ws = _apply_dot_path_in_sql(
-                    f, location=f"filters[{i}]", model=model,
-                )
-                all_warnings.extend(ws)
-                if rewritten != f:
-                    filters_changed = True
-                new_filters.append(rewritten if rewritten is not None else f)
-            if filters_changed:
-                model = model.model_copy(update={"filters": new_filters})
-
+        model, ws = _normalize_column_dot_paths(model)
+        all_warnings.extend(ws)
+        model, ws = _normalize_model_filter_dot_paths(model)
+        all_warnings.extend(ws)
     return NormalizationResult(model=model, warnings=all_warnings)

@@ -1579,6 +1579,46 @@ class SlayerQueryEngine:
         # can use the returned model directly.
         return await self._validate_and_populate_cache(model)
 
+    async def _reachable_aggs_for_save(
+        self, model: SlayerModel,
+    ) -> Optional[frozenset[str]]:
+        """Best-effort storage BFS over the join graph collecting custom
+        aggregation names (DEV-1500). Returns ``None`` when ``model`` has no
+        measures to normalise or when the walk yields nothing; absent join
+        targets and storage errors (incl. ``AmbiguousModelError``) are
+        swallowed so a save never aborts on a flaky join-target lookup.
+        """
+        if not model.measures:
+            return None
+
+        storage = self.storage
+        data_source = model.data_source
+
+        async def _resolver(
+            target_model_name: str, named_queries,  # noqa: ARG001
+        ):
+            if not storage:
+                return None
+            try:
+                if data_source:
+                    target = await storage.get_model(
+                        target_model_name, data_source=data_source,
+                    )
+                else:
+                    target = await storage.get_model(target_model_name)
+            except Exception:  # noqa: BLE001 — best-effort; AmbiguousModelError + misc
+                return None
+            return (None, target) if target is not None else None
+
+        try:
+            return await _collect_reachable_agg_names(
+                model=model,
+                resolve_join_target=_resolver,
+                named_queries={},
+            )
+        except Exception:  # noqa: BLE001 — never let the walk abort a save
+            return None
+
     async def save_model(self, model: SlayerModel) -> SlayerModel:
         """Persist a SlayerModel through the engine.
 
@@ -1591,41 +1631,12 @@ class SlayerQueryEngine:
         legacy in-tree rewriters still fire during enrichment for callers
         that load and re-execute persisted models.
 
-        DEV-1500 — when the model has any measures to normalise, do a
-        best-effort storage walk of the join graph so the FUNC_STYLE_AGG
-        rewrite recognises custom aggregations defined on joined models.
-        Failures (missing target, ``AmbiguousModelError``, any storage
-        hiccup) are swallowed; the walk degrades to the model's own
-        aggregations.
+        DEV-1500 — the FUNC_STYLE_AGG rewrite recognises custom aggregations
+        defined on joined models via ``_reachable_aggs_for_save`` (best-effort
+        storage walk; swallowed on missing target / AmbiguousModelError /
+        storage hiccup).
         """
-        custom_aggs: Optional[frozenset[str]] = None
-        if model.measures:
-            async def _resolve_join_target_for_save(
-                target_model_name: str, named_queries,  # noqa: ARG001
-            ):
-                if not self.storage:
-                    return None
-                try:
-                    if model.data_source:
-                        target = await self.storage.get_model(
-                            target_model_name, data_source=model.data_source,
-                        )
-                    else:
-                        target = await self.storage.get_model(target_model_name)
-                except Exception:  # noqa: BLE001 — best-effort; AmbiguousModelError + misc
-                    return None
-                if target is None:
-                    return None
-                return (None, target)
-
-            try:
-                custom_aggs = await _collect_reachable_agg_names(
-                    model=model,
-                    resolve_join_target=_resolve_join_target_for_save,
-                    named_queries={},
-                )
-            except Exception:  # noqa: BLE001 — never let the walk abort a save
-                custom_aggs = None
+        custom_aggs = await self._reachable_aggs_for_save(model)
         norm_model = normalize_model(model, custom_agg_names=custom_aggs)
         if norm_model.model is not None:
             model = norm_model.model
