@@ -148,6 +148,62 @@ class FirstLastRenderState(BaseModel):
     threaded through ``_build_where_having_from_planned`` instead."""
 
 
+def _iter_first_last_leaves(key) -> "list":
+    """DEV-1501 (Codex round 3): walk a composite ValueKey for first /
+    last ``AggregateKey`` leaves.
+
+    Composite aggregate slots (``ArithmeticKey`` / ``ScalarCallKey``)
+    aren't separately materialised — their operand AggregateKeys are
+    inlined at the composite render path. Without surfacing the leaves
+    here, the ranked-subquery builder wouldn't see their distinct time
+    columns and the composite render would resolve every operand to
+    bare ``_last_rn``.
+
+    Returns local first/last leaves only (cross-model operands raise in
+    the composite render path; row / literal / scalar-call /
+    transform / between / in branches recurse into operands without
+    surfacing themselves).
+    """
+    from slayer.core.keys import (
+        AggregateKey,
+        ArithmeticKey,
+        BetweenKey,
+        InKey,
+        ScalarCallKey,
+    )
+
+    out: list = []
+
+    def _walk(k) -> None:
+        if isinstance(k, AggregateKey):
+            if k.agg in ("first", "last") and not getattr(
+                k.source, "path", (),
+            ):
+                out.append(k)
+            return
+        if isinstance(k, ArithmeticKey):
+            for o in k.operands:
+                _walk(o)
+            return
+        if isinstance(k, ScalarCallKey):
+            for a in k.args:
+                _walk(a)
+            return
+        if isinstance(k, BetweenKey):
+            _walk(k.column)
+            _walk(k.low)
+            _walk(k.high)
+            return
+        if isinstance(k, InKey):
+            _walk(k.column)
+            return
+        # LiteralKey / ColumnKey / TimeTruncKey / TransformKey / etc.:
+        # not a first/last operand carrier; stop recursing.
+
+    _walk(key)
+    return out
+
+
 def _agg_render_spec_from_enriched(em: "EnrichedMeasure") -> AggRenderSpec:
     """Adapt a legacy ``EnrichedMeasure`` to the typed ``AggRenderSpec`` for
     the refactored dialect helpers (DEV-1452 Stage A).
@@ -4419,6 +4475,45 @@ class SQLGenerator:
                         )
                     )
 
+        # DEV-1501 (Codex round 3): composite aggregate slots (ArithmeticKey
+        # / ScalarCallKey of aggregates) carry first/last AggregateKey
+        # operands that are not separately slotted but DO need their time
+        # columns to contribute ``_first_rn`` / ``_last_rn{suffix}`` columns
+        # in the ranked subquery — otherwise the composite render's
+        # ``MAX(CASE WHEN _last_rn{suffix} = 1 ...)`` references a column
+        # the subquery never projects. Walk every composite-aggregate slot
+        # in base_render_order for first/last AggregateKey leaves and
+        # synthesise specs for them (NOT projected as columns — they are
+        # inlined inside the composite render). Keyed by the AggregateKey
+        # itself so two composites sharing the same operand dedupe.
+        composite_synth_by_key: Dict[Any, "EnrichedMeasure"] = {}
+        for sid in base_render_order:
+            slot = slots_by_id[sid]
+            if slot.phase != Phase.AGGREGATE:
+                continue
+            if isinstance(slot.key, AggregateKey):
+                continue  # handled by synth_by_sid above
+            for agg_leaf in _iter_first_last_leaves(slot.key):
+                if agg_leaf in composite_synth_by_key:
+                    continue
+                composite_synth_by_key[agg_leaf] = (
+                    self._build_agg_render_spec_from_planned(
+                        slot=slot,
+                        key=agg_leaf,
+                        source_model=source_model,
+                        source_relation=source_relation,
+                        # Per-leaf alias must be distinct so the filtered
+                        # rn-map lookup (keyed by alias) hits the right
+                        # column when multiple composite operands share
+                        # a Column.filter.
+                        full_alias=(
+                            f"{source_relation}._composite_op_"
+                            f"{len(composite_synth_by_key)}"
+                        ),
+                        bundle=bundle,
+                    )
+                )
+
         # WHERE goes inside the ranked subquery (raw-row filtering before
         # ranking). HAVING is recomputed and applied by the caller.
         where_clause, _having = self._build_where_having_from_planned(
@@ -4438,7 +4533,17 @@ class SQLGenerator:
             default_time_col_sql=default_time_col_sql,
             partition_exprs=partition_exprs,
             extra_projections=extra_projections,
-            synth_specs=list(synth_by_sid.values()),
+            # Project AggregateKey synth_specs (single-key slot
+            # aggregates) PLUS composite-operand first/last synth specs
+            # so their distinct time columns each contribute an rn
+            # column. The composite operands aren't projected as base
+            # SELECT columns — they're inlined inside the composite
+            # render in pass 2 — but their time columns must still
+            # participate in the ranked-subquery rn-column set.
+            synth_specs=(
+                list(synth_by_sid.values())
+                + list(composite_synth_by_key.values())
+            ),
             from_clause=from_clause,
             base_joins=base_joins,
             where_clause=where_clause,
@@ -4480,10 +4585,19 @@ class SQLGenerator:
                     )
                 else:
                     # Composite aggregate (no single ``AggregateKey``).
+                    # DEV-1501 (Codex round 3): thread rn state so a
+                    # composite expression containing first/last operands
+                    # binds each operand to its own ``_first_rn`` /
+                    # ``_last_rn{suffix}`` column instead of bare
+                    # ``_last_rn``.
                     agg_expr, is_agg = self._render_aggregate_composite_expr(
                         key=slot.key, slot=slot, source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,
+                        rn_suffix_map=rn_suffix_map,
+                        default_time_col=default_time_col_sql,
+                        filtered_rn_map=filtered_rn_map,
+                        filtered_match_map=filtered_match_map,
                     )
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
@@ -4518,6 +4632,10 @@ class SQLGenerator:
         source_model,
         source_relation: str,
         bundle=None,
+        rn_suffix_map: Optional[Dict[str, str]] = None,
+        default_time_col: Optional[str] = None,
+        filtered_rn_map: Optional[Dict[str, str]] = None,
+        filtered_match_map: Optional[Dict[str, str]] = None,
     ) -> "tuple[exp.Expression, bool]":
         """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
         ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
@@ -4528,6 +4646,13 @@ class SQLGenerator:
         cast — the caller casts the composite once). Returns ``(expr,
         contains_aggregate)``. Cross-model operand aggregates (non-empty
         ``source.path``) are not yet handled here — they need CTE routing.
+
+        DEV-1501 (Codex round 3): when the host base is built via the
+        first/last ranked-subquery path, the caller threads the rn maps
+        here so a composite expression like ``last(amount, created_at) +
+        last(amount, updated_at)`` renders each operand with its OWN
+        ``_last_rn{suffix}`` column instead of collapsing to bare
+        ``_last_rn``.
         """
         from decimal import Decimal
 
@@ -4550,7 +4675,13 @@ class SQLGenerator:
                 source_relation=source_relation, full_alias="__op__",
                 bundle=bundle,
             )
-            agg_expr, is_agg = self._build_agg(synth)
+            agg_expr, is_agg = self._build_agg(
+                synth,
+                rn_suffix_map=rn_suffix_map,
+                default_time_col=default_time_col,
+                filtered_rn_map=filtered_rn_map,
+                filtered_match_map=filtered_match_map,
+            )
             return agg_expr, is_agg
         if isinstance(key, ArithmeticKey):
             operands = []
@@ -4560,6 +4691,10 @@ class SQLGenerator:
                     key=o, slot=slot, source_model=source_model,
                     source_relation=source_relation,
                     bundle=bundle,
+                    rn_suffix_map=rn_suffix_map,
+                    default_time_col=default_time_col,
+                    filtered_rn_map=filtered_rn_map,
+                    filtered_match_map=filtered_match_map,
                 )
                 operands.append(e)
                 any_agg = any_agg or a
@@ -4573,6 +4708,10 @@ class SQLGenerator:
                         key=a, slot=slot, source_model=source_model,
                         source_relation=source_relation,
                         bundle=bundle,
+                        rn_suffix_map=rn_suffix_map,
+                        default_time_col=default_time_col,
+                        filtered_rn_map=filtered_rn_map,
+                        filtered_match_map=filtered_match_map,
                     )
                     args.append(e)
                     any_agg = any_agg or ag

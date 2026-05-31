@@ -5202,6 +5202,60 @@ class TestDev1501HiddenFirstLastRender:
                 f"through the ScalarCallKey recursion.\nHAVING:\n{having_sql}"
             )
 
+    async def test_composite_first_last_in_projection_uses_correct_suffixes(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A COMPOSITE aggregate measure containing first/last operands
+        with different explicit time columns
+        (``revenue:last(created_at) + revenue:last(updated_at)``) must
+        render each operand with its OWN ``_last_rn{suffix}``, not
+        collapse to bare ``_last_rn``. Triggered when the query ALSO
+        has a direct projected first/last so the first/last branch
+        fires — composite renders via ``_render_aggregate_composite_expr``
+        which previously didn't receive rn state. Codex review of
+        DEV-1501 PR #159 round 3.
+        """
+        m = _orders_two_ts_model(default_td="created_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                # Direct first/last triggers _build_first_last_base_select;
+                # the composite operand is the bug under test.
+                measures=[
+                    ModelMeasure(formula="revenue:last(created_at)", name="lc"),
+                    ModelMeasure(
+                        formula="revenue:last(created_at) + revenue:last(updated_at)",
+                        name="diff",
+                    ),
+                ],
+                dimensions=[ColumnRef(name="status")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Both rn columns must exist in the ranked subquery.
+            assert "_last_rn" in sql and "_last_rn_2" in sql
+            # The composite ``diff`` projection must contain BOTH
+            # ``_last_rn`` (created_at bucket) AND ``_last_rn_2``
+            # (updated_at bucket) — not two copies of ``_last_rn``.
+            diff_match = _re.search(
+                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?\+\s*"
+                r"MAX\(CASE WHEN (_last_rn(?:_\d+)?)[\s\S]*?"
+                r'AS "orders\.diff"',
+                sql,
+            )
+            assert diff_match is not None, (
+                f"composite ``diff`` projection not found / wrong shape:\n{sql}"
+            )
+            left_rn, right_rn = diff_match.group(1), diff_match.group(2)
+            assert {left_rn, right_rn} == {"_last_rn", "_last_rn_2"}, (
+                f"Composite first/last operands collapsed: left={left_rn!r}, "
+                f"right={right_rn!r} — expected one of each.\nSQL:\n{sql}"
+            )
+
     async def test_cross_model_filtered_last_in_having(
         self, generator: SQLGenerator
     ) -> None:
