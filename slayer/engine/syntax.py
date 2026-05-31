@@ -315,6 +315,145 @@ def _normalize_sql_filter_operators(text: str) -> str:
     return _rewrite_comparison_equals("".join(result))
 
 
+def _classify_paren(
+    hist: List[Tuple[str, str]],
+) -> Tuple[bool, Optional[str]]:
+    """Classify an open ``(`` as a CALL or GROUPING paren.
+
+    A ``(`` is a call paren when the previous significant token is a
+    bare identifier (callable name) or a callable-suffix token (``)``
+    / ``]``). Lowercase keywords (``and`` / ``or`` / ``not`` / ``in``
+    / ``is``) do NOT make the next ``(`` a call paren — that's why
+    ``not(...)`` and ``x in (...)`` carry grouping parens.
+    """
+    prev_kind = hist[-1][0] if hist else None
+    prev_text = hist[-1][1] if hist else ""
+    is_call = prev_kind == "NAME" or prev_text in (")", "]")
+    callee = hist[-1][1] if (is_call and prev_kind == "NAME") else None
+    return is_call, callee
+
+
+def _is_kwarg_equals(
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> bool:
+    """Whether a lone ``=`` is a Python keyword-argument separator.
+
+    True iff the innermost open paren is a call paren whose callee is
+    NOT a scalar (scalars never accept kwargs), and the ``=`` matches
+    Python's ``IDENT preceded by ( or ,`` keyword-argument grammar.
+    """
+    top = stack[-1] if stack else None
+    if top is None or not top[0]:
+        return False
+    if top[1] is not None and top[1] in SCALAR_FUNCTIONS:
+        return False
+    prev_kind = hist[-1][0] if hist else None
+    prev_prev_kind = hist[-2][0] if len(hist) >= 2 else None
+    return prev_kind == "NAME" and prev_prev_kind in ("LPAREN", "COMMA")
+
+
+def _push_hist(hist: List[Tuple[str, str]], kind: str, text: str) -> None:
+    """Append ``(kind, text)`` and trim ``hist`` to the last 2 entries."""
+    hist.append((kind, text))
+    if len(hist) > 2:
+        del hist[0]
+
+
+def _handle_pass_through(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    """Whitespace and string literals: emit verbatim, don't touch hist."""
+    out.append(m.group(0))
+
+
+def _handle_ident(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    ident = m.group(0)
+    out.append(ident)
+    _push_hist(hist, "KW" if ident in _FILTER_KEYWORDS else "NAME", ident)
+
+
+def _handle_other(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    """Numbers, compound ops (``==``/``<=``/``>=``/``!=``), brackets, and
+    any single char not otherwise classified (``:``, ``.``, ``+``, ``-``,
+    ``*``, ``/``, ``%``, ``<``, ``>``, ``!``, ``|``, ``{``, ``}``, ...)."""
+    text = m.group(0)
+    out.append(text)
+    _push_hist(hist, "OTHER", text)
+
+
+def _handle_comma(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    out.append(",")
+    _push_hist(hist, "COMMA", ",")
+
+
+def _handle_lparen(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    stack.append(_classify_paren(hist))
+    out.append("(")
+    _push_hist(hist, "LPAREN", "(")
+
+
+def _handle_rparen(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    if stack:
+        stack.pop()
+    out.append(")")
+    _push_hist(hist, "OTHER", ")")
+
+
+def _handle_op_eq(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    out.append("=" if _is_kwarg_equals(stack, hist) else "==")
+    _push_hist(hist, "OTHER", "=")
+
+
+_HANDLERS: Dict[str, Any] = {
+    "ws": _handle_pass_through,
+    "string": _handle_pass_through,
+    "ident": _handle_ident,
+    "number": _handle_other,
+    "op_eq2": _handle_other,
+    "op_eq": _handle_op_eq,
+    "lparen": _handle_lparen,
+    "rparen": _handle_rparen,
+    "lbrack": _handle_other,
+    "rbrack": _handle_other,
+    "comma": _handle_comma,
+    "other": _handle_other,
+}
+
+
 def _rewrite_comparison_equals(text: str) -> str:
     """Rewrite SQL-style ``=`` to Python ``==`` except where Python would
     treat the ``=`` as a keyword argument inside a non-scalar call.
@@ -323,26 +462,27 @@ def _rewrite_comparison_equals(text: str) -> str:
     reject kwargs, only ``AggCall`` / ``TransformCall`` carry kwargs),
     a lone ``=`` is preserved (kwarg) iff:
 
-    1. the innermost open paren is a CALL paren (the preceding
-       significant token is a bare identifier, ``)``, or ``]``;
-       otherwise GROUPING). Lowercase Python keywords
-       (``and`` / ``or`` / ``not`` / ``in`` / ``is``) do not classify
-       a following ``(`` as a call paren — they introduce a grouping
-       paren (``not(...)``, ``x in (...)``).
+    1. the innermost open paren is a CALL paren (see
+       :func:`_classify_paren`),
     2. the callee of that innermost call is NOT in
        :data:`SCALAR_FUNCTIONS` — scalars never accept kwargs, so a
        ``=`` inside them is the user's SQL comparison
-       (``coalesce(status = 'paid', False)``).
+       (``coalesce(status = 'paid', False)``),
     3. the ``=`` is immediately preceded (skipping whitespace) by an
        identifier preceded (skipping whitespace) by the call's ``(``
-       or by a ``,`` at that paren depth — Python's
-       keyword-argument grammar.
+       or by a ``,`` at that paren depth — Python's keyword-argument
+       grammar (see :func:`_is_kwarg_equals`).
 
     Compound operators (``==``, ``<=``, ``>=``, ``!=``) are emitted
     verbatim by the tokenizer so their ``=`` is never touched. String
     literals are tokenized as a unit (Python single/double-quoted with
     backslash escapes) and pass through without perturbing the paren
     stack or the previous-significant-token history.
+
+    Token-class dispatch goes through :data:`_HANDLERS` keyed by the
+    regex's ``lastgroup`` (each token-class group is named and the
+    arms are mutually exclusive, so ``lastgroup`` is exactly the
+    matched arm).
     """
     out: List[str] = []
     # Each frame: (is_call, callee). ``callee`` is the identifier text
@@ -354,78 +494,8 @@ def _rewrite_comparison_equals(text: str) -> str:
     # LPAREN, COMMA, OTHER (everything else; string literals don't enter
     # the history).
     hist: List[Tuple[str, str]] = []
-
-    def _push(kind: str, text: str) -> None:
-        hist.append((kind, text))
-        if len(hist) > 2:
-            del hist[0]
-
     for m in _SCAN_TOKEN_RE.finditer(text):
-        if m.group("ws") is not None:
-            out.append(m.group(0))
-            continue
-        if m.group("string") is not None:
-            out.append(m.group(0))
-            continue
-        ident = m.group("ident")
-        if ident is not None:
-            out.append(ident)
-            _push("KW" if ident in _FILTER_KEYWORDS else "NAME", ident)
-            continue
-        if m.group("number") is not None:
-            out.append(m.group(0))
-            _push("OTHER", m.group(0))
-            continue
-        if m.group("op_eq2") is not None:
-            out.append(m.group(0))
-            _push("OTHER", m.group(0))
-            continue
-        if m.group("op_eq") is not None:
-            prev_kind = hist[-1][0] if hist else None
-            prev_prev_kind = hist[-2][0] if len(hist) >= 2 else None
-            top = stack[-1] if stack else None
-            is_kwarg = (
-                top is not None
-                and top[0]  # call paren
-                and (top[1] is None or top[1] not in SCALAR_FUNCTIONS)
-                and prev_kind == "NAME"
-                and prev_prev_kind in ("LPAREN", "COMMA")
-            )
-            out.append("=" if is_kwarg else "==")
-            _push("OTHER", "=")
-            continue
-        if m.group("lparen") is not None:
-            prev_kind = hist[-1][0] if hist else None
-            prev_text = hist[-1][1] if hist else ""
-            is_call = prev_kind == "NAME" or prev_text in (")", "]")
-            callee = hist[-1][1] if (is_call and prev_kind == "NAME") else None
-            stack.append((is_call, callee))
-            out.append("(")
-            _push("LPAREN", "(")
-            continue
-        if m.group("rparen") is not None:
-            if stack:
-                stack.pop()
-            out.append(")")
-            _push("OTHER", ")")
-            continue
-        if m.group("lbrack") is not None:
-            out.append("[")
-            _push("OTHER", "[")
-            continue
-        if m.group("rbrack") is not None:
-            out.append("]")
-            _push("OTHER", "]")
-            continue
-        if m.group("comma") is not None:
-            out.append(",")
-            _push("COMMA", ",")
-            continue
-        # Any other single char (``:``, ``.``, ``+``, ``-``, ``*``, ``/``,
-        # ``%``, ``<``, ``>``, ``!``, ``|``, ``{``, ``}``, ...).
-        out.append(m.group(0))
-        _push("OTHER", m.group(0))
-
+        _HANDLERS[m.lastgroup](m, out, stack, hist)
     return "".join(out)
 
 
