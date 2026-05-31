@@ -253,7 +253,9 @@ class ExampleQueryHit(BaseModel):
 class EntityHit(BaseModel):
     id: str                          # canonical entity string
     kind: str                        # "datasource"|"model"|"column"|"measure"|"aggregation"
-    score: float                     # raw tantivy BM25
+    score: float                     # RRF-fused across channels 1+2+3
+                                     # (DEV-1513), or single-channel raw
+                                     # when only one channel contributed
     text: str                        # full indexed text (no truncation)
 
 class SearchResponse(BaseModel):
