@@ -713,6 +713,19 @@ async def ensure_column_sample_fresh(
         # No data to persist (e.g. PK / hidden / no rows). Helper short-
         # circuits without writing — keeps cache predicate from flipping.
         return column
+    if (
+        sample.sampled_values is None
+        and sample.distinct_count is None
+        and column.sampled
+    ):
+        # Overflow-retry path failed to recover structured data: the
+        # ``ColumnSample`` carries only the generic ``"> 50 distinct"``
+        # marker. The column already has a richer ``sampled`` text
+        # (e.g. v6 legacy ``"a, b, c ... (1234 distinct)"`` or a
+        # previous successful-overflow run). Skip the persist + return
+        # the input so the rich text survives — cache predicate still
+        # flags the column stale so the next call retries.
+        return column
     try:
         await storage.update_column_sampled(
             data_source=model.data_source,

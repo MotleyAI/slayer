@@ -624,6 +624,35 @@ async def _lookup_named_entity(
     return LookupMissing()
 
 
+def _group_column_hits(
+    entity_hits: List["EntityHit"],
+) -> Dict[Tuple[str, str], List[Tuple[int, "EntityHit", str]]]:
+    """DEV-1516 helper: split a fused entity-hit list into per-model
+    buckets for the search-side sample-refresh hook.
+
+    Walks ``entity_hits``, keeps only ``kind == "column"`` hits whose
+    canonical id parses as ``<data_source>.<model>.<column>`` (3
+    segments), and groups them by ``(data_source, model_name)`` so the
+    caller can serialise writes within a model and parallelise across
+    models. Each member tuple is ``(original_hit_index, hit,
+    column_name)`` — the index is preserved so caller can splice
+    refreshed text back into the original list in place."""
+    groups: Dict[Tuple[str, str], List[Tuple[int, EntityHit, str]]] = {}
+    for idx, hit in enumerate(entity_hits):
+        if hit.kind != "column":
+            continue
+        segments = hit.id.split(".")
+        if len(segments) != 3:
+            # Bare datasource / model canonicals are handled by other
+            # kinds; columns are always 3-segment.
+            continue
+        data_source, model_name, column_name = segments
+        groups.setdefault((data_source, model_name), []).append(
+            (idx, hit, column_name)
+        )
+    return groups
+
+
 class SearchService:
     """Orchestrates the three retrieval channels + RRF fusion."""
 
@@ -662,98 +691,74 @@ class SearchService:
     ) -> List[EntityHit]:
         """DEV-1516 post-fusion column-hit refresh.
 
-        Walk ``entity_hits``, identify hits with ``kind == "column"``,
-        group by ``(data_source, model_name)``, and refresh + re-render
-        each one. Persists within a model are serialized (the storage
-        write is a model-level read-modify-write); different models run
-        concurrently via ``asyncio.gather``. Hit text is replaced
-        in-place with the freshly-rendered column text.
-
-        Silently leaves a hit unchanged when:
-
-        - ``self._engine`` is None (caller guards this),
-        - the canonical id cannot be parsed into datasource + model + column,
-        - the parent model or column cannot be loaded from storage,
-        - the helper returns the input column (cache hit / non-categorical /
-          failure — see :func:`ensure_column_sample_fresh`).
-        """
+        Groups column hits by ``(data_source, model_name)`` and dispatches
+        each group to :meth:`_refresh_group_worker`. Per-model writes
+        serialise (storage's ``update_column_sampled`` is a model-level
+        read-modify-write); cross-model writes parallelise via
+        ``asyncio.gather``. Returns ``entity_hits`` with refreshed text
+        spliced in for each column hit whose helper call returned a
+        materially-updated column."""
         assert self._engine is not None  # caller-guarded
-
-        # Group column hits by (data_source, model_name). Preserve the
-        # original hit position so we can write refreshed text back into
-        # ``entity_hits`` in place.
-        groups: Dict[Tuple[str, str], List[Tuple[int, EntityHit, str]]] = {}
-        for idx, hit in enumerate(entity_hits):
-            if hit.kind != "column":
-                continue
-            segments = hit.id.split(".")
-            if len(segments) != 3:
-                # Bare datasource / model canonicals are handled by other
-                # kinds; columns are always 3-segment.
-                continue
-            data_source, model_name, column_name = segments
-            groups.setdefault((data_source, model_name), []).append(
-                (idx, hit, column_name)
-            )
-
+        groups = _group_column_hits(entity_hits)
         if not groups:
             return entity_hits
-
-        # Result buffer keyed by original hit index. Defaults to the
-        # unrefreshed hit; per-column refresh writes refreshed text into it.
         refreshed_by_idx: Dict[int, EntityHit] = {}
-
-        async def _refresh_group(
-            ds_name: str,
-            model_name: str,
-            members: List[Tuple[int, EntityHit, str]],
-        ) -> None:
-            try:
-                model = await self._storage.get_model(
-                    model_name, data_source=ds_name,
-                )
-            except Exception as exc:  # NOSONAR(S112) — best-effort
-                logger.warning(
-                    "search refresh: failed to load model %s.%s: %s",
-                    ds_name, model_name, exc,
-                )
-                return
-            if model is None:
-                return
-            # Per-model serialization: sequential awaits within the group.
-            for idx, hit, column_name in members:
-                col = model.get_column(column_name)
-                if col is None:
-                    continue
-                refreshed_col = await ensure_column_sample_fresh(
-                    model=model,
-                    column=col,
-                    engine=self._engine,  # type: ignore[arg-type]
-                    storage=self._storage,
-                )
-                if refreshed_col is col:
-                    # Helper returned the input — cache hit, ineligible,
-                    # or any failure. Leave the hit text as-is.
-                    continue
-                # Re-render with the refreshed column so the agent sees
-                # the freshly-profiled values.
-                new_text = render_column_text(
-                    model=model, column=refreshed_col,
-                )
-                refreshed_by_idx[idx] = hit.model_copy(
-                    update={"text": new_text},
-                )
-
         await asyncio.gather(*[
-            _refresh_group(ds, model_name, members)
+            self._refresh_group_worker(
+                ds_name=ds, model_name=model_name,
+                members=members, refreshed_by_idx=refreshed_by_idx,
+            )
             for (ds, model_name), members in groups.items()
         ])
-
         if not refreshed_by_idx:
             return entity_hits
         return [
             refreshed_by_idx.get(i, h) for i, h in enumerate(entity_hits)
         ]
+
+    async def _refresh_group_worker(
+        self,
+        *,
+        ds_name: str,
+        model_name: str,
+        members: List[Tuple[int, EntityHit, str]],
+        refreshed_by_idx: Dict[int, EntityHit],
+    ) -> None:
+        """Refresh every column hit on one ``(data_source, model_name)``
+        group sequentially (per-model serialisation). Loads the model
+        once, walks members, and writes refreshed hits into the shared
+        ``refreshed_by_idx`` buffer keyed by original hit index."""
+        try:
+            model = await self._storage.get_model(
+                model_name, data_source=ds_name,
+            )
+        except Exception as exc:  # NOSONAR(S112) — best-effort
+            logger.warning(
+                "search refresh: failed to load model %s.%s: %s",
+                ds_name, model_name, exc,
+            )
+            return
+        if model is None:
+            return
+        for idx, hit, column_name in members:
+            col = model.get_column(column_name)
+            if col is None:
+                continue
+            refreshed_col = await ensure_column_sample_fresh(
+                model=model,
+                column=col,
+                engine=self._engine,  # type: ignore[arg-type]
+                storage=self._storage,
+            )
+            if refreshed_col is col:
+                # Helper returned the input — cache hit, ineligible, or
+                # any failure. Leave the hit text as-is.
+                continue
+            refreshed_by_idx[idx] = hit.model_copy(update={
+                "text": render_column_text(
+                    model=model, column=refreshed_col,
+                ),
+            })
 
     async def search(
         self,

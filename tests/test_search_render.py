@@ -16,6 +16,8 @@ Pins what each entity kind contributes to its tantivy `text` field:
 
 from __future__ import annotations
 
+import json
+
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
@@ -230,7 +232,10 @@ def test_column_text_omits_sampled_when_empty_string_and_no_list() -> None:
 def test_column_text_renders_full_sampled_values_when_present() -> None:
     """DEV-1516: when ``sampled_values`` is populated, the renderer surfaces
     the full list (typically 50) instead of falling back to the 20-truncated
-    ``sampled`` text. This is the per-column-data-pull contract."""
+    ``sampled`` text. This is the per-column-data-pull contract.
+
+    CodeRabbit thread 2: the list is JSON-encoded so values containing
+    commas survive unambiguously to the consumer."""
     m = _make_orders_model()
     col = m.get_column("status")
     assert col is not None
@@ -240,13 +245,13 @@ def test_column_text_renders_full_sampled_values_when_present() -> None:
     col.sampled_values = fifty
     col.distinct_count = 50
     text = render_column_text(model=m, column=col)
-    expected_line = f"Sample values: {', '.join(fifty)}"
+    expected_line = f"Sample values: {json.dumps(fifty, ensure_ascii=False)}"
     assert expected_line in text
     # Last value must appear — proves it's not the 20-truncated fallback.
     assert "v49" in text
     # Order is preserved.
-    v00_pos = text.index("v00")
-    v49_pos = text.index("v49")
+    v00_pos = text.index('"v00"')
+    v49_pos = text.index('"v49"')
     assert v00_pos < v49_pos
 
 
@@ -262,8 +267,8 @@ def test_column_text_overflow_appends_distinct_count_line() -> None:
     col.sampled_values = fifty
     col.distinct_count = 12345
     text = render_column_text(model=m, column=col)
-    # All 50 values rendered.
-    assert ", ".join(fifty) in text
+    # All 50 values rendered in the JSON-encoded list form.
+    assert json.dumps(fifty, ensure_ascii=False) in text
     # Distinct-count line present.
     assert "Distinct count: 12345" in text
     # Order: sample-values line comes first, distinct-count line after.
@@ -281,7 +286,7 @@ def test_column_text_no_distinct_line_when_count_equals_len_sampled_values() -> 
     col.distinct_count = 3
     col.sampled = "paid, refunded, cancelled"
     text = render_column_text(model=m, column=col)
-    assert "Sample values: paid, refunded, cancelled" in text
+    assert 'Sample values: ["paid", "refunded", "cancelled"]' in text
     assert "Distinct count" not in text
 
 
@@ -294,8 +299,26 @@ def test_column_text_no_distinct_line_when_distinct_count_is_none() -> None:
     col.distinct_count = None
     col.sampled = "paid, refunded"
     text = render_column_text(model=m, column=col)
-    assert "Sample values: paid, refunded" in text
+    assert 'Sample values: ["paid", "refunded"]' in text
     assert "Distinct count" not in text
+
+
+def test_column_text_sampled_values_with_commas_survive_intact() -> None:
+    """CodeRabbit thread 2: values containing commas (e.g. ``"R$ 1,000–3,000"``)
+    must survive intact in the rendered text — that's why we switched from
+    comma-join to JSON encoding. The structured ``sampled_values`` field is
+    the unambiguous channel; the rendered EntityHit.text must preserve it."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled_values = ["R$ 1,000–3,000", "R$ 3,001–5,000", "Other"]
+    col.distinct_count = 3
+    text = render_column_text(model=m, column=col)
+    # The literal commas inside each value must appear inside quotes —
+    # JSON encoding makes them unambiguous from the list separator.
+    assert '"R$ 1,000–3,000"' in text
+    assert '"R$ 3,001–5,000"' in text
+    assert '"Other"' in text
 
 
 def test_column_text_authoritative_empty_list_wins_over_stale_sampled() -> None:
@@ -351,7 +374,7 @@ def test_column_text_preserves_value_order() -> None:
     col.sampled_values = ["z_dominant", "a_minor", "m_middle"]
     col.distinct_count = 3
     text = render_column_text(model=m, column=col)
-    expected = "Sample values: z_dominant, a_minor, m_middle"
+    expected = 'Sample values: ["z_dominant", "a_minor", "m_middle"]'
     assert expected in text
 
 

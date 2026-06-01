@@ -26,6 +26,7 @@ Spec rules pinned by ``tests/test_search_render.py``:
 
 from __future__ import annotations
 
+import json
 from typing import List
 
 from pydantic import BaseModel
@@ -188,7 +189,14 @@ def render_column_text(*, model: SlayerModel, column: Column) -> str:
     # ``Sample values: `` trailer in the indexed text).
     if column.sampled_values is not None:
         if column.sampled_values:
-            lines.append(f"Sample values: {', '.join(column.sampled_values)}")
+            # JSON-encode the list to preserve values that contain commas
+            # (e.g. ``"R$ 1,000–3,000"``) — comma-joining would re-introduce
+            # the exact ambiguity that the structured ``sampled_values`` field
+            # was meant to solve.
+            lines.append(
+                "Sample values: "
+                + json.dumps(column.sampled_values, ensure_ascii=False)
+            )
             # Overflow signal: render true cardinality on a follow-up line
             # only when STRICTLY greater than the values we returned. Equal
             # means we returned the entire set; emitting a hint would be

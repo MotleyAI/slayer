@@ -553,11 +553,12 @@ async def test_search_service_accepts_engine_kwarg(
     stale_setup: Tuple[StorageBackend, SlayerQueryEngine],
 ) -> None:
     """DEV-1516: SearchService now accepts an optional ``engine=`` kwarg so
-    the search path can run the sample-refresh helper. Codex finding #1."""
+    the search path can run the sample-refresh helper. Codex finding #1.
+    Also pins that the supplied engine actually lands on the instance —
+    a bare ``is not None`` check on the constructor result was tautological."""
     storage, engine = stale_setup
-    # Must construct cleanly with engine.
     svc = SearchService(storage=storage, engine=engine)
-    assert svc is not None
+    assert svc._engine is engine
 
 
 @pytest.mark.asyncio

@@ -849,7 +849,7 @@ async def test_ensure_fresh_returns_input_when_cache_hit(
 
     profile_calls = {"n": 0}
 
-    async def boom_profile(*_args, **_kwargs):
+    async def boom_profile(*_args, **_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
         profile_calls["n"] += 1
         raise AssertionError("profile_column should not be called on cache hit")
 
@@ -902,6 +902,59 @@ async def test_ensure_fresh_categorical_miss_profiles_and_persists(
 
 
 @pytest.mark.asyncio
+async def test_ensure_fresh_does_not_clobber_rich_sampled_on_overflow_retry_failure(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """CodeRabbit thread 1: a legacy v6 column has rich ``sampled``
+    text (e.g. ``"a, b, c ... (1234 distinct)"``) but no
+    ``sampled_values``. If the secondary count_distinct query fails on
+    re-profile, ``profile_column`` returns
+    ``ColumnSample(sampled="> 50 distinct", sampled_values=None,
+    distinct_count=None)``. The helper must NOT clobber the richer
+    cached text with the generic fallback marker."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    assert model is not None
+    col = model.get_column("status")
+    assert col is not None
+    # Simulate legacy v6 state.
+    col.sampled = "paid, refunded, cancelled ... (1234 distinct)"
+    col.sampled_values = None
+    col.distinct_count = None
+
+    # Fake profile_column returns the overflow-retry-failed marker.
+    async def overflow_retry_fail(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        return ColumnSample(
+            sampled="> 50 distinct",
+            sampled_values=None,
+            distinct_count=None,
+        )
+
+    persist_calls: list = []
+    original_persist = storage.update_column_sampled
+
+    async def tracking_persist(**kwargs):
+        persist_calls.append(kwargs)
+        return await original_persist(**kwargs)
+
+    monkeypatch.setattr(
+        "slayer.engine.profiling.profile_column", overflow_retry_fail,
+    )
+    monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    # Returned column retains the rich legacy text.
+    assert result.sampled == "paid, refunded, cancelled ... (1234 distinct)"
+    # No persist attempted (would clobber the rich text in storage).
+    assert persist_calls == [], (
+        "overflow-retry-failed sample must NOT be persisted when the "
+        "column already has a richer sampled text"
+    )
+
+
+@pytest.mark.asyncio
 async def test_ensure_fresh_returns_input_when_profile_returns_none(
     sqlite_setup, monkeypatch,
 ) -> None:
@@ -915,12 +968,12 @@ async def test_ensure_fresh_returns_input_when_profile_returns_none(
     col.sampled_values = None
     col.distinct_count = None
 
-    async def returns_none(**_kwargs):
+    async def returns_none(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
         return None
 
     persist_calls = {"n": 0}
 
-    async def counting_persist(**_kwargs):
+    async def counting_persist(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches update_column_sampled (async)
         persist_calls["n"] += 1
 
     monkeypatch.setattr("slayer.engine.profiling.profile_column", returns_none)
@@ -948,7 +1001,7 @@ async def test_ensure_fresh_returns_input_when_profile_raises(
     col.sampled_values = None
     col.distinct_count = None
 
-    async def explodes(**_kwargs):
+    async def explodes(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
         raise RuntimeError("simulated profile failure")
 
     persist_calls: list = []
@@ -999,7 +1052,7 @@ async def test_ensure_fresh_swallows_persist_failure_returns_refreshed(
     col.sampled_values = None
     col.distinct_count = None
 
-    async def boom_persist(**_kwargs):
+    async def boom_persist(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches update_column_sampled (async)
         raise RuntimeError("simulated persist failure")
 
     monkeypatch.setattr(storage, "update_column_sampled", boom_persist)
@@ -1034,7 +1087,7 @@ async def test_ensure_fresh_skips_numeric_temporal(
 
     profile_calls = {"n": 0}
 
-    async def counting_profile(**kwargs):
+    async def counting_profile(**kwargs):  # noqa: ARG001  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
         profile_calls["n"] += 1
         return None
 
@@ -1064,7 +1117,7 @@ async def test_ensure_fresh_skips_hidden_and_primary_key(
 
     profile_calls: list = []
 
-    async def counting_profile(**kwargs):
+    async def counting_profile(**kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
         col_kw = kwargs.get("column")
         if col_kw is not None:
             profile_calls.append(col_kw.name)
@@ -1073,7 +1126,7 @@ async def test_ensure_fresh_skips_hidden_and_primary_key(
     persist_calls: list = []
     original_persist = storage.update_column_sampled
 
-    async def counting_persist(**kwargs):
+    async def counting_persist(**kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches update_column_sampled (async)
         persist_calls.append(kwargs.get("column_name"))
         return await original_persist(**kwargs)
 
@@ -1137,7 +1190,7 @@ async def test_ensure_fresh_does_not_hard_gate_sql_mode(
 
     profile_calls = {"n": 0}
 
-    async def counting_profile(*, model, column, engine):
+    async def counting_profile(*, model, column, engine):  # noqa: ARG001  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
         profile_calls["n"] += 1
         return None  # simulate "profile didn't find anything"
 

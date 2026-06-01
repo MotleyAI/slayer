@@ -342,9 +342,16 @@ prefers the structured `sampled_values` list (full top-50) over the
 Column: warehouse.orders.status
 Type: TEXT
 Description: Order status.
-Sample values: paid, refunded, cancelled, pending, … (all 50)
+Sample values: ["paid", "refunded", "cancelled", "pending", …]  ← JSON-encoded, all 50
 Distinct count: 12345        ← only when distinct_count > len(sampled_values)
 ```
+
+The list is rendered as a JSON array (not comma-joined) so values that
+themselves contain commas — `"R$ 1,000–3,000"`, locale-formatted numbers,
+multi-clause labels — survive unambiguously to the consumer. This is why
+DEV-1480 introduced the structured `sampled_values` field in the first
+place; comma-joining it back to a flat string would re-introduce the
+exact ambiguity it was meant to solve.
 
 When `sampled_values` is `None` (numeric / temporal columns, or legacy
 v6 data, or rare overflow-with-failed-count_distinct rows), the renderer
