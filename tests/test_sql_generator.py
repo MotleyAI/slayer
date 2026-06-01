@@ -1631,6 +1631,69 @@ class TestRankFamilyTransforms:
             f"<= 5 predicate should live in the outer wrapper, got:\n{sql}"
         )
 
+    async def test_ntile_with_n_kwarg_in_filter(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1492: ``ntile(<measure>, n=4) <= 1`` end-to-end.
+
+        Mirrors ``test_dense_rank_in_filter_top_5_distinct``. The fix to
+        ``parse_filter_expr`` (DEV-1492) preserves the ``n=4`` kwarg through
+        operator normalization, so the filter parses as a TransformCall with
+        kwargs and the planner extracts it as a hidden field. The window
+        function must materialise inside the inner SELECT and the comparison
+        must live in the outer ``_filtered`` wrapper.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="customer_id")],
+            measures=[ModelMeasure(formula="revenue:sum")],
+            filters=["ntile(revenue:sum, n=4) <= 1"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "_filtered" in sql, f"expected post-filter wrapper, got:\n{sql}"
+        inner_sql, outer_sql = sql.split("_filtered", 1)
+        assert "NTILE(4)" in inner_sql, (
+            f"NTILE(4) should be materialised in the inner SELECT, got:\n{sql}"
+        )
+        assert "NTILE(" not in outer_sql, (
+            f"NTILE should not appear in the outer wrapper, got:\n{sql}"
+        )
+        assert "<= 1" in _norm(outer_sql), (
+            f"<= 1 predicate should live in the outer wrapper, got:\n{sql}"
+        )
+
+    async def test_rank_with_partition_by_kwarg_in_filter(
+        self, generator: SQLGenerator, orders_model: SlayerModel
+    ) -> None:
+        """DEV-1492: ``rank(<measure>, partition_by=<col>) <= 1`` end-to-end.
+
+        Same fix path as ntile-with-n: ``partition_by=status`` must survive
+        operator normalization so the planner sees it as a kwarg, binds it to
+        a column ref, and emits ``RANK() OVER (PARTITION BY ...)`` in the
+        inner SELECT. The ``<= 1`` predicate must land in the outer
+        ``_filtered`` wrapper.
+        """
+        query = SlayerQuery(
+            source_model="orders",
+            dimensions=[ColumnRef(name="status"), ColumnRef(name="customer_id")],
+            measures=[ModelMeasure(formula="revenue:sum")],
+            filters=["rank(revenue:sum, partition_by=status) <= 1"],
+        )
+        sql = await _generate(generator, query, orders_model)
+        assert "_filtered" in sql, f"expected post-filter wrapper, got:\n{sql}"
+        inner_sql, outer_sql = sql.split("_filtered", 1)
+        assert (
+            'RANK() OVER (PARTITION BY "orders.status" '
+            'ORDER BY "orders.revenue_sum" DESC)'
+            in _norm(inner_sql)
+        ), f"PARTITION BY status should appear in the inner SELECT, got:\n{sql}"
+        assert "RANK()" not in outer_sql, (
+            f"RANK should not appear in the outer wrapper, got:\n{sql}"
+        )
+        assert "<= 1" in _norm(outer_sql), (
+            f"<= 1 predicate should live in the outer wrapper, got:\n{sql}"
+        )
+
     async def test_rank_partition_by_time_dimension(
         self, generator: SQLGenerator, orders_model: SlayerModel
     ) -> None:

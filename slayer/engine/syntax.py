@@ -49,7 +49,7 @@ from __future__ import annotations
 import ast
 import re
 from decimal import Decimal
-from typing import Any, Dict, Iterator, List, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -166,6 +166,24 @@ _COLON_AGG_RE = re.compile(
     # No (args) consumption — Python's AST handles that.
 )
 
+_FILTER_KEYWORDS = frozenset({"and", "or", "not", "in", "is"})
+_SCAN_TOKEN_RE = re.compile(
+    r"(?P<ws>\s+)"
+    r"|(?P<string>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
+    r"|(?P<ident>[A-Za-z_]\w*)"
+    r"|(?P<number>\d+(?:\.\d*)?|\.\d+)"
+    r"|(?P<op_eq2>==|<=|>=|!=)"
+    r"|(?P<op_eq>=)"
+    r"|(?P<lparen>\()"
+    r"|(?P<rparen>\))"
+    r"|(?P<lbrack>\[)"
+    r"|(?P<rbrack>\])"
+    r"|(?P<comma>,)"
+    r"|(?P<other>.)",
+    re.DOTALL,
+)
+
+
 _BIN_OP_MAP: Dict[type, str] = {
     ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
     ast.Mod: "%", ast.Pow: "**", ast.FloorDiv: "//",
@@ -279,7 +297,6 @@ def _normalize_sql_filter_operators(text: str) -> str:
         part = re.sub(r"\bNULL\b", "None", part, flags=re.IGNORECASE)
         for kw in ("IS", "NOT", "AND", "OR", "IN"):
             part = re.sub(rf"\b{kw}\b", kw.lower(), part, flags=re.IGNORECASE)
-        part = re.sub(r"(?<![<>=!])=(?!=)", "==", part)
         part = part.replace("<>", "!=")
         # SQL ``||`` concat → Python ``|`` (BitOr), reinterpreted as a
         # ``concat(...)`` ScalarCall in ``_convert``. ``|`` binds tighter
@@ -289,7 +306,223 @@ def _normalize_sql_filter_operators(text: str) -> str:
         result.append(part)
         if i < len(literals):
             result.append(literals[i])
-    return "".join(result)
+    # DEV-1492: the `=` → `==` rewrite runs on the rejoined string with a
+    # call-paren-aware scanner that leaves keyword-argument `=` alone
+    # inside non-scalar calls (transforms / parametric aggregations). Run
+    # last so the scanner sees lowercased keywords and the post-`<>` /
+    # post-`||` text — only its own pass can touch literal-spanning
+    # paren context correctly.
+    return _rewrite_comparison_equals("".join(result))
+
+
+def _classify_paren(
+    hist: List[Tuple[str, str]],
+) -> Tuple[bool, Optional[str]]:
+    """Classify an open ``(`` as a CALL or GROUPING paren.
+
+    A ``(`` is a call paren when the previous significant token is a
+    bare identifier (callable name) or a callable-suffix token (``)``
+    / ``]``). Lowercase keywords (``and`` / ``or`` / ``not`` / ``in``
+    / ``is``) do NOT make the next ``(`` a call paren — that's why
+    ``not(...)`` and ``x in (...)`` carry grouping parens.
+
+    DEV-1492 iteration 3: a colon-aggregation context
+    (``revenue:first(...)``) makes the call a parametric aggregation
+    regardless of the callee name. ``first`` and ``last`` sit in both
+    :data:`ALL_TRANSFORMS` and the built-in aggregation set
+    (``_AMBIGUOUS_AGG_TRANSFORMS`` in ``slayer/core/formula.py``);
+    after a ``:`` they are always aggregations, never transforms.
+    Drop the callee to ``None`` so :func:`_is_kwarg_equals` takes the
+    aggregation/unknown branch (kwargs preserved after ``(`` or
+    ``,``).
+    """
+    prev_kind = hist[-1][0] if hist else None
+    prev_text = hist[-1][1] if hist else ""
+    is_call = prev_kind == "NAME" or prev_text in (")", "]")
+    callee = hist[-1][1] if (is_call and prev_kind == "NAME") else None
+    if callee is not None and len(hist) >= 2 and hist[-2] == ("OTHER", ":"):
+        callee = None
+    return is_call, callee
+
+
+def _is_kwarg_equals(
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> bool:
+    """Whether a lone ``=`` is a Python keyword-argument separator.
+
+    Three callee classes get different treatment (DEV-1492 iteration 2):
+
+    * **Scalar** (``callee in SCALAR_FUNCTIONS``) — never a kwarg;
+      scalars reject keyword args by design.
+    * **Transform** (``callee in ALL_TRANSFORMS``) — the first
+      positional is always the value to transform, so a kwarg can
+      only appear AFTER a ``,``. This preserves the documented
+      predicate-input form (``consecutive_periods(status = 'paid')``
+      where the SQL ``=`` is part of the predicate, not a kwarg).
+    * **Aggregation or unknown** — kwarg can be the first arg
+      (``weighted_avg(weight=qty)``, ``percentile(p=0.5)``), so the
+      ``=`` may follow either ``(`` or ``,``.
+    """
+    top = stack[-1] if stack else None
+    if top is None or not top[0]:
+        return False
+    callee = top[1]
+    if callee is not None and callee in SCALAR_FUNCTIONS:
+        return False
+    prev_kind = hist[-1][0] if hist else None
+    if prev_kind != "NAME":
+        return False
+    prev_prev_kind = hist[-2][0] if len(hist) >= 2 else None
+    if callee is not None and callee in ALL_TRANSFORMS:
+        return prev_prev_kind == "COMMA"
+    return prev_prev_kind in ("LPAREN", "COMMA")
+
+
+def _push_hist(hist: List[Tuple[str, str]], kind: str, text: str) -> None:
+    """Append ``(kind, text)`` and trim ``hist`` to the last 2 entries."""
+    hist.append((kind, text))
+    if len(hist) > 2:
+        del hist[0]
+
+
+def _handle_pass_through(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    """Whitespace and string literals: emit verbatim, don't touch hist."""
+    out.append(m.group(0))
+
+
+def _handle_ident(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    ident = m.group(0)
+    out.append(ident)
+    _push_hist(hist, "KW" if ident in _FILTER_KEYWORDS else "NAME", ident)
+
+
+def _handle_other(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    """Numbers, compound ops (``==``/``<=``/``>=``/``!=``), brackets, and
+    any single char not otherwise classified (``:``, ``.``, ``+``, ``-``,
+    ``*``, ``/``, ``%``, ``<``, ``>``, ``!``, ``|``, ``{``, ``}``, ...)."""
+    text = m.group(0)
+    out.append(text)
+    _push_hist(hist, "OTHER", text)
+
+
+def _handle_comma(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    out.append(",")
+    _push_hist(hist, "COMMA", ",")
+
+
+def _handle_lparen(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    stack.append(_classify_paren(hist))
+    out.append("(")
+    _push_hist(hist, "LPAREN", "(")
+
+
+def _handle_rparen(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    if stack:
+        stack.pop()
+    out.append(")")
+    _push_hist(hist, "OTHER", ")")
+
+
+def _handle_op_eq(
+    m: "re.Match[str]",
+    out: List[str],
+    stack: List[Tuple[bool, Optional[str]]],
+    hist: List[Tuple[str, str]],
+) -> None:
+    out.append("=" if _is_kwarg_equals(stack, hist) else "==")
+    _push_hist(hist, "OTHER", "=")
+
+
+_HANDLERS: Dict[str, Any] = {
+    "ws": _handle_pass_through,
+    "string": _handle_pass_through,
+    "ident": _handle_ident,
+    "number": _handle_other,
+    "op_eq2": _handle_other,
+    "op_eq": _handle_op_eq,
+    "lparen": _handle_lparen,
+    "rparen": _handle_rparen,
+    "lbrack": _handle_other,
+    "rbrack": _handle_other,
+    "comma": _handle_comma,
+    "other": _handle_other,
+}
+
+
+def _rewrite_comparison_equals(text: str) -> str:
+    """Rewrite SQL-style ``=`` to Python ``==`` except where Python would
+    treat the ``=`` as a keyword argument inside a non-scalar call.
+
+    Per the architecture (``docs/architecture/parsing.md`` — scalars
+    reject kwargs, only ``AggCall`` / ``TransformCall`` carry kwargs),
+    a lone ``=`` is preserved (kwarg) iff:
+
+    1. the innermost open paren is a CALL paren (see
+       :func:`_classify_paren`),
+    2. the callee of that innermost call is NOT in
+       :data:`SCALAR_FUNCTIONS` — scalars never accept kwargs, so a
+       ``=`` inside them is the user's SQL comparison
+       (``coalesce(status = 'paid', False)``),
+    3. the ``=`` is immediately preceded (skipping whitespace) by an
+       identifier preceded (skipping whitespace) by the call's ``(``
+       or by a ``,`` at that paren depth — Python's keyword-argument
+       grammar (see :func:`_is_kwarg_equals`).
+
+    Compound operators (``==``, ``<=``, ``>=``, ``!=``) are emitted
+    verbatim by the tokenizer so their ``=`` is never touched. String
+    literals are tokenized as a unit (Python single/double-quoted with
+    backslash escapes) and pass through without perturbing the paren
+    stack or the previous-significant-token history.
+
+    Token-class dispatch goes through :data:`_HANDLERS` keyed by the
+    regex's ``lastgroup`` (each token-class group is named and the
+    arms are mutually exclusive, so ``lastgroup`` is exactly the
+    matched arm).
+    """
+    out: List[str] = []
+    # Each frame: (is_call, callee). ``callee`` is the identifier text
+    # preceding the call's ``(``, or ``None`` (e.g. a callable expression
+    # like ``f()(x=1)`` where the prior token is ``)``).
+    stack: List[Tuple[bool, Optional[str]]] = []
+    # Trailing window of the last 2 significant tokens (oldest-first).
+    # Categories: NAME (bare identifier), KW (lowercase Python keyword),
+    # LPAREN, COMMA, OTHER (everything else; string literals don't enter
+    # the history).
+    hist: List[Tuple[str, str]] = []
+    for m in _SCAN_TOKEN_RE.finditer(text):
+        _HANDLERS[m.lastgroup](m, out, stack, hist)
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
