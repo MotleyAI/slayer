@@ -1,10 +1,10 @@
-"""Embedding-based semantic search channel (DEV-1386).
+"""Embedding storage + litellm client wrapper (DEV-1386).
 
-Exposes the persisted ``Embedding`` row. The ``EmbeddingService`` orchestrator
-and the litellm client wrapper are intentionally not re-exported here — they
-import from ``slayer.storage.base``, which imports from this package, so eager
-re-export would create a cycle. Import them directly from
-``slayer.embeddings.service`` / ``slayer.embeddings.client`` when needed.
+The orchestrator that owns the refresh pipeline + cosine ranking lives
+in :mod:`slayer.search.retrievers.embeddings` as of DEV-1514. This
+package exposes only the persisted ``Embedding`` row; the litellm
+client wrapper is in :mod:`slayer.embeddings.client` and the cosine
+helpers are in :mod:`slayer.embeddings.ranker`.
 """
 
 from slayer.embeddings.models import Embedding

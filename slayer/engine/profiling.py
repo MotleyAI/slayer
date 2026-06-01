@@ -617,18 +617,15 @@ async def handle_edit_refresh(
     # match the new content_hash.
     reloaded = await storage.get_model(model_name, data_source=data_source)
     if reloaded is not None:
-        # Local import: keep embeddings off the cold-start path when the
-        # extra is not installed.
-        from slayer.embeddings.service import EmbeddingService
+        # DEV-1514: fan out through SearchService so every registered
+        # retriever sees the refresh. SearchService isolates per-retriever
+        # exceptions as prefixed warnings.
+        # Local import: keep the search module off the cold-start path.
+        from slayer.search.service import SearchService
 
-        try:
-            warnings.extend(
-                await EmbeddingService(storage=storage).refresh_model_subtree(
-                    reloaded,
-                )
+        warnings.extend(
+            await SearchService(storage=storage).refresh_model_subtree(
+                reloaded,
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            warnings.append(
-                f"{model_name}: embedding refresh failed: {exc}"
-            )
+        )
     return warnings
