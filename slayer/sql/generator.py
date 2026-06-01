@@ -4657,7 +4657,7 @@ class SQLGenerator:
             group_by_keys, True, first_last_state,
         )
 
-    def _render_aggregate_composite_expr(
+    def _render_aggregate_composite_expr(  # NOSONAR(S3776) — sequential isinstance dispatch over ValueKey union (AggregateKey / ArithmeticKey / ScalarCallKey / LiteralKey) with rn-state + composite-alias-by-key threading. Each branch carries the per-type recursion contract; extracting helpers would scatter the rn-state forwarding chain.
         self,
         *,
         key,
@@ -4760,6 +4760,7 @@ class SQLGenerator:
                         default_time_col=default_time_col,
                         filtered_rn_map=filtered_rn_map,
                         filtered_match_map=filtered_match_map,
+                        composite_alias_by_key=composite_alias_by_key,
                     )
                     args.append(e)
                     any_agg = any_agg or ag
@@ -4788,7 +4789,7 @@ class SQLGenerator:
             f"{type(key).__name__} not supported."
         )
 
-    def _render_with_cross_model_plans(
+    def _render_with_cross_model_plans(  # NOSONAR(S3776) — orchestration of host ``_base`` CTE + per-plan ``_cm_*`` CTEs + combined SELECT + transform-chain step CTEs + outer ORDER BY/LIMIT wrap. Each block is a coherent compilation stage sharing planned_query / slots_by_id / cma_slot_ids / seen_base_ids state; extracting per-stage helpers would scatter the cross-cutting state.
         self,
         *,
         planned_query,
@@ -4876,13 +4877,25 @@ class SQLGenerator:
         # cross-model agg), partition-by dims, or a hidden time_key. Cross-
         # model agg deps stay in the per-plan ``_cm_*`` CTEs. Mirrors
         # ``_collect_base_aux_slot_ids`` used by the local transform path.
-        if planned_query.transform_layers:
-            aux_slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
+        aux_slot_id_by_key = {s.key: s.id for s in slots_by_id.values()}
+
+        def _add_local_aux_slots(
+            *,
+            include_order: bool,
+            aggregates_only: bool,
+        ) -> None:
+            """Pull local (non-cross-model) aux slot ids into
+            ``base_render_order``. Shared body for the transform-deps
+            pass (include_order=True) and the AGG-phase filter pass
+            (aggregates_only=True), to keep the duplication-density
+            metric below the gate.
+            """
             for sid in self._collect_base_aux_slot_ids(
                 planned_query=planned_query,
                 slot_id_by_key=aux_slot_id_by_key,
                 slots_by_id=slots_by_id,
-                include_order=True,
+                include_order=include_order,
+                aggregates_only=aggregates_only,
             ):
                 if sid in cma_slot_ids or sid in seen_base_ids:
                     continue
@@ -4894,32 +4907,16 @@ class SQLGenerator:
                 base_render_order.append(sid)
                 seen_base_ids.add(sid)
 
+        if planned_query.transform_layers:
+            _add_local_aux_slots(include_order=True, aggregates_only=False)
         # DEV-1501 (Codex round 6): host AGG-phase filter operand
         # AggregateKey slots (a HAVING filter on a hidden local first/
-        # last like ``revenue:last(created_at) > 100``) must also reach
-        # ``base_render_order`` so the host ``_base`` CTE builds the
-        # ranked subquery — otherwise HAVING references a dangling
-        # ``_last_rn``. The transform-gated block above misses this case
-        # (no transforms). ``aggregates_only=True`` keeps row deps out
-        # of GROUP BY; ``include_order=False`` since order is already
-        # covered by ``order_only_local_ids`` above.
-        aux_slot_id_by_key_agg = {s.key: s.id for s in slots_by_id.values()}
-        for sid in self._collect_base_aux_slot_ids(
-            planned_query=planned_query,
-            slot_id_by_key=aux_slot_id_by_key_agg,
-            slots_by_id=slots_by_id,
-            include_order=False,
-            aggregates_only=True,
-        ):
-            if sid in cma_slot_ids or sid in seen_base_ids:
-                continue
-            slot = slots_by_id.get(sid)
-            if slot is None:
-                continue
-            if getattr(getattr(slot.key, "source", None), "path", ()):
-                continue  # cross-model leaf dep → owned by a _cm_* CTE
-            base_render_order.append(sid)
-            seen_base_ids.add(sid)
+        # last) must also reach ``base_render_order`` so the host
+        # ``_base`` CTE builds the ranked subquery — otherwise HAVING
+        # references a dangling ``_last_rn``. ``aggregates_only=True``
+        # keeps row deps out of GROUP BY; ``include_order=False`` since
+        # order is already covered by ``order_only_local_ids`` above.
+        _add_local_aux_slots(include_order=False, aggregates_only=True)
 
         # Hidden grain materialisation: when the user query has neither
         # host row slots NOR local aggs (and no hidden order targets),
