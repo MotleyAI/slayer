@@ -72,12 +72,12 @@ class BM25Retriever(Retriever):
     ) -> RetrievalResult:
         if not query_entities:
             return RetrievalResult()
-        filtered = (
-            _filter_memories_entities(
-                all_memories, valid_canonicals=valid_canonicals,
-            )
-            if valid_canonicals
-            else all_memories
+        # ``valid_canonicals`` is always supplied (non-Optional in the
+        # ABC); empty set means "no entities are live — drop every
+        # stale tag", which makes ``_filter_memories_entities`` strip
+        # everything and BM25 returns empty. Don't truthy-check it.
+        filtered = _filter_memories_entities(
+            all_memories, valid_canonicals=valid_canonicals,
         )
         # DEV-1513: self-ref augmentation runs AFTER the stale-tag
         # filter so the synthetic ref always survives.
