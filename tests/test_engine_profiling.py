@@ -31,6 +31,7 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.profiling import (
     ColumnSample,
+    ensure_column_sample_fresh,
     profile_column,
     refresh_table_backed_model_sampled,
 )
@@ -823,3 +824,382 @@ async def test_refresh_passes_all_three_kwargs_to_storage(sqlite_setup, monkeypa
         assert "sampled" in kw
         assert "sampled_values" in kw
         assert "distinct_count" in kw
+
+
+# ---------------------------------------------------------------------------
+# ensure_column_sample_fresh — DEV-1516 shared cache-aware refresh helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_returns_input_when_cache_hit(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """When ``_is_sample_cached(column)`` returns True (categorical with
+    ``sampled_values`` populated), the helper must short-circuit — no
+    profile call, no persist call, returns the same column object."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    col = model.get_column("status")
+    assert col is not None
+    # Pre-populate as if already cached.
+    col.sampled = "paid, refunded, cancelled"
+    col.sampled_values = ["paid", "refunded", "cancelled"]
+    col.distinct_count = 3
+
+    profile_calls = {"n": 0}
+
+    async def boom_profile(*_args, **_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        profile_calls["n"] += 1
+        raise AssertionError("profile_column should not be called on cache hit")
+
+    persist_calls = {"n": 0}
+    original_persist = storage.update_column_sampled
+
+    async def counting_persist(**kwargs):
+        persist_calls["n"] += 1
+        return await original_persist(**kwargs)
+
+    monkeypatch.setattr("slayer.engine.profiling.profile_column", boom_profile)
+    monkeypatch.setattr(storage, "update_column_sampled", counting_persist)
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    assert result is col, "cache hit should return the same column object"
+    assert profile_calls["n"] == 0
+    assert persist_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_categorical_miss_profiles_and_persists(
+    sqlite_setup,
+) -> None:
+    """DEV-1516: a categorical column with stale ``sampled_values=None``
+    triggers a live profile, persists via storage, and returns a refreshed
+    column model with the populated structured fields."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    col = model.get_column("status")
+    assert col is not None
+    # Force the stale state.
+    col.sampled = None
+    col.sampled_values = None
+    col.distinct_count = None
+
+    refreshed = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    assert refreshed.sampled is not None
+    assert refreshed.sampled_values is not None
+    assert refreshed.distinct_count is not None
+    # And persistence happened.
+    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded_col = reloaded.get_column("status")
+    assert reloaded_col is not None
+    assert reloaded_col.sampled_values is not None
+    assert reloaded_col.distinct_count is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_does_not_clobber_rich_sampled_on_overflow_retry_failure(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """CodeRabbit thread 1: a legacy v6 column has rich ``sampled``
+    text (e.g. ``"a, b, c ... (1234 distinct)"``) but no
+    ``sampled_values``. If the secondary count_distinct query fails on
+    re-profile, ``profile_column`` returns
+    ``ColumnSample(sampled="> 50 distinct", sampled_values=None,
+    distinct_count=None)``. The helper must NOT clobber the richer
+    cached text with the generic fallback marker."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    assert model is not None
+    col = model.get_column("status")
+    assert col is not None
+    # Simulate legacy v6 state.
+    col.sampled = "paid, refunded, cancelled ... (1234 distinct)"
+    col.sampled_values = None
+    col.distinct_count = None
+
+    # Fake profile_column returns the overflow-retry-failed marker.
+    async def overflow_retry_fail(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        return ColumnSample(
+            sampled="> 50 distinct",
+            sampled_values=None,
+            distinct_count=None,
+        )
+
+    persist_calls: list = []
+    original_persist = storage.update_column_sampled
+
+    async def tracking_persist(**kwargs):
+        persist_calls.append(kwargs)
+        return await original_persist(**kwargs)
+
+    monkeypatch.setattr(
+        "slayer.engine.profiling.profile_column", overflow_retry_fail,
+    )
+    monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    # Returned column retains the rich legacy text.
+    assert result.sampled == "paid, refunded, cancelled ... (1234 distinct)"
+    # No persist attempted (would clobber the rich text in storage).
+    assert persist_calls == [], (
+        "overflow-retry-failed sample must NOT be persisted when the "
+        "column already has a richer sampled text"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_returns_input_when_profile_returns_none(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """When ``profile_column`` returns None (PK / hidden / failed query),
+    the helper returns the INPUT column unchanged and skips persistence."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    col = model.get_column("status")
+    assert col is not None
+    col.sampled = None
+    col.sampled_values = None
+    col.distinct_count = None
+
+    async def returns_none(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        return None
+
+    persist_calls = {"n": 0}
+
+    async def counting_persist(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches update_column_sampled (async)
+        persist_calls["n"] += 1
+
+    monkeypatch.setattr("slayer.engine.profiling.profile_column", returns_none)
+    monkeypatch.setattr(storage, "update_column_sampled", counting_persist)
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    assert result is col
+    assert persist_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_returns_input_when_profile_raises(
+    sqlite_setup, monkeypatch, caplog,
+) -> None:
+    """Best-effort: a raised ``profile_column`` exception is logged and
+    swallowed; the helper returns the INPUT column. Caller renders with
+    whatever was cached (or no sample-values line at all)."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    col = model.get_column("status")
+    assert col is not None
+    col.sampled = None
+    col.sampled_values = None
+    col.distinct_count = None
+
+    async def explodes(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        raise RuntimeError("simulated profile failure")
+
+    persist_calls: list = []
+    original_persist = storage.update_column_sampled
+
+    async def tracking_persist(**kwargs):
+        persist_calls.append(kwargs)
+        return await original_persist(**kwargs)
+
+    monkeypatch.setattr("slayer.engine.profiling.profile_column", explodes)
+    monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="slayer.engine.profiling"):
+        result = await ensure_column_sample_fresh(
+            model=model, column=col, engine=engine, storage=storage,
+        )
+    assert result is col
+    # Codex round-3 finding #7: persist must NOT be attempted on profile
+    # failure. A wrong helper that swallows the failure but still calls
+    # ``update_column_sampled(sampled_values=None, ...)`` would clobber any
+    # stale cache with permanent None and pass a "returns input" assertion.
+    assert persist_calls == [], (
+        "profile failure must NOT trigger update_column_sampled; "
+        "a wrong implementation that writes None on failure would clobber"
+    )
+    # Logged with model/datasource/column context for observability.
+    assert any(
+        "status" in rec.getMessage() and "orders" in rec.getMessage()
+        for rec in caplog.records
+    ), "helper must log profile failure with context"
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_swallows_persist_failure_returns_refreshed(
+    sqlite_setup, monkeypatch, caplog,
+) -> None:
+    """If profile succeeds but ``storage.update_column_sampled`` raises, the
+    helper returns the IN-MEMORY refreshed column (so the caller can still
+    render fresh data this call) and logs the persist failure. Subsequent
+    calls will retry — the cache predicate still flags it stale because the
+    persist never landed."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    col = model.get_column("status")
+    assert col is not None
+    col.sampled = None
+    col.sampled_values = None
+    col.distinct_count = None
+
+    async def boom_persist(**_kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches update_column_sampled (async)
+        raise RuntimeError("simulated persist failure")
+
+    monkeypatch.setattr(storage, "update_column_sampled", boom_persist)
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="slayer.engine.profiling"):
+        result = await ensure_column_sample_fresh(
+            model=model, column=col, engine=engine, storage=storage,
+        )
+    # Fresh data is in-memory even though persist failed.
+    assert result.sampled_values is not None
+    assert result.distinct_count is not None
+    # And the persist failure was logged.
+    assert any(
+        "persist" in rec.getMessage().lower() or "update_column" in rec.getMessage()
+        for rec in caplog.records
+    ), "helper must log persist failure with context"
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_skips_numeric_temporal(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """Numeric/temporal columns are out of scope for the helper. inspect_model
+    handles them via the batched min/max path. The helper returns the input
+    column unchanged regardless of cache state."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+    col = model.get_column("amount")  # DOUBLE
+    assert col is not None
+    col.sampled = None  # stale numeric
+
+    profile_calls = {"n": 0}
+
+    async def counting_profile(**kwargs):  # noqa: ARG001  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        profile_calls["n"] += 1
+        return None
+
+    monkeypatch.setattr("slayer.engine.profiling.profile_column", counting_profile)
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=col, engine=engine, storage=storage,
+    )
+    assert result is col
+    assert profile_calls["n"] == 0, (
+        "numeric/temporal columns must not trigger the helper's profile call"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_skips_hidden_and_primary_key(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """Hidden / PK columns are never profiled. ``_is_sample_cached`` returns
+    True for them by convention; the helper short-circuits via the cache check.
+
+    Codex round-3 finding #8: assert profile_column and update_column_sampled
+    are never called. The previous shape (input-equals-output) would pass for
+    a wrong helper that calls profile_column → gets None → returns input."""
+    engine, storage = sqlite_setup
+    model = await storage.get_model("orders", data_source="ds")
+
+    profile_calls: list = []
+
+    async def counting_profile(**kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        col_kw = kwargs.get("column")
+        if col_kw is not None:
+            profile_calls.append(col_kw.name)
+        return None
+
+    persist_calls: list = []
+    original_persist = storage.update_column_sampled
+
+    async def counting_persist(**kwargs):  # NOSONAR(S7503) — required async signature: monkeypatches update_column_sampled (async)
+        persist_calls.append(kwargs.get("column_name"))
+        return await original_persist(**kwargs)
+
+    monkeypatch.setattr(
+        "slayer.engine.profiling.profile_column", counting_profile,
+    )
+    monkeypatch.setattr(storage, "update_column_sampled", counting_persist)
+
+    pk_col = model.get_column("id")
+    assert pk_col is not None
+    assert pk_col.primary_key is True
+
+    result = await ensure_column_sample_fresh(
+        model=model, column=pk_col, engine=engine, storage=storage,
+    )
+    assert result is pk_col
+    assert "id" not in profile_calls, (
+        "PK columns must short-circuit BEFORE profile_column is called"
+    )
+    assert "id" not in persist_calls
+
+    # Hidden column.
+    hidden = Column(name="hidden_one", type=DataType.TEXT, hidden=True)
+    model.columns.append(hidden)
+    await storage.save_model(model)
+    refreshed_model = await storage.get_model("orders", data_source="ds")
+    hidden_col = refreshed_model.get_column("hidden_one")
+    assert hidden_col is not None
+    result_hidden = await ensure_column_sample_fresh(
+        model=refreshed_model, column=hidden_col,
+        engine=engine, storage=storage,
+    )
+    assert result_hidden is hidden_col
+    assert "hidden_one" not in profile_calls, (
+        "hidden columns must short-circuit BEFORE profile_column is called"
+    )
+    assert "hidden_one" not in persist_calls
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_does_not_hard_gate_sql_mode(
+    sqlite_setup, monkeypatch,
+) -> None:
+    """Codex finding #3: helper must NOT early-return on sql-mode /
+    query-backed models — inspect_model historically calls ``profile_column``
+    on those without a ``_is_table_backed`` gate. Let ``profile_column``
+    decide; it returns None for unsupported shapes naturally."""
+    engine, storage = sqlite_setup
+    # Construct a sql-mode model directly (not table-backed).
+    sql_model = SlayerModel(
+        name="sql_orders",
+        sql="SELECT * FROM orders",
+        data_source="ds",
+        columns=[Column(name="status", type=DataType.TEXT)],
+    )
+    col = sql_model.get_column("status")
+    assert col is not None
+    col.sampled = None
+    col.sampled_values = None
+    col.distinct_count = None
+
+    profile_calls = {"n": 0}
+
+    async def counting_profile(*, model, column, engine):  # noqa: ARG001  # NOSONAR(S7503) — required async signature: monkeypatches profile_column (async)
+        profile_calls["n"] += 1
+        return None  # simulate "profile didn't find anything"
+
+    monkeypatch.setattr("slayer.engine.profiling.profile_column", counting_profile)
+
+    await ensure_column_sample_fresh(
+        model=sql_model, column=col, engine=engine, storage=storage,
+    )
+    assert profile_calls["n"] == 1, (
+        "helper must reach profile_column even for sql-mode models; "
+        "the gate is at profile_column, not at the helper"
+    )

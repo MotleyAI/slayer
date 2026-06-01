@@ -99,6 +99,77 @@ async def test_mcp_search_tool_returns_json_with_three_lists(
 
 
 @pytest.mark.asyncio
+async def test_mcp_search_path_wires_engine_into_search_service(
+    storage_with_corpus: StorageBackend,
+) -> None:
+    """DEV-1516 codex finding #1: ``create_mcp_server`` constructs a
+    ``SearchService`` with an engine kwarg so the search-side refresh
+    actually fires in the MCP product path. This test catches a regression
+    where the engine wiring is dropped (the helper would silently no-op)."""
+    from slayer.mcp.server import create_mcp_server
+    from slayer.search.service import SearchService
+
+    constructed: list = []
+
+    real_init = SearchService.__init__
+
+    def capturing_init(self, *args, **kwargs):
+        constructed.append(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    # Patch on the class so the MCP factory's `SearchService(storage=..., engine=...)`
+    # call funnels through us.
+    original = SearchService.__init__
+    SearchService.__init__ = capturing_init  # type: ignore[assignment]
+    try:
+        create_mcp_server(storage=storage_with_corpus)
+    finally:
+        SearchService.__init__ = original  # type: ignore[assignment]
+
+    assert constructed, "create_mcp_server should construct SearchService"
+    # At least one construction must include a non-None engine kwarg.
+    kw_lists = constructed
+    assert any(
+        kw.get("engine") is not None for kw in kw_lists
+    ), (
+        "MCP wiring regression: SearchService constructed without engine. "
+        "Search-side sample-refresh would silently no-op."
+    )
+
+
+@pytest.mark.asyncio
+async def test_rest_search_path_wires_engine_into_search_service(
+    storage_with_corpus: StorageBackend,
+) -> None:
+    """REST counterpart of the MCP wiring test. ``create_app`` must also
+    pass the engine to SearchService."""
+    from slayer.api.server import create_app
+    from slayer.search.service import SearchService
+
+    constructed: list = []
+    real_init = SearchService.__init__
+
+    def capturing_init(self, *args, **kwargs):
+        constructed.append(kwargs)
+        return real_init(self, *args, **kwargs)
+
+    original = SearchService.__init__
+    SearchService.__init__ = capturing_init  # type: ignore[assignment]
+    try:
+        create_app(storage=storage_with_corpus)
+    finally:
+        SearchService.__init__ = original  # type: ignore[assignment]
+
+    assert constructed, "create_app should construct SearchService"
+    assert any(
+        kw.get("engine") is not None for kw in constructed
+    ), (
+        "REST wiring regression: SearchService constructed without engine. "
+        "Search-side sample-refresh would silently no-op on REST calls."
+    )
+
+
+@pytest.mark.asyncio
 async def test_mcp_search_friendly_warning_on_unknown_entity(
     storage_with_corpus: StorageBackend,
 ) -> None:
