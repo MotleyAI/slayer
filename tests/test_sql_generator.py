@@ -5336,6 +5336,61 @@ class TestDev1501HiddenFirstLastRender:
             )
             assert "customers.signed_up_at" in sql
 
+    async def test_filtered_composite_first_last_uses_filtered_rn(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A FILTERED first/last operand inside a composite projection
+        (``paid_amount:last(created_at) + 1``) must bind to the
+        FILTERED rank column (``_last_rn_f0``) and match flag — not
+        bare ``_last_rn`` + raw filter. The composite synth's per-leaf
+        alias must match the alias the ranked subquery's
+        ``filtered_rn_map`` was keyed by. Codex review of DEV-1501 PR
+        #159 round 6.
+        """
+        m = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                Column(
+                    name="paid_amount", sql="amount",
+                    filter="status = 'paid'", type=DataType.DOUBLE,
+                ),
+            ],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(
+                    formula="paid_amount:last(created_at) + 1",
+                    name="plus1",
+                )],
+                dimensions=[ColumnRef(name="status")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            assert "_last_rn_f0" in sql, (
+                f"Filtered rank column _last_rn_f0 missing:\n{sql}"
+            )
+            assert "_match_f0" in sql, (
+                f"Filter match-flag column _match_f0 missing:\n{sql}"
+            )
+            # The composite's ``plus1`` projection's MAX must reference
+            # the FILTERED rn column — not bare ``_last_rn``.
+            assert _re.search(
+                r'MAX\(CASE WHEN _last_rn_f0\s*=\s*1.*?AS "orders\.plus1"',
+                sql, _re.DOTALL,
+            ), (
+                f"Composite operand did not bind to _last_rn_f0; falls back "
+                f"to bare _last_rn + raw filter (alias key mismatch).\n{sql}"
+            )
+
     async def test_composite_first_last_in_projection_uses_correct_suffixes(
         self, generator: SQLGenerator
     ) -> None:
@@ -5388,6 +5443,80 @@ class TestDev1501HiddenFirstLastRender:
             assert {left_rn, right_rn} == {"_last_rn", "_last_rn_2"}, (
                 f"Composite first/last operands collapsed: left={left_rn!r}, "
                 f"right={right_rn!r} — expected one of each.\nSQL:\n{sql}"
+            )
+
+    async def test_cross_model_query_with_local_first_last_having_filter(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A query carrying BOTH a cross-model aggregate AND a LOCAL
+        first/last filter in HAVING (``filters=["revenue:last(created_at)
+        > 100"]``) must NOT silently emit a HAVING that references a
+        dangling ``_last_rn``. Two acceptable outcomes (both are strict
+        improvements over the silent-dangling-SQL bug Codex flagged):
+        (a) emit valid SQL with a ranked subquery in ``_base``, or (b)
+        raise ``NotImplementedError`` with the existing local-first/last
+        + cross-model guard message. Codex review of DEV-1501 PR #159
+        round 6.
+        """
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="score", sql="score", type=DataType.DOUBLE),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(
+                target_model="customers",
+                join_pairs=[["customer_id", "id"]],
+            )],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(customers)
+            await storage.save_model(orders)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                # Cross-model measure + LOCAL first/last HAVING filter.
+                measures=[ModelMeasure(formula="customers.score:sum", name="cs")],
+                dimensions=[ColumnRef(name="status")],
+                filters=["revenue:last(created_at) > 100"],
+            )
+            try:
+                sql = (await engine.execute(query, dry_run=True)).sql
+            except NotImplementedError as exc:
+                # Acceptable outcome (b): the existing guard fires when
+                # the host base would need a ranked subquery alongside a
+                # cross-model aggregate. The clear error message replaces
+                # what was silently dangling-``_last_rn`` SQL.
+                assert "first/last" in str(exc).lower(), (
+                    f"NotImplementedError raised but with unexpected message: "
+                    f"{exc!r}"
+                )
+                return
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # Acceptable outcome (a): if SQL is emitted, the host
+            # ``_base`` CTE must build the ranked subquery so HAVING
+            # resolves.
+            base_cte = _re.search(
+                r"_base AS \((.*?)\), _cm_", sql, _re.DOTALL,
+            )
+            assert base_cte is not None, f"_base CTE not found:\n{sql}"
+            base_sql = base_cte.group(1)
+            assert "ROW_NUMBER" in base_sql, (
+                f"Host _base CTE did NOT build the ranked subquery for the "
+                f"local first/last HAVING filter — _last_rn is dangling.\n"
+                f"_base:\n{base_sql}"
             )
 
     async def test_cross_model_filtered_last_in_having(

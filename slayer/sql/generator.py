@@ -4608,11 +4608,20 @@ class SQLGenerator:
                     )
                 else:
                     # Composite aggregate (no single ``AggregateKey``).
-                    # DEV-1501 (Codex round 3): thread rn state so a
+                    # DEV-1501 (Codex round 3 + 6): thread rn state so a
                     # composite expression containing first/last operands
                     # binds each operand to its own ``_first_rn`` /
                     # ``_last_rn{suffix}`` column instead of bare
-                    # ``_last_rn``.
+                    # ``_last_rn``; AND pass per-leaf alias map so a
+                    # FILTERED first/last operand's synth matches the
+                    # alias the ranked subquery used to key
+                    # ``filtered_rn_map`` / ``filtered_match_map``
+                    # (otherwise the lookup misses and the operand falls
+                    # back to bare ``_last_rn`` + raw filter_sql).
+                    composite_alias_by_key = {
+                        agg_key: spec.alias
+                        for agg_key, spec in composite_synth_by_key.items()
+                    }
                     agg_expr, is_agg = self._render_aggregate_composite_expr(
                         key=slot.key, slot=slot, source_model=source_model,
                         source_relation=source_relation,
@@ -4621,6 +4630,7 @@ class SQLGenerator:
                         default_time_col=default_time_col_sql,
                         filtered_rn_map=filtered_rn_map,
                         filtered_match_map=filtered_match_map,
+                        composite_alias_by_key=composite_alias_by_key,
                     )
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(agg_expr, slot.type)
@@ -4659,6 +4669,7 @@ class SQLGenerator:
         default_time_col: Optional[str] = None,
         filtered_rn_map: Optional[Dict[str, str]] = None,
         filtered_match_map: Optional[Dict[str, str]] = None,
+        composite_alias_by_key: Optional[Dict[Any, str]] = None,
     ) -> "tuple[exp.Expression, bool]":
         """Render an AGGREGATE-phase composite key (``ArithmeticKey`` /
         ``ScalarCallKey`` of aggregates, e.g. ``expensenet:avg +
@@ -4693,9 +4704,22 @@ class SQLGenerator:
                     "AGGREGATE-phase composite is not yet supported; factor it "
                     "into a multi-stage source_queries model."
                 )
+            # DEV-1501 (Codex round 6): for FILTERED composite operands,
+            # the ranked subquery's ``filtered_rn_map`` /
+            # ``filtered_match_map`` were keyed by the per-leaf alias
+            # ``_build_first_last_base_select`` minted at synth time
+            # (e.g. ``orders._composite_op_0``). Rebuilding the synth
+            # with the fixed placeholder ``__op__`` would miss those
+            # lookups and fall back to bare ``_last_rn`` + raw
+            # ``filter_sql``. Use the per-leaf alias when supplied.
+            op_alias = (
+                composite_alias_by_key.get(key)
+                if composite_alias_by_key is not None
+                else None
+            ) or "__op__"
             synth = self._build_agg_render_spec_from_planned(
                 slot=slot, key=key, source_model=source_model,
-                source_relation=source_relation, full_alias="__op__",
+                source_relation=source_relation, full_alias=op_alias,
                 bundle=bundle,
             )
             agg_expr, is_agg = self._build_agg(
@@ -4718,6 +4742,7 @@ class SQLGenerator:
                     default_time_col=default_time_col,
                     filtered_rn_map=filtered_rn_map,
                     filtered_match_map=filtered_match_map,
+                    composite_alias_by_key=composite_alias_by_key,
                 )
                 operands.append(e)
                 any_agg = any_agg or a
@@ -4868,6 +4893,33 @@ class SQLGenerator:
                     continue  # cross-model leaf dep → owned by a _cm_* CTE
                 base_render_order.append(sid)
                 seen_base_ids.add(sid)
+
+        # DEV-1501 (Codex round 6): host AGG-phase filter operand
+        # AggregateKey slots (a HAVING filter on a hidden local first/
+        # last like ``revenue:last(created_at) > 100``) must also reach
+        # ``base_render_order`` so the host ``_base`` CTE builds the
+        # ranked subquery — otherwise HAVING references a dangling
+        # ``_last_rn``. The transform-gated block above misses this case
+        # (no transforms). ``aggregates_only=True`` keeps row deps out
+        # of GROUP BY; ``include_order=False`` since order is already
+        # covered by ``order_only_local_ids`` above.
+        aux_slot_id_by_key_agg = {s.key: s.id for s in slots_by_id.values()}
+        for sid in self._collect_base_aux_slot_ids(
+            planned_query=planned_query,
+            slot_id_by_key=aux_slot_id_by_key_agg,
+            slots_by_id=slots_by_id,
+            include_order=False,
+            aggregates_only=True,
+        ):
+            if sid in cma_slot_ids or sid in seen_base_ids:
+                continue
+            slot = slots_by_id.get(sid)
+            if slot is None:
+                continue
+            if getattr(getattr(slot.key, "source", None), "path", ()):
+                continue  # cross-model leaf dep → owned by a _cm_* CTE
+            base_render_order.append(sid)
+            seen_base_ids.add(sid)
 
         # Hidden grain materialisation: when the user query has neither
         # host row slots NOR local aggs (and no hidden order targets),
@@ -6252,7 +6304,7 @@ class SQLGenerator:
             alias = slot.declared_name
         return f"{source_relation}.{alias}"
 
-    def _collect_joined_paths_for_base(
+    def _collect_joined_paths_for_base(  # NOSONAR(S3776) — sequential per-slot dispatch over ROW (ColumnKey / TimeTruncKey path) vs AGGREGATE (top-level AggregateKey first/last + composite first/last leaves) classification. Each branch is the per-slot join-discovery contract; extracting per-shape helpers would scatter the contract.
         self,
         *,
         base_render_order: List[str],
