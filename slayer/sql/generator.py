@@ -3688,6 +3688,9 @@ class SQLGenerator:
         needed_join_paths = self._collect_joined_paths_for_base(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
+            source_model=source_model,
+            source_relation=source_relation,
+            bundle=bundle,
         )
         # Pre-expand local derived (ColumnSqlKey) ROW dimensions: inline
         # sibling/joined derived refs (DEV-1333 / DEV-1410) and pull any
@@ -6301,11 +6304,14 @@ class SQLGenerator:
             alias = slot.declared_name
         return f"{source_relation}.{alias}"
 
-    def _collect_joined_paths_for_base(  # NOSONAR(S3776) — sequential per-slot dispatch over ROW (ColumnKey / TimeTruncKey path) vs AGGREGATE (top-level AggregateKey first/last + composite first/last leaves) classification. Each branch is the per-slot join-discovery contract; extracting per-shape helpers would scatter the contract.
+    def _collect_joined_paths_for_base(  # NOSONAR(S3776) — sequential per-slot dispatch over ROW (ColumnKey / TimeTruncKey path) vs AGGREGATE (top-level AggregateKey first/last + composite first/last leaves; ColumnKey args qualify directly, ColumnSqlKey args expand-and-scan through the derived sql). Each branch is the per-slot join-discovery contract; extracting per-shape helpers would scatter the contract.
         self,
         *,
         base_render_order: List[str],
         slots_by_id: Dict[str, Any],
+        source_model=None,
+        source_relation: Optional[str] = None,
+        bundle=None,
     ) -> List[Tuple[str, ...]]:
         """Walk ROW slots in render order to collect unique joined paths.
 
@@ -6318,8 +6324,16 @@ class SQLGenerator:
         any joined path named by an explicit ranking-time arg
         (``amount:last(stores.opened_at)``) — the ranked subquery's
         ``ORDER BY`` references that column, so the join must be in scope.
+        Derived (``ColumnSqlKey``) time args (``amount:last(net_amount_date)``
+        where ``net_amount_date.sql`` references ``customers.signed_up_at``)
+        are expanded through ``_expand_derived_column_sql`` and then scanned
+        with ``_joined_paths_in_sql`` so their crossed joins also land in the
+        FROM — requires ``source_model`` / ``source_relation`` / ``bundle``
+        (the existing ROW-derived expand path uses the same triple).
         """
-        from slayer.core.keys import AggregateKey, ColumnKey, Phase, TimeTruncKey
+        from slayer.core.keys import (
+            AggregateKey, ColumnKey, ColumnSqlKey, Phase, TimeTruncKey,
+        )
 
         seen: set = set()
         ordered: List[Tuple[str, ...]] = []
@@ -6360,6 +6374,37 @@ class SQLGenerator:
                     for a in fl.args:
                         if isinstance(a, ColumnKey):
                             _add(a.path)
+                        elif (
+                            # DEV-1501 (Codex round 8): a derived time arg
+                            # (``amount:last(net_amount_date)``) is expanded
+                            # against the source relation inside the ranked
+                            # subquery's ``ORDER BY``; any joined ref the
+                            # expansion introduces (``customers.signed_up_at``)
+                            # must pull its join into ``_base``. Without
+                            # ``bundle`` (defensive entry point), skip — the
+                            # ranked subquery falls back to verbatim emit and
+                            # the missing join would surface as broken SQL at
+                            # runtime, but no upstream caller hits this path
+                            # without a bundle.
+                            isinstance(a, ColumnSqlKey)
+                            and not a.path
+                            and source_model is not None
+                            and source_relation is not None
+                            and bundle is not None
+                        ):
+                            expanded = self._expand_derived_column_sql(
+                                source_model=source_model,
+                                source_relation=source_relation,
+                                column_name=a.column_name,
+                                bundle=bundle,
+                            )
+                            for p in self._joined_paths_in_sql(
+                                sql_expr=self._parse(expanded),
+                                source_relation=source_relation,
+                                source_model=source_model,
+                                bundle=bundle,
+                            ):
+                                _add(p)
         return ordered
 
     def _build_from_and_joins(

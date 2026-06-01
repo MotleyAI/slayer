@@ -85,7 +85,7 @@ def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, s
     return out
 
 
-def _projection_rn_by_alias(sql: str, dialect: str = "postgres") -> dict[str, str]:
+def _projection_rn_by_alias(sql: str, dialect: str = "postgres") -> dict[str, str]:  # NOSONAR(S3776) — sequential isinstance dispatch over outermost-SELECT projection layers (Alias / Cast / Max / Case / EQ / Column unwrap). Each layer is a structural-shape predicate whose failure short-circuits to the next projection; extracting per-layer helpers would scatter the predicate.
     """For the OUTERMOST SELECT, walk projections and return
     ``{alias: rn_column_name}`` for every projection whose body is a
     ``MAX(CASE WHEN <_first_rn|_last_rn[suffix]> = 1 THEN …)`` aggregate
@@ -4456,20 +4456,8 @@ class TestTransformAmbiguousTimeDimension:
     """
 
     async def test_two_time_dims_no_disambiguation_raises(self, generator: SQLGenerator) -> None:
-
-        m = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        m = _orders_two_ts_model()
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["cumsum(revenue:sum)"],
@@ -4483,20 +4471,8 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
 
     async def test_two_time_dims_with_main_succeeds(self, generator: SQLGenerator) -> None:
         """Disambiguation via main_time_dimension keeps the transform working."""
-
-        m = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
-Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        m = _orders_two_ts_model()
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["cumsum(revenue:sum)"],
@@ -4538,11 +4514,7 @@ class TestParameterizedAggCanonicalDistinct:
                 Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -4608,11 +4580,7 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
                 Column(name="status", sql="status", type=DataType.TEXT),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=[
@@ -4635,37 +4603,70 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
 
     async def test_unparameterized_alias_unchanged(self, generator: SQLGenerator) -> None:
         """Backwards-compat: revenue:sum still produces orders.revenue_sum (no suffix)."""
-
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(source_model="orders", measures=["revenue:sum"])
             sql = (await engine.execute(query, dry_run=True)).sql
             assert '"orders.revenue_sum"' in sql
 
     async def test_star_count_alias_unchanged(self, generator: SQLGenerator) -> None:
         """Backwards-compat: *:count still produces orders._count."""
-
         m = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
 Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(source_model="orders", measures=["*:count"])
             sql = (await engine.execute(query, dry_run=True)).sql
             assert '"orders._count"' in sql
+
+
+@asynccontextmanager
+async def _persist_and_engine(
+    *models: SlayerModel,
+    ds_name: str = "test",
+    ds_type: str = "postgres",
+):
+    """Yield a ``SlayerQueryEngine`` with the given models persisted to a
+    throwaway ``YAMLStorage``. Replaces the per-test ``tempfile +
+    YAMLStorage + save_datasource + save_model + SlayerQueryEngine``
+    boilerplate that DEV-1501 repeated 16+ times — same shape, but one
+    line at the call site. ``ds_name`` / ``ds_type`` follow the
+    repo-wide convention (``data_source="test"`` everywhere).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = YAMLStorage(base_dir=tmp)
+        await storage.save_datasource(
+            DatasourceConfig(name=ds_name, type=ds_type),
+        )
+        for m in models:
+            await storage.save_model(m)
+        yield SlayerQueryEngine(storage=storage)
+
+
+def _orders_with_paid_amount_model() -> SlayerModel:
+    """DEV-1501 fixture-style helper — an ``orders`` model with a FILTERED
+    ``paid_amount`` column (only ``status='paid'`` rows participate). Used
+    by the filtered-first/last test suite (3+ tests share this exact model).
+    """
+    return SlayerModel(
+        name="orders", sql_table="orders", data_source="test",
+        columns=[
+            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+            Column(name="status", sql="status", type=DataType.TEXT),
+            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            Column(
+                name="paid_amount", sql="amount",
+                filter="status = 'paid'", type=DataType.DOUBLE,
+            ),
+        ],
+    )
 
 
 def _orders_two_ts_model(*, default_td: "str | None" = None) -> SlayerModel:
@@ -4702,11 +4703,7 @@ class TestDev1501HiddenFirstLastRender:
         distinct rank columns and distinct outer ORDER BY terms.
         """
         m = _orders_two_ts_model()
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -4748,11 +4745,7 @@ class TestDev1501HiddenFirstLastRender:
         rank columns (one ASC for first, one DESC for last).
         """
         m = _orders_two_ts_model()
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -4783,11 +4776,7 @@ class TestDev1501HiddenFirstLastRender:
         Regression for the order-by-only + no-default case.
         """
         m = _orders_two_ts_model()  # no default_td
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -4811,11 +4800,7 @@ class TestDev1501HiddenFirstLastRender:
         ``default_time_dimension`` for the rank ordering.
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -4839,11 +4824,7 @@ class TestDev1501HiddenFirstLastRender:
         materialised alias is trimmed from result keys.
         """
         m = _orders_two_ts_model()
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=[
@@ -4898,11 +4879,7 @@ class TestDev1501HiddenFirstLastRender:
         path.
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -4938,11 +4915,7 @@ class TestDev1501HiddenFirstLastRender:
         distinct ``_last_rn{suffix}`` columns.
         """
         m = _orders_two_ts_model()
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -4986,11 +4959,7 @@ class TestDev1501HiddenFirstLastRender:
         ``_last_rn{suffix}``. Combined-surface regression (Codex MED 8).
         """
         m = _orders_two_ts_model()
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -5039,11 +5008,7 @@ class TestDev1501HiddenFirstLastRender:
         explicit time arg).
         """
         m = _orders_two_ts_model()  # no default_td
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=[
@@ -5085,26 +5050,7 @@ class TestDev1501HiddenFirstLastRender:
         ranks the wrong row (or references a column out of scope).
         Codex review of DEV-1501 PR #159 (Group A).
         """
-        m = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                # The FILTERED measure: only "paid" rows participate in the
-                # ranking-and-pick.
-                Column(
-                    name="paid_amount", sql="amount",
-                    filter="status = 'paid'", type=DataType.DOUBLE,
-                ),
-            ],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -5154,24 +5100,7 @@ class TestDev1501HiddenFirstLastRender:
         dropped ``aliases_by_slot_id`` through the recursion (Codex
         review of DEV-1501 PR #159 round 2).
         """
-        m = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(
-                    name="paid_amount", sql="amount",
-                    filter="status = 'paid'", type=DataType.DOUBLE,
-                ),
-            ],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             # ``coalesce(agg, 0)`` wraps the AggregateKey in a
             # ScalarCallKey — exercises the recursion branch that
             # previously dropped ``aliases_by_slot_id``.
@@ -5213,12 +5142,7 @@ class TestDev1501HiddenFirstLastRender:
         …)`` referencing a column the bare FROM never projects. Codex
         review of DEV-1501 PR #159 round 4.
         """
-        m = _orders_two_ts_model()
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(_orders_two_ts_model()) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 # ONLY composite — no direct first/last sibling.
@@ -5262,12 +5186,8 @@ class TestDev1501HiddenFirstLastRender:
         and ``_build_unfiltered_rn_columns`` emits ``ORDER BY None``.
         Codex review of DEV-1501 PR #159 round 5.
         """
-        m = _orders_two_ts_model()  # no default_time_dimension
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        # ``_orders_two_ts_model()`` has no ``default_time_dimension``.
+        async with _persist_and_engine(_orders_two_ts_model()) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 # Composite with bare ``revenue:last`` — no explicit
@@ -5312,12 +5232,7 @@ class TestDev1501HiddenFirstLastRender:
                 join_pairs=[["customer_id", "id"]],
             )],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(customers)
-            await storage.save_model(orders)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(customers, orders) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(
@@ -5347,24 +5262,7 @@ class TestDev1501HiddenFirstLastRender:
         ``filtered_rn_map`` was keyed by. Codex review of DEV-1501 PR
         #159 round 6.
         """
-        m = SlayerModel(
-            name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(
-                    name="paid_amount", sql="amount",
-                    filter="status = 'paid'", type=DataType.DOUBLE,
-                ),
-            ],
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(
@@ -5404,12 +5302,7 @@ class TestDev1501HiddenFirstLastRender:
         which previously didn't receive rn state. Codex review of
         DEV-1501 PR #159 round 3.
         """
-        m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(_orders_two_ts_model(default_td="created_at")) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 # Direct first/last triggers _build_first_last_base_select;
@@ -5479,12 +5372,7 @@ class TestDev1501HiddenFirstLastRender:
                 join_pairs=[["customer_id", "id"]],
             )],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(customers)
-            await storage.save_model(orders)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(customers, orders) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 # Cross-model measure + LOCAL first/last HAVING filter.
@@ -5561,12 +5449,7 @@ class TestDev1501HiddenFirstLastRender:
                 join_pairs=[["customer_id", "id"]],
             )],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(customers)
-            await storage.save_model(orders)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(customers, orders) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -5601,6 +5484,76 @@ class TestDev1501HiddenFirstLastRender:
                 f"HAVING:\n{having_sql}\nSQL:\n{sql}"
             )
 
+    async def test_derived_time_arg_pulls_in_referenced_join(
+        self, generator: SQLGenerator,
+    ) -> None:
+        """DEV-1501 (Codex round 8): a DERIVED first/last time arg whose
+        ``Column.sql`` references a joined column must pull that join into
+        the base FROM. ``_resolve_explicit_time_col`` expands
+        ``net_signed_at.sql = "customers.signed_up_at"`` so the ranked
+        subquery's ``ORDER BY`` emits ``customers.signed_up_at``; without
+        a corresponding ``LEFT JOIN customers`` the SQL is broken.
+        Previously ``_collect_joined_paths_for_base`` only walked
+        ``ColumnKey`` args; ``ColumnSqlKey`` derived time args were
+        invisible to join discovery.
+        """
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="signed_up_at", sql="signed_up_at", type=DataType.TIMESTAMP),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                # Derived time column whose sql crosses the customers join.
+                # No other slot drags ``customers`` into the FROM, so this
+                # is the ONLY signal join discovery has to add it.
+                Column(
+                    name="net_signed_at", sql="customers.signed_up_at",
+                    type=DataType.TIMESTAMP,
+                ),
+            ],
+            joins=[
+                ModelJoin(
+                    target_model="customers",
+                    join_pairs=[["customer_id", "id"]],
+                ),
+            ],
+        )
+        async with _persist_and_engine(customers, orders) as engine:
+            query = SlayerQuery(
+                source_model="orders",
+                measures=["*:count"],
+                dimensions=[ColumnRef(name="status")],
+                order=[
+                    OrderItem(
+                        column="amount:last(net_signed_at)", direction="desc",
+                    ),
+                ],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # The ranked subquery's ORDER BY must reference the expanded
+            # joined column.
+            assert "customers.signed_up_at" in sql, (
+                f"Expected expanded customers.signed_up_at ranking expression in SQL:\n{sql}"
+            )
+            # The customers join must be present in the base FROM. Without
+            # the DEV-1501 fix, ``_collect_joined_paths_for_base`` skipped
+            # the ColumnSqlKey arg and the join was missing → broken SQL.
+            assert _re.search(
+                r"LEFT JOIN\s+customers\b", sql, _re.IGNORECASE,
+            ) is not None, (
+                f"customers join missing in base FROM — derived time-col "
+                f"join discovery regressed:\n{sql}"
+            )
+
 
 class TestDev1501BroadTriggerAndGuards:
     """DEV-1501 — broad-trigger materialise+trim behaviour and the guards
@@ -5617,11 +5570,7 @@ class TestDev1501BroadTriggerAndGuards:
         projected alias inline at the same SELECT level.
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=[ModelMeasure(formula="revenue:sum", name="rev")],
@@ -5647,11 +5596,7 @@ class TestDev1501BroadTriggerAndGuards:
         from result keys and response metadata.
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -5703,11 +5648,7 @@ class TestDev1501BroadTriggerAndGuards:
         prevents the hidden first/last from leaking extra GROUP BY entries.
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 dimensions=[ColumnRef(name="status")],
@@ -5756,11 +5697,7 @@ class TestDev1501BroadTriggerAndGuards:
                 Column(name="revenue", sql="amount", type=DataType.DOUBLE),
             ],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -5780,11 +5717,7 @@ class TestDev1501BroadTriggerAndGuards:
         result keys and response metadata.
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -5819,11 +5752,7 @@ class TestDev1501BroadTriggerAndGuards:
         before the materialised aggregate values are visible.
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
@@ -5876,11 +5805,7 @@ class TestDev1501BroadTriggerAndGuards:
         path's ``outer_alias_index``).
         """
         m = _orders_two_ts_model(default_td="created_at")
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 # Same key (revenue:sum), two different names → one interned
@@ -5932,11 +5857,7 @@ class TestDev1501BroadTriggerAndGuards:
                 Column(name="cost", sql="cost", type=DataType.DOUBLE),
             ],
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = YAMLStorage(base_dir=tmp)
-            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            await storage.save_model(m)
-            engine = SlayerQueryEngine(storage=storage)
+        async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 source_model="orders",
                 measures=["*:count"],
