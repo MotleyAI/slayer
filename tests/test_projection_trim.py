@@ -984,7 +984,15 @@ class TestProvenance:
             "orders.total",
             "orders.n",
         ], f"unexpected projection order:\n{sql}"
-        assert all("quantity_sum" not in a for a in _all_aliases_in_sql(sql))
+        # DEV-1501: hidden order/filter aggregates materialise as inner
+        # base-CTE columns (per ``docs/architecture/planning.md`` —
+        # "hidden slot is materialised in the base CTE … then trimmed
+        # from the public projection"). The hidden ``quantity_sum``
+        # alias may appear in inner CTE / base SELECT but MUST NOT
+        # appear in the OUTER public projection.
+        assert all(
+            "quantity_sum" not in c for c in _outer_select_columns(sql)
+        ), f"quantity_sum leaked into outer projection:\n{sql}"
 
     async def test_provenance_merge_when_order_by_matches_declared(
         self, orders_model: SlayerModel,

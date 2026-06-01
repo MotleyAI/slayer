@@ -90,7 +90,14 @@ So `ORDER BY revenue:sum DESC LIMIT 10` with no declared `revenue:sum` measure
 interns the aggregate as a `hidden=True` slot: the base CTE materializes it, the
 outer SELECT trims it from the public projection, and `StageSchema.columns`
 excludes it (downstream stages see no extra column). The same rule covers
-filter-only refs.
+filter-only refs. The no-transform "plain" path follows the same pattern via a
+conditional outer-trim wrapper (DEV-1501): the wrap fires only when the base
+materialises a hidden slot, so simple flat queries stay flat. Hidden parametric
+aggregates (`revenue:last(created_at)` vs `revenue:last(updated_at)`,
+`revenue:percentile(p=0.5)` vs `…(p=0.95)`) route their declared name through
+`canonical_agg_name` so the args/kwargs surface in the materialised alias —
+two distinct hidden parametric aggregates get distinct base-CTE aliases instead
+of colliding on `revenue_last` / `revenue_percentile`.
 
 `filter_referenced_slot_ids(bound_filter, registry)` walks the predicate via
 `_iter_slot_deps` and looks each dep up in the registry, returning `set[SlotId]`

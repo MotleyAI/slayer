@@ -40,6 +40,11 @@ Reads from typed `PlannedQuery` fields (`row_slots` / `aggregate_slots` /
   AS _filtered WHERE …`; `time_shift` / `consecutive_periods` emit dedicated
   self-join CTE pairs;
 - otherwise → a single base SELECT with WHERE/HAVING, GROUP BY, ORDER BY, LIMIT.
+  When the base CTE materialises any hidden aggregate (an aggregate referenced
+  ONLY by ORDER BY or a filter, never declared as a measure), a conditional
+  outer-trim wrapper projects exactly the public projection — same shape as the
+  transform path's outer wrap, minus the step CTEs — so the hidden alias does
+  not leak into the result columns (DEV-1501).
 
 It builds its own `slot_id_by_key` map (the `PlannedQuery` doesn't carry the
 registry), materializes hidden aux slots referenced as transform inputs /
@@ -128,9 +133,12 @@ The generator preserves the result keys byte-for-byte: `orders.revenue_sum`,
 `orders._count` (the `*` dropped, the leading `_` kept), joined dimensions as the
 full dotted path `orders.customers.regions.name`, and renamed measures as
 `orders.<user_name>`. `_full_alias_for_slot` derives these from the slot's key /
-public aliases. The one documented exception is cross-model parametric
-aggregates, which carry the kwarg suffix legacy dropped (see the cross-model
-limitations).
+public aliases. Two documented exceptions, both routed through the same
+`canonical_agg_name` helper: cross-model parametric aggregates carry the kwarg
+suffix legacy dropped, and hidden parametric `first`/`last` (DEV-1501) carry the
+explicit time-arg suffix so distinct time-column specs get distinct
+materialised aliases (`orders.revenue_last_created_at`,
+`orders.revenue_last_updated_at`).
 
 ## Response metadata (`response_meta.py`)
 
