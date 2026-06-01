@@ -119,12 +119,17 @@ async def test_entities_and_question_both_set_runs_both_channels(
 
 @pytest.mark.asyncio
 async def test_entities_only_runs_channel_1_only(service: SearchService) -> None:
+    """Channel 1 fills BOTH memory hits (BM25 over entity tags) and
+    entity hits (DEV-1513 implicit self-reference)."""
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         max_memories=5,
         max_entities=5,
     )
-    assert response.entities == []
+    # DEV-1513: the named ref itself surfaces in the entities bucket.
+    assert any(
+        h.id == "warehouse.orders.amount_paid" for h in response.entities
+    )
     # Memories include the two tagged on amount_paid (both have query=None).
     learnings = [h.text for h in response.memories]
     assert any("gross of refunds" in lm for lm in learnings)
@@ -134,6 +139,8 @@ async def test_entities_only_runs_channel_1_only(service: SearchService) -> None
 async def test_query_only_runs_channel_1_via_extracted_entities(
     service: SearchService,
 ) -> None:
+    """Channel 1 walks the extracted entities; DEV-1513 also surfaces
+    them in the entities bucket."""
     response = await service.search(
         query={
             "source_model": "orders",
@@ -142,7 +149,11 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
         max_memories=5,
         max_entities=5,
     )
-    assert response.entities == []
+    # DEV-1513: the query's source model and referenced column surface
+    # in the entities bucket.
+    entity_ids = {h.id for h in response.entities}
+    assert "warehouse.orders" in entity_ids
+    assert "warehouse.orders.amount_paid" in entity_ids
     learnings = [h.text for h in response.memories]
     assert any("gross of refunds" in lm for lm in learnings)
 

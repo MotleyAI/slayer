@@ -27,12 +27,9 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.models import SlayerModel
 from slayer.memories.models import Memory
 from slayer.search.render import (
-    render_aggregation_text,
-    render_column_text,
-    render_datasource_text,
-    render_measure_text,
+    collect_model_entity_pairs,
+    render_datasource_pair,
     render_memory_text,
-    render_model_text,
 )
 
 
@@ -118,38 +115,6 @@ class Corpus(BaseModel):
     canonical_to_kind: Dict[str, str]
 
 
-def _render_model_subtree_pairs(
-    model: SlayerModel,
-) -> List[Tuple[str, str, str]]:
-    """Render docs for one model: the model itself + its visible columns +
-    named measures + custom aggregations. Hidden columns and unnamed
-    measures are skipped to match the indexer's filter rules."""
-    model_canonical = f"{model.data_source}.{model.name}"
-    pairs: List[Tuple[str, str, str]] = [(
-        model_canonical, "model", render_model_text(model=model),
-    )]
-    for column in model.columns:
-        if column.hidden:
-            continue
-        pairs.append((
-            f"{model_canonical}.{column.name}", "column",
-            render_column_text(model=model, column=column),
-        ))
-    for measure in model.measures:
-        if measure.name is None:
-            continue
-        pairs.append((
-            f"{model_canonical}.{measure.name}", "measure",
-            render_measure_text(model=model, measure=measure),
-        ))
-    for aggregation in model.aggregations:
-        pairs.append((
-            f"{model_canonical}.{aggregation.name}", "aggregation",
-            render_aggregation_text(model=model, aggregation=aggregation),
-        ))
-    return pairs
-
-
 def _collect_render_pairs(
     *,
     memories: List[Memory],
@@ -157,19 +122,21 @@ def _collect_render_pairs(
     datasources: List[str],
 ) -> List[Tuple[str, str, str]]:
     """Return ``[(canonical_id, kind, rendered_text), ...]`` for every
-    doc that goes into the index. Same filter rules as the indexer:
-    hidden models and hidden columns are skipped."""
+    doc that goes into the index. Routes through the unified dispatch
+    helpers in ``slayer.search.render`` (DEV-1513). Hidden models and
+    hidden columns are skipped inside the helpers."""
     out: List[Tuple[str, str, str]] = []
     models_by_ds: Dict[str, List[SlayerModel]] = {}
     for m in visible_models:
         models_by_ds.setdefault(m.data_source, []).append(m)
     for ds in datasources:
-        out.append((
-            ds, "datasource",
-            render_datasource_text(name=ds, models=models_by_ds.get(ds, [])),
-        ))
+        pair = render_datasource_pair(
+            name=ds, models=models_by_ds.get(ds, []),
+        )
+        out.append((pair.canonical_id, pair.kind, pair.text))
     for model in visible_models:
-        out.extend(_render_model_subtree_pairs(model))
+        for re in collect_model_entity_pairs(model=model):
+            out.append((re.canonical_id, re.kind, re.text))
     for memory in memories:
         out.append((
             f"memory:{memory.id}", "memory",

@@ -3,12 +3,19 @@
 Ports the body of the former ``SearchService._run_channel_1`` into a
 standalone :class:`~slayer.search.retriever.Retriever`. Stateless: no
 persistence, no write hooks (defaults to ABC no-op).
+
+DEV-1513: every memory's effective tag list is augmented with
+``memory:<self_id>`` before BM25 ranking, so a user-supplied
+``memory:<id>`` ref surfaces the named memory at the top of the BM25
+ranking. Augmentation runs after the stale-tag filter so the self-ref
+cannot be stripped even if ``valid_canonicals`` ever drifted.
 """
 
 from __future__ import annotations
 
 from typing import List, Optional
 
+from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.memories.models import Memory
 from slayer.memories.ranker import bm25_rank
 from slayer.search.index import Corpus
@@ -28,6 +35,22 @@ def _filter_memories_entities(
             out.append(m)
         else:
             out.append(m.model_copy(update={"entities": live}))
+    return out
+
+
+def _augment_with_self_refs(memories: List[Memory]) -> List[Memory]:
+    """DEV-1513: augment each memory's ``entities`` with
+    ``memory:<self_id>`` so a user-supplied ``memory:<id>`` ref surfaces
+    the named memory at the top of the BM25 ranking. Idempotent."""
+    out: List[Memory] = []
+    for m in memories:
+        self_ref = f"{_MEMORY_PREFIX}{m.id}"
+        if self_ref in m.entities:
+            out.append(m)
+        else:
+            out.append(m.model_copy(
+                update={"entities": [self_ref, *m.entities]},
+            ))
     return out
 
 
@@ -56,8 +79,11 @@ class BM25Retriever(Retriever):
             if valid_canonicals
             else all_memories
         )
+        # DEV-1513: self-ref augmentation runs AFTER the stale-tag
+        # filter so the synthetic ref always survives.
+        augmented = _augment_with_self_refs(filtered)
         ranked = bm25_rank(
-            memories=filtered, query_entities=query_entities,
+            memories=augmented, query_entities=query_entities,
         )
         return RetrievalResult(
             memory_ranking=[mem.id for mem, _ in ranked],

@@ -22,12 +22,9 @@ from slayer.memories.models import Memory
 from slayer.memories.resolver import canonical_id_rooted_at
 from slayer.search.index import Corpus
 from slayer.search.render import (
-    render_aggregation_text,
-    render_column_text,
-    render_datasource_text,
-    render_measure_text,
+    collect_model_entity_pairs,
+    render_datasource_pair,
     render_memory_text_for_embedding,
-    render_model_text,
 )
 from slayer.search.retriever import RetrievalResult, Retriever
 from slayer.storage.base import StorageBackend
@@ -47,24 +44,6 @@ def _sha256(text: str) -> str:
 
 def _memory_canonical_id(memory_id: str) -> str:
     return f"{_MEMORY_PREFIX}{memory_id}"
-
-
-def _model_canonical_id(model: SlayerModel) -> str:
-    return f"{model.data_source}.{model.name}"
-
-
-def _column_canonical_id(model: SlayerModel, *, column_name: str) -> str:
-    return f"{model.data_source}.{model.name}.{column_name}"
-
-
-def _measure_canonical_id(model: SlayerModel, *, measure_name: str) -> str:
-    return f"{model.data_source}.{model.name}.{measure_name}"
-
-
-def _aggregation_canonical_id(
-    model: SlayerModel, *, aggregation_name: str,
-) -> str:
-    return f"{model.data_source}.{model.name}.{aggregation_name}"
 
 
 def _memory_id_from_canonical(canonical_id: str) -> Optional[str]:
@@ -332,61 +311,40 @@ class EmbeddingRetriever(Retriever):
     async def refresh_datasource(
         self, *, name: str, models: List[SlayerModel],
     ) -> List[str]:
-        """Refresh the embedding for one datasource doc."""
+        """Refresh the embedding for one datasource doc.
+
+        Routes through the unified :func:`render_datasource_pair` so the
+        visibility filter is applied in exactly one place (DEV-1513).
+        """
         if not embedding_client.is_available():
             return []
+        pair = render_datasource_pair(name=name, models=models)
         pending = _PendingRefresh(
-            canonical_id=name,
+            canonical_id=pair.canonical_id,
             entity_kind="datasource",
-            text=render_datasource_text(name=name, models=models),
+            text=pair.text,
         )
         return await self._apply_pending([pending])
 
     async def refresh_model_subtree(self, model: SlayerModel) -> List[str]:
         """Refresh the model doc + every visible column + named measures
-        + custom aggregations in a single batch call. Hidden models /
-        hidden columns are skipped entirely (matches the tantivy
-        indexing rules)."""
+        + custom aggregations in a single batch call.
+
+        Routes through the unified :func:`collect_model_entity_pairs` so
+        the "what counts as an indexable entity" filter rules (hidden
+        model -> empty; hidden column skipped; unnamed measure skipped)
+        live in exactly one place (DEV-1513).
+        """
         if not embedding_client.is_available():
             return []
-        if model.hidden:
-            return []
-        pending: List[_PendingRefresh] = []
-        pending.append(_PendingRefresh(
-            canonical_id=_model_canonical_id(model),
-            entity_kind="model",
-            text=render_model_text(model=model),
-        ))
-        for column in model.columns:
-            if column.hidden:
-                continue
-            pending.append(_PendingRefresh(
-                canonical_id=_column_canonical_id(
-                    model, column_name=column.name,
-                ),
-                entity_kind="column",
-                text=render_column_text(model=model, column=column),
-            ))
-        for measure in model.measures:
-            if measure.name is None:
-                continue
-            pending.append(_PendingRefresh(
-                canonical_id=_measure_canonical_id(
-                    model, measure_name=measure.name,
-                ),
-                entity_kind="measure",
-                text=render_measure_text(model=model, measure=measure),
-            ))
-        for aggregation in model.aggregations:
-            pending.append(_PendingRefresh(
-                canonical_id=_aggregation_canonical_id(
-                    model, aggregation_name=aggregation.name,
-                ),
-                entity_kind="aggregation",
-                text=render_aggregation_text(
-                    model=model, aggregation=aggregation,
-                ),
-            ))
+        pending: List[_PendingRefresh] = [
+            _PendingRefresh(
+                canonical_id=re.canonical_id,
+                entity_kind=re.kind,  # type: ignore[arg-type]
+                text=re.text,
+            )
+            for re in collect_model_entity_pairs(model=model)
+        ]
         return await self._apply_pending(pending)
 
     # ------------------------------------------------------------------

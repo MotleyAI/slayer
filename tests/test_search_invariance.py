@@ -589,3 +589,85 @@ async def test_entities_invariant_under_max_memories_with_channel_3_active(
             f"channel-3 active: entities changed when max_memories went "
             f"5 -> {max_memories}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DEV-1513: channel-1 entity ranking — per-bucket invariance must hold
+# when named entity surfacing is active
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_memories_invariant_under_max_entities_with_channel_1_named(
+    service_invariance: SearchService,
+) -> None:
+    """DEV-1513: with ``entities=[X]`` supplied (channel 1 entity ranking
+    active), varying ``max_entities`` must not perturb the memories list.
+
+    Control: the entities bucket actually contains the named ref at the
+    baseline cap, proving channel-1 entity surfacing is active in this
+    fixture configuration."""
+    # No ``question`` so channel 1 is the SOLE entity source — proving the
+    # invariance loop genuinely exercises the new code path rather than
+    # passing trivially via channel 2/3 contributions.
+    base = await _ids(
+        service_invariance,
+        entities=["warehouse.orders.amount_paid"],
+        datasource="warehouse",
+        max_memories=3,
+        max_example_queries=0,
+        max_entities=5,
+    )
+    assert "warehouse.orders.amount_paid" in base["entities"], (
+        "channel-1 named surfacing must be active to make this invariance "
+        "test meaningful"
+    )
+    for max_entities in (0, 1, 5, 50, 200):
+        other = await _ids(
+            service_invariance,
+            entities=["warehouse.orders.amount_paid"],
+            datasource="warehouse",
+            max_memories=3,
+            max_example_queries=0,
+            max_entities=max_entities,
+        )
+        assert other["memories"] == base["memories"], (
+            f"channel-1 named active: memories changed when max_entities "
+            f"went 5 -> {max_entities}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_entities_invariant_under_max_memories_with_channel_1_named(
+    service_invariance: SearchService,
+) -> None:
+    """DEV-1513: with ``entities=[X]`` supplied, varying ``max_memories``
+    must not perturb the entities list.
+
+    Control: the entities bucket contains the named ref at baseline."""
+    # No ``question`` so channel 1 is the SOLE entity source.
+    base = await _ids(
+        service_invariance,
+        entities=["warehouse.orders.amount_paid"],
+        datasource="warehouse",
+        max_memories=2,
+        max_example_queries=0,
+        max_entities=3,
+    )
+    assert "warehouse.orders.amount_paid" in base["entities"], (
+        "channel-1 named surfacing must be active to make this invariance "
+        "test meaningful"
+    )
+    for max_memories in (0, 1, 20, 100):
+        other = await _ids(
+            service_invariance,
+            entities=["warehouse.orders.amount_paid"],
+            datasource="warehouse",
+            max_memories=max_memories,
+            max_example_queries=0,
+            max_entities=3,
+        )
+        assert other["entities"] == base["entities"], (
+            f"channel-1 named active: entities changed when max_memories "
+            f"went 2 -> {max_memories}"
+        )
