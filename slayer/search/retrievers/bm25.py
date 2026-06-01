@@ -16,7 +16,7 @@ from slayer.search.retriever import RetrievalResult, Retriever
 
 
 def _filter_memories_entities(
-    memories: List[Memory], valid_canonicals: set,
+    memories: List[Memory], *, valid_canonicals: set,
 ) -> List[Memory]:
     """Return shallow copies of ``memories`` whose ``entities`` lists
     are filtered down to ``valid_canonicals`` only (DEV-1428). Used to
@@ -50,7 +50,9 @@ class BM25Retriever(Retriever):
         if not query_entities:
             return RetrievalResult()
         filtered = (
-            _filter_memories_entities(all_memories, valid_canonicals)
+            _filter_memories_entities(
+                all_memories, valid_canonicals=valid_canonicals,
+            )
             if valid_canonicals
             else all_memories
         )

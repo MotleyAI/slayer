@@ -396,7 +396,7 @@ async def test_retrieve_does_one_fetch_corpus_and_one_embed_question(
     await retriever_for_setup.upsert_memory(memory)
     await retriever_for_setup.refresh_model_subtree(model)
 
-    async def fake_query_embed(question, *, model=None):
+    async def fake_query_embed(question, *, model=None):  # NOSONAR(S7503) — async stub matches the real ``embed_query`` signature being monkeypatched
         return [0.1, 0.2, 0.3]
 
     monkeypatch.setattr(
@@ -462,7 +462,7 @@ async def test_retrieve_surfaces_dim_mismatch_warning(
     memory = Memory(id="1", learning="x", entities=[])
     await retriever_for_setup.upsert_memory(memory)
 
-    async def fake_query_embed(question, *, model=None):
+    async def fake_query_embed(question, *, model=None):  # NOSONAR(S7503) — async stub matches the real ``embed_query`` signature being monkeypatched
         return [0.1, 0.2]  # dim=2; mismatch vs persisted dim=3
 
     monkeypatch.setattr(

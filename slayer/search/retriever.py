@@ -84,13 +84,13 @@ class Retriever(ABC):
     # Create / refresh hooks — default no-op
     # ------------------------------------------------------------------
 
-    async def upsert_memory(self, memory: Memory) -> List[str]:
+    async def upsert_memory(self, memory: Memory) -> List[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> List[str]:
+    async def refresh_model_subtree(self, model: SlayerModel) -> List[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
-    async def refresh_datasource(
+    async def refresh_datasource(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         self, *, name: str, models: List[SlayerModel],
     ) -> List[str]:
         return []
@@ -105,15 +105,15 @@ class Retriever(ABC):
     # third-party vector DBs) can override them without an ABC change.
     # ------------------------------------------------------------------
 
-    async def delete_memory(self, memory_id: str) -> None:
+    async def delete_memory(self, memory_id: str) -> None:  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
         return None
 
-    async def delete_model(
+    async def delete_model(  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
         self, *, data_source: str, name: str,
     ) -> None:
         return None
 
-    async def delete_datasource(self, name: str) -> None:
+    async def delete_datasource(self, name: str) -> None:  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
         return None
 
 

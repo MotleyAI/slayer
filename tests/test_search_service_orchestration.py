@@ -135,6 +135,12 @@ async def test_valid_canonicals_built_once_and_shared_by_identity(
         max_memories=5, max_example_queries=2, max_entities=5,
     )
     # Same object identity for both retrievers' captured set.
+    assert r1.captured_valid_canonicals_ids, (
+        "r1.retrieve was not invoked"
+    )
+    assert r2.captured_valid_canonicals_ids, (
+        "r2.retrieve was not invoked"
+    )
     assert r1.captured_valid_canonicals_ids[0] == \
         r2.captured_valid_canonicals_ids[0]
     # And the set is non-empty.
@@ -325,9 +331,12 @@ async def test_all_memories_and_datasource_forwarded_to_every_retriever(
         max_memories=5, max_example_queries=2, max_entities=5,
     )
     # Same all_memories list identity for both retrievers.
+    assert r1.captured_all_memories_ids, "r1.retrieve was not invoked"
+    assert r2.captured_all_memories_ids, "r2.retrieve was not invoked"
     assert r1.captured_all_memories_ids[0] == \
         r2.captured_all_memories_ids[0]
     # Both saw the 5 seeded memories.
+    assert r1.captured_all_memories_lens, "r1.retrieve was not invoked"
     assert r1.captured_all_memories_lens[0] == 5
     # Datasource forwarded verbatim.
     assert r1.captured_datasources == ["mydb"]

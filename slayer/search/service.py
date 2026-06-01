@@ -146,7 +146,7 @@ def _dedup(items: List[str]) -> List[str]:
 
 
 def _filter_memories_by_datasource(
-    memories: List[Memory], datasource: Optional[str],
+    *, memories: List[Memory], datasource: Optional[str],
 ) -> List[Memory]:
     """DEV-1409: keep memories with at least one entity rooted at
     ``datasource``. ``datasource=None`` is a no-op identity filter so
@@ -387,8 +387,8 @@ class SearchService:
             )
 
         all_memories: List[Memory] = _filter_memories_by_datasource(
-            await self._storage.list_memories(entities=None),
-            datasource,
+            memories=await self._storage.list_memories(entities=None),
+            datasource=datasource,
         )
 
         valid_canonicals = await self._valid_canonical_set(
@@ -592,8 +592,8 @@ class SearchService:
             "newest memories by recency."
         )
         recency_memories = _filter_memories_by_datasource(
-            await self._storage.list_memories(entities=None),
-            datasource,
+            memories=await self._storage.list_memories(entities=None),
+            datasource=datasource,
         )
         recency_memories.sort(key=lambda m: m.created_at, reverse=True)
         valid_canonicals = await self._valid_canonical_set(

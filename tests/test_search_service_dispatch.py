@@ -95,7 +95,7 @@ class _RecordingRetriever(Retriever):
         return [self._ds_warn] if self._ds_warn else []
 
 
-async def test_default_retrievers_wired_when_none_passed(
+async def test_default_retrievers_wired_when_none_passed(  # NOSONAR(S7503) — async required for pytest-asyncio to consume the async ``storage`` fixture
     storage: StorageBackend,
 ) -> None:
     """Default factory: BM25Retriever + TantivyRetriever +
@@ -105,7 +105,7 @@ async def test_default_retrievers_wired_when_none_passed(
     assert names == ["bm25", "tantivy", "embeddings"]
 
 
-async def test_custom_retrievers_replace_default(
+async def test_custom_retrievers_replace_default(  # NOSONAR(S7503) — async required for pytest-asyncio to consume the async ``storage`` fixture
     storage: StorageBackend,
 ) -> None:
     custom = [_RecordingRetriever(name="a"), _RecordingRetriever(name="b")]
@@ -270,7 +270,7 @@ async def test_refresh_datasource_exception_isolated(
     assert "r2-still-ran" in warnings
 
 
-async def test_search_service_does_not_expose_delete_methods(
+async def test_search_service_does_not_expose_delete_methods(  # NOSONAR(S7503) — async required for pytest-asyncio to consume the async ``storage`` fixture
     storage: StorageBackend,
 ) -> None:
     """Codex Finding 3: this PR keeps storage-side cascade as the

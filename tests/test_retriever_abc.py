@@ -62,7 +62,7 @@ def test_tantivy_retriever_subclasses_retriever() -> None:
     assert TantivyRetriever().name == "tantivy"
 
 
-async def test_embedding_retriever_subclasses_retriever(
+async def test_embedding_retriever_subclasses_retriever(  # NOSONAR(S7503) — async required for pytest-asyncio to consume the async ``storage`` fixture
     storage: StorageBackend,
 ) -> None:
     assert issubclass(EmbeddingRetriever, Retriever)
@@ -93,7 +93,7 @@ async def test_default_no_op_write_hooks_return_documented_empties() -> None:
         assert await retriever.delete_datasource("mydb") is None
 
 
-async def test_three_concrete_retrievers_have_distinct_names(
+async def test_three_concrete_retrievers_have_distinct_names(  # NOSONAR(S7503) — async required for pytest-asyncio to consume the async ``storage`` fixture
     storage: StorageBackend,
 ) -> None:
     names = {

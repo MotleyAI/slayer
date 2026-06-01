@@ -53,16 +53,16 @@ def _model_canonical_id(model: SlayerModel) -> str:
     return f"{model.data_source}.{model.name}"
 
 
-def _column_canonical_id(model: SlayerModel, column_name: str) -> str:
+def _column_canonical_id(model: SlayerModel, *, column_name: str) -> str:
     return f"{model.data_source}.{model.name}.{column_name}"
 
 
-def _measure_canonical_id(model: SlayerModel, measure_name: str) -> str:
+def _measure_canonical_id(model: SlayerModel, *, measure_name: str) -> str:
     return f"{model.data_source}.{model.name}.{measure_name}"
 
 
 def _aggregation_canonical_id(
-    model: SlayerModel, aggregation_name: str,
+    model: SlayerModel, *, aggregation_name: str,
 ) -> str:
     return f"{model.data_source}.{model.name}.{aggregation_name}"
 
@@ -361,7 +361,9 @@ class EmbeddingRetriever(Retriever):
             if column.hidden:
                 continue
             pending.append(_PendingRefresh(
-                canonical_id=_column_canonical_id(model, column.name),
+                canonical_id=_column_canonical_id(
+                    model, column_name=column.name,
+                ),
                 entity_kind="column",
                 text=render_column_text(model=model, column=column),
             ))
@@ -369,14 +371,16 @@ class EmbeddingRetriever(Retriever):
             if measure.name is None:
                 continue
             pending.append(_PendingRefresh(
-                canonical_id=_measure_canonical_id(model, measure.name),
+                canonical_id=_measure_canonical_id(
+                    model, measure_name=measure.name,
+                ),
                 entity_kind="measure",
                 text=render_measure_text(model=model, measure=measure),
             ))
         for aggregation in model.aggregations:
             pending.append(_PendingRefresh(
                 canonical_id=_aggregation_canonical_id(
-                    model, aggregation.name,
+                    model, aggregation_name=aggregation.name,
                 ),
                 entity_kind="aggregation",
                 text=render_aggregation_text(
