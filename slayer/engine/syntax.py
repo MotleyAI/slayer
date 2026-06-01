@@ -339,18 +339,32 @@ def _is_kwarg_equals(
 ) -> bool:
     """Whether a lone ``=`` is a Python keyword-argument separator.
 
-    True iff the innermost open paren is a call paren whose callee is
-    NOT a scalar (scalars never accept kwargs), and the ``=`` matches
-    Python's ``IDENT preceded by ( or ,`` keyword-argument grammar.
+    Three callee classes get different treatment (DEV-1492 iteration 2):
+
+    * **Scalar** (``callee in SCALAR_FUNCTIONS``) — never a kwarg;
+      scalars reject keyword args by design.
+    * **Transform** (``callee in ALL_TRANSFORMS``) — the first
+      positional is always the value to transform, so a kwarg can
+      only appear AFTER a ``,``. This preserves the documented
+      predicate-input form (``consecutive_periods(status = 'paid')``
+      where the SQL ``=`` is part of the predicate, not a kwarg).
+    * **Aggregation or unknown** — kwarg can be the first arg
+      (``weighted_avg(weight=qty)``, ``percentile(p=0.5)``), so the
+      ``=`` may follow either ``(`` or ``,``.
     """
     top = stack[-1] if stack else None
     if top is None or not top[0]:
         return False
-    if top[1] is not None and top[1] in SCALAR_FUNCTIONS:
+    callee = top[1]
+    if callee is not None and callee in SCALAR_FUNCTIONS:
         return False
     prev_kind = hist[-1][0] if hist else None
+    if prev_kind != "NAME":
+        return False
     prev_prev_kind = hist[-2][0] if len(hist) >= 2 else None
-    return prev_kind == "NAME" and prev_prev_kind in ("LPAREN", "COMMA")
+    if callee is not None and callee in ALL_TRANSFORMS:
+        return prev_prev_kind == "COMMA"
+    return prev_prev_kind in ("LPAREN", "COMMA")
 
 
 def _push_hist(hist: List[Tuple[str, str]], kind: str, text: str) -> None:

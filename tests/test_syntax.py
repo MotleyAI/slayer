@@ -686,6 +686,28 @@ class TestFilterOperatorNormalization:
         assert right.left == Ref(name="status")
         assert right.right == Literal(value="),=")
 
+    def test_transform_bare_ref_equality_predicate_preserved(self):
+        # DEV-1492 iteration 2 (Codex review): consecutive_periods(predicate)
+        # is documented to take a boolean predicate (formulas.md:140,163,170).
+        # A bare-ref SQL equality (`status = 'paid'`) as the first positional
+        # arg of a transform must NOT be misread as a kwarg — transforms only
+        # accept kwargs AFTER the value (i.e. after the first `,`). The colon-
+        # agg form (`revenue:sum > 0`) already worked because the `:` token
+        # breaks the LPAREN/IDENT pattern; the bare-ref form is the gap.
+        result = parse_filter_expr("consecutive_periods(status = 'paid') >= 2")
+        assert isinstance(result, Cmp)
+        assert result.op == ">="
+        assert isinstance(result.left, TransformCall)
+        assert result.left.op == "consecutive_periods"
+        assert result.left.args == ()
+        assert result.left.kwargs == ()
+        inner = result.left.input
+        assert isinstance(inner, Cmp)
+        assert inner.op == "=="
+        assert inner.left == Ref(name="status")
+        assert inner.right == Literal(value="paid")
+        assert result.right == Literal(value=Decimal(2))
+
     def test_comparison_inside_ifnull_scalar_call_preserved(self):
         # DEV-1492 (Codex review): the SCALAR_FUNCTIONS narrowing must
         # apply to every scalar in the allowlist, not just `coalesce`.
