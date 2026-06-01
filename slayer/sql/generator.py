@@ -4352,25 +4352,36 @@ class SQLGenerator:
         # default is needed and the helper should not raise.
         if default_time_col_sql is None:
             needs_default = False
+            # DEV-1501 (Codex round 5): walk both top-level AggregateKey
+            # slots AND first/last leaves inside composite slots
+            # (ArithmeticKey / ScalarCallKey). A composite like
+            # ``revenue:last + 1`` with no explicit time arg and no
+            # default time dim would otherwise bypass the validation,
+            # then ``_build_unfiltered_rn_columns`` would emit
+            # ``ORDER BY None``.
             for sid in base_render_order:
+                if needs_default:
+                    break
                 slot = slots_by_id[sid]
                 if slot.phase != Phase.AGGREGATE:
                     continue
                 key = slot.key
-                if not isinstance(key, AggregateKey):
-                    continue
-                if key.agg not in ("first", "last"):
-                    continue
-                # An explicit time arg is the first ColumnKey / ColumnSqlKey
-                # in ``key.args``. If any first/last slot is missing one, we
-                # need the default.
-                has_explicit = any(
-                    isinstance(a, (ColumnKey, ColumnSqlKey))
-                    for a in key.args
-                )
-                if not has_explicit:
-                    needs_default = True
-                    break
+                fl_keys: list = []
+                if isinstance(key, AggregateKey):
+                    if key.agg in ("first", "last"):
+                        fl_keys = [key]
+                else:
+                    fl_keys = _iter_first_last_leaves(key)
+                for fl in fl_keys:
+                    # An explicit time arg is the first ColumnKey /
+                    # ColumnSqlKey in ``key.args``.
+                    has_explicit = any(
+                        isinstance(a, (ColumnKey, ColumnSqlKey))
+                        for a in fl.args
+                    )
+                    if not has_explicit:
+                        needs_default = True
+                        break
             if needs_default:
                 raise ValueError(
                     "first/last aggregation requires a ranking time column "
@@ -6280,15 +6291,26 @@ class SQLGenerator:
                     _add(key.path)
                 elif isinstance(key, TimeTruncKey):
                     _add(key.column.path)
-            elif (
-                slot.phase == Phase.AGGREGATE
-                and isinstance(key, AggregateKey)
-                and key.agg in ("first", "last")
-                and not getattr(key.source, "path", ())
-            ):
-                for a in key.args:
-                    if isinstance(a, ColumnKey):
-                        _add(a.path)
+            elif slot.phase == Phase.AGGREGATE:
+                # DEV-1501 (Codex round 5): walk top-level AggregateKey
+                # slots AND first/last leaves inside composite slots
+                # (ArithmeticKey / ScalarCallKey). A composite operand
+                # ``amount:last(stores.opened_at) + 1`` orders the ranked
+                # subquery by ``stores.opened_at`` and requires the
+                # ``stores`` join to be in scope.
+                fl_keys: list = []
+                if (
+                    isinstance(key, AggregateKey)
+                    and key.agg in ("first", "last")
+                    and not getattr(key.source, "path", ())
+                ):
+                    fl_keys = [key]
+                elif not isinstance(key, AggregateKey):
+                    fl_keys = _iter_first_last_leaves(key)
+                for fl in fl_keys:
+                    for a in fl.args:
+                        if isinstance(a, ColumnKey):
+                            _add(a.path)
         return ordered
 
     def _build_from_and_joins(

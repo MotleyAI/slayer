@@ -5251,6 +5251,91 @@ class TestDev1501HiddenFirstLastRender:
                 f"right={right_rn!r}\nSQL:\n{sql}"
             )
 
+    async def test_composite_first_last_without_default_time_dim_raises(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A composite measure containing a first/last operand without
+        explicit time arg AND no model ``default_time_dimension`` must
+        raise the "first/last requires a ranking time column" error.
+        Without composite-aware validation in
+        ``_build_first_last_base_select``, the query bypasses the check
+        and ``_build_unfiltered_rn_columns`` emits ``ORDER BY None``.
+        Codex review of DEV-1501 PR #159 round 5.
+        """
+        m = _orders_two_ts_model()  # no default_time_dimension
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(m)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                # Composite with bare ``revenue:last`` — no explicit
+                # time arg, no default time dim, no temporal dim.
+                measures=[ModelMeasure(
+                    formula="revenue:last + 1", name="plus1",
+                )],
+                dimensions=[ColumnRef(name="status")],
+            )
+            with pytest.raises(ValueError, match="time"):
+                await engine.execute(query, dry_run=True)
+
+    async def test_composite_first_last_with_joined_time_arg_adds_join(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A composite measure containing a first/last operand with a
+        JOINED explicit time arg (``revenue:last(customers.signed_up_at)
+        + 1``) must pull the ``customers`` join into the FROM so the
+        ranked subquery's ORDER BY can reference ``customers.signed_up_at``.
+        Without composite-aware path discovery in
+        ``_collect_joined_paths_for_base``, the join is missing and the
+        SQL references an unjoined alias. Codex review of DEV-1501 PR
+        #159 round 5.
+        """
+        customers = SlayerModel(
+            name="customers", sql_table="customers", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="signed_up_at", sql="signed_up_at", type=DataType.TIMESTAMP),
+            ],
+        )
+        orders = SlayerModel(
+            name="orders", sql_table="orders", data_source="test",
+            columns=[
+                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+                Column(name="status", sql="status", type=DataType.TEXT),
+                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+                Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            ],
+            joins=[ModelJoin(
+                target_model="customers",
+                join_pairs=[["customer_id", "id"]],
+            )],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = YAMLStorage(base_dir=tmp)
+            await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
+            await storage.save_model(customers)
+            await storage.save_model(orders)
+            engine = SlayerQueryEngine(storage=storage)
+            query = SlayerQuery(
+                source_model="orders",
+                measures=[ModelMeasure(
+                    formula="revenue:last(customers.signed_up_at) + 1",
+                    name="plus1",
+                )],
+                dimensions=[ColumnRef(name="status")],
+            )
+            sql = (await engine.execute(query, dry_run=True)).sql
+            _assert_valid_sql(sql, dialect=generator.dialect)
+            # The ranked subquery's ORDER BY references customers.signed_up_at,
+            # so the customers join MUST be in the FROM.
+            assert "LEFT JOIN customers" in sql or "JOIN customers" in sql, (
+                f"customers join missing — composite first/last with joined "
+                f"time arg didn't pull its join:\n{sql}"
+            )
+            assert "customers.signed_up_at" in sql
+
     async def test_composite_first_last_in_projection_uses_correct_suffixes(
         self, generator: SQLGenerator
     ) -> None:
@@ -5325,9 +5410,12 @@ class TestDev1501HiddenFirstLastRender:
                 Column(name="active", sql="active", type=DataType.BOOLEAN),
                 # FILTERED column — only active customers' rows participate
                 # in the ranking-and-pick.
+                # ``active`` is BOOLEAN — Postgres rejects ``active = 1``
+                # (no implicit bool↔int cast); use ``= TRUE`` so the
+                # generated CASE WHEN is valid (CodeRabbit DEV-1501 round 5).
                 Column(
                     name="active_score", sql="score",
-                    filter="active = 1", type=DataType.DOUBLE,
+                    filter="active = TRUE", type=DataType.DOUBLE,
                 ),
             ],
         )
