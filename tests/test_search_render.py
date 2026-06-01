@@ -191,8 +191,14 @@ def test_column_text_includes_per_field_metadata() -> None:
 
 
 def test_column_text_includes_sampled_when_present() -> None:
+    """Legacy ``sampled``-only fallback path: when ``sampled_values is None``
+    the renderer falls back to the persisted text. Used by numeric columns
+    and pre-DEV-1480 legacy data."""
     m = _make_orders_model()
     col = m.get_column("status")
+    assert col is not None
+    # Wipe sampled_values to force the fallback path.
+    col.sampled_values = None
     text = render_column_text(model=m, column=col)
     assert "paid, refunded, cancelled" in text
 
@@ -202,69 +208,180 @@ def test_column_text_omits_sampled_when_absent() -> None:
     col = m.get_column("id")
     text = render_column_text(model=m, column=col)
     assert "Sample values" not in text
+    assert "Distinct count" not in text
     assert "None" not in text
 
 
-def test_column_text_omits_sampled_when_empty_string() -> None:
-    """DEV-1480: an all-NULL profiled categorical column has ``sampled=""``.
-    The render must skip the ``Sample values:`` line for empty strings so
-    the embedded text doesn't get a bare ``Sample values: `` trailer."""
+def test_column_text_omits_sampled_when_empty_string_and_no_list() -> None:
+    """DEV-1480: an all-NULL profiled categorical column persisted pre-DEV-1516
+    has ``sampled=""`` and ``sampled_values=None``. Renderer must skip the
+    ``Sample values:`` line for the empty-string fallback so the embedded text
+    doesn't get a bare ``Sample values: `` trailer."""
     m = _make_orders_model()
     col = m.get_column("status")
+    assert col is not None
     col.sampled = ""
-    col.sampled_values = []
-    col.distinct_count = 0
+    col.sampled_values = None
+    col.distinct_count = None
     text = render_column_text(model=m, column=col)
     assert "Sample values" not in text
 
 
-def test_column_text_includes_overflow_sampled_with_total() -> None:
-    """DEV-1480 overflow case: ``sampled`` carries the top-20 + total suffix.
-    The text rendering must include the suffix so the embedded doc surfaces
-    the true cardinality at search time."""
+def test_column_text_renders_full_sampled_values_when_present() -> None:
+    """DEV-1516: when ``sampled_values`` is populated, the renderer surfaces
+    the full list (typically 50) instead of falling back to the 20-truncated
+    ``sampled`` text. This is the per-column-data-pull contract."""
     m = _make_orders_model()
     col = m.get_column("status")
+    assert col is not None
+    fifty = [f"v{i:02d}" for i in range(50)]
+    # Set ``sampled`` to the legacy 20-truncated text to prove the list wins.
+    col.sampled = ", ".join(fifty[:20])
+    col.sampled_values = fifty
+    col.distinct_count = 50
+    text = render_column_text(model=m, column=col)
+    expected_line = f"Sample values: {', '.join(fifty)}"
+    assert expected_line in text
+    # Last value must appear — proves it's not the 20-truncated fallback.
+    assert "v49" in text
+    # Order is preserved.
+    v00_pos = text.index("v00")
+    v49_pos = text.index("v49")
+    assert v00_pos < v49_pos
+
+
+def test_column_text_overflow_appends_distinct_count_line() -> None:
+    """DEV-1516: on overflow (distinct_count > len(sampled_values)) the
+    renderer emits a follow-up ``Distinct count: N`` line so the agent can
+    tell the column has more values than the top-50 we returned."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    fifty = [f"v{i:02d}" for i in range(50)]
+    col.sampled = "v00, v01, v02 ... (12345 distinct)"
+    col.sampled_values = fifty
+    col.distinct_count = 12345
+    text = render_column_text(model=m, column=col)
+    # All 50 values rendered.
+    assert ", ".join(fifty) in text
+    # Distinct-count line present.
+    assert "Distinct count: 12345" in text
+    # Order: sample-values line comes first, distinct-count line after.
+    assert text.index("Sample values:") < text.index("Distinct count:")
+
+
+def test_column_text_no_distinct_line_when_count_equals_len_sampled_values() -> None:
+    """DEV-1516: emit the ``Distinct count`` line only when STRICTLY greater
+    than ``len(sampled_values)``. Equal means we returned every value; no
+    need to hint at more."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled_values = ["paid", "refunded", "cancelled"]
+    col.distinct_count = 3
+    col.sampled = "paid, refunded, cancelled"
+    text = render_column_text(model=m, column=col)
+    assert "Sample values: paid, refunded, cancelled" in text
+    assert "Distinct count" not in text
+
+
+def test_column_text_no_distinct_line_when_distinct_count_is_none() -> None:
+    """DEV-1516: distinct_count line only fires when distinct_count is set."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled_values = ["paid", "refunded"]
+    col.distinct_count = None
+    col.sampled = "paid, refunded"
+    text = render_column_text(model=m, column=col)
+    assert "Sample values: paid, refunded" in text
+    assert "Distinct count" not in text
+
+
+def test_column_text_authoritative_empty_list_wins_over_stale_sampled() -> None:
+    """DEV-1516 / codex finding #3: ``sampled_values=[]`` is authoritative
+    (we ran the profile and there were no values). It must NOT fall back to
+    a stale ``sampled`` text — that would surface ghost values the agent
+    would mistake for real data. The empty list also means the renderer
+    must SKIP the ``Sample values:`` line entirely — emitting a bare
+    ``Sample values: `` trailer would leak into the search index and tantivy
+    would parse the trailing colon as noise."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled_values = []
+    col.sampled = "stale_value, leftover"  # would-be fallback; must NOT win
+    col.distinct_count = 0
+    text = render_column_text(model=m, column=col)
+    # Stale text MUST NOT leak.
+    assert "stale_value" not in text
+    assert "leftover" not in text
+    # Empty-list contract: NO ``Sample values:`` line at all (no bare trailer).
+    assert "Sample values" not in text
+    # No distinct-count line (0 == len([])).
+    assert "Distinct count" not in text
+
+
+def test_column_text_overflow_legacy_fallback_no_duplicate_distinct_line() -> None:
+    """DEV-1516 / codex finding #4: a legacy categorical column persisted
+    pre-DEV-1480 has ``sampled_values=None`` and the overflow suffix baked
+    into the ``sampled`` text (``"... (N distinct)"``). The new
+    distinct-count line must NOT fire on that fallback path — it would
+    duplicate the suffix."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled_values = None
+    col.sampled = "a, b, c ... (1234 distinct)"
+    col.distinct_count = 1234
+    text = render_column_text(model=m, column=col)
+    # Fallback line present.
+    assert "Sample values: a, b, c ... (1234 distinct)" in text
+    # No extra "Distinct count:" line that would double-report 1234.
+    assert "Distinct count" not in text
+
+
+def test_column_text_preserves_value_order() -> None:
+    """The renderer must NOT sort or shuffle ``sampled_values`` — they're
+    already ordered by frequency (most common first) and the agent relies
+    on that ordering to identify dominant values."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled_values = ["z_dominant", "a_minor", "m_middle"]
+    col.distinct_count = 3
+    text = render_column_text(model=m, column=col)
+    expected = "Sample values: z_dominant, a_minor, m_middle"
+    assert expected in text
+
+
+def test_column_text_both_none_emits_no_sample_lines() -> None:
+    """Defensive: when both ``sampled`` and ``sampled_values`` are None
+    (unprofiled column), the renderer must emit neither the sample-values
+    line nor the distinct-count line."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled = None
+    col.sampled_values = None
+    col.distinct_count = None
+    text = render_column_text(model=m, column=col)
+    assert "Sample values" not in text
+    assert "Distinct count" not in text
+
+
+def test_column_text_includes_overflow_sampled_with_total_legacy_path() -> None:
+    """DEV-1480 overflow legacy path: when ``sampled_values is None`` the
+    renderer falls back to the persisted ``sampled`` text which already
+    carries the ``... (N distinct)`` suffix. Kept to pin the fallback shape
+    for pre-DEV-1480 / count_distinct-failed retry rows."""
+    m = _make_orders_model()
+    col = m.get_column("status")
+    assert col is not None
+    col.sampled_values = None
     col.sampled = "a, b, c ... (1234 distinct)"
     text = render_column_text(model=m, column=col)
     assert "Sample values: a, b, c ... (1234 distinct)" in text
-
-
-def test_column_text_unchanged_by_sampled_values_field() -> None:
-    """DEV-1480: only ``sampled`` (the text string) is embedded. Adding the
-    structured ``sampled_values`` list must NOT change the rendered text and
-    therefore must NOT bump the content_hash."""
-    m = _make_orders_model()
-    col_with_list = m.get_column("status")
-    col_with_list.sampled_values = ["paid", "refunded", "cancelled"]
-    col_with_list.distinct_count = 3
-    text_with_list = render_column_text(model=m, column=col_with_list)
-
-    # Build a sibling column identical except for the structured field.
-    plain = Column(
-        name=col_with_list.name,
-        type=col_with_list.type,
-        description=col_with_list.description,
-        sampled=col_with_list.sampled,
-    )
-    text_plain = render_column_text(model=m, column=plain)
-    assert text_with_list == text_plain
-
-
-def test_column_text_unchanged_by_distinct_count_field() -> None:
-    """DEV-1480: ``distinct_count`` is metadata; not embedded."""
-    m = _make_orders_model()
-    col_with_count = m.get_column("status")
-    col_with_count.distinct_count = 999
-    text_with = render_column_text(model=m, column=col_with_count)
-
-    plain = Column(
-        name=col_with_count.name,
-        type=col_with_count.type,
-        description=col_with_count.description,
-        sampled=col_with_count.sampled,
-    )
-    text_plain = render_column_text(model=m, column=plain)
-    assert text_with == text_plain
 
 
 def test_column_text_excludes_meta() -> None:

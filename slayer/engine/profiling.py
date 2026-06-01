@@ -27,8 +27,13 @@ DEV-1480 changes:
 - Categorical query orders by per-value count desc (alphabetical tie-break
   in SQL) so the persisted top-N is "most common values first".
 - New ``Column.sampled_values: Optional[List[str]]`` carries the top-50
-  list verbatim (no ambiguous text split). Stays ``None`` for overflow >50
-  and for numeric/temporal columns.
+  list verbatim (no ambiguous text split). For categorical columns it is
+  populated on ≤50 distinct AND on overflow when the secondary
+  ``count_distinct`` query succeeds. It stays ``None`` only for
+  numeric/temporal columns AND for the rare overflow branch where the
+  secondary ``count_distinct`` query fails (intentional cache-miss retry
+  signal — ``_is_sample_cached`` flags it stale so the next
+  ``inspect_model`` / ``refresh-samples`` call retries).
 - New ``Column.distinct_count: Optional[int]`` carries the true total
   cardinality; the overflow branch fires a second ``count_distinct`` query
   via a transient ``ModelExtension`` (bypassing ``Column.allowed_aggregations``
@@ -40,10 +45,18 @@ DEV-1480 changes:
   ``values=None, distinct_count=None`` to signal "data omitted from the
   legacy entry". The richer DEV-1480 data only lives on ``ColumnSample``
   produced by ``profile_column``.
+
+DEV-1516 additions:
+- :func:`ensure_column_sample_fresh` — shared cache-aware refresh helper
+  used by both ``inspect_model``'s categorical loop and the search
+  service's post-fusion column-hit hook. Returns the input column on cache
+  hit / non-categorical / failure, and an in-memory refreshed copy on
+  success (after persisting via storage).
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, NamedTuple, Optional, Set, Tuple
 
 from slayer.core.enums import DataType
@@ -51,6 +64,9 @@ from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -632,3 +648,92 @@ async def handle_edit_refresh(
                 f"{model_name}: embedding refresh failed: {exc}"
             )
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# DEV-1516: shared cache-aware refresh helper
+# ---------------------------------------------------------------------------
+
+
+async def ensure_column_sample_fresh(
+    *,
+    model: SlayerModel,
+    column: Column,
+    engine: SlayerQueryEngine,
+    storage: StorageBackend,
+) -> Column:
+    """Best-effort refresh of a stale categorical column's persisted sample.
+
+    Used by both :func:`slayer.mcp.server.inspect_model` (categorical cache
+    miss path) and :class:`slayer.search.service.SearchService` (post-fusion
+    column-hit hook) so DEV-1516's "stale columns auto-refresh on the spot"
+    contract has a single source of truth.
+
+    Returns the **input column unchanged** when:
+
+    - ``_is_sample_cached(column)`` is True (cache hit; includes hidden /
+      primary-key columns by convention),
+    - the column is not categorical (numeric / temporal are handled by
+      ``inspect_model``'s batched min/max path; the search hook never
+      refreshes them since their ``sampled`` text has no 20-vs-50 issue),
+    - :func:`profile_column` returns ``None`` (e.g. transient query failure
+      or no rows),
+    - :func:`profile_column` raises (logged + swallowed),
+    - ``storage.update_column_sampled`` raises (logged + swallowed; the
+      in-memory refresh is still returned so the caller can render fresh
+      data this call).
+
+    Returns a Pydantic ``model_copy``'d column with refreshed
+    ``sampled`` / ``sampled_values`` / ``distinct_count`` fields on
+    success (after persisting via storage).
+
+    Logs ``WARNING`` on profile + persist failures with
+    ``(data_source, model_name, column_name)`` context so observability
+    matches the pre-DEV-1516 inline implementation in ``inspect_model``.
+    """
+    if _is_sample_cached(column):
+        return column
+    if column.type not in _CATEGORICAL_TYPES:
+        # Numeric / temporal: inspect_model handles them via the batched
+        # min/max query. The search refresh hook intentionally skips them
+        # because their ``sampled`` text is a min/max range, not a value
+        # list — the 20-vs-50 distinction does not apply.
+        return column
+    try:
+        sample = await profile_column(
+            model=model, column=column, engine=engine,
+        )
+    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
+        logger.warning(
+            "ensure_column_sample_fresh: failed to profile %s.%s.%s: %s",
+            model.data_source, model.name, column.name, exc,
+        )
+        return column
+    if sample is None:
+        # No data to persist (e.g. PK / hidden / no rows). Helper short-
+        # circuits without writing — keeps cache predicate from flipping.
+        return column
+    try:
+        await storage.update_column_sampled(
+            data_source=model.data_source,
+            model_name=model.name,
+            column_name=column.name,
+            sampled=sample.sampled,
+            sampled_values=sample.sampled_values,
+            distinct_count=sample.distinct_count,
+        )
+    except Exception as exc:  # NOSONAR(S112) — best-effort: see module docstring
+        logger.warning(
+            "ensure_column_sample_fresh: failed to persist sample for "
+            "%s.%s.%s via update_column_sampled: %s",
+            model.data_source, model.name, column.name, exc,
+        )
+        # Fall through: surface the in-memory refresh so the caller can
+        # still render fresh data this call. Next call will retry — the
+        # cache predicate still flags the column stale because the persist
+        # never landed.
+    return column.model_copy(update={
+        "sampled": sample.sampled,
+        "sampled_values": sample.sampled_values,
+        "distinct_count": sample.distinct_count,
+    })

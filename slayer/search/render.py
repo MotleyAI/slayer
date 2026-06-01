@@ -181,11 +181,29 @@ def render_column_text(*, model: SlayerModel, column: Column) -> str:
         lines.append(f"SQL: {column.sql}")
     if column.filter:
         lines.append(f"Filter: {column.filter}")
-    # DEV-1480: skip the line when ``sampled`` is empty (all-NULL profiled
-    # categorical column). Avoids a bare ``Sample values: `` trailer in the
-    # embedded doc text, and keeps the content_hash stable for columns whose
-    # only DEV-1480 change is the new structured ``sampled_values`` field.
-    if column.sampled:
+    # DEV-1516: prefer the structured ``sampled_values`` list (full top-50)
+    # over the 20-truncated ``sampled`` text. ``is None`` gates the fallback
+    # so an authoritative empty list (``[]``) does not re-surface a stale
+    # ``sampled`` text; an empty list simply skips the line (avoids a bare
+    # ``Sample values: `` trailer in the indexed text).
+    if column.sampled_values is not None:
+        if column.sampled_values:
+            lines.append(f"Sample values: {', '.join(column.sampled_values)}")
+            # Overflow signal: render true cardinality on a follow-up line
+            # only when STRICTLY greater than the values we returned. Equal
+            # means we returned the entire set; emitting a hint would be
+            # noise. Gated on ``sampled_values is not None`` so the legacy
+            # ``"... (N distinct)"`` suffix in ``sampled`` text does not get
+            # duplicated by an extra line.
+            if (
+                column.distinct_count is not None
+                and column.distinct_count > len(column.sampled_values)
+            ):
+                lines.append(f"Distinct count: {column.distinct_count}")
+    elif column.sampled:
+        # Fallback for numeric/temporal columns (``sampled`` is a min/max
+        # range, not a list) and pre-DEV-1480 legacy data where the
+        # structured field was never populated.
         lines.append(f"Sample values: {column.sampled}")
     if column.primary_key:
         lines.append("Primary key: yes")
