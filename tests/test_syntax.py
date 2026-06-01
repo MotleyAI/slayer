@@ -686,6 +686,25 @@ class TestFilterOperatorNormalization:
         assert right.left == Ref(name="status")
         assert right.right == Literal(value="),=")
 
+    def test_colon_agg_with_ambiguous_name_preserves_kwarg_in_filter(self):
+        # DEV-1492 iteration 3 (Codex review): `first` and `last` are in
+        # both ALL_TRANSFORMS (FIRST_VALUE window) and BUILTIN_AGGREGATIONS
+        # (per-group first/last). The colon makes them aggregation calls,
+        # so a kwarg after `(` must be preserved — the transform-only
+        # COMMA-after-IDENT rule does NOT apply when the call sits after
+        # a `:`. Built-in `first`/`last` take the order column positionally
+        # today, but custom aggregations overriding these names can declare
+        # any kwarg shape; this pins the architectural rule.
+        result = parse_filter_expr("revenue:first(order=created_at) > 0")
+        assert isinstance(result, Cmp)
+        assert result.op == ">"
+        assert isinstance(result.left, AggCall)
+        assert result.left.source == Ref(name="revenue")
+        assert result.left.agg == "first"
+        assert result.left.args == ()
+        assert result.left.kwargs == (("order", Ref(name="created_at")),)
+        assert result.right == Literal(value=Decimal(0))
+
     def test_transform_bare_ref_equality_predicate_preserved(self):
         # DEV-1492 iteration 2 (Codex review): consecutive_periods(predicate)
         # is documented to take a boolean predicate (formulas.md:140,163,170).

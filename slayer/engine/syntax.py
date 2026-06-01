@@ -325,11 +325,23 @@ def _classify_paren(
     / ``]``). Lowercase keywords (``and`` / ``or`` / ``not`` / ``in``
     / ``is``) do NOT make the next ``(`` a call paren — that's why
     ``not(...)`` and ``x in (...)`` carry grouping parens.
+
+    DEV-1492 iteration 3: a colon-aggregation context
+    (``revenue:first(...)``) makes the call a parametric aggregation
+    regardless of the callee name. ``first`` and ``last`` sit in both
+    :data:`ALL_TRANSFORMS` and the built-in aggregation set
+    (``_AMBIGUOUS_AGG_TRANSFORMS`` in ``slayer/core/formula.py``);
+    after a ``:`` they are always aggregations, never transforms.
+    Drop the callee to ``None`` so :func:`_is_kwarg_equals` takes the
+    aggregation/unknown branch (kwargs preserved after ``(`` or
+    ``,``).
     """
     prev_kind = hist[-1][0] if hist else None
     prev_text = hist[-1][1] if hist else ""
     is_call = prev_kind == "NAME" or prev_text in (")", "]")
     callee = hist[-1][1] if (is_call and prev_kind == "NAME") else None
+    if callee is not None and len(hist) >= 2 and hist[-2] == ("OTHER", ":"):
+        callee = None
     return is_call, callee
 
 
