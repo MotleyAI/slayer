@@ -6031,14 +6031,54 @@ class SQLGenerator:
         if isinstance(value_key, AggregateKey):
             # HAVING-route: render the aggregate against the target.
             # Reuse the synthesise helper with target_model as scope.
-            from slayer.core.keys import AggregateKey as _AggKey
-            local_source = ColumnKey(path=(), leaf=value_key.source.leaf) \
-                if isinstance(value_key.source, ColumnKey) else value_key.source
+            from slayer.core.keys import (
+                AggregateKey as _AggKey, ColumnSqlKey as _ColSqlKey,
+            )
+            # DEV-1501 (Codex round 9): mirror the projection-path
+            # rerooting (lines ~5685-5730) here. The routed AggregateKey
+            # carries args/kwargs still rooted at the cross-model path
+            # (``customers.regions.amount:last(customers.regions.opened_at)``
+            # arrives with ``args=(ColumnKey(path=("customers","regions"),
+            # leaf="opened_at"),)``). Inside the target CTE scope those
+            # refs must qualify under the local relation, not the
+            # host-rooted ``__``-path alias — same fix the projection
+            # path applies via ``_reroot_kwarg``. Without this, the
+            # ranked subquery's ``ORDER BY`` qualifies the time column
+            # under a non-existent alias inside the CTE.
+            cross_model_path = getattr(value_key.source, "path", ())
+
+            def _reroot_having(kval):
+                if isinstance(kval, ColumnKey) and kval.path == cross_model_path:
+                    return ColumnKey(path=(), leaf=kval.leaf)
+                if isinstance(kval, _ColSqlKey) and kval.path == cross_model_path:
+                    return _ColSqlKey(
+                        path=(), model=kval.model,
+                        column_name=kval.column_name,
+                    )
+                return kval
+
+            if isinstance(value_key.source, ColumnKey):
+                local_source = ColumnKey(path=(), leaf=value_key.source.leaf)
+            elif isinstance(value_key.source, _ColSqlKey):
+                local_source = _ColSqlKey(
+                    path=(), model=value_key.source.model,
+                    column_name=value_key.source.column_name,
+                )
+            else:
+                local_source = value_key.source
+            local_args = tuple(
+                _reroot_having(a)
+                if isinstance(a, (ColumnKey, _ColSqlKey)) else a
+                for a in value_key.args
+            )
+            local_kwargs = tuple(
+                (k, _reroot_having(v)) for k, v in value_key.kwargs
+            )
             local_agg = _AggKey(
                 source=local_source,
                 agg=value_key.agg,
-                args=value_key.args,
-                kwargs=value_key.kwargs,
+                args=local_args,
+                kwargs=local_kwargs,
                 column_filter_key=value_key.column_filter_key,
             )
             from slayer.engine.planned import ValueSlot as _Slot
