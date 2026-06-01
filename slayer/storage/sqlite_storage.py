@@ -497,7 +497,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     # the ABC contract (third-party code or the cascade-strip path that
     # bypasses the public ``save_memory`` API still expect these
     # primitives). The cascade write path calls ``_save_memory_row``
-    # directly to avoid triggering ``EmbeddingService.refresh_memory``.
+    # directly to avoid triggering ``EmbeddingRetriever.upsert_memory``.
 
     def _save_memory_sync(self, memory: Memory) -> None:
         data = json.dumps(memory.model_dump(mode="json"))

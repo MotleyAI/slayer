@@ -36,7 +36,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.embeddings import client as embedding_client
-from slayer.embeddings.service import EmbeddingService
+from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -171,7 +171,7 @@ async def test_embedding_refresh_model_subtree_uses_unified_helper(
     monkeypatch: pytest.MonkeyPatch,
     stub_available: None,
 ) -> None:
-    """``EmbeddingService.refresh_model_subtree`` produces (canonical_id,
+    """``EmbeddingRetriever.refresh_model_subtree`` produces (canonical_id,
     entity_kind, content_hash) triples that match what would be derived
     from ``collect_model_entity_pairs``. This pins the unification: any
     drift between the corpus-build dispatch and the embedding-refresh
@@ -189,12 +189,12 @@ async def test_embedding_refresh_model_subtree_uses_unified_helper(
         return [[0.0, 1.0]] * len(texts)
 
     monkeypatch.setattr(
-        "slayer.embeddings.service.embed_batch", stub_embed_batch,
+        "slayer.search.retrievers.embeddings.embed_batch", stub_embed_batch,
     )
 
     model = await storage.get_model("orders", data_source="warehouse")
     assert model is not None
-    svc = EmbeddingService(storage=storage)
+    svc = EmbeddingRetriever(storage=storage)
     await svc.refresh_model_subtree(model)
 
     # Every rendered text produced by the helper should appear in the
@@ -250,9 +250,9 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
         return [[0.0, 1.0]] * len(texts)
 
     monkeypatch.setattr(
-        "slayer.embeddings.service.embed_batch", stub_embed_batch,
+        "slayer.search.retrievers.embeddings.embed_batch", stub_embed_batch,
     )
-    svc = EmbeddingService(storage=storage)
+    svc = EmbeddingRetriever(storage=storage)
     await svc.refresh_datasource(name="warehouse", models=[orders, audit])
     assert pair_ws.text in captured
 
@@ -328,7 +328,7 @@ async def test_embedding_path_actually_calls_collect_model_entity_pairs(
     looks it up: if the embedding dispatch still has a private duplicate,
     the sentinel text never reaches the embedding batch."""
     from slayer.search.render import RenderedEntity
-    from slayer.embeddings import service as emb_mod
+    from slayer.search.retrievers import embeddings as emb_mod
 
     sentinel_text = "SENTINEL_EMB_TEXT"
     sentinel = RenderedEntity(
@@ -352,7 +352,7 @@ async def test_embedding_path_actually_calls_collect_model_entity_pairs(
 
     model = await storage.get_model("orders", data_source="warehouse")
     assert model is not None
-    await EmbeddingService(storage=storage).refresh_model_subtree(model)
+    await EmbeddingRetriever(storage=storage).refresh_model_subtree(model)
     assert sentinel_text in captured
 
 
@@ -388,7 +388,7 @@ async def test_embedding_path_actually_calls_render_datasource_pair(
 ) -> None:
     """Same sentinel pattern for the embedding-side datasource refresh."""
     from slayer.search.render import RenderedEntity
-    from slayer.embeddings import service as emb_mod
+    from slayer.search.retrievers import embeddings as emb_mod
 
     sentinel_text = "SENTINEL_DS_EMB_TEXT"
     sentinel = RenderedEntity(
@@ -410,7 +410,7 @@ async def test_embedding_path_actually_calls_render_datasource_pair(
 
     monkeypatch.setattr(emb_mod, "embed_batch", stub_embed_batch)
 
-    await EmbeddingService(storage=storage).refresh_datasource(
+    await EmbeddingRetriever(storage=storage).refresh_datasource(
         name="warehouse", models=[],
     )
     assert sentinel_text in captured
