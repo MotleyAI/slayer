@@ -62,7 +62,7 @@ def check_column_types(model_name, expected_types):
     """Assert /models/{name} returns the expected DataType strings.
 
     expected_types: dict mapping column name to DataType .value string
-        (e.g. "number", "string", "time", "date"). Columns absent
+        (e.g. "DOUBLE", "TEXT", "TIMESTAMP", "DATE"). Columns absent
         from the dict are ignored — different dialects expose different
         column sets, and this helper is a positive-coverage check, not
         an exhaustive schema comparison.

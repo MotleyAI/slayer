@@ -1827,6 +1827,9 @@ class SQLGenerator:
         if self.dialect == "tsql":
             # T-SQL uses DATETRUNC(unit, col) — available since SQL Server 2022.
             # Week must use ISO_WEEK (Monday-start) to be @@DATEFIRST-independent.
+            # DATETRUNC requires a temporal type; wrap non-column/cast expressions.
+            if not isinstance(col_expr, (exp.Column, exp.Cast)):
+                col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
             tsql_gran = "iso_week" if gran_str == "week" else gran_str
             return exp.Anonymous(
                 this="DATETRUNC",
@@ -2542,7 +2545,8 @@ class SQLGenerator:
 
         std_x = exp.Anonymous(this=std_fn, expressions=[x_guarded])
         std_y = exp.Anonymous(this=std_fn, expressions=[y_guarded])
-        denom = exp.Paren(this=exp.Mul(this=std_x, expression=std_y))
+        raw_denom = exp.Paren(this=exp.Mul(this=std_x, expression=std_y))
+        denom = exp.Anonymous(this="NULLIF", expressions=[raw_denom, exp.Literal.number(0)])
         return exp.Div(this=covar, expression=denom)
 
     def _build_stat_agg(self, measure: "EnrichedMeasure") -> exp.Expression:

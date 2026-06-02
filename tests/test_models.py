@@ -828,7 +828,7 @@ class TestDatasourceConfig:
             port=1433,
             database="mydb",
             username="sa",
-            password="Secret!123",
+            password="Secret!123",  # NOSONAR(S2068) — test-only fixture credential, not a real secret
         )
         cs = ds.get_connection_string()
         assert cs.startswith("mssql+pyodbc://")
@@ -838,11 +838,7 @@ class TestDatasourceConfig:
     def test_sqlserver_connection_string_includes_odbc_driver_param(self) -> None:
         ds = DatasourceConfig(name="test", type="mssql", host="sqlhost", database="db")
         cs = ds.get_connection_string()
-        # Must include exact ODBC driver name so pyodbc can locate the installed driver
-        cs_lower = cs.lower()
-        assert "odbc" in cs_lower
-        assert "driver" in cs_lower
-        assert "18" in cs  # msodbcsql18 is the expected driver
+        assert "driver=ODBC+Driver+18+for+SQL+Server" in cs
 
     def test_sqlserver_connection_string_includes_trust_server_cert(self) -> None:
         ds = DatasourceConfig(name="test", type="mssql", host="sqlhost", database="db")

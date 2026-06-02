@@ -121,6 +121,9 @@ _FLOAT_LIKE_SA_TYPES = frozenset(
         # ClickHouse adapter (clickhouse-sqlalchemy)
         "FLOAT32",
         "FLOAT64",
+        # T-SQL monetary types (fixed-precision decimal, no integer rounding)
+        "MONEY",
+        "SMALLMONEY",
     }
 )
 

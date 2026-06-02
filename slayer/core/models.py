@@ -747,24 +747,27 @@ class DatasourceConfig(BaseModel):
         _NO_COLON.check(name=v, context=label)
         return v
 
+    def _get_tsql_connection_string(self) -> str:
+        auth = ""
+        if self.username:
+            auth = self.username
+            if self.password:
+                auth += f":{self.password}"
+            auth += "@"
+        host_port = self.host or "localhost"
+        if self.port:
+            host_port += f":{self.port}"
+        db = self.database or ""
+        params = "driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+        return f"mssql+pyodbc://{auth}{host_port}/{db}?{params}"
+
     def get_connection_string(self) -> str:
         if self.connection_string:
             return self.connection_string
         if self.type in ("sqlite", "duckdb"):
             return f"{self.type}:///{self.database}"
         if self.type in ("mssql", "sqlserver", "tsql"):
-            auth = ""
-            if self.username:
-                auth = self.username
-                if self.password:
-                    auth += f":{self.password}"
-                auth += "@"
-            host_port = self.host or "localhost"
-            if self.port:
-                host_port += f":{self.port}"
-            db = self.database or ""
-            params = "driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
-            return f"mssql+pyodbc://{auth}{host_port}/{db}?{params}"
+            return self._get_tsql_connection_string()
         driver_map = {
             "postgres": "postgresql",
             "postgresql": "postgresql",
